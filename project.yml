@@ -1,0 +1,44 @@
+name: FilmEmulation
+options:
+  bundleIdPrefix: com.filmemulation
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "16.0"
+  generateEmptyDirectories: true
+  defaultConfig: Debug
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    GENERATE_INFOPLIST_FILE: "YES"
+    INFOPLIST_KEY_NSCameraUsageDescription: "FilmEmulation needs camera access to capture Apple Log video for film stock processing."
+    INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "FilmEmulation saves rendered videos to your photo library."
+    INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "FilmEmulation saves rendered videos to your photo library."
+    INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+    INFOPLIST_KEY_UIRequiredDeviceCapabilities: "metal video-capture"
+    INFOPLIST_KEY_UIStatusBarHidden: "YES"
+    DEVELOPMENT_TEAM: "KHLQQ79C66"
+
+configs:
+  Debug: debug
+  Release: release
+
+targets:
+  FilmEmulation:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Resources/Shaders
+        type: metal
+    resources:
+      - path: App/Resources/LUTs
+        type: folder
+      - path: App/Resources/Grain
+        type: folder
+      - path: App/Resources/stocks.json
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.filmemulation.app
+        CODE_SIGN_STYLE: Automatic
+        PROVISIONING_PROFILE_SPECIFIER: ""

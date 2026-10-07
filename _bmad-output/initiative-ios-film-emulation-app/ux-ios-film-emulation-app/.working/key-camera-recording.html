@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Camera — Recording</title>
+<style>
+  /* Governed by: DESIGN.md (Colors, Components — Record Button, Typography)
+     EXPERIENCE.md (State Patterns — Recording, Component Patterns — Record Flow step 2) */
+
+  :root {
+    --bg: #000000;
+    --surface: rgba(26,26,26,0.85);
+    --text-primary: #FFFFFF;
+    --text-secondary: rgba(255,255,255,0.6);
+    --record-recording: #FF0000;
+    --accent: #3B82F6;
+    --safe-top: 54px;
+    --safe-bottom: 34px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #111;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: -apple-system, 'SF Pro', system-ui, sans-serif;
+  }
+
+  .phone {
+    width: 393px;
+    height: 852px;
+    background: var(--bg);
+    border-radius: 44px;
+    overflow: hidden;
+    position: relative;
+    box-shadow: 0 0 0 3px #333, 0 20px 60px rgba(0,0,0,0.5);
+  }
+
+  .preview {
+    position: absolute;
+    inset: 0;
+    background: 
+      radial-gradient(ellipse at 30% 40%, rgba(60,80,120,0.3) 0%, transparent 60%),
+      radial-gradient(ellipse at 70% 60%, rgba(40,50,70,0.2) 0%, transparent 50%),
+      linear-gradient(180deg, #1a1a2e 0%, #16213e 30%, #0f3460 60%, #1a1a1a 100%);
+  }
+
+  .status-bar {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: var(--safe-top);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding: 14px 28px 8px;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .status-bar .time { font-weight: 600; }
+  .status-bar .icons { display: flex; gap: 6px; opacity: 0.8; }
+
+  /* Recording dot + timer */
+  .recording-indicator {
+    position: absolute;
+    top: var(--safe-top);
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-top: 10px;
+  }
+  .rec-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--record-recording);
+    animation: pulse 0.8s ease-in-out infinite;
+  }
+  .timer {
+    color: var(--record-recording);
+    font-size: 22px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 1px;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.85); }
+  }
+
+  /* Stock Strip */
+  .stock-strip {
+    position: absolute;
+    bottom: calc(var(--safe-bottom) + 100px);
+    left: 50%;
+    transform: translateX(-50%);
+    height: 44px;
+    padding: 0 20px;
+    background: var(--surface);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-radius: 9999px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .stock-strip .chevron { color: var(--text-secondary); font-size: 12px; }
+  .stock-strip .stock-name { color: var(--text-primary); font-size: 15px; font-weight: 400; min-width: 48px; text-align: center; }
+
+  /* Record Button — recording state */
+  .record-btn-outer {
+    position: absolute;
+    bottom: calc(var(--safe-bottom) + 24px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: 80px; height: 80px;
+    border-radius: 50%;
+    border: 4px solid var(--record-recording);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    animation: btn-pulse 1.6s ease-in-out infinite;
+  }
+  .record-btn-inner {
+    width: 68px; height: 68px;
+    border-radius: 50%;
+    background: rgba(255,0,0,0.8);
+    animation: inner-pulse 1.6s ease-in-out infinite;
+  }
+
+  @keyframes btn-pulse {
+    0%, 100% { transform: translateX(-50%) scale(1); }
+    50% { transform: translateX(-50%) scale(1.05); }
+  }
+  @keyframes inner-pulse {
+    0%, 100% { border-radius: 50%; }
+    50% { border-radius: 8px; }
+  }
+
+  .screen-label {
+    position: absolute;
+    top: 100px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.6);
+    color: var(--text-secondary);
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="preview"></div>
+  <div class="screen-label">Recording</div>
+
+  <div class="status-bar">
+    <span class="time">9:41</span>
+    <span class="icons">●●●●○ ▹</span>
+  </div>
+
+  <!-- Recording timer -->
+  <div class="recording-indicator">
+    <div class="rec-dot"></div>
+    <span class="timer">01:23</span>
+  </div>
+
+  <div class="stock-strip">
+    <span class="chevron">◂</span>
+    <span class="stock-name">500T</span>
+    <span class="chevron">▸</span>
+  </div>
+
+  <div class="record-btn-outer">
+    <div class="record-btn-inner"></div>
+  </div>
+</div>
+</body>
+</html>

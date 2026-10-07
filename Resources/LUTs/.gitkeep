@@ -1,0 +1,9 @@
+# Placeholder for .cube LUT files
+# Real LUT files should be placed here:
+#   kodak250d.cube
+#   kodak500t.cube
+#   portra800.cube
+#   gold200.cube
+#   cinestill50d.cube
+#   cinestill800t.cube
+#   bw.cube

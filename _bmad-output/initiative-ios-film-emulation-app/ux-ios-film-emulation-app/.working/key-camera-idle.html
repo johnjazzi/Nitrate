@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Camera — Idle</title>
+<style>
+  /* Governed by: DESIGN.md (Colors, Typography, Layout & Spacing, Shapes, Components — Record Button, Stock Strip)
+     EXPERIENCE.md (State Patterns — Idle, Component Patterns — Stock Selector) */
+
+  :root {
+    --bg: #000000;
+    --surface: rgba(26,26,26,0.85);
+    --text-primary: #FFFFFF;
+    --text-secondary: rgba(255,255,255,0.6);
+    --record: #FF3B30;
+    --accent: #3B82F6;
+    --safe-top: 54px;
+    --safe-bottom: 34px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #111;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: -apple-system, 'SF Pro', system-ui, sans-serif;
+  }
+
+  .phone {
+    width: 393px;
+    height: 852px;
+    background: var(--bg);
+    border-radius: 44px;
+    overflow: hidden;
+    position: relative;
+    box-shadow: 0 0 0 3px #333, 0 20px 60px rgba(0,0,0,0.5);
+  }
+
+  .preview {
+    position: absolute;
+    inset: 0;
+    background: 
+      radial-gradient(ellipse at 30% 40%, rgba(60,80,120,0.3) 0%, transparent 60%),
+      radial-gradient(ellipse at 70% 60%, rgba(40,50,70,0.2) 0%, transparent 50%),
+      linear-gradient(180deg, #1a1a2e 0%, #16213e 30%, #0f3460 60%, #1a1a1a 100%);
+    /* Simulates a dark scene through clean preview — no LUT applied */
+  }
+
+  /* Top safe area */
+  .status-bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--safe-top);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding: 14px 28px 8px;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .status-bar .time { font-weight: 600; }
+  .status-bar .icons { display: flex; gap: 6px; opacity: 0.8; }
+
+  /* Stock Strip */
+  .stock-strip {
+    position: absolute;
+    bottom: calc(var(--safe-bottom) + 100px);
+    left: 50%;
+    transform: translateX(-50%);
+    height: 44px;
+    padding: 0 20px;
+    background: var(--surface);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-radius: 9999px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: border-color 0.2s;
+  }
+  .stock-strip .chevron { color: var(--text-secondary); font-size: 12px; }
+  .stock-strip .stock-name { 
+    color: var(--text-primary); 
+    font-size: 15px; 
+    font-weight: 400;
+    min-width: 48px;
+    text-align: center;
+  }
+
+  /* Record Button */
+  .record-btn-outer {
+    position: absolute;
+    bottom: calc(var(--safe-bottom) + 24px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    border: 4px solid var(--record);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .record-btn-inner {
+    width: 68px;
+    height: 68px;
+    border-radius: 50%;
+    background: rgba(26,26,26,0.6);
+  }
+
+  /* Render Pill (hidden in idle) — shown for reference at low opacity */
+  .render-pill {
+    position: absolute;
+    bottom: calc(var(--safe-bottom) + 12px);
+    right: 20px;
+    height: 32px;
+    padding: 0 12px;
+    background: var(--surface);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-radius: 9999px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    opacity: 0; /* hidden in idle */
+  }
+  .render-pill .count {
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 500;
+  }
+
+  /* Screen label */
+  .screen-label {
+    position: absolute;
+    top: 100px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.6);
+    color: var(--text-secondary);
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="preview"></div>
+  <div class="screen-label">Idle</div>
+
+  <!-- Status bar -->
+  <div class="status-bar">
+    <span class="time">9:41</span>
+    <span class="icons">●●●●○ ▹</span>
+  </div>
+
+  <!-- Stock strip -->
+  <div class="stock-strip">
+    <span class="chevron">◂</span>
+    <span class="stock-name">500T</span>
+    <span class="chevron">▸</span>
+  </div>
+
+  <!-- Record button -->
+  <div class="record-btn-outer">
+    <div class="record-btn-inner"></div>
+  </div>
+
+  <!-- Render pill (hidden) -->
+  <div class="render-pill">
+    <span class="count">—</span>
+  </div>
+</div>
+</body>
+</html>

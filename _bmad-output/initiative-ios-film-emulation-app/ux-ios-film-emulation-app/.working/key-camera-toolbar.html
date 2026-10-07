@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Camera — Toolbar Open</title>
+<style>
+  /* Governed by: DESIGN.md (Colors, Typography, Layout, Shapes, Components — Toolbar, EV Slider, Lens Selector)
+     EXPERIENCE.md (State Patterns — Toolbar open, Component Patterns — Stock Selector, Lens Selection, Exposure Controls) */
+
+  :root {
+    --bg: #000000;
+    --surface: rgba(26,26,26,0.85);
+    --surface-elevated: rgba(42,42,42,0.9);
+    --text-primary: #FFFFFF;
+    --text-secondary: rgba(255,255,255,0.6);
+    --accent: #3B82F6;
+    --record: #FF3B30;
+    --safe-top: 54px;
+    --safe-bottom: 34px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #111;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: -apple-system, 'SF Pro', system-ui, sans-serif;
+  }
+
+  .phone {
+    width: 393px; height: 852px;
+    background: var(--bg);
+    border-radius: 44px;
+    overflow: hidden;
+    position: relative;
+    box-shadow: 0 0 0 3px #333, 0 20px 60px rgba(0,0,0,0.5);
+  }
+
+  .preview {
+    position: absolute; inset: 0;
+    background: 
+      radial-gradient(ellipse at 30% 40%, rgba(60,80,120,0.3) 0%, transparent 60%),
+      radial-gradient(ellipse at 70% 60%, rgba(40,50,70,0.2) 0%, transparent 50%),
+      linear-gradient(180deg, #1a1a2e 0%, #16213e 30%, #0f3460 60%, #1a1a1a 100%);
+  }
+
+  .status-bar {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: var(--safe-top);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding: 14px 28px 8px;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  /* Toolbar */
+  .toolbar {
+    position: absolute;
+    top: var(--safe-top);
+    left: 12px; right: 12px;
+    height: 48px;
+    background: var(--surface);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    gap: 4px;
+  }
+
+  .toolbar-item {
+    height: 36px;
+    padding: 0 10px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: transparent;
+    transition: background 0.15s;
+  }
+  .toolbar-item.active {
+    background: var(--accent);
+    color: var(--text-primary);
+  }
+  .toolbar-item .icon { font-size: 15px; }
+
+  .toolbar-spacer { flex: 1; }
+
+  /* EV Slider inside toolbar */
+  .ev-slider-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 6px;
+  }
+  .ev-label {
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+    font-family: 'SF Mono', monospace;
+    width: 32px;
+    text-align: center;
+  }
+  .ev-track {
+    width: 100px;
+    height: 4px;
+    background: rgba(255,255,255,0.2);
+    border-radius: 2px;
+    position: relative;
+  }
+  .ev-fill {
+    position: absolute;
+    left: 0; top: 0;
+    width: 55%; /* ~ +0.3 EV */
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+  .ev-thumb {
+    position: absolute;
+    left: 53%; top: -8px;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  /* Stock Strip — active state (blue border since toolbar open) */
+  .stock-strip {
+    position: absolute;
+    bottom: calc(var(--safe-bottom) + 100px);
+    left: 50%;
+    transform: translateX(-50%);
+    height: 44px;
+    padding: 0 20px;
+    background: var(--surface);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-radius: 9999px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--accent);
+  }
+  .stock-strip .chevron { color: var(--text-secondary); font-size: 12px; }
+  .stock-strip .stock-name { color: var(--text-primary); font-size: 15px; font-weight: 400; min-width: 48px; text-align: center; }
+
+  /* Record Button */
+  .record-btn-outer {
+    position: absolute;
+    bottom: calc(var(--safe-bottom) + 24px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: 80px; height: 80px;
+    border-radius: 50%;
+    border: 4px solid var(--record);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .record-btn-inner {
+    width: 68px; height: 68px;
+    border-radius: 50%;
+    background: rgba(26,26,26,0.6);
+  }
+
+  .screen-label {
+    position: absolute;
+    top: 130px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.6);
+    color: var(--text-secondary);
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="preview"></div>
+  <div class="screen-label">Toolbar Open</div>
+
+  <div class="status-bar">
+    <span style="font-weight:600">9:41</span>
+    <span style="display:flex;gap:6px;opacity:0.8">●●●●○ ▹</span>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <div class="toolbar-item active">13mm</div>
+    <div class="toolbar-item">24mm</div>
+    <div class="toolbar-item">Tele</div>
+    <div class="toolbar-item">
+      <span class="icon">↻</span>
+      <span>Front</span>
+    </div>
+    <div class="toolbar-item">
+      <span class="icon">⚡</span>
+    </div>
+    <div class="toolbar-item">
+      <span class="icon">◐</span>
+      <span>Portrait</span>
+    </div>
+    <div class="ev-slider-group">
+      <span class="ev-label">+0.3</span>
+      <div class="ev-track">
+        <div class="ev-fill"></div>
+        <div class="ev-thumb"></div>
+      </div>
+    </div>
+    <div class="toolbar-spacer"></div>
+    <div class="toolbar-item" style="font-size:16px">⚙</div>
+  </div>
+
+  <div class="stock-strip">
+    <span class="chevron">◂</span>
+    <span class="stock-name">500T</span>
+    <span class="chevron">▸</span>
+  </div>
+
+  <div class="record-btn-outer">
+    <div class="record-btn-inner"></div>
+  </div>
+</div>
+</body>
+</html>

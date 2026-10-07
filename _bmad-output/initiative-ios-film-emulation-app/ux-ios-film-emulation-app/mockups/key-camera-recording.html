@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Camera — Recording</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; font-family: -apple-system, 'SF Pro', system-ui, sans-serif; }
+  .phone { width: 393px; height: 852px; background: #000; border-radius: 44px; overflow: hidden; position: relative; box-shadow: 0 0 0 3px #333, 0 20px 60px rgba(0,0,0,0.5); }
+  .preview { position: absolute; inset: 0; background: radial-gradient(ellipse at 30% 40%, rgba(60,80,120,.25) 0%, transparent 60%), radial-gradient(ellipse at 70% 60%, rgba(40,50,70,.15) 0%, transparent 50%), linear-gradient(180deg, #1a1a2e 0%, #16213e 30%, #0f3460 60%, #1a1a1a 100%); }
+  .status { position: absolute; top: 16px; left: 0; right: 0; display: flex; justify-content: space-between; padding: 0 32px; color: #fff; font-size: 13px; font-weight: 500; opacity: 0.5; z-index: 2; }
+  /* Recording indicator — top center, red */
+  .rec {
+    position: absolute; top: 50px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 6px; z-index: 2;
+  }
+  .rec-dot { width: 8px; height: 8px; border-radius: 50%; background: #FF0000; animation: pulse 0.8s ease-in-out infinite; }
+  .timer { color: #FF0000; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.85)} }
+  /* Stock pill */
+  .stock { position: absolute; top: 54px; left: 50%; transform: translateX(-50%); height: 36px; padding: 0 14px; background: rgba(0,0,0,.45); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-radius: 9999px; display: flex; align-items: center; gap: 6px; color: #fff; font-size: 14px; font-weight: 500; z-index: 2; border: 1px solid rgba(255,255,255,.08); opacity: 0; }
+  /* Shutter — recording state */
+  .shutter-outer { position: absolute; bottom: 48px; left: 50%; transform: translateX(-50%); width: 74px; height: 74px; border-radius: 50%; border: 4px solid #FF0000; display: flex; align-items: center; justify-content: center; z-index: 2; animation: btn-pulse 1.6s ease-in-out infinite; }
+  .shutter-inner { width: 62px; height: 62px; border-radius: 50%; background: rgba(255,0,0,.7); animation: inner 1.6s ease-in-out infinite; }
+  @keyframes btn-pulse { 0%,100%{transform:translateX(-50%) scale(1)} 50%{transform:translateX(-50%) scale(1.05)} }
+  @keyframes inner { 0%,100%{border-radius:50%} 50%{border-radius:6px} }
+  .label { position: absolute; bottom: 140px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.5); color: rgba(255,255,255,.5); font-size: 10px; padding: 4px 10px; border-radius: 8px; text-transform: uppercase; letter-spacing: 1px; z-index: 10; }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="preview"></div>
+  <div class="status"><span>9:41</span><span style="opacity:.3">●●●●○ ▹</span></div>
+  <div class="rec"><div class="rec-dot"></div><span class="timer">01:23</span></div>
+  <div class="stock"><span style="opacity:.35;font-size:10px">◂</span><span style="min-width:42px;text-align:center">500T</span><span style="opacity:.35;font-size:10px">▸</span></div>
+  <div class="shutter-outer"><div class="shutter-inner"></div></div>
+  <div class="label">Recording</div>
+</div>
+</body>
+</html>

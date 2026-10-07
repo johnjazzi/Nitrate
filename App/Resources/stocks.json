@@ -1,0 +1,94 @@
+{
+  "stocks": [
+    {
+      "stockId": "kodak250d_f3513di",
+      "displayName": "250D F3513DI",
+      "category": "video",
+      "lutName": "250D F3513DI - Apple Log 2.cube",
+      "halationStrength": 0.15,
+      "glowStrength": 0.05,
+      "defaultISO": 250
+    },
+    {
+      "stockId": "kodak250d_k2383",
+      "displayName": "250D K2383",
+      "category": "video",
+      "lutName": "250D K2383 - Apple Log 2.cube",
+      "halationStrength": 0.15,
+      "glowStrength": 0.05,
+      "defaultISO": 250
+    },
+    {
+      "stockId": "kodak500t_f3513di",
+      "displayName": "500T F3513DI",
+      "category": "video",
+      "lutName": "500T F3513DI - Apple Log 2.cube",
+      "halationStrength": 0.2,
+      "glowStrength": 0.08,
+      "defaultISO": 500
+    },
+    {
+      "stockId": "kodak500t_k2383",
+      "displayName": "500T K2383",
+      "category": "video",
+      "lutName": "500T K2383 - Apple Log 2.cube",
+      "halationStrength": 0.2,
+      "glowStrength": 0.08,
+      "defaultISO": 500
+    },
+    {
+      "stockId": "kodak500t85a_f3513di",
+      "displayName": "500T 85A F3513DI",
+      "category": "video",
+      "lutName": "500T 85A F3513DI - Apple Log 2.cube",
+      "halationStrength": 0.2,
+      "glowStrength": 0.08,
+      "defaultISO": 500
+    },
+    {
+      "stockId": "kodak500t85a_k2383",
+      "displayName": "500T 85A K2383",
+      "category": "video",
+      "lutName": "500T 85A K2383 - Apple Log 2.cube",
+      "halationStrength": 0.2,
+      "glowStrength": 0.08,
+      "defaultISO": 500
+    },
+    {
+      "stockId": "kodak200t_f3513di",
+      "displayName": "200T F3513DI",
+      "category": "video",
+      "lutName": "200T F3513DI - Apple Log 2.cube",
+      "halationStrength": 0.12,
+      "glowStrength": 0.04,
+      "defaultISO": 200
+    },
+    {
+      "stockId": "kodak200t_k2383",
+      "displayName": "200T K2383",
+      "category": "video",
+      "lutName": "200T K2383 - Apple Log 2.cube",
+      "halationStrength": 0.12,
+      "glowStrength": 0.04,
+      "defaultISO": 200
+    },
+    {
+      "stockId": "cinestill50d_f3513di",
+      "displayName": "50D F3513DI",
+      "category": "photo",
+      "lutName": "50D F3513DI - Apple Log 2.cube",
+      "halationStrength": 0.30,
+      "glowStrength": 0.06,
+      "defaultISO": 50
+    },
+    {
+      "stockId": "cinestill50d_k2383",
+      "displayName": "50D K2383",
+      "category": "photo",
+      "lutName": "50D K2383 - Apple Log 2.cube",
+      "halationStrength": 0.30,
+      "glowStrength": 0.06,
+      "defaultISO": 50
+    }
+  ]
+}

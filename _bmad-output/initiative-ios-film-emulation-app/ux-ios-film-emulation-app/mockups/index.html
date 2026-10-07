@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iOS Film Emulation App — Key Screens</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --text: #fff;
+    --text-secondary: rgba(255,255,255,0.5);
+    --accent: #3B82F6;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    font-family: -apple-system, 'SF Pro', system-ui, sans-serif;
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  header {
+    padding: 40px 40px 20px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  header h1 {
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.5px;
+  }
+  header p {
+    color: var(--text-secondary);
+    font-size: 15px;
+    margin-top: 4px;
+  }
+
+  .grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 32px;
+    padding: 32px 40px;
+    justify-content: center;
+  }
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+  .card-label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .card iframe {
+    width: 393px;
+    height: 852px;
+    border: none;
+    border-radius: 44px;
+    overflow: hidden;
+    box-shadow: 0 0 0 3px #333, 0 20px 60px rgba(0,0,0,0.5);
+    background: #000;
+    transform-origin: top center;
+  }
+
+  .card .caption {
+    font-size: 13px;
+    color: var(--text-secondary);
+    text-align: center;
+    max-width: 300px;
+    line-height: 1.4;
+  }
+
+  @media (max-width: 900px) {
+    .card iframe { width: 280px; height: 607px; }
+    .grid { gap: 20px; padding: 20px; }
+    header { padding: 24px 20px 16px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>iOS Film Emulation App</h1>
+  <p>v1 Key Screens — dark mode, mood.camera minimal, single camera screen in 4 canonical states</p>
+</header>
+
+<div class="grid">
+
+  <div class="card">
+    <span class="card-label">Idle</span>
+    <iframe src="key-camera-idle.html"></iframe>
+    <span class="caption">Clean preview. Record button + stock strip only. Readouts & toolbar hidden. The default state.</span>
+  </div>
+
+  <div class="card">
+    <span class="card-label">Recording</span>
+    <iframe src="key-camera-recording.html"></iframe>
+    <span class="caption">Timer at top. Record button pulsing red, inner shrinks to rounded rect. Toolbar auto-hidden.</span>
+  </div>
+
+  <div class="card">
+    <span class="card-label">Toolbar Open</span>
+    <iframe src="key-camera-toolbar.html"></iframe>
+    <span class="caption">Tap stock name → toolbar drops from top. Lens selector (13mm active), flash, portrait, EV slider +0.3, gear. Stock pill gets blue border.</span>
+  </div>
+
+  <div class="card">
+    <span class="card-label">Readouts + Locked</span>
+    <iframe src="key-camera-readouts.html"></iframe>
+    <span class="caption">Readouts visible top-left. Shutter locked at 1/48 (blue highlight). ISO 640 auto (white). EV indicator below.</span>
+  </div>
+
+</div>
+</body>
+</html>

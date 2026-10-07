@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Camera — Readouts + Locked</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; font-family: -apple-system, 'SF Pro', system-ui, sans-serif; }
+  .phone { width: 393px; height: 852px; background: #000; border-radius: 44px; overflow: hidden; position: relative; box-shadow: 0 0 0 3px #333, 0 20px 60px rgba(0,0,0,0.5); }
+  .preview { position: absolute; inset: 0; background: radial-gradient(ellipse at 30% 40%, rgba(60,80,120,.25) 0%, transparent 60%), radial-gradient(ellipse at 70% 60%, rgba(40,50,70,.15) 0%, transparent 50%), linear-gradient(180deg, #1a1a2e 0%, #16213e 30%, #0f3460 60%, #1a1a1a 100%); }
+  .status { position: absolute; top: 16px; left: 0; right: 0; display: flex; justify-content: space-between; padding: 0 32px; color: #fff; font-size: 13px; font-weight: 500; opacity: 0.7; z-index: 2; }
+
+  /* Readouts — floating pills top-right */
+  .readouts { position: absolute; top: 48px; right: 16px; display: flex; gap: 6px; z-index: 2; }
+  .ro {
+    height: 30px; padding: 0 10px;
+    background: rgba(0,0,0,.45); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    border-radius: 8px;
+    display: flex; align-items: center; gap: 5px;
+    font-size: 15px; font-weight: 600; font-family: 'SF Mono', monospace;
+    border: 1px solid rgba(255,255,255,.06);
+  }
+  .ro.locked { background: rgba(37,99,235,.25); color: #60A5FA; border-color: rgba(96,165,250,.3); }
+  .ro.unlocked { color: #fff; }
+  .ro-lbl { font-size: 9px; font-weight: 500; font-family: -apple-system, 'SF Pro', system-ui, sans-serif; color: rgba(255,255,255,.4); text-transform: uppercase; letter-spacing: .5px; }
+
+  .stock { position: absolute; top: 54px; left: 50%; transform: translateX(-50%); height: 36px; padding: 0 14px; background: rgba(0,0,0,.45); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-radius: 9999px; display: flex; align-items: center; gap: 6px; color: #fff; font-size: 14px; font-weight: 500; z-index: 2; border: 1px solid rgba(255,255,255,.08); }
+  .stock .chevron { opacity: 0.35; font-size: 10px; }
+  .stock .name { min-width: 42px; text-align: center; }
+
+  .shutter-outer { position: absolute; bottom: 48px; left: 50%; transform: translateX(-50%); width: 74px; height: 74px; border-radius: 50%; border: 4px solid #fff; display: flex; align-items: center; justify-content: center; z-index: 2; }
+  .shutter-inner { width: 62px; height: 62px; border-radius: 50%; background: rgba(255,255,255,.15); }
+  .label { position: absolute; bottom: 140px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.5); color: rgba(255,255,255,.5); font-size: 10px; padding: 4px 10px; border-radius: 8px; text-transform: uppercase; letter-spacing: 1px; z-index: 10; }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="preview"></div>
+  <div class="status"><span>9:41</span><span style="opacity:.5">●●●●○ ▹</span></div>
+
+  <div class="readouts">
+    <div class="ro locked"><span class="ro-lbl">S</span><span>1/48</span></div>
+    <div class="ro unlocked"><span class="ro-lbl">ISO</span><span>640</span></div>
+  </div>
+
+  <div class="stock">
+    <span class="chevron">◂</span><span class="name">500T</span><span class="chevron">▸</span>
+  </div>
+
+  <div class="shutter-outer"><div class="shutter-inner"></div></div>
+  <div class="label">Readouts + Locked</div>
+</div>
+</body>
+</html>

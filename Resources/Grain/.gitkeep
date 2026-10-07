@@ -1,0 +1,4 @@
+# Placeholder for grain data files
+# Real files to be placed here:
+#   grain3d.raw  — 128³ float32 3D noise volume (128 * 128 * 128 * 4 = 8,388,608 bytes)
+#   grain.png    — 2D grain texture for v3 photos (unused in v1)
