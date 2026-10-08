@@ -6,6 +6,17 @@ import Foundation
 final class FilmStockLibrary {
     private(set) var stocks: [FilmStockConfig] = []
     private let isoDefaultsKey = "film_stock_iso_defaults"
+    private let selectedStockKey = "film_stock_selected_id"
+
+    /// Persisted last-selected stock ID.
+    var lastSelectedStockId: String? {
+        UserDefaults.standard.string(forKey: selectedStockKey)
+    }
+
+    /// Persist the active stock selection.
+    func setSelectedStock(_ stockId: String) {
+        UserDefaults.standard.set(stockId, forKey: selectedStockKey)
+    }
 
     /// Load stocks from bundled stocks.json.
     func load() throws {
@@ -19,9 +30,9 @@ final class FilmStockLibrary {
         stocks = container.stocks
     }
 
-    /// AD-10: Single factory method — callers never construct FilmStockConfig directly.
+    /// AD-10: Return a config with all fields preserved (including tints).
     func config(for stockId: String, iso: Float) -> FilmStockConfig? {
-        guard var template = stocks.first(where: { $0.stockId == stockId }) else {
+        guard let template = stocks.first(where: { $0.stockId == stockId }) else {
             return nil
         }
         return FilmStockConfig(
@@ -31,7 +42,10 @@ final class FilmStockLibrary {
             lutName: template.lutName,
             halationStrength: template.halationStrength,
             glowStrength: template.glowStrength,
-            defaultISO: iso
+            grainSize: template.grainSize,
+            defaultISO: iso,
+            primaryTint: template.primaryTint,
+            secondaryTint: template.secondaryTint
         )
     }
 
@@ -40,8 +54,12 @@ final class FilmStockLibrary {
         stocks.filter { $0.category == .video }
     }
 
+    /// Save the last-used ISO for a stock.
+    func setISO(_ iso: Float, for stockId: String) {
+        saveLastISO(for: stockId, iso: iso)
+    }
+
     /// Persist the last-used ISO per stock across sessions.
-    /// Spec: "Each shot remembers its own ISO. App restores last-used ISO per stock."
     func saveLastISO(for stockId: String, iso: Float) {
         var defaults = UserDefaults.standard.dictionary(forKey: isoDefaultsKey) as? [String: Float] ?? [:]
         defaults[stockId] = iso
@@ -66,8 +84,7 @@ enum StockError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .missingResource(let message):
-            return message
+        case .missingResource(let msg): return msg
         }
     }
 }

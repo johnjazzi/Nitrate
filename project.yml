@@ -14,7 +14,7 @@ settings:
     INFOPLIST_KEY_NSCameraUsageDescription: "FilmEmulation needs camera access to capture Apple Log video for film stock processing."
     INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "FilmEmulation saves rendered videos to your photo library."
     INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "FilmEmulation saves rendered videos to your photo library."
-    INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+    INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
     INFOPLIST_KEY_UIRequiredDeviceCapabilities: "metal video-capture"
     INFOPLIST_KEY_UIStatusBarHidden: "YES"
     DEVELOPMENT_TEAM: "KHLQQ79C66"

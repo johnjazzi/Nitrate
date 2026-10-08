@@ -61,19 +61,20 @@ final class PipelineRenderer: @unchecked Sendable {
             throw RenderError.noVideoTrack
         }
 
+        // Audio passthrough: copy audio track unchanged
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        let audioTrack = audioTracks.first
+
         let naturalSize = try await videoTrack.load(.naturalSize)
         let duration = try await asset.load(.duration)
         let nominalFrameRate = try await videoTrack.load(.nominalFrameRate)
         let preferredTransform = try await videoTrack.load(.preferredTransform)
 
-        // Determine if the video is portrait (90° or 270° transform)
-        let isPortrait = preferredTransform.b == 1.0 || preferredTransform.b == -1.0
-            || preferredTransform.c == 1.0 || preferredTransform.c == -1.0
-        let renderWidth = isPortrait ? naturalSize.height : naturalSize.width
-        let renderHeight = isPortrait ? naturalSize.width : naturalSize.height
+        let renderWidth = naturalSize.width
+        let renderHeight = naturalSize.height
 
-        // Reader: 16-bit float preserves Apple Log HDR dynamic range for LUT accuracy.
-        // Use renderWidth/renderHeight to handle portrait video (naturalSize is always encoded size).
+        // Use naturalSize everywhere — encoded dimensions, never swapped.
+        // Rotation is preserved via writerInput.transform below.
         let readerOutputSettings: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_64RGBAHalf,
             kCVPixelBufferMetalCompatibilityKey as String: true,
@@ -85,14 +86,24 @@ final class PipelineRenderer: @unchecked Sendable {
         reader.add(readerOutput)
         reader.timeRange = trimRange ?? CMTimeRange(start: .zero, duration: duration)
 
+        // Audio reader + writer (passthrough)
+        var audioReaderOutput: AVAssetReaderTrackOutput?
+        var audioWriterInput: AVAssetWriterInput?
+        if let audioTrack = audioTrack {
+            audioReaderOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
+            audioReaderOutput?.alwaysCopiesSampleData = false
+            reader.add(audioReaderOutput!)
+        }
+
         // Writer setup
         let outputURL = tempOutputURL()
         let writer = try AVAssetWriter(url: outputURL, fileType: .mov)
 
         let videoCompression: [String: Any] = [
-            AVVideoAverageBitRateKey: 36_000_000,
+            AVVideoAverageBitRateKey: 72_000_000,
             AVVideoMaxKeyFrameIntervalKey: 48,
-            AVVideoExpectedSourceFrameRateKey: nominalFrameRate
+            AVVideoExpectedSourceFrameRateKey: nominalFrameRate,
+            AVVideoAllowFrameReorderingKey: false
         ]
 
         let writerOutputSettings: [String: Any] = [
@@ -104,13 +115,14 @@ final class PipelineRenderer: @unchecked Sendable {
 
         let writerInput = AVAssetWriterInput(mediaType: .video, outputSettings: writerOutputSettings)
         writerInput.expectsMediaDataInRealTime = false
+        writerInput.transform = preferredTransform
 
         // Writer adaptor: BGRA 8-bit. After LUT, output is SDR in [0,1] — 8-bit is fine.
         // HEVC encoder expects BGRA (converts to Y′CbCr internally).
         let sourcePixelBufferAttributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey as String: naturalSize.width,
-            kCVPixelBufferHeightKey as String: naturalSize.height,
+            kCVPixelBufferWidthKey as String: renderWidth,
+            kCVPixelBufferHeightKey as String: renderHeight,
             kCVPixelBufferMetalCompatibilityKey as String: true
         ]
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(
@@ -119,6 +131,17 @@ final class PipelineRenderer: @unchecked Sendable {
         )
 
         writer.add(writerInput)
+
+        // Audio passthrough writer input
+        // nil outputSettings + sourceFormatHint = pass compressed audio straight through
+        if let audioTrack = audioTrack {
+            let audioDesc = try await audioTrack.load(.formatDescriptions).first
+            let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil,
+                                                  sourceFormatHint: audioDesc)
+            audioInput.expectsMediaDataInRealTime = false
+            writer.add(audioInput)
+            audioWriterInput = audioInput
+        }
 
         guard writer.startWriting() else {
             throw RenderError.writerFailed(writer.error)
@@ -129,14 +152,16 @@ final class PipelineRenderer: @unchecked Sendable {
             throw RenderError.readerFailed(reader.error)
         }
 
-        // Process frames
+        // Process video frames + audio passthrough
         try await processFrames(
             readerOutput: readerOutput,
             adaptor: adaptor,
             writerInput: writerInput,
             writer: writer,
             config: config,
-            frameRate: nominalFrameRate
+            frameRate: nominalFrameRate,
+            audioReaderOutput: audioReaderOutput,
+            audioWriterInput: audioWriterInput
         )
 
         // Finalize
@@ -272,7 +297,9 @@ final class PipelineRenderer: @unchecked Sendable {
         writerInput: AVAssetWriterInput,
         writer: AVAssetWriter,
         config: FilmStockConfig,
-        frameRate: Float
+        frameRate: Float,
+        audioReaderOutput: AVAssetReaderTrackOutput?,
+        audioWriterInput: AVAssetWriterInput?
     ) async throws {
         let pass1State = pass1Pipeline!
         let pass2State = pass2Pipeline!
@@ -291,6 +318,21 @@ final class PipelineRenderer: @unchecked Sendable {
                     continuation.resume()
                     return
                 }
+
+                // Start audio passthrough on a parallel queue
+                let audioDone: DispatchWorkItem? = {
+                    guard let audioReader = audioReaderOutput,
+                          let audioWriter = audioWriterInput else { return nil }
+                    let work = DispatchWorkItem {
+                        while audioWriter.isReadyForMoreMediaData || writer.status == .writing {
+                            guard let sample = audioReader.copyNextSampleBuffer() else { break }
+                            audioWriter.append(sample)
+                        }
+                        audioWriter.markAsFinished()
+                    }
+                    DispatchQueue.global(qos: .utility).async(execute: work)
+                    return work
+                }()
 
                 while writerInput.isReadyForMoreMediaData || writer.status == .writing {
                     // Wait until the writer input is ready or writer fails
@@ -347,6 +389,7 @@ final class PipelineRenderer: @unchecked Sendable {
                         outputPixelBuffer: outBuf,
                         frameIndex: frameIndex,
                         iso: config.defaultISO,
+                        grainSize: config.grainSize,
                         width: actualWidth,
                         height: actualHeight
                     )
@@ -357,6 +400,10 @@ final class PipelineRenderer: @unchecked Sendable {
                     adaptor.append(outBuf, withPresentationTime: timestamp)
                     frameIndex += 1
                 }
+
+                // Wait for audio passthrough to complete before continuing
+                audioDone?.wait()
+                audioWriterInput?.markAsFinished()
 
                 continuation.resume()
             }
@@ -416,6 +463,7 @@ final class PipelineRenderer: @unchecked Sendable {
         outputPixelBuffer: CVPixelBuffer,
         frameIndex: UInt,
         iso: Float,
+        grainSize: Float,
         width: Int,
         height: Int
     ) -> Bool {
@@ -428,7 +476,7 @@ final class PipelineRenderer: @unchecked Sendable {
             return false
         }
 
-        var uniforms = GrainUniforms(frameIndex: frameIndex, iso: iso)
+        var uniforms = GrainUniforms(frameIndex: frameIndex, iso: iso, grainSize: grainSize)
 
         encoder.setComputePipelineState(pass2Pipeline!)
         encoder.setTexture(inputTexture, index: 0)
@@ -576,9 +624,10 @@ final class PipelineRenderer: @unchecked Sendable {
 // MARK: - Supporting Types
 
 struct GrainUniforms {
-    let frameIndex: UInt
-    let iso: Float
-    let padding: simd_float2 = .zero
+    var frameIndex: UInt
+    var iso: Float
+    var grainSize: Float
+    var padding: Float = 0
 }
 
 enum RenderError: LocalizedError {

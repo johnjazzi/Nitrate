@@ -28,8 +28,12 @@ kernel void pass1_lut_halation_glow(
     float4 color = input.read(gid);
 
     // 3D LUT lookup — sample the 33³ or 65³ cube
-    // Convert linear RGB to LUT coordinates (0-1 range)
-    float3 lutCoord = clamp(color.rgb, 0.0f, 1.0f);
+    // Apple Log → LUT domain mapping: scale scene-referred values into [0,1].
+    // Apple Log roughly maps scene (0, 1.0, 18% gray) to (0.25, 0.49, 0.43),
+    // with HDR highlights going well above 0.5. We use a soft S-curve to map
+    // the log range into LUT-addressable space without clipping.
+    float3 mapped = color.rgb * 1.8 - 0.15;
+    float3 lutCoord = clamp(mapped, 0.0f, 1.0f);
     float3 lutSample = lut.sample(linear_sampler, lutCoord).rgb;
 
     // Halation: bloom in highlights from red channel scattering

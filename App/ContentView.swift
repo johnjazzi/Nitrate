@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 /// Single camera screen with stock/queue sheets and a settings gear.
 /// Toggle "Frame Mode" in Settings to show a viewfinder-style preview.
@@ -13,25 +14,28 @@ struct ContentView: View {
     @State private var showQueueSheet = false
     @State private var showSettings = false
     @State private var showFramedPreview = false
+    @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var currentSourceURL: URL?
+
+    /// Persisted stock selection — survives across recordings.
+    @State private var selectedStock: FilmStockConfig?
+    @State private var currentISO: Float = 400
+
+    /// Camera controls state
+    @State private var zoomFactor: Double = 1.0
+    @State private var isFrontCamera = false
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            // Single CameraView — always in the hierarchy with identical modifiers.
-            // Frame mode toggles clip shape & padding only — no view identity change.
             cameraLayer
 
             VStack(spacing: 0) {
                 topBar
                     .padding(.bottom, showFramedPreview ? 8 : 0)
 
-                if showFramedPreview {
-                    Spacer()
-                } else {
-                    Spacer().frame(height: 0)
-                }
+                Spacer()
 
                 bottomBar
                     .padding(.top, showFramedPreview ? 8 : 0)
@@ -46,23 +50,42 @@ struct ContentView: View {
             PurchaseView(viewModel: purchaseViewModel, showFramedPreview: $showFramedPreview)
         }
         .onChange(of: cameraViewModel.lastRecordedURL) { _, newURL in
-            if let url = newURL {
-                currentSourceURL = url
+            guard let url = newURL else { return }
+            currentSourceURL = url
+
+            // Auto-render: skip stock sheet if already selected
+            if let stock = selectedStock {
+                enqueueRender(sourceURL: url, stock: stock)
+            } else {
                 showStockSheet = true
+            }
+        }
+        .onAppear {
+            // Restore persisted stock selection
+            if let lastId = library.lastSelectedStockId,
+               let stock = library.videoStocks().first(where: { $0.stockId == lastId }) {
+                selectedStock = stock
+                currentISO = library.lastISO(for: stock.stockId)
             }
         }
     }
 
+    // MARK: - Helpers
+
+    private func enqueueRender(sourceURL: URL, stock: FilmStockConfig) {
+        renderQueueViewModel.enqueue(
+            sourceURL: sourceURL,
+            stockId: stock.stockId,
+            iso: currentISO
+        )
+    }
+
     // MARK: - Camera Layer
 
-    /// The camera layer is always present at full size.
-    /// In frame mode we clip it and overlay a border — the view itself never changes identity.
     private var cameraLayer: some View {
         CameraView(viewModel: cameraViewModel)
             .ignoresSafeArea()
-            .clipShape(showFramedPreview
-                ? AnyShape(RoundedRectangle(cornerRadius: 16))
-                : AnyShape(Rectangle()))
+            .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
             .padding(.horizontal, showFramedPreview ? 8 : 0)
             .overlay {
                 if showFramedPreview {
@@ -73,8 +96,11 @@ struct ContentView: View {
             }
     }
 
+    // MARK: - Top Bar
+
     private var topBar: some View {
-        HStack {
+        HStack(spacing: 12) {
+            // Settings
             Button {
                 showSettings = true
             } label: {
@@ -85,10 +111,85 @@ struct ContentView: View {
                     .background(.black.opacity(0.4))
                     .clipShape(Circle())
             }
-            .padding(.leading, 16)
-            .padding(.top, 8)
+
+            // Import from Photos
+            PhotosPicker(selection: $selectedPhotoItem, matching: .videos) {
+                Image(systemName: "square.and.arrow.down")
+                    .font(.title2)
+                    .foregroundStyle(.white)
+                    .padding(12)
+                    .background(.black.opacity(0.4))
+                    .clipShape(Circle())
+            }
+            .onChange(of: selectedPhotoItem) { _, item in
+                guard let item else { return }
+                Task {
+                    if let data = try? await item.loadTransferable(type: Data.self),
+                       let importURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("imported_\(UUID().uuidString).mov") {
+                        try data.write(to: importURL)
+                        currentSourceURL = importURL
+                        if let stock = selectedStock {
+                            enqueueRender(sourceURL: importURL, stock: stock)
+                        } else {
+                            showStockSheet = true
+                        }
+                    }
+                    selectedPhotoItem = nil
+                }
+            }
+
+            // Camera switch (front/back)
+            Button {
+                switchCamera()
+            } label: {
+                Image(systemName: "arrow.triangle.2.circlepath.camera")
+                    .font(.title2)
+                    .foregroundStyle(.white)
+                    .padding(12)
+                    .background(.black.opacity(0.4))
+                    .clipShape(Circle())
+            }
+
+            // Zoom slider
+            zoomControl
 
             Spacer()
+        }
+        .padding(.leading, 16)
+        .padding(.top, 8)
+    }
+
+    private var zoomControl: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "minus.magnifyingglass")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.6))
+
+            Slider(value: $zoomFactor, in: 1.0...5.0, step: 0.1)
+                .frame(width: 80)
+                .onChange(of: zoomFactor) { _, value in
+                    Task { try? cameraViewModel.session.setZoom(CGFloat(value)) }
+                }
+
+            Image(systemName: "plus.magnifyingglass")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.6))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.black.opacity(0.4))
+        .clipShape(Capsule())
+    }
+
+    private func switchCamera() {
+        isFrontCamera.toggle()
+        let position: AVCaptureDevice.Position = isFrontCamera ? .front : .back
+        Task {
+            do {
+                try cameraViewModel.session.switchCamera(to: position)
+            } catch {
+                cameraViewModel.errorMessage = "Camera switch failed: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -96,23 +197,88 @@ struct ContentView: View {
 
     private var bottomBar: some View {
         HStack(spacing: 0) {
-            bottomButton(icon: "film", label: "Stock") { showStockSheet = true }
+            // Left: Stock chip or stock button — fixed width for centering
+            Group {
+                if let stock = selectedStock {
+                    stockChip(stock)
+                } else {
+                    bottomButton(icon: "film", label: "Stock") { showStockSheet = true }
+                }
+            }
+            .frame(width: 90)
+
             recordButton.frame(maxWidth: .infinity)
+
+            // Right: Queue button — fixed width to match left
             queueButton
+                .frame(width: 90)
         }
         .frame(height: 90)
     }
 
+    // MARK: - Stock Chip
+
+    /// Duotone stripe card with ISO + D/T badge overlaid in black.
+    /// 5 horizontal slices: 1,2,5 = primary color; 3,4 = secondary.
+    private func stockChip(_ stock: FilmStockConfig) -> some View {
+        Button {
+            showStockSheet = true
+        } label: {
+            ZStack {
+                // Duotone stripe card
+                VStack(spacing: 0) {
+                    ForEach(0..<5) { idx in
+                        let isPrimary = idx == 0 || idx == 1 || idx == 4
+                        (isPrimary ? stock.primaryColor : stock.secondaryColor)
+                            .frame(height: 6)
+                    }
+                }
+                .frame(width: 56, height: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                // ISO + D/T overlay
+                Text("\(Int(currentISO))\(stock.lightType)")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
+        }
+    }
+
+    // MARK: - Queue Button
+
     private var queueButton: some View {
         VStack(spacing: 2) {
             ZStack(alignment: .topTrailing) {
-                Image(systemName: "list.bullet").font(.title2)
-                if renderQueueViewModel.pendingCount > 0 {
-                    Text("\(renderQueueViewModel.pendingCount)")
+                // Progress circle when processing
+                if renderQueueViewModel.isProcessing {
+                    ZStack {
+                        Circle()
+                            .stroke(.white.opacity(0.2), lineWidth: 2.5)
+                            .frame(width: 34, height: 34)
+                        Circle()
+                            .trim(from: 0, to: 0.75)
+                            .stroke(.orange, lineWidth: 2.5)
+                            .frame(width: 34, height: 34)
+                            .rotationEffect(.degrees(-90))
+                            .animation(.linear(duration: 1).repeatForever(autoreverses: false), value: renderQueueViewModel.isProcessing)
+                    }
+                    Image(systemName: "list.bullet").font(.title2)
+                } else {
+                    Image(systemName: "list.bullet").font(.title2)
+                }
+
+                // Badge with count
+                let count = renderQueueViewModel.pendingCount + (renderQueueViewModel.isProcessing ? 1 : 0)
+                if count > 0 {
+                    Text("\(count)")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(3)
-                        .background(.red)
+                        .background(renderQueueViewModel.isProcessing ? .orange : .red)
                         .clipShape(Circle())
                         .offset(x: 10, y: -6)
                 }
@@ -247,7 +413,9 @@ struct ContentView: View {
             library: library,
             renderQueueViewModel: renderQueueViewModel,
             sourceURL: currentSourceURL,
-            isPresented: $showStockSheet
+            isPresented: $showStockSheet,
+            selectedStock: $selectedStock,
+            currentISO: $currentISO
         )
     }
 
@@ -267,19 +435,6 @@ struct ContentView: View {
     }
 }
 
-// MARK: - View Extension
-
-private extension View {
-    @ViewBuilder
-    func `if`(_ condition: Bool, transform: (Self) -> some View) -> some View {
-        if condition {
-            transform(self)
-        } else {
-            self
-        }
-    }
-}
-
 // MARK: - Stock Sheet
 
 private struct StockSheetView: View {
@@ -287,16 +442,18 @@ private struct StockSheetView: View {
     let renderQueueViewModel: RenderQueueViewModel
     var sourceURL: URL?
     @Binding var isPresented: Bool
+    @Binding var selectedStock: FilmStockConfig?
+    @Binding var currentISO: Float
 
     @State private var stocks: [FilmStockConfig] = []
-    @State private var selectedStock: FilmStockConfig?
+    @State private var localSelection: FilmStockConfig?
     @State private var iso: Float = 400
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
                 stockPicker
-                if selectedStock != nil { isoSlider }
+                if localSelection != nil { isoSlider }
 
                 if let url = sourceURL {
                     renderButton(sourceURL: url)
@@ -316,8 +473,17 @@ private struct StockSheetView: View {
             }
             .onAppear {
                 stocks = library.videoStocks()
-                if selectedStock == nil, let first = stocks.first {
-                    selectStock(first)
+                if localSelection == nil {
+                    localSelection = selectedStock ?? stocks.first
+                    iso = localSelection.flatMap { library.lastISO(for: $0.stockId) } ?? 400
+                }
+            }
+            .onDisappear {
+                if let stock = localSelection {
+                    selectedStock = stock
+                    currentISO = iso
+                    library.setSelectedStock(stock.stockId)
+                    library.setISO(iso, for: stock.stockId)
                 }
             }
         }
@@ -329,10 +495,13 @@ private struct StockSheetView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(stocks, id: \.stockId) { stock in
-                        StockCard(
+                        DuotoneStockCard(
                             stock: stock,
-                            isSelected: selectedStock?.stockId == stock.stockId,
-                            action: { selectStock(stock) }
+                            isSelected: localSelection?.stockId == stock.stockId,
+                            action: {
+                                localSelection = stock
+                                iso = library.lastISO(for: stock.stockId)
+                            }
                         )
                     }
                 }
@@ -354,7 +523,7 @@ private struct StockSheetView: View {
 
     private func renderButton(sourceURL: URL) -> some View {
         Button {
-            guard let stock = selectedStock else {
+            guard let stock = localSelection else {
                 renderQueueViewModel.rendererErrorMessage = "Select a film stock first."
                 return
             }
@@ -367,7 +536,7 @@ private struct StockSheetView: View {
         } label: {
             HStack {
                 Image(systemName: "play.rectangle.fill")
-                Text("Render with \(selectedStock?.displayName ?? "Stock")")
+                Text("Render with \(localSelection?.displayName ?? "Stock")")
             }
             .frame(maxWidth: .infinity)
             .padding()
@@ -376,10 +545,50 @@ private struct StockSheetView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
+}
 
-    private func selectStock(_ stock: FilmStockConfig) {
-        selectedStock = stock
-        iso = library.lastISO(for: stock.stockId)
+// MARK: - Duotone Stock Card
+
+private struct DuotoneStockCard: View {
+    let stock: FilmStockConfig
+    let isSelected: Bool
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                // Duotone swatch
+                GeometryReader { geo in
+                    VStack(spacing: 0) {
+                        ForEach(0..<5) { i in
+                            let isPrimary = i == 0 || i == 1 || i == 4
+                            (isPrimary ? stock.primaryColor : stock.secondaryColor)
+                                .frame(height: geo.size.height / 5.0)
+                        }
+                    }
+                }
+                .frame(width: 48, height: 60)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(isSelected ? .white : .clear, lineWidth: 2)
+                }
+
+                Text(stock.displayName)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(isSelected ? .white : .secondary)
+                    .lineLimit(1)
+
+                Text(stock.lightType)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(isSelected ? stock.primaryColor : .secondary.opacity(0.3))
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
+            .frame(width: 72)
+        }
     }
 }
 
@@ -388,11 +597,25 @@ private struct StockSheetView: View {
 private struct QueueSheetView: View {
     @State var viewModel: RenderQueueViewModel
     @Binding var isPresented: Bool
+    @State private var showAll = false
+    @State private var shareTarget: RenderJob?
+
+    private var sessionJobs: [RenderJob] {
+        viewModel.jobs.filter { $0.sessionId == RenderJob.currentSessionId }
+    }
+
+    private var olderCount: Int {
+        viewModel.jobs.count - sessionJobs.count
+    }
+
+    private var visibleJobs: [RenderJob] {
+        showAll ? viewModel.jobs : sessionJobs
+    }
 
     var body: some View {
         NavigationStack {
             Group {
-                if viewModel.jobs.isEmpty {
+                if visibleJobs.isEmpty {
                     ContentUnavailableView(
                         "No Render Jobs",
                         systemImage: "tray",
@@ -400,10 +623,10 @@ private struct QueueSheetView: View {
                     )
                 } else {
                     List {
-                        if let current = viewModel.currentJob {
+                        if let current = visibleJobs.first(where: { $0.status == .processing }) {
                             Section("Processing") { JobRow(job: current, isCurrent: true) }
                         }
-                        let pending = viewModel.jobs.filter { $0.status == .pending }
+                        let pending = visibleJobs.filter { $0.status == .pending }
                         if !pending.isEmpty {
                             Section("Pending (\(pending.count))") {
                                 ForEach(pending) { job in
@@ -416,13 +639,19 @@ private struct QueueSheetView: View {
                                 }
                             }
                         }
-                        let completed = viewModel.completedJobs
+                        let completed = visibleJobs.filter { $0.status == .completed }
                         if !completed.isEmpty {
                             Section("Completed (\(completed.count))") {
-                                ForEach(completed) { job in JobRow(job: job) }
+                                ForEach(completed) { job in
+                                    Button {
+                                        shareVideo(job)
+                                    } label: {
+                                        JobRow(job: job)
+                                    }
+                                }
                             }
                         }
-                        let failed = viewModel.jobs.filter { $0.status == .failed }
+                        let failed = visibleJobs.filter { $0.status == .failed }
                         if !failed.isEmpty {
                             Section("Failed (\(failed.count))") {
                                 ForEach(failed) { job in
@@ -437,6 +666,21 @@ private struct QueueSheetView: View {
                                 }
                             }
                         }
+
+                        if !showAll && olderCount > 0 {
+                            Section {
+                                Button {
+                                    showAll = true
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "clock.badge.checkmark")
+                                        Text("Show all (\(olderCount) older jobs)")
+                                    }
+                                    .font(.footnote)
+                                    .foregroundStyle(.blue)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -447,9 +691,21 @@ private struct QueueSheetView: View {
                     Button("Done") { isPresented = false }
                 }
             }
+            .sheet(item: $shareTarget) { job in
+                if let url = job.outputURL {
+                    ShareSheet(items: [url])
+                }
+            }
         }
     }
-}
+
+    private func shareVideo(_ job: RenderJob) {
+        guard job.outputURL != nil else { return }
+        shareTarget = job
+    }
+    }
+
+// MARK: - Job Row
 
 private struct JobRow: View {
     let job: RenderJob
@@ -458,55 +714,40 @@ private struct JobRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(job.stockId).font(.headline)
-                Text("ISO \(Int(job.iso))").font(.caption).foregroundStyle(.secondary)
+                Text(job.stockId).font(.caption.weight(.semibold))
+                Text("ISO \(Int(job.iso))").font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
-            statusIcon
+            statusLabel
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
     }
 
     @ViewBuilder
-    private var statusIcon: some View {
+    private var statusLabel: some View {
         switch job.status {
-        case .pending:  Image(systemName: "clock").foregroundStyle(.secondary)
-        case .processing: ProgressView()
-        case .completed: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        case .failed: Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+        case .pending:   Text("Pending").font(.caption2).foregroundStyle(.secondary)
+        case .processing:
+            HStack {
+                ProgressView().scaleEffect(0.8)
+                Text("Rendering").font(.caption2).foregroundStyle(.orange)
+            }
+        case .completed: Label("Done", systemImage: "checkmark.circle.fill").font(.caption2).foregroundStyle(.green)
+        case .failed: Label("Failed", systemImage: "xmark.circle.fill").font(.caption2).foregroundStyle(.red)
         }
     }
 }
 
-// MARK: - Stock Card
+// MARK: - Share Sheet
 
-private struct StockCard: View {
-    let stock: FilmStockConfig
-    let isSelected: Bool
-    let action: () -> Void
+import UIKit
 
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 8) {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(stockColor)
-                    .frame(width: 80, height: 80)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 3)
-                    )
-                Text(stock.displayName).font(.caption).foregroundStyle(.primary)
-            }
-        }
-        .buttonStyle(.plain)
+private struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
 
-    private var stockColor: Color {
-        if stock.stockId.contains("250d") { return .orange.opacity(0.6) }
-        if stock.stockId.contains("500t85a") { return .purple.opacity(0.5) }
-        if stock.stockId.contains("500t") { return .blue.opacity(0.5) }
-        if stock.stockId.contains("200t") { return .teal.opacity(0.5) }
-        if stock.stockId.contains("50d") { return .mint.opacity(0.5) }
-        return .gray
-    }
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
