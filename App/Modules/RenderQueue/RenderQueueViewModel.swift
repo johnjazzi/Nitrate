@@ -124,7 +124,7 @@ final class RenderQueueViewModel {
         }
 
         do {
-            let outputURL = try await renderer.render(sourceURL: job.sourceURL, config: config, trimRange: job.trimRange)
+            let outputURL = try await renderer.render(sourceURL: job.sourceURL, config: config, trimRange: job.trimRange, bitrate: DeliverySettings.averageBitRate)
 
             guard FileManager.default.fileExists(atPath: outputURL.path),
                   let attrs = try? FileManager.default.attributesOfItem(atPath: outputURL.path),

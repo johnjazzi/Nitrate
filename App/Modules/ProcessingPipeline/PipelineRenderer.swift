@@ -6,7 +6,7 @@ import CoreVideo
 /// Pass 1: LUT + halation + glow (single fused Metal compute shader).
 /// Pass 2: 3D noise volume grain with temporal coherence (AD-9).
 /// Input: .mov URL (Apple Log, HEVC H.265, 4K, 24fps).
-/// Output: .mov URL (HEVC H.265, 4K, ~36 Mbps).
+/// Output: .mov URL (HEVC H.265, 4K, ~60 Mbps).
 final class PipelineRenderer: @unchecked Sendable {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
@@ -49,8 +49,19 @@ final class PipelineRenderer: @unchecked Sendable {
     func render(
         sourceURL: URL,
         config: FilmStockConfig,
-        trimRange: CMTimeRange? = nil
+        trimRange: CMTimeRange? = nil,
+        bitrate: Int = RenderEncodingContract.averageBitRate
     ) async throws -> URL {
+        (try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange, bitrate: bitrate)).outputURL
+    }
+
+    private func renderInternally(
+        sourceURL: URL,
+        config: FilmStockConfig,
+        trimRange: CMTimeRange? = nil,
+        bitrate: Int = RenderEncodingContract.averageBitRate
+    ) async throws -> (outputURL: URL, counters: RenderDiagnosticsManifest.Counters) {
+        try config.validate()
         // Load the LUT for this stock
         try loadLUT(named: config.lutName)
 
@@ -75,6 +86,13 @@ final class PipelineRenderer: @unchecked Sendable {
 
         // Use naturalSize everywhere — encoded dimensions, never swapped.
         // Rotation is preserved via writerInput.transform below.
+        //
+        // Input contract: read the source as RGBA half-float WITHOUT requesting an
+        // AVFoundation colorspace conversion. The reader preserves the source's
+        // Apple Log 2 code values (transfer) and native wide gamut as decoded; the
+        // per-stock LUT then performs the Apple Log 2 → Rec.709 transform. Do NOT
+        // add AVVideoColorPropertiesKey here — that would make AVFoundation convert
+        // the colorspace and double-transform against the LUT.
         let readerOutputSettings: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_64RGBAHalf,
             kCVPixelBufferMetalCompatibilityKey as String: true,
@@ -86,13 +104,19 @@ final class PipelineRenderer: @unchecked Sendable {
         reader.add(readerOutput)
         reader.timeRange = trimRange ?? CMTimeRange(start: .zero, duration: duration)
 
-        // Audio reader + writer (passthrough)
-        var audioReaderOutput: AVAssetReaderTrackOutput?
+        // Audio reader (passthrough) uses its OWN AVAssetReader instance.
+        // AVAssetReader is not thread-safe: the video path reads on
+        // `renderQueue` while audio is copied on a separate queue, so sharing
+        // one reader across both threads risks dropped or corrupted samples.
+        var audioReader: AVAssetReader?
         var audioWriterInput: AVAssetWriterInput?
         if let audioTrack = audioTrack {
-            audioReaderOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
-            audioReaderOutput?.alwaysCopiesSampleData = false
-            reader.add(audioReaderOutput!)
+            let ar = try AVAssetReader(asset: asset)
+            let audioOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
+            audioOutput.alwaysCopiesSampleData = false
+            ar.add(audioOutput)
+            ar.timeRange = trimRange ?? CMTimeRange(start: .zero, duration: duration)
+            audioReader = ar
         }
 
         // Writer setup
@@ -100,25 +124,31 @@ final class PipelineRenderer: @unchecked Sendable {
         let writer = try AVAssetWriter(url: outputURL, fileType: .mov)
 
         let videoCompression: [String: Any] = [
-            AVVideoAverageBitRateKey: 72_000_000,
+            AVVideoAverageBitRateKey: bitrate,
             AVVideoMaxKeyFrameIntervalKey: 48,
             AVVideoExpectedSourceFrameRateKey: nominalFrameRate,
             AVVideoAllowFrameReorderingKey: false
         ]
 
         let writerOutputSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.hevc,
+            AVVideoCodecKey: AVVideoCodecType(rawValue: RenderEncodingContract.codec),
             AVVideoWidthKey: renderWidth,
             AVVideoHeightKey: renderHeight,
-            AVVideoCompressionPropertiesKey: videoCompression
+            AVVideoCompressionPropertiesKey: videoCompression,
+            AVVideoColorPropertiesKey: [
+                AVVideoColorPrimariesKey: RenderEncodingContract.colorPrimaries,
+                AVVideoTransferFunctionKey: RenderEncodingContract.transferFunction,
+                AVVideoYCbCrMatrixKey: RenderEncodingContract.yCbCrMatrix
+            ]
         ]
 
         let writerInput = AVAssetWriterInput(mediaType: .video, outputSettings: writerOutputSettings)
         writerInput.expectsMediaDataInRealTime = false
         writerInput.transform = preferredTransform
 
-        // Writer adaptor: BGRA 8-bit. After LUT, output is SDR in [0,1] — 8-bit is fine.
-        // HEVC encoder expects BGRA (converts to Y′CbCr internally).
+        // BGRA 8-bit adaptor; HEVC encoder converts BGRA → Y′CbCr internally.
+        // Output tagged Rec.709 SDR (LUT pack is "Apple Log 2 → Rec.709"); exact transfer
+        // gamma (2.2 vs 2.4) still unverified — BT.709 transfer is the standard SDR tag.
         let sourcePixelBufferAttributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: renderWidth,
@@ -131,6 +161,7 @@ final class PipelineRenderer: @unchecked Sendable {
         )
 
         writer.add(writerInput)
+        writer.metadata = try RenderMovieMetadata.make(config: config, bitrate: bitrate)
 
         // Audio passthrough writer input
         // nil outputSettings + sourceFormatHint = pass compressed audio straight through
@@ -151,16 +182,19 @@ final class PipelineRenderer: @unchecked Sendable {
         guard reader.startReading() else {
             throw RenderError.readerFailed(reader.error)
         }
+        if let audioReader, !audioReader.startReading() {
+            throw RenderError.readerFailed(audioReader.error)
+        }
 
         // Process video frames + audio passthrough
-        try await processFrames(
+        let counters = try await processFrames(
             readerOutput: readerOutput,
             adaptor: adaptor,
             writerInput: writerInput,
             writer: writer,
             config: config,
             frameRate: nominalFrameRate,
-            audioReaderOutput: audioReaderOutput,
+            audioReader: audioReader,
             audioWriterInput: audioWriterInput
         )
 
@@ -172,7 +206,78 @@ final class PipelineRenderer: @unchecked Sendable {
             throw RenderError.writerFailed(error)
         }
 
-        return outputURL
+        return (outputURL, counters)
+    }
+
+    /// Runs the unchanged renderer while collecting a self-contained diagnostic bundle.
+    /// Diagnostics are opt-in so the app's existing call site and output contract remain unchanged.
+    func render(
+        sourceURL: URL,
+        config: FilmStockConfig,
+        trimRange: CMTimeRange? = nil,
+        bitrate: Int = RenderEncodingContract.averageBitRate,
+        diagnosticsBundleDirectory: URL
+    ) async throws -> RenderDiagnosticResult {
+        let runID = UUID()
+        let bundleURL = diagnosticsBundleDirectory.appendingPathComponent("render-\(runID.uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+        } catch {
+            throw RenderDiagnosticError.invalidBundleDirectory(diagnosticsBundleDirectory)
+        }
+
+        var manifest = RenderDiagnosticsManifest(
+            runID: runID,
+            startedAt: Date(),
+            finishedAt: nil,
+            stockID: config.stockId,
+            iso: config.defaultISO,
+            environment: RenderDiagnostics.makeEnvironment(device: device),
+            input: await RenderDiagnostics.inspectMedia(url: sourceURL),
+            output: nil,
+            resources: diagnosticResources(for: config)
+        )
+        manifest.recipe = .init(config: config, averageBitRate: bitrate, codec: RenderEncodingContract.codec)
+        let renderStart = Date()
+        var resultOutput: URL?
+
+        do {
+            let renderResult = try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange, bitrate: bitrate)
+            let outputURL = renderResult.outputURL
+            resultOutput = outputURL
+            manifest.counters = renderResult.counters
+            manifest.timings["render"] = Date().timeIntervalSince(renderStart)
+
+            let bundledOutput = bundleURL.appendingPathComponent("rendered.mov")
+            try FileManager.default.copyItem(at: outputURL, to: bundledOutput)
+            manifest.output = await RenderDiagnostics.inspectMedia(url: bundledOutput)
+
+            let sourceDirectory = bundleURL.appendingPathComponent("source-frames", isDirectory: true)
+            let outputDirectory = bundleURL.appendingPathComponent("output-frames", isDirectory: true)
+            try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+            let sourceExtractionStart = Date()
+            manifest.sourceFrames = await RenderDiagnostics.extractFrames(from: sourceURL, directory: sourceDirectory)
+            manifest.timings["source-frame-extraction"] = Date().timeIntervalSince(sourceExtractionStart)
+            let outputExtractionStart = Date()
+            manifest.outputFrames = await RenderDiagnostics.extractFrames(from: bundledOutput, directory: outputDirectory)
+            manifest.timings["output-frame-extraction"] = Date().timeIntervalSince(outputExtractionStart)
+            manifest.succeeded = true
+            manifest.finishedAt = Date()
+            try RenderDiagnostics.writeManifest(manifest, to: bundleURL)
+            return RenderDiagnosticResult(outputURL: outputURL, bundleURL: bundleURL, manifest: manifest)
+        } catch {
+            manifest.timings["render"] = Date().timeIntervalSince(renderStart)
+            manifest.finishedAt = Date()
+            manifest.error = error.localizedDescription
+            manifest.failureStage = error is RenderContractError ? "configuration" : ((error as? RenderError)?.stage ?? "render")
+            manifest.counters.failed = 1
+            try? RenderDiagnostics.writeManifest(manifest, to: bundleURL)
+            if let resultOutput {
+                try? FileManager.default.removeItem(at: resultOutput)
+            }
+            throw error
+        }
     }
 
     // MARK: - LUT Loading
@@ -234,14 +339,14 @@ final class PipelineRenderer: @unchecked Sendable {
             }
         }
 
-        guard size > 0, !values.isEmpty else {
+        guard size > 0, values.count == size * size * size * 4 else {
             throw RenderError.invalidLUTData
         }
 
         return (size, values)
     }
 
-    /// Upload parsed LUT values to a 3D Metal texture (RGBA). Reversed z-order for Metal.
+    /// Upload Resolve .cube RGB triplets to a 3D Metal texture (RGBA).
     private func createLUTTexture(size: Int, values: [Float]) throws {
         lutTexture = nil
 
@@ -258,24 +363,9 @@ final class PipelineRenderer: @unchecked Sendable {
             throw RenderError.textureCreationFailed
         }
 
-        // .cube data: BGR order, z-increment fastest (outer loop over B).
-        // Metal samples with normalized coords (r,g,b) where r→x, g→y, b→z.
-        // Reorder BGR→RGB and flip layout for Metal's slice ordering.
-        var reordered: [Float] = []
-        reordered.reserveCapacity(size * size * size * 4)
-        for r in 0..<size {
-            for g in 0..<size {
-                for b in 0..<size {
-                    let idx = (r * size * size + g * size + b) * 4
-                    reordered.append(values[idx + 2]) // B → R
-                    reordered.append(values[idx + 1]) // G → G
-                    reordered.append(values[idx])     // R → B
-                    reordered.append(values[idx + 3]) // A
-                }
-            }
-        }
-
-        reordered.withUnsafeBytes { ptr in
+        // Resolve writes 3D cubes as RGB triplets with red varying fastest.
+        // Metal's x/y/z texture axes map directly to r/g/b, respectively.
+        values.withUnsafeBytes { ptr in
             texture.replace(
                 region: MTLRegionMake3D(0, 0, 0, size, size, size),
                 mipmapLevel: 0,
@@ -298,37 +388,35 @@ final class PipelineRenderer: @unchecked Sendable {
         writer: AVAssetWriter,
         config: FilmStockConfig,
         frameRate: Float,
-        audioReaderOutput: AVAssetReaderTrackOutput?,
+        audioReader: AVAssetReader?,
         audioWriterInput: AVAssetWriterInput?
-    ) async throws {
+    ) async throws -> RenderDiagnosticsManifest.Counters {
         let pass1State = pass1Pipeline!
         let pass2State = pass2Pipeline!
         guard let lut = lutTexture else {
             throw RenderError.missingResource("LUT texture not loaded")
         }
 
-        var frameIndex: UInt = 0
+        var frameIndex: UInt32 = 0
         var firstFrame = true
         var actualWidth = 0
         var actualHeight = 0
+        let counterBox = FrameCounterBox()
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<RenderDiagnosticsManifest.Counters, Error>) in
             renderQueue.async { [weak self] in
                 guard let self else {
-                    continuation.resume()
+                    continuation.resume(returning: counterBox.counters)
                     return
                 }
 
-                // Start audio passthrough on a parallel queue
+                // Start audio passthrough on a parallel queue. The audio
+                // reader is dedicated to audio, so it is only touched from
+                // this queue (the video reader lives on `renderQueue`).
                 let audioDone: DispatchWorkItem? = {
-                    guard let audioReader = audioReaderOutput,
-                          let audioWriter = audioWriterInput else { return nil }
-                    let work = DispatchWorkItem {
-                        while audioWriter.isReadyForMoreMediaData || writer.status == .writing {
-                            guard let sample = audioReader.copyNextSampleBuffer() else { break }
-                            audioWriter.append(sample)
-                        }
-                        audioWriter.markAsFinished()
+                    guard audioReader != nil, audioWriterInput != nil else { return nil }
+                    let work = DispatchWorkItem { [weak self] in
+                        self?.copyAudioSamples(from: audioReader, to: audioWriterInput, writer: writer)
                     }
                     DispatchQueue.global(qos: .utility).async(execute: work)
                     return work
@@ -353,9 +441,11 @@ final class PipelineRenderer: @unchecked Sendable {
                     guard let sampleBuffer = readerOutput.copyNextSampleBuffer() else {
                         break
                     }
+                    counterBox.counters.decoded += 1
 
                     guard let sourcePixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-                        continue
+                        continuation.resume(throwing: RenderError.stageFailed("decode", "Sample buffer has no pixel buffer."))
+                        return
                     }
                     let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
@@ -367,10 +457,15 @@ final class PipelineRenderer: @unchecked Sendable {
 
                     // Get an output pixel buffer from the adaptor's pool
                     var outputPixelBuffer: CVPixelBuffer?
-                    let pool = adaptor.pixelBufferPool!
-                    CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &outputPixelBuffer)
-
-                    guard let outBuf = outputPixelBuffer else { continue }
+                    guard let pool = adaptor.pixelBufferPool else {
+                        continuation.resume(throwing: RenderError.stageFailed("pixel-buffer-pool", "Writer pixel buffer pool is unavailable."))
+                        return
+                    }
+                    let allocationStatus = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &outputPixelBuffer)
+                    guard allocationStatus == kCVReturnSuccess, let outBuf = outputPixelBuffer else {
+                        continuation.resume(throwing: RenderError.stageFailed("pixel-buffer-allocation", "Unable to allocate output pixel buffer (\(allocationStatus))."))
+                        return
+                    }
 
                     // Process: input → pass1 → intermediate → pass2 → output
                     let pass1Output = self.runPass1(
@@ -378,11 +473,15 @@ final class PipelineRenderer: @unchecked Sendable {
                         lut: lut,
                         halationStrength: config.halationStrength,
                         glowStrength: config.glowStrength,
+                        outputContrast: config.outputContrast,
                         width: actualWidth,
                         height: actualHeight
                     )
 
-                    guard let intermediateTexture = pass1Output else { continue }
+                    guard let intermediateTexture = pass1Output else {
+                        continuation.resume(throwing: RenderError.stageFailed("gpu-pass-1", "The LUT/halation/glow GPU pass did not complete."))
+                        return
+                    }
 
                     let pass2Output = self.runPass2(
                         inputTexture: intermediateTexture,
@@ -394,10 +493,18 @@ final class PipelineRenderer: @unchecked Sendable {
                         height: actualHeight
                     )
 
-                    guard pass2Output else { continue }
+                    guard pass2Output else {
+                        continuation.resume(throwing: RenderError.stageFailed("gpu-pass-2", "The grain GPU pass did not complete."))
+                        return
+                    }
+                    counterBox.counters.processed += 1
 
                     // Append processed frame
-                    adaptor.append(outBuf, withPresentationTime: timestamp)
+                    guard adaptor.append(outBuf, withPresentationTime: timestamp) else {
+                        continuation.resume(throwing: RenderError.stageFailed("writer-append", writer.error?.localizedDescription ?? "Writer rejected a processed frame."))
+                        return
+                    }
+                    counterBox.counters.appended += 1
                     frameIndex += 1
                 }
 
@@ -405,7 +512,40 @@ final class PipelineRenderer: @unchecked Sendable {
                 audioDone?.wait()
                 audioWriterInput?.markAsFinished()
 
-                continuation.resume()
+                continuation.resume(returning: counterBox.counters)
+            }
+        }
+    }
+
+    /// Copies audio samples from the dedicated audio reader to the writer
+    /// input, waiting out backpressure instead of dropping samples. The
+    /// previous loop called `append` while the input was not ready, which
+    /// returned false and silently discarded samples (gaps/silent audio).
+    /// Runs synchronously on the calling queue — dispatch on a background queue.
+    private func copyAudioSamples(
+        from audioReader: AVAssetReader?,
+        to audioWriterInput: AVAssetWriterInput?,
+        writer: AVAssetWriter
+    ) {
+        guard let audioOutput = audioReader?.outputs.first as? AVAssetReaderTrackOutput,
+              let audioWriter = audioWriterInput else { return }
+        while true {
+            var pollCount = 0
+            while !audioWriter.isReadyForMoreMediaData {
+                if writer.status == .failed || writer.status == .cancelled {
+                    return
+                }
+                usleep(1000)
+                pollCount += 1
+                if pollCount > 30_000 {  // 30s safety timeout
+                    return
+                }
+            }
+            guard let sample = audioOutput.copyNextSampleBuffer() else {
+                return  // end of audio
+            }
+            if !audioWriter.append(sample) {
+                return  // append rejected despite readiness
             }
         }
     }
@@ -418,6 +558,7 @@ final class PipelineRenderer: @unchecked Sendable {
         lut: MTLTexture,
         halationStrength: Float,
         glowStrength: Float,
+        outputContrast: Float,
         width: Int,
         height: Int
     ) -> MTLTexture? {
@@ -434,6 +575,7 @@ final class PipelineRenderer: @unchecked Sendable {
 
         var halation = halationStrength
         var glow = glowStrength
+        var contrast = outputContrast
 
         encoder.setComputePipelineState(pass1Pipeline!)
         encoder.setTexture(sourceTexture, index: 0)
@@ -441,6 +583,7 @@ final class PipelineRenderer: @unchecked Sendable {
         encoder.setTexture(lut, index: 2)
         encoder.setBytes(&halation, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&glow, length: MemoryLayout<Float>.size, index: 1)
+        encoder.setBytes(&contrast, length: MemoryLayout<Float>.size, index: 2)
 
         let threadGroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let threadGroups = MTLSize(
@@ -453,7 +596,7 @@ final class PipelineRenderer: @unchecked Sendable {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
 
-        return intermediateTexture
+        return commandBuffer.status == .completed ? intermediateTexture : nil
     }
 
     /// Pass 2: grain. Writes result directly into the output pixel buffer.
@@ -461,7 +604,7 @@ final class PipelineRenderer: @unchecked Sendable {
     private func runPass2(
         inputTexture: MTLTexture,
         outputPixelBuffer: CVPixelBuffer,
-        frameIndex: UInt,
+        frameIndex: UInt32,
         iso: Float,
         grainSize: Float,
         width: Int,
@@ -495,7 +638,7 @@ final class PipelineRenderer: @unchecked Sendable {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
 
-        return true
+        return commandBuffer.status == .completed
     }
 
     // MARK: - Texture Helpers
@@ -537,19 +680,35 @@ final class PipelineRenderer: @unchecked Sendable {
     // MARK: - Shader & Grain Loading
 
     private func loadMetalShaders() throws {
-        // Xcode compiles .metal files into default.metallib at build time.
-        // Source .metal files are not in the bundle.
-        let library = try device.makeDefaultLibrary(bundle: Bundle.main)
-
-        guard let pass1 = library.makeFunction(name: "pass1_lut_halation_glow") else {
-            throw RenderError.missingFunction("pass1_lut_halation_glow")
+        // Try Bundle.main first (works for iOS app and macOS tool when metallib is bundled).
+        if let library = try? device.makeDefaultLibrary(bundle: Bundle.main) {
+            guard let pass1 = library.makeFunction(name: "pass1_lut_halation_glow") else {
+                throw RenderError.missingFunction("pass1_lut_halation_glow")
+            }
+            guard let pass2 = library.makeFunction(name: "pass2_grain") else {
+                throw RenderError.missingFunction("pass2_grain")
+            }
+            pass1Pipeline = try device.makeComputePipelineState(function: pass1)
+            pass2Pipeline = try device.makeComputePipelineState(function: pass2)
+            return
         }
-        guard let pass2 = library.makeFunction(name: "pass2_grain") else {
-            throw RenderError.missingFunction("pass2_grain")
+        // Fallback: look for default.metallib next to the executable (macOS CLI).
+        let exePath = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        let exeDir = URL(fileURLWithPath: exePath).deletingLastPathComponent()
+        let metallibURL = exeDir.appendingPathComponent("default.metallib")
+        if FileManager.default.fileExists(atPath: metallibURL.path) {
+            let library = try device.makeLibrary(URL: metallibURL)
+            guard let pass1 = library.makeFunction(name: "pass1_lut_halation_glow") else {
+                throw RenderError.missingFunction("pass1_lut_halation_glow")
+            }
+            guard let pass2 = library.makeFunction(name: "pass2_grain") else {
+                throw RenderError.missingFunction("pass2_grain")
+            }
+            pass1Pipeline = try device.makeComputePipelineState(function: pass1)
+            pass2Pipeline = try device.makeComputePipelineState(function: pass2)
+            return
         }
-
-        pass1Pipeline = try device.makeComputePipelineState(function: pass1)
-        pass2Pipeline = try device.makeComputePipelineState(function: pass2)
+        throw RenderError.missingShader("default.metallib not found in bundle or next to executable")
     }
 
     private func loadGrainVolume() throws {
@@ -613,6 +772,23 @@ final class PipelineRenderer: @unchecked Sendable {
         return nil
     }
 
+    private func diagnosticResources(for config: FilmStockConfig) -> [RenderDiagnosticsManifest.Resource] {
+        var resources: [RenderDiagnosticsManifest.Resource] = []
+        if let lut = findBundleFile(named: config.lutName) {
+            resources.append(RenderDiagnostics.resource(kind: "lut", url: URL(fileURLWithPath: lut)))
+        }
+        if let grain = findBundleFile(named: "grain3d.raw") {
+            resources.append(RenderDiagnostics.resource(kind: "grain", url: URL(fileURLWithPath: grain)))
+        }
+        if let executablePath = Bundle.main.executablePath {
+            let metallib = URL(fileURLWithPath: executablePath).deletingLastPathComponent().appendingPathComponent("default.metallib")
+            if FileManager.default.fileExists(atPath: metallib.path) {
+                resources.append(RenderDiagnostics.resource(kind: "metallib", url: metallib))
+            }
+        }
+        return resources
+    }
+
     private func tempOutputURL() -> URL {
         // Use documents directory so output persists for viewing/sharing.
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -624,10 +800,16 @@ final class PipelineRenderer: @unchecked Sendable {
 // MARK: - Supporting Types
 
 struct GrainUniforms {
-    var frameIndex: UInt
+    var frameIndex: UInt32
     var iso: Float
     var grainSize: Float
     var padding: Float = 0
+}
+
+/// Frame processing is serialized on `renderQueue`; this box avoids crossing a mutable
+/// value capture into that closure while retaining exact per-run diagnostic counters.
+private final class FrameCounterBox: @unchecked Sendable {
+    var counters = RenderDiagnosticsManifest.Counters()
 }
 
 enum RenderError: LocalizedError {
@@ -643,6 +825,12 @@ enum RenderError: LocalizedError {
     case invalidLUTData
     case textureCreationFailed
     case textureCacheCreationFailed
+    case stageFailed(String, String)
+
+    var stage: String? {
+        if case .stageFailed(let stage, _) = self { return stage }
+        return nil
+    }
 
     var errorDescription: String? {
         switch self {
@@ -658,6 +846,7 @@ enum RenderError: LocalizedError {
         case .invalidLUTData: return "Failed to parse .cube LUT file."
         case .textureCreationFailed: return "Failed to create Metal texture."
         case .textureCacheCreationFailed: return "Failed to create Metal texture cache."
+        case .stageFailed(let stage, let message): return "\(stage): \(message)"
         }
     }
 }

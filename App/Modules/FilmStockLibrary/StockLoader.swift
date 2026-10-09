@@ -27,6 +27,7 @@ final class FilmStockLibrary {
         let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
         let container = try decoder.decode(StocksContainer.self, from: data)
+        try container.stocks.forEach { try $0.validate() }
         stocks = container.stocks
     }
 
@@ -35,18 +36,7 @@ final class FilmStockLibrary {
         guard let template = stocks.first(where: { $0.stockId == stockId }) else {
             return nil
         }
-        return FilmStockConfig(
-            stockId: template.stockId,
-            displayName: template.displayName,
-            category: template.category,
-            lutName: template.lutName,
-            halationStrength: template.halationStrength,
-            glowStrength: template.glowStrength,
-            grainSize: template.grainSize,
-            defaultISO: iso,
-            primaryTint: template.primaryTint,
-            secondaryTint: template.secondaryTint
-        )
+        return template.overridingISO(iso)
     }
 
     /// Returns v1 video stocks only (Kodak 250D and 500T).

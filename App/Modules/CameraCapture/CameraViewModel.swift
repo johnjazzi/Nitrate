@@ -21,6 +21,12 @@ final class CameraViewModel {
     var errorMessage: String?
     private(set) var lastRecordedURL: URL?
 
+    // Exposure (live from the device, polled every 0.5s)
+    var liveISO: Float = 0
+    var liveShutterSeconds: Double = 0
+    var isManualExposure = false
+    var manualISO: Float = 400
+
     // AD-8: Max clip duration
     static let maxClipDuration: TimeInterval = 300 // 5 minutes
     static let lowSpaceThreshold: Int64 = 1_000_000_000 // 1GB
@@ -28,11 +34,35 @@ final class CameraViewModel {
 
     private var recordingTimer: Timer?
     private var spacePollingTimer: Timer?
+    private var exposurePollingTimer: Timer?
 
     // MARK: - Actions
 
     func onAppear() {
+        // Request the camera first (it's the critical path). The microphone is
+        // requested after the session is configured, to avoid stacking two
+        // system permission dialogs at launch (which can leave the app stuck
+        // on the launch screen).
         requestCameraAccess()
+    }
+
+    private func requestMicrophoneAccess() {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            // configure() already adds the mic via addMicrophoneInputLocked().
+            break
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                guard let self, granted else { return }
+                Task { @MainActor in
+                    self.session.addMicrophoneInput()
+                }
+            }
+        case .denied, .restricted:
+            break // record video-only
+        @unknown default:
+            break
+        }
     }
 
     private func requestCameraAccess() {
@@ -62,7 +92,13 @@ final class CameraViewModel {
             try session.configure()
             session.start()
 
-            if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
+            // Mic is added by configure() when already authorized; request it
+            // here (after start) only for the first-launch grant case.
+            requestMicrophoneAccess()
+            startExposurePolling()
+            refreshExposure()
+
+            if let device = session.activeDevice {
                 focusManager = FocusManager(device: device)
             }
 
@@ -79,6 +115,7 @@ final class CameraViewModel {
     func onDisappear() {
         session.stop()
         stopPolling()
+        stopExposurePolling()
     }
 
     func startRecording() {
@@ -109,12 +146,70 @@ final class CameraViewModel {
         focusManager?.focus(at: point, in: previewLayer)
     }
 
+    /// Switch the active lens and refresh tap-to-focus for the new device.
+    func selectLens(_ lens: CameraLens) throws {
+        try session.selectCamera(lens)
+        if let device = session.activeDevice {
+            focusManager = FocusManager(device: device)
+        }
+        // configureDevice resets to auto exposure on the device swap; re-apply
+        // manual exposure so the 180° shutter + ISO lock survives lens changes.
+        if isManualExposure {
+            try session.lockManualExposure(iso: manualISO)
+        }
+    }
+
     func toggleShutterLock(currentShutter: Float64) {
         exposure.toggleShutterLock(currentShutter: currentShutter)
     }
 
     func toggleISOLock(currentISO: Float) {
         exposure.toggleISOLock(currentISO: currentISO)
+    }
+
+    // MARK: - Manual Exposure
+
+    func setManualISO(_ iso: Float) {
+        manualISO = iso
+        do {
+            try session.lockManualExposure(iso: iso)
+            isManualExposure = true
+            refreshExposure()
+        } catch {
+            errorMessage = "Failed to set ISO: \(error.localizedDescription)"
+        }
+    }
+
+    func toggleManualExposure() {
+        if isManualExposure {
+            do {
+                try session.setAutoExposure()
+                isManualExposure = false
+                refreshExposure()
+            } catch {
+                errorMessage = "Failed to unlock exposure: \(error.localizedDescription)"
+            }
+        } else {
+            // Enter manual mode at the current metered ISO (no exposure jump).
+            setManualISO(liveISO > 0 ? liveISO : manualISO)
+        }
+    }
+
+    private func refreshExposure() {
+        liveISO = session.currentISO
+        liveShutterSeconds = session.currentShutterSeconds
+    }
+
+    private func startExposurePolling() {
+        stopExposurePolling()
+        exposurePollingTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshExposure() }
+        }
+    }
+
+    private func stopExposurePolling() {
+        exposurePollingTimer?.invalidate()
+        exposurePollingTimer = nil
     }
 
     func dismissError() {

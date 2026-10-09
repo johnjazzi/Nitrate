@@ -12,6 +12,7 @@ settings:
     SWIFT_VERSION: "6.0"
     GENERATE_INFOPLIST_FILE: "YES"
     INFOPLIST_KEY_NSCameraUsageDescription: "FilmEmulation needs camera access to capture Apple Log video for film stock processing."
+    INFOPLIST_KEY_NSMicrophoneUsageDescription: "FilmEmulation records audio to accompany your film clips."
     INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "FilmEmulation saves rendered videos to your photo library."
     INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "FilmEmulation saves rendered videos to your photo library."
     INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
@@ -22,6 +23,15 @@ settings:
 configs:
   Debug: debug
   Release: release
+
+schemes:
+  RenderCLI:
+    build:
+      targets:
+        RenderCLI: all
+    test:
+      targets:
+        - RenderCLITests
 
 targets:
   FilmEmulation:
@@ -44,3 +54,38 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.filmemulation.app
         CODE_SIGN_STYLE: Automatic
         PROVISIONING_PROFILE_SPECIFIER: ""
+
+  RenderCLI:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: CLI/
+      - path: App/Modules/ProcessingPipeline/
+      - path: App/Modules/FilmStockLibrary/
+      - path: Resources/Shaders/
+        type: metal
+      - path: Resources/Grain/grain3d.raw
+        type: file
+      - path: Resources/LUTs/
+        type: file
+      - path: Resources/stocks.json
+    dependencies:
+      - sdk: Metal.framework
+      - sdk: AVFoundation.framework
+    settings:
+      SWIFT_VERSION: "6.0"
+
+  RenderCLITests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests
+      - path: App/Modules/ProcessingPipeline/
+      - path: App/Modules/FilmStockLibrary/
+    dependencies:
+      - sdk: Metal.framework
+      - sdk: AVFoundation.framework
+    settings:
+      SWIFT_VERSION: "6.0"

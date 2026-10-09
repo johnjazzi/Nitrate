@@ -19,6 +19,7 @@ kernel void pass1_lut_halation_glow(
     texture3d<float, access::sample> lut   [[texture(2)]],
     constant float& halationStrength       [[buffer(0)]],
     constant float& glowStrength           [[buffer(1)]],
+    constant float& outputContrast         [[buffer(2)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= input.get_width() || gid.y >= input.get_height()) {
@@ -27,14 +28,12 @@ kernel void pass1_lut_halation_glow(
 
     float4 color = input.read(gid);
 
-    // 3D LUT lookup — sample the 33³ or 65³ cube
-    // Apple Log → LUT domain mapping: scale scene-referred values into [0,1].
-    // Apple Log roughly maps scene (0, 1.0, 18% gray) to (0.25, 0.49, 0.43),
-    // with HDR highlights going well above 0.5. We use a soft S-curve to map
-    // the log range into LUT-addressable space without clipping.
-    float3 mapped = color.rgb * 1.8 - 0.15;
-    float3 lutCoord = clamp(mapped, 0.0f, 1.0f);
-    float3 lutSample = lut.sample(linear_sampler, lutCoord).rgb;
+    // The Resolve .cube assets are authored directly for normalized Apple Log 2
+    // code values. Do not introduce an extra contrast curve before sampling.
+    float3 lutSample = lut.sample(linear_sampler, color.rgb).rgb;
+
+    // Soften the print contrast to match the reference look (post-LUT, pre-effects).
+    lutSample = (lutSample - 0.5f) * outputContrast + 0.5f;
 
     // Halation: bloom in highlights from red channel scattering
     // Simulated by adding a warm diffusion to bright areas

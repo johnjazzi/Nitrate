@@ -23,7 +23,8 @@ struct ContentView: View {
 
     /// Camera controls state
     @State private var zoomFactor: Double = 1.0
-    @State private var isFrontCamera = false
+    @State private var selectedLens: CameraLens = .wide
+    @State private var availableLenses: [CameraLens] = []
 
     var body: some View {
         ZStack {
@@ -61,11 +62,22 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            availableLenses = cameraViewModel.session.availableLenses
+            if !availableLenses.contains(selectedLens) {
+                selectedLens = availableLenses.first ?? .wide
+            }
+
             // Restore persisted stock selection
             if let lastId = library.lastSelectedStockId,
                let stock = library.videoStocks().first(where: { $0.stockId == lastId }) {
                 selectedStock = stock
                 currentISO = library.lastISO(for: stock.stockId)
+                applyStockWhiteBalance(stock)
+            }
+        }
+        .onChange(of: selectedStock) { _, newStock in
+            if let stock = newStock {
+                applyStockWhiteBalance(stock)
             }
         }
     }
@@ -78,6 +90,13 @@ struct ContentView: View {
             stockId: stock.stockId,
             iso: currentISO
         )
+    }
+
+    /// Lock the camera's white balance to the selected stock's color
+    /// temperature (daylight 5600K / tungsten 3200K) so the Apple Log → LUT
+    /// transform sees a consistent per-stock white point.
+    private func applyStockWhiteBalance(_ stock: FilmStockConfig) {
+        cameraViewModel.session.setWhiteBalance(temperatureKelvin: stock.colorTemperature)
     }
 
     // MARK: - Camera Layer
@@ -94,66 +113,105 @@ struct ContentView: View {
                         .padding(.horizontal, 8)
                 }
             }
+            .overlay {
+                GeometryReader { geometry in
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { location in
+                            let normalizedPoint = CGPoint(
+                                x: location.x / geometry.size.width,
+                                y: location.y / geometry.size.height
+                            )
+                            Task { try? cameraViewModel.session.setExposurePoint(normalizedPoint) }
+                        }
+                }
+            }
     }
 
     // MARK: - Top Bar
 
     private var topBar: some View {
-        HStack(spacing: 12) {
-            // Settings
-            Button {
-                showSettings = true
-            } label: {
-                Image(systemName: "gearshape.fill")
-                    .font(.title2)
-                    .foregroundStyle(.white)
-                    .padding(12)
-                    .background(.black.opacity(0.4))
-                    .clipShape(Circle())
-            }
+        VStack(spacing: 2) {
+            HStack(spacing: 12) {
+                // Settings
+                Button {
+                    showSettings = true
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.title2)
+                        .foregroundStyle(.white)
+                        .padding(12)
+                        .background(.black.opacity(0.4))
+                        .clipShape(Circle())
+                }
 
-            // Import from Photos
-            PhotosPicker(selection: $selectedPhotoItem, matching: .videos) {
-                Image(systemName: "square.and.arrow.down")
-                    .font(.title2)
-                    .foregroundStyle(.white)
-                    .padding(12)
-                    .background(.black.opacity(0.4))
-                    .clipShape(Circle())
-            }
-            .onChange(of: selectedPhotoItem) { _, item in
-                guard let item else { return }
-                Task {
-                    if let data = try? await item.loadTransferable(type: Data.self),
-                       let importURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("imported_\(UUID().uuidString).mov") {
-                        try data.write(to: importURL)
-                        currentSourceURL = importURL
-                        if let stock = selectedStock {
-                            enqueueRender(sourceURL: importURL, stock: stock)
-                        } else {
-                            showStockSheet = true
+                // Import from Photos
+                PhotosPicker(selection: $selectedPhotoItem, matching: .videos) {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.title2)
+                        .foregroundStyle(.white)
+                        .padding(12)
+                        .background(.black.opacity(0.4))
+                        .clipShape(Circle())
+                }
+                .onChange(of: selectedPhotoItem) { _, item in
+                    guard let item else { return }
+                    Task {
+                        if let data = try? await item.loadTransferable(type: Data.self),
+                           let importURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("imported_\(UUID().uuidString).mov") {
+                            try data.write(to: importURL)
+                            currentSourceURL = importURL
+                            if let stock = selectedStock {
+                                enqueueRender(sourceURL: importURL, stock: stock)
+                            } else {
+                                showStockSheet = true
+                            }
+                        }
+                        selectedPhotoItem = nil
+                    }
+                }
+
+                // Camera lens selector (front/ultrawide/tele/normal)
+                Menu {
+                    ForEach(availableLenses) { lens in
+                        Button {
+                            selectLens(lens)
+                        } label: {
+                            if lens == selectedLens {
+                                Label(lens.rawValue, systemImage: "checkmark")
+                            } else {
+                                Text(lens.rawValue)
+                            }
                         }
                     }
-                    selectedPhotoItem = nil
-                }
-            }
-
-            // Camera switch (front/back)
-            Button {
-                switchCamera()
-            } label: {
-                Image(systemName: "arrow.triangle.2.circlepath.camera")
-                    .font(.title2)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: selectedLens.systemImage)
+                            .font(.caption)
+                        Text(selectedLens.rawValue)
+                            .font(.caption.weight(.semibold))
+                        Image(systemName: "chevron.down")
+                            .font(.caption2)
+                    }
                     .foregroundStyle(.white)
-                    .padding(12)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
                     .background(.black.opacity(0.4))
-                    .clipShape(Circle())
+                    .clipShape(Capsule())
+                }
+
+                // Zoom slider
+                zoomControl
+
+                Spacer()
             }
 
-            // Zoom slider
-            zoomControl
+            HStack {
+                Spacer()
 
-            Spacer()
+                // Exposure row
+                exposureControl
+            }
         }
         .padding(.leading, 16)
         .padding(.top, 8)
@@ -181,12 +239,61 @@ struct ContentView: View {
         .clipShape(Capsule())
     }
 
-    private func switchCamera() {
-        isFrontCamera.toggle()
-        let position: AVCaptureDevice.Position = isFrontCamera ? .front : .back
+    private var exposureControl: some View {
+        HStack(spacing: 10) {
+            // Live exposure readout (ISO + shutter)
+            Text("ISO \(Int(cameraViewModel.liveISO)) · \(shutterText)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.9))
+
+            // Auto / Manual toggle
+            Button {
+                cameraViewModel.toggleManualExposure()
+            } label: {
+                Text(cameraViewModel.isManualExposure ? "Manual" : "Auto")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(cameraViewModel.isManualExposure ? .black : .white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(cameraViewModel.isManualExposure ? Color.yellow : Color.white.opacity(0.2))
+                    .clipShape(Capsule())
+            }
+
+            // ISO slider (manual only)
+            if cameraViewModel.isManualExposure {
+                let range = cameraViewModel.session.isoRange
+                Slider(
+                    value: Binding(
+                        get: { Double(cameraViewModel.manualISO) },
+                        set: { cameraViewModel.setManualISO(Float($0)) }
+                    ),
+                    in: Double(range.lowerBound)...Double(range.upperBound),
+                    step: 50
+                )
+                .frame(width: 90)
+                .tint(.yellow)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.black.opacity(0.4))
+        .clipShape(Capsule())
+        .padding(.trailing, 16)
+    }
+
+    private var shutterText: String {
+        let seconds = cameraViewModel.liveShutterSeconds
+        guard seconds > 0 else { return "1/48" }
+        return "1/\(Int((1.0 / seconds).rounded()))"
+    }
+
+    private func selectLens(_ lens: CameraLens) {
+        guard lens != selectedLens else { return }
         Task {
             do {
-                try cameraViewModel.session.switchCamera(to: position)
+                try cameraViewModel.selectLens(lens)
+                selectedLens = lens
+                zoomFactor = 1.0
             } catch {
                 cameraViewModel.errorMessage = "Camera switch failed: \(error.localizedDescription)"
             }
@@ -560,8 +667,8 @@ private struct DuotoneStockCard: View {
                 // Duotone swatch
                 GeometryReader { geo in
                     VStack(spacing: 0) {
-                        ForEach(0..<5) { i in
-                            let isPrimary = i == 0 || i == 1 || i == 4
+                        ForEach(0..<5) { index in
+                            let isPrimary = index == 0 || index == 1 || index == 4
                             (isPrimary ? stock.primaryColor : stock.secondaryColor)
                                 .frame(height: geo.size.height / 5.0)
                         }

@@ -76,8 +76,13 @@ kernel void pass2_grain(
     float intensity = uniforms.iso / 400.0f;
     float grainSize = uniforms.grainSize > 0.0f ? uniforms.grainSize : 1.0f;
 
-    // Film-style grain: blue channel is ~1.6× grainier than red
-    float3 grainScale = float3(1.0f, 1.3f, 1.6f) * intensity * 0.12f * grainSize;
+    // Film-style grain: blue channel is ~1.6× grainier than red.
+    // Base strength 0.55 (was 0.12): the bundled grain3d.raw volume has very
+    // low contrast (values span ~[0.385, 0.615], std ≈ 0.049), so the original
+    // 0.12 scale produced ~1-2 LSB of grain in 8-bit output — imperceptible even
+    // with a correct CPU/Metal uniform ABI. 0.55 lifts ISO-250 grain to roughly
+    // 3-4% and ISO-500 grain to ~7-9% per channel (blue strongest).
+    float3 grainScale = float3(1.0f, 1.3f, 1.6f) * intensity * 0.55f * grainSize;
 
     // --- Film latitude (grain fades near pure black and pure white) ---
     float luminance = dot(color.rgb, float3(0.2126f, 0.7152f, 0.0722f));
@@ -95,7 +100,7 @@ kernel void pass2_grain(
 
     // Higher weight on negative grain (dark specks) vs positive (bright specks)
     float3 result = color.rgb;
-    result += grainRgb * 0.35f;  // additive component (small)
+    result += grainRgb * 0.85f;  // additive component (lifted from 0.35 for visibility)
     // Subtractive: dark specks more prominent at mid-low luminance
     float3 subtractive = min(float3(0.0f), grainRgb) * 2.8f * (1.0f - luminance);
     result += subtractive;

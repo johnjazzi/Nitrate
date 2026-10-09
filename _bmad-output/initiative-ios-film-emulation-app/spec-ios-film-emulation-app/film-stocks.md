@@ -1,20 +1,14 @@
-# Film Stocks (v1)
+# Film Stocks
 
-Seven starter emulations bundled with v1. Each stock defines a LUT for color response, a grain pattern with ISO-driven size/amount, halation characteristics, and glow diffusion.
+## v1
 
-## Photo Stocks
+| Stock | Slice | Required character |
+|---|---|---|
+| Kodak Vision3 500T | First and blocking | Tungsten-balanced baseline; restrained saturation, highlight latitude, visible fine texture, warm localized halation, and soft highlight glow. |
+| Kodak Vision3 250D | After 500T acceptance | Daylight-balanced baseline; finer texture, wide latitude, neutral daylight response, and subtler halation than 500T. |
 
-| Stock | Type | Characteristics |
-|-------|------|----------------|
-| Kodak Portra 800 | Color negative | Warm skintones, fine grain at box speed, wide latitude. The "default" portrait and general-purpose stock. |
-| Kodak Gold 200 | Color negative | Warm, golden highlights, moderate contrast. Sunny-day everyday stock with a nostalgic feel. |
-| Cinestill 50D | Color negative (motion picture) | Fine grain, neutral palette, halation from removed remjet layer. Daylight-balanced, extremely clean. |
-| Cinestill 800T | Color negative (motion picture) | Tungsten-balanced, pronounced halation in highlights, cooler shadows. Night and artificial light stock. |
-| Black & White | B&W negative | High acutance, visible grain structure, full tonal range. General-purpose monochrome. |
+Stock names describe the intended creative references, not a claim of scientifically reproducing one lab, scanner, print stock, or display transform. Each stock configuration must version its transform/LUT, grain response, halation, and glow parameters so a checkpoint result can be reproduced.
 
-## Video Stocks
+## Deferred photo stocks
 
-| Stock | Type | Characteristics |
-|-------|------|----------------|
-| Kodak Vision3 250D | Color negative (motion picture) | Daylight-balanced, fine grain, wide dynamic range. General-purpose video stock. |
-| Kodak Vision3 500T | Color negative (motion picture) | Tungsten-balanced, more visible grain than 250D, excellent low-light performance. |
+Portra 800, Gold 200, Cinestill 50D, Cinestill 800T, and black-and-white stocks belong to the photo milestone, not the v1 render slice.

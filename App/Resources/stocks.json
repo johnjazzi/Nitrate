@@ -8,6 +8,8 @@
       "halationStrength": 0.15,
       "glowStrength": 0.05,
       "grainSize": 1.0,
+      "outputContrast": 0.6,
+      "colorTemperature": 5600,
       "defaultISO": 250,
       "primaryTint": "#E8C46C",
       "secondaryTint": "#C4953A"
@@ -20,6 +22,8 @@
       "halationStrength": 0.15,
       "glowStrength": 0.05,
       "grainSize": 1.0,
+      "outputContrast": 0.6,
+      "colorTemperature": 5600,
       "defaultISO": 250,
       "primaryTint": "#D4A843",
       "secondaryTint": "#A67C2E"
@@ -32,9 +36,41 @@
       "halationStrength": 0.2,
       "glowStrength": 0.08,
       "grainSize": 1.3,
+      "outputContrast": 0.6,
+      "colorTemperature": 3200,
       "defaultISO": 500,
       "primaryTint": "#4A90A4",
-      "secondaryTint": "#1A4A5C"
+      "secondaryTint": "#1A4A5C",
+      "recipe": {
+        "schemaVersion": 1,
+        "version": "500t-current-v1",
+        "input": {
+          "gamut": "unverified",
+          "transfer": "Apple Log 2",
+          "provenance": "user-declared"
+        },
+        "output": {
+          "gamut": "Rec.709",
+          "transfer": "Rec.709",
+          "provenance": "user-declared"
+        },
+        "domainMin": [
+          0,
+          0,
+          0
+        ],
+        "domainMax": [
+          1,
+          1,
+          1
+        ],
+        "domainProvenance": "implicit-cube-default",
+        "lutAlgorithm": "resolve-rgb-red-fastest-linear-clamp-v1",
+        "halationAlgorithm": "input-luma-warm-highlight-addition-v1",
+        "glowAlgorithm": "constant-warm-addition-v1",
+        "grainAlgorithm": "hashed-128-volume-iso-subtractive-dither-v1",
+        "deliveryAlgorithm": "clamp-bgra8-hevc-rec709-tagged-v1"
+      }
     },
     {
       "stockId": "kodak500t_k2383",
@@ -44,9 +80,41 @@
       "halationStrength": 0.2,
       "glowStrength": 0.08,
       "grainSize": 1.3,
+      "outputContrast": 0.6,
+      "colorTemperature": 3200,
       "defaultISO": 500,
       "primaryTint": "#3D7D93",
-      "secondaryTint": "#153A4A"
+      "secondaryTint": "#153A4A",
+      "recipe": {
+        "schemaVersion": 1,
+        "version": "500t-current-v1",
+        "input": {
+          "gamut": "unverified",
+          "transfer": "Apple Log 2",
+          "provenance": "user-declared"
+        },
+        "output": {
+          "gamut": "Rec.709",
+          "transfer": "Rec.709",
+          "provenance": "user-declared"
+        },
+        "domainMin": [
+          0,
+          0,
+          0
+        ],
+        "domainMax": [
+          1,
+          1,
+          1
+        ],
+        "domainProvenance": "implicit-cube-default",
+        "lutAlgorithm": "resolve-rgb-red-fastest-linear-clamp-v1",
+        "halationAlgorithm": "input-luma-warm-highlight-addition-v1",
+        "glowAlgorithm": "constant-warm-addition-v1",
+        "grainAlgorithm": "hashed-128-volume-iso-subtractive-dither-v1",
+        "deliveryAlgorithm": "clamp-bgra8-hevc-rec709-tagged-v1"
+      }
     },
     {
       "stockId": "kodak500t85a_f3513di",
@@ -56,9 +124,41 @@
       "halationStrength": 0.2,
       "glowStrength": 0.08,
       "grainSize": 1.3,
+      "outputContrast": 0.6,
+      "colorTemperature": 5600,
       "defaultISO": 500,
       "primaryTint": "#D4956B",
-      "secondaryTint": "#8B4A30"
+      "secondaryTint": "#8B4A30",
+      "recipe": {
+        "schemaVersion": 1,
+        "version": "500t-current-v1",
+        "input": {
+          "gamut": "unverified",
+          "transfer": "Apple Log 2",
+          "provenance": "user-declared"
+        },
+        "output": {
+          "gamut": "Rec.709",
+          "transfer": "Rec.709",
+          "provenance": "user-declared"
+        },
+        "domainMin": [
+          0,
+          0,
+          0
+        ],
+        "domainMax": [
+          1,
+          1,
+          1
+        ],
+        "domainProvenance": "implicit-cube-default",
+        "lutAlgorithm": "resolve-rgb-red-fastest-linear-clamp-v1",
+        "halationAlgorithm": "input-luma-warm-highlight-addition-v1",
+        "glowAlgorithm": "constant-warm-addition-v1",
+        "grainAlgorithm": "hashed-128-volume-iso-subtractive-dither-v1",
+        "deliveryAlgorithm": "clamp-bgra8-hevc-rec709-tagged-v1"
+      }
     },
     {
       "stockId": "kodak500t85a_k2383",
@@ -68,9 +168,41 @@
       "halationStrength": 0.2,
       "glowStrength": 0.08,
       "grainSize": 1.3,
+      "outputContrast": 0.6,
+      "colorTemperature": 5600,
       "defaultISO": 500,
       "primaryTint": "#C48055",
-      "secondaryTint": "#7A3E25"
+      "secondaryTint": "#7A3E25",
+      "recipe": {
+        "schemaVersion": 1,
+        "version": "500t-current-v1",
+        "input": {
+          "gamut": "unverified",
+          "transfer": "Apple Log 2",
+          "provenance": "user-declared"
+        },
+        "output": {
+          "gamut": "Rec.709",
+          "transfer": "Rec.709",
+          "provenance": "user-declared"
+        },
+        "domainMin": [
+          0,
+          0,
+          0
+        ],
+        "domainMax": [
+          1,
+          1,
+          1
+        ],
+        "domainProvenance": "implicit-cube-default",
+        "lutAlgorithm": "resolve-rgb-red-fastest-linear-clamp-v1",
+        "halationAlgorithm": "input-luma-warm-highlight-addition-v1",
+        "glowAlgorithm": "constant-warm-addition-v1",
+        "grainAlgorithm": "hashed-128-volume-iso-subtractive-dither-v1",
+        "deliveryAlgorithm": "clamp-bgra8-hevc-rec709-tagged-v1"
+      }
     },
     {
       "stockId": "kodak200t_f3513di",
@@ -80,6 +212,8 @@
       "halationStrength": 0.12,
       "glowStrength": 0.04,
       "grainSize": 0.8,
+      "outputContrast": 0.6,
+      "colorTemperature": 3200,
       "defaultISO": 200,
       "primaryTint": "#6B8DB5",
       "secondaryTint": "#2A4060"
@@ -92,6 +226,8 @@
       "halationStrength": 0.12,
       "glowStrength": 0.04,
       "grainSize": 0.8,
+      "outputContrast": 0.6,
+      "colorTemperature": 3200,
       "defaultISO": 200,
       "primaryTint": "#5E7EA5",
       "secondaryTint": "#223550"
@@ -101,9 +237,11 @@
       "displayName": "50D F3513DI",
       "category": "photo",
       "lutName": "50D F3513DI - Apple Log 2.cube",
-      "halationStrength": 0.30,
+      "halationStrength": 0.3,
       "glowStrength": 0.06,
       "grainSize": 0.6,
+      "outputContrast": 0.6,
+      "colorTemperature": 5600,
       "defaultISO": 50,
       "primaryTint": "#D4453A",
       "secondaryTint": "#6B1A15"
@@ -113,9 +251,11 @@
       "displayName": "50D K2383",
       "category": "photo",
       "lutName": "50D K2383 - Apple Log 2.cube",
-      "halationStrength": 0.30,
+      "halationStrength": 0.3,
       "glowStrength": 0.06,
       "grainSize": 0.6,
+      "outputContrast": 0.6,
+      "colorTemperature": 5600,
       "defaultISO": 50,
       "primaryTint": "#C04035",
       "secondaryTint": "#5E1510"

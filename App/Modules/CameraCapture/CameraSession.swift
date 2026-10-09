@@ -1,5 +1,37 @@
 import AVFoundation
 
+/// Selectable capture lenses. Maps a UI-facing name to an AVCaptureDevice type
+/// + position. "Normal" is the rear wide (1x) camera.
+enum CameraLens: String, CaseIterable, Identifiable {
+    case ultraWide = "Ultrawide"
+    case wide = "Normal"
+    case telephoto = "Tele"
+    case front = "Front"
+
+    var id: String { rawValue }
+
+    var deviceType: AVCaptureDevice.DeviceType {
+        switch self {
+        case .ultraWide: return .builtInUltraWideCamera
+        case .wide, .front: return .builtInWideAngleCamera
+        case .telephoto: return .builtInTelephotoCamera
+        }
+    }
+
+    var position: AVCaptureDevice.Position {
+        self == .front ? .front : .back
+    }
+
+    var systemImage: String {
+        switch self {
+        case .ultraWide: return "camera.viewfinder"
+        case .wide: return "camera.fill"
+        case .telephoto: return "camera.circle"
+        case .front: return "camera.rotate"
+        }
+    }
+}
+
 /// AD-3: Manages the AVCaptureSession — Apple Log, HEVC H.265, 4K, 24fps, clean preview.
 /// Runs on a dedicated serial queue. Never posts to main thread directly.
 final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
@@ -7,10 +39,15 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     private let sessionQueue = DispatchQueue(label: "camera.session")
     private let movieOutput = AVCaptureMovieFileOutput()
     private var videoDeviceInput: AVCaptureDeviceInput?
+    private var microphoneInput: AVCaptureDeviceInput?
+    private var microphoneAdded = false
     private var isConfigured = false
+    /// Fixed white-balance temperature (Kelvin) requested by the selected stock.
+    /// Applied on the next configureDevice or immediately via setWhiteBalance.
+    private var whiteBalanceTemperature: Float?
 
-    /// Currently active camera position
-    private(set) var activePosition: AVCaptureDevice.Position = .back
+    /// Currently selected lens (rear wide/ultrawide/tele, or front).
+    private(set) var activeLens: CameraLens = .wide
     /// Current device (accessible for view model queries)
     private(set) var activeDevice: AVCaptureDevice?
 
@@ -28,15 +65,16 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
             session.sessionPreset = .hd4K3840x2160
 
             guard let device = AVCaptureDevice.default(
-                .builtInWideAngleCamera,
+                activeLens.deviceType,
                 for: .video,
-                position: activePosition
+                position: activeLens.position
             ) else {
                 configError = CameraError.noCameraAvailable
                 return
             }
 
             do {
+                addMicrophoneInputLocked()
                 try addDevice(device)
                 try configureDevice(device)
                 configureMovieOutput()
@@ -47,6 +85,42 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         }
 
         if let error = configError { throw error }
+    }
+
+    /// Add the microphone input from any thread (idempotent). Audio is optional:
+    /// a denied/missing microphone just records video-only. Re-adds the movie
+    /// output so it creates the audio connection (mirrors `addDevice`).
+    /// Async so the caller (main thread) never blocks on camera/audio hardware;
+    /// runs after any pending configure()/start() on sessionQueue.
+    func addMicrophoneInput() {
+        sessionQueue.async { [weak self] in
+            guard let self, !self.microphoneAdded else { return }
+            self.session.beginConfiguration()
+            defer { self.session.commitConfiguration() }
+            self.addMicrophoneInputLocked()
+            // Refresh the movie output only if the video connection already
+            // exists (session already running). On first launch addDevice adds
+            // the movie output later, creating both video + audio connections.
+            if self.microphoneAdded, self.movieOutput.connection(with: .video) != nil {
+                self.session.removeOutput(self.movieOutput)
+                if self.session.canAddOutput(self.movieOutput) {
+                    self.session.addOutput(self.movieOutput)
+                }
+                self.configureMovieOutput()
+            }
+        }
+    }
+
+    /// Add the microphone input within an active session configuration.
+    private func addMicrophoneInputLocked() {
+        guard !microphoneAdded,
+              AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+              let mic = AVCaptureDevice.default(.microphone, for: .audio, position: .unspecified),
+              let input = try? AVCaptureDeviceInput(device: mic),
+              session.canAddInput(input) else { return }
+        session.addInput(input)
+        microphoneInput = input
+        microphoneAdded = true
     }
 
     private func addDevice(_ device: AVCaptureDevice) throws {
@@ -75,8 +149,13 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         try device.lockForConfiguration()
         defer { device.unlockForConfiguration() }
 
-        // Apple Log color space
-        if device.activeFormat.supportedColorSpaces.contains(.appleLog) {
+        // The bundled transform LUTs are authored for Apple Log 2. Prefer that
+        // contract when this device/format supports it; use Apple Log as a
+        // compatibility fallback on older hardware.
+        if #available(iOS 26.0, *),
+           device.activeFormat.supportedColorSpaces.contains(.appleLog2) {
+            device.activeColorSpace = .appleLog2
+        } else if device.activeFormat.supportedColorSpaces.contains(.appleLog) {
             device.activeColorSpace = .appleLog
         }
 
@@ -84,8 +163,10 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 24)
         device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 24)
 
-        // Locked white balance for consistent LUT application
-        lockWhiteBalance(device)
+        // Apply the selected film stock's fixed white balance (daylight 5600K /
+        // tungsten 3200K). If no stock temperature has been set yet, leave the
+        // device's default white balance untouched.
+        applyWhiteBalanceLock(device)
 
         // Default to continuous auto exposure
         if device.isExposureModeSupported(.continuousAutoExposure) {
@@ -95,13 +176,34 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         activeDevice = device
     }
 
-    /// Lock white balance to a consistent value so LUTs apply predictably.
-    /// Uses the current device white balance gains (locks to ambient light).
-    private func lockWhiteBalance(_ device: AVCaptureDevice) {
-        if device.isWhiteBalanceModeSupported(.locked) {
-            // Lock at current WB gains — captures the ambient light temperature
-            device.whiteBalanceMode = .locked
+    /// Set the fixed white-balance temperature (Kelvin) for the selected film
+    /// stock. Daylight stocks use 5600K; tungsten stocks use 3200K. Locking the
+    /// sensor to a fixed temperature (instead of continuous auto WB) keeps the
+    /// Apple Log → LUT transform on a consistent white point per stock.
+    func setWhiteBalance(temperatureKelvin: Float) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.whiteBalanceTemperature = temperatureKelvin
+            guard let device = self.activeDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                self.applyWhiteBalanceLock(device)
+                device.unlockForConfiguration()
+            } catch {
+                // Non-fatal: leave current white balance if the lock fails.
+            }
         }
+    }
+
+    /// Lock the device to `whiteBalanceTemperature` if one is set. Caller must
+    /// hold the device configuration lock (configureDevice or setWhiteBalance).
+    private func applyWhiteBalanceLock(_ device: AVCaptureDevice) {
+        guard let kelvin = whiteBalanceTemperature,
+              device.isWhiteBalanceModeSupported(.locked) else { return }
+        let tint = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(
+            temperature: kelvin, tint: 0)
+        let gains = device.deviceWhiteBalanceGains(for: tint)
+        device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
     }
 
     private func configureMovieOutput() {
@@ -112,7 +214,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         }
 
         let compressionSettings: [String: Any] = [
-            AVVideoAverageBitRateKey: 36_000_000,
+            AVVideoAverageBitRateKey: DeliverySettings.averageBitRate,
             AVVideoMaxKeyFrameIntervalKey: 48,
             AVVideoProfileLevelKey: "HEVC_Main_AutoLevel"
         ]
@@ -127,9 +229,26 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
 
     // MARK: - Camera Switching
 
-    /// Switch between .back and .front cameras.
-    func switchCamera(to position: AVCaptureDevice.Position) throws {
-        guard activePosition != position else { return }
+    /// Lenses available on this device (queryable before session configuration).
+    var availableLenses: [CameraLens] {
+        var lenses: [CameraLens] = []
+        if Self.deviceAvailable(.builtInWideAngleCamera, .back) { lenses.append(.wide) }
+        if Self.deviceAvailable(.builtInUltraWideCamera, .back) { lenses.append(.ultraWide) }
+        if Self.deviceAvailable(.builtInTelephotoCamera, .back) { lenses.append(.telephoto) }
+        if Self.deviceAvailable(.builtInWideAngleCamera, .front) { lenses.append(.front) }
+        return lenses
+    }
+
+    private static func deviceAvailable(
+        _ type: AVCaptureDevice.DeviceType,
+        _ position: AVCaptureDevice.Position
+    ) -> Bool {
+        AVCaptureDevice.default(type, for: .video, position: position) != nil
+    }
+
+    /// Switch to a specific lens (rear wide/ultrawide/tele, or front).
+    func selectCamera(_ lens: CameraLens) throws {
+        guard activeLens != lens else { return }
 
         var switchError: Error?
         sessionQueue.sync {
@@ -137,9 +256,9 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
             defer { session.commitConfiguration() }
 
             guard let device = AVCaptureDevice.default(
-                .builtInWideAngleCamera,
+                lens.deviceType,
                 for: .video,
-                position: position
+                position: lens.position
             ) else {
                 switchError = CameraError.noCameraAvailable
                 return
@@ -148,7 +267,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
             do {
                 try addDevice(device)
                 try configureDevice(device)
-                activePosition = position
+                activeLens = lens
             } catch {
                 switchError = error
             }
@@ -180,6 +299,22 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         activeDevice?.videoZoomFactor ?? 1.0
     }
 
+    /// Current sensor ISO (0 if no active device). Read from any thread for display.
+    var currentISO: Float {
+        activeDevice?.iso ?? 0
+    }
+
+    /// Current shutter duration in seconds (0 if no active device).
+    var currentShutterSeconds: Double {
+        activeDevice?.exposureDuration.seconds ?? 0
+    }
+
+    /// Device's supported ISO range (fallback 100–3200 before the device is ready).
+    var isoRange: ClosedRange<Float> {
+        guard let device = activeDevice else { return 100...3200 }
+        return device.activeFormat.minISO...device.activeFormat.maxISO
+    }
+
     // MARK: - Exposure Controls
 
     /// Lock exposure at a specific ISO and shutter duration.
@@ -194,6 +329,14 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
 
         device.setExposureModeCustom(duration: clampedShutter, iso: clampedISO) { _ in }
         device.unlockForConfiguration()
+    }
+
+    /// 180° shutter angle at 24fps = 1/48s.
+    static let filmShutterDuration = CMTime(value: 1, timescale: 48)
+
+    /// Lock exposure to the film standard: 180° shutter (1/48s) at a fixed ISO.
+    func lockManualExposure(iso: Float) throws {
+        try setExposure(iso: iso, shutter: Self.filmShutterDuration)
     }
 
     /// Switch to continuous auto exposure (default).

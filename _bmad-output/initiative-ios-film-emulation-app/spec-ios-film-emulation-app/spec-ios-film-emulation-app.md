@@ -2,97 +2,93 @@
 id: SPEC-ios-film-emulation-app
 companions:
   - film-stocks.md
+  - render-quality.md
 sources:
   - ../brief-ios-film-emulation-app/brief-ios-film-emulation-app.md
 ---
 
-> **Canonical contract.** This SPEC and the files in `companions:` are the complete, preservation-validated contract for what to build, test, and validate. Source documents listed in frontmatter are for traceability — consult them only if you need narrative rationale or prose color this contract intentionally omits.
+> **Canonical contract.** This SPEC and the files in `companions:` are the complete, preservation-validated contract for what to build, test, and validate. Source documents listed in frontmatter are for traceability only.
 
 # iOS Film Emulation App
 
-> **v1/v2/v3 roadmap:**
-> - **v1:** Video capture with post-record film emulation render. Shoot Apple Log → pick stock → render → save. Original Log always kept.
-> - **v2:** Post-processing unbaked footage. Save clean Log, browse in-app library, apply/swap stocks after capture.
-> - **v3:** Photos. RAW capture with manual controls, film emulation pipeline, post-capture stock application.
-
 ## Why
 
-A vision to realize: the creator wants to productize their personal Blackmagic Camera + desktop LUT video workflow into a dead-simple iOS app, combined with mood.camera's stripped-down film-shooting experience. No existing app delivers post-capture film emulation, video support, accurate film grain, and impulse-buy pricing in a single camera. v1 focuses on the video capture and render pipeline — the creator's primary pain point — with photos and the full post-capture library deferred to later versions.
+Realize a simple iPhone camera whose rendered video can replace the creator's Blackmagic Camera plus desktop LUT workflow for everyday clips. The defining product quality is convincing film character, so v1 proves one excellent, inspectable video path before expanding the library, editor, or photo feature set.
 
 ## Capabilities
 
 - **CAP-2**
-  - **intent:** User can capture video in Apple Log with HEVC (H.265) encoding at 4K and ~36 Mbps, at 24fps, with manual control over shutter speed and ISO. Preview shows the standard camera feed — no LUT or filter applied during shooting.
-  - **success:** A captured video produces a clean Apple Log .mov file at 4K, 24fps, HEVC H.265 ~36 Mbps. Preview is a clean AVCaptureVideoPreviewLayer with no processing artifacts.
+  - **intent:** User can capture clean Apple Log video at 4K, 24 fps with manual shutter and ISO controls and an unprocessed preview.
+  - **success:** A device recording reports HEVC, 4K, 24 fps, Apple Log color properties, expected audio, and no preview filter.
 
 - **CAP-3**
-  - **intent:** User can lock shutter speed or ISO (or both) independently. When one is locked, the app auto-exposes the unlocked parameter to a user-set target EV. Shutter speed is clamped to 1/24–1/100; if exposure demands faster, the image overexposes.
-  - **success:** Locking shutter at 1/48 and changing lighting results in ISO adjusting to maintain target EV. Shutter never exceeds 1/100 regardless of brightness. Locking both prevents any auto-exposure; an EV indicator shows over/under.
+  - **intent:** User can lock shutter, ISO, or both while an unlocked exposure parameter follows a target EV.
+  - **success:** At 1/48 shutter lock, ISO responds to lighting; shutter remains within 1/24–1/100; locking both holds both values and displays deviation from target EV.
 
 - **CAP-5**
-  - **intent:** User can trim the start and end of a video clip before rendering. Trimming is non-destructive — the source Log file is never modified.
-  - **success:** Trimmed render outputs only the selected time range. Source .mov remains at full length. Trimming does not re-encode untrimmed segments.
+  - **intent:** User can non-destructively trim the start and end of a clip before rendering.
+  - **success:** Output duration and audio match the chosen range while the source movie remains byte-for-byte unchanged.
 
 - **CAP-6**
-  - **intent:** After recording, user picks a film stock and triggers a post-record render. The pipeline processes the Apple Log source through LUT → grain → halation → glow and outputs a processed .mov to the camera roll.
-  - **success:** Side-by-side comparison with reference film stock shows matching color response, grain structure, highlight bloom, and soft light diffusion in the rendered output.
+  - **intent:** User can render an Apple Log clip into a color-managed film emulation with stock color response, spatial halation, highlight glow, and grain.
+  - **success:** The output passes the transform, metadata, artifact, and creator-review gates in `render-quality.md`; disabling each effect produces an attributable difference without changing unrelated stages.
 
 - **CAP-7**
-  - **intent:** Film grain amount responds to a per-stock ISO slider. Video grain uses a 3D noise volume for temporal coherence — naturalistic frame-to-frame, not random static overlay. Rendered via GPU shaders during the post-record render pass.
-  - **success:** Increasing ISO on Kodak 500T visibly increases grain intensity. Video grain does not flicker or produce static-like artifacts across frames.
+  - **intent:** User can choose per-shot exposure-index grain behavior appropriate to the selected stock, with stable motion over time.
+  - **success:** Grain responds monotonically to the control, does not visibly tile or repeat during the checkpoint clip, avoids frame-to-frame flicker, and preserves rather than obscures facial and highlight detail.
 
 - **CAP-9**
-  - **intent:** User can try the full app free for 7 days, then unlock via $5/year subscription or $10 lifetime purchase. No feature gating between tiers.
-  - **success:** First launch starts a 7-day trial with all features available. After expiry, features lock behind purchase. Either purchase option permanently unlocks all features.
+  - **intent:** User can try the full app for seven days, then unlock it for $5/year or $10 lifetime without tier-based feature gating.
+  - **success:** Trial and both purchases unlock the same features; expiry blocks protected actions and restore purchases works.
 
 - **CAP-11**
-  - **intent:** User can record a new clip while a previous clip is rendering. Render jobs queue sequentially and persist across app backgrounding.
-  - **success:** Starting a new recording does not block or cancel an in-progress render. Queue state (pending, current, completed) is visible. Closing and reopening the app restores the queue.
+  - **intent:** User can record while prior clips render through a persistent sequential queue.
+  - **success:** Capture remains usable during render; pending, current, completed, and failed jobs survive relaunch and execute once in order.
 
 - **CAP-12**
-  - **intent:** Single clip maximum duration is 5 minutes. Free device space is displayed and updated during recording. Recording is blocked if free space drops below 500MB.
-  - **success:** Recording auto-stops at 5:00. Free space bar updates every 5 seconds. Record button is disabled when free space < 500MB.
+  - **intent:** User is protected from oversized recordings and insufficient storage.
+  - **success:** Recording stops at five minutes, available space refreshes during recording, and capture is blocked below 500 MB.
 
 - **CAP-13**
-  - **intent:** Focus works exactly like the native iPhone camera — tap to focus on a point. Portrait mode (depth effect) is available on supported devices.
-  - **success:** Tapping the preview sets focus at that point with the same behavior as the built-in Camera app. Portrait mode toggle enables depth capture on devices that support it.
+  - **intent:** User can tap the preview to focus with native-camera behavior.
+  - **success:** A supported device focuses at the tapped point and communicates focus state; unsupported depth features are not presented.
+
+- **CAP-14**
+  - **intent:** Developer can repeatably evaluate every render stage and detect regressions before device review.
+  - **success:** The same fixture produces captured source metadata, named intermediate/final frames, scopes, automated invariants, and a review sheet whose failures identify a pipeline stage.
+
+- **CAP-15**
+  - **intent:** Creator can capture and render a short Kodak Vision3 500T clip on a supported iPhone as the first end-to-end quality checkpoint.
+  - **success:** A 10–20 second mixed-light clip renders with synchronized audio, correct orientation and SDR metadata, survives Photos playback, and is accepted or returned with observations using the rubric in `render-quality.md`.
 
 ## Constraints
 
-- iOS-only. iPhone 13 Pro or newer required (Apple Log color space + HEVC 4K).
-- Video locked to 24fps. No other frame rates in v1.
-- Shutter speed clamped to 1/24–1/100 range. Overexpose if exposure demands faster shutter than 1/100.
-- Preview shows clean camera feed — no real-time LUT, grain, or filter applied during shooting.
-- Single clip maximum 5 minutes. Recording blocked below 500MB free space.
-- Two starter video stocks only: Kodak 250D and 500T.
-- No custom LUT import in v1.
-- No photos in v1. No post-capture save-clean workflow in v1 (render is post-record but the Log-to-processed mapping is 1:1 at render time; no library of clean captures for re-processing).
+- v1 is iOS-only, requires a device that supports Apple Log capture, and locks capture to 4K at 24 fps.
+- The first checkpoint runs on iPhone 18 with iOS 27.2 beta; runtime capability checks and a supported-device matrix must protect older Apple Log-capable iPhones from assumptions specific to that beta environment.
+- Every render stage declares its input/output color space and transfer function; arbitrary log scale/offset mapping and untagged delivery are forbidden.
+- The first accepted slice targets Kodak Vision3 500T and SDR Rec.709 HEVC delivery; additional stocks and HDR delivery cannot delay it.
+- Shutter remains within 1/24–1/100, defaulting to 1/48; exposure may clip when the upper limit is reached.
+- Halation and glow are spatial, highlight-derived effects. A constant full-frame tint is not compliant.
+- Grain must remain temporally stable, stock-configurable, and evaluated at delivery resolution after encoding.
+- The source Apple Log movie is never modified and audio remains synchronized through trim and render.
+- Correctness and inspectability precede optimization for the vertical slice, which must still finish without crash or thermal shutdown on the checkpoint device.
+- No custom LUT import, multi-clip editing, or real-time filtered camera preview in v1.
 
 ## Non-goals
 
-- Photos (RAW capture, photo film stocks) — deferred to v3
-- Save-clean-and-apply-later workflow — deferred to v2
-- In-app library of unprocessed captures — deferred to v2
-- Android support
-- Multi-clip video editing (combining, transitions, audio tracks)
-- Community preset sharing or discovery
-- Importing RAW files from external cameras
-- Full editing suite or Lightroom-style adjustments
-- In-app social sharing, cloud sync, or backup
-- Custom LUT import or creation
-- Non-24fps frame rates
+- Photos or RAW photo processing in v1
+- A clean-capture library or stock swapping after the initial render in v1
+- HDR delivery before the SDR 500T slice is accepted
+- Scientific reproduction of a particular physical negative, laboratory process, scanner, or print stock
+- Android, social features, cloud sync, community presets, or DSLR/mirrorless RAW import
+- A full color-grading or timeline editor
 
 ## Success signal
 
-- The creator stops using Blackmagic Camera + desktop LUT tools for quick-turnaround video and uses this app instead.
-- Film enthusiasts who know the reference stocks say the emulation is convincing — "yeah, that's 500T."
-- The app earns positive App Store ratings and steady organic download growth in the film-enthusiast niche.
+The creator renders the checkpoint clip on their phone, prefers or considers it competitive with their quick Blackmagic-plus-desktop result, and can identify remaining defects by pipeline stage rather than describing the result only as “off.” The same fixture can then catch color, grain, temporal, metadata, and A/V regressions automatically or through the recorded rubric.
 
 ## Assumptions
 
-- Assumed Apple Log capture uses `AVCaptureColorSpace.appleLog` (not "Apple Log 2" — no such API exists in AVFoundation).
-- Assumed two accurate video stocks are sufficient for v1; photo stocks and additional video stocks can be added in later versions.
-- Assumed 24fps with 1/48 default shutter is the correct baseline for a "film look" video app.
-- Assumed the 128³ 3D noise volume provides sufficient grain variation without visible repetition at 5-minute clip lengths.
-
-> **ISO slider behavior:** Per-shot setting — each shot remembers its own ISO. App restores the last-used ISO per stock as the default for new shots, persisting across sessions.
+- SDR Rec.709 is the v1 delivery target; HDR delivery will be specified only after the first slice is accepted.
+- The creator's current Blackmagic Camera plus desktop LUT result is the primary subjective reference, supplemented by scopes and metadata checks.
+- Kodak Vision3 500T is the highest-value first stock because it exercises tungsten color response, low-light texture, halation, and glow.

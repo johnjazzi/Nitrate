@@ -1,0 +1,137 @@
+[[entry]]
+id = 1
+type = "story"
+title = "Instrument the existing 500T tracer path"
+description = "Runs a versioned Apple Log fixture through the current source-to-movie path and emits source/output metadata, representative frames, render timings, capability data, and stage-specific diagnostic failures without changing the look."
+verify = "One command or app action produces a reproducible review bundle for the fixture and distinguishes a missing resource or failed stage from a successful render."
+covers = ["CAP-14", "CAP-15"]
+after = []
+hitl = false
+risk = "high"
+unknown = "The repository does not yet identify a redistributable Apple Log fixture; create or record one without treating a device-only capture as an automated golden."
+plan_checkpoint = true
+
+[[entry]]
+id = 2
+type = "story"
+title = "Version the 500T transform and effect contract"
+description = "Defines the exact Apple Log input interpretation, working and Rec.709 delivery transforms, LUT domain, and versioned 500T transform/grain/halation/glow configuration consumed by all later shader stages."
+verify = "A deterministic chart fixture documents expected neutral, saturation, and highlight behavior, and changing the configuration version makes the diagnostic bundle identify the new recipe."
+covers = ["CAP-6", "CAP-14"]
+after = [1]
+hitl = false
+risk = "high"
+unknown = "Output domain user-declared Rec.709 (Etsy Apple Log 2→Rec.709 pack, m00585). Story 3 added a structural LUT golden (Tests/LUTContractTests.swift: neutral-axis monotonic, bounded cast, highlight roll-off, no clipping) — but the contract stays 'user-declared', NOT colorimetrically 'verified' (structural ≠ reference-accurate; input gamut still unverified)."
+
+[[entry]]
+id = 3
+type = "story"
+title = "Implement color-managed Apple Log to SDR rendering"
+description = "Replaces the arbitrary shader mapping with the versioned decode, 500T transform, and Rec.709 delivery contract from entry 2, including correct movie color properties and isolated stock-transform evidence."
+verify = "Fixture scopes and tolerant goldens show expected neutrals and highlight roll-off without unexplained clipping, while Photos and metadata inspection agree on SDR Rec.709 delivery."
+covers = ["CAP-6", "CAP-14"]
+after = [2]
+hitl = false
+risk = "high"
+
+[[entry]]
+id = 4
+type = "story"
+title = "Implement spatial halation and highlight glow"
+description = "Adds distinct highlight masks and spatial diffusion stages for warm halation and broader glow on top of entry 3's declared image contract."
+verify = "Independent on/off difference images show localized halation and glow without global tint, black lift, or unrelated stock-transform changes."
+covers = ["CAP-6", "CAP-14"]
+after = [3]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 5
+type = "story"
+title = "Add versioned per-shot exposure-index selection"
+description = "Carries a user-selected exposure index through the render job into the versioned 500T grain configuration and persists the last value for that stock."
+verify = "Two queued renders retain their distinct selected values, relaunch restores the stock's last value, and diagnostics report the effective recipe without altering color or diffusion stages."
+covers = ["CAP-7", "CAP-14"]
+after = [4]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 6
+type = "story"
+title = "Implement temporally stable 500T grain"
+description = "Uses entry 5's effective recipe to produce exposure-index-responsive grain after diffusion while eliminating visible tiling, frozen noise, crawling edges, and short temporal loops."
+verify = "Encoded static-crop diagnostics and grain on/off evidence pass the temporal thresholds and show monotonic texture response without changing upstream stages."
+covers = ["CAP-7", "CAP-14"]
+after = [5]
+hitl = false
+risk = "high"
+unknown = "The existing 128-cubed volume may be unsuitable once short-loop and tiling tests are applied; the implementation may replace the temporal strategy while preserving the stage contract."
+
+[[entry]]
+id = 7
+type = "story"
+title = "Harden movie writing and render failure semantics"
+description = "Preserves source timing, orientation, trim-relative timestamps, and synchronized audio while making every pixel-buffer allocation, GPU stage, append, reader, and writer failure fatal and recoverable."
+verify = "Valid fixtures produce complete playable movies, while seeded append/resource/GPU failures leave no successful partial output and report the responsible stage."
+covers = ["CAP-6", "CAP-14", "CAP-15"]
+after = [6]
+hitl = false
+risk = "high"
+
+[[entry]]
+id = 8
+type = "story"
+title = "Run the iPhone 18 render-quality checkpoint"
+description = "Renders a mixed-light Apple Log clip on iPhone 18/iOS 27.2 beta, saves it to Photos, records source/render capabilities, and captures the creator's rubric without claiming the checkpoint device as the minimum requirement."
+verify = "The movie plays in Photos with correct orientation and synchronized audio, every rubric row is recorded, no row is broken, and overall is accepted before downstream cleanup starts."
+covers = ["CAP-15"]
+after = [7]
+hitl = true
+risk = "high"
+unknown = "Beta OS metadata reporting and Photos inspection may differ from older releases; observations must be recorded rather than generalized into compatibility rules."
+done_checkpoint = true
+
+[[entry]]
+id = 9
+type = "story"
+title = "Refactor the accepted render slice"
+description = "Performs cleanup identified by entries 1–8 and their reviews without expanding behavior or changing the accepted recipe."
+verify = "The accepted fixture, diagnostics, and phone checkpoint recipe remain green after cleanup."
+covers = ["CAP-6", "CAP-7", "CAP-14"]
+after = [1, 2, 3, 4, 5, 6, 7, 8]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 10
+type = "story"
+title = "Consolidate the render regression suite"
+description = "Integrates the per-story metadata, golden-frame, effect-isolation, temporal-grain, A/V, and failure-path checks into the closing end-to-end suite rather than recreating them."
+verify = "The suite passes the accepted pipeline and detects seeded representative color-tag, skipped-effect, grain-loop, audio-timing, and partial-writer faults."
+covers = ["CAP-6", "CAP-7", "CAP-14", "CAP-15"]
+after = [9]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 11
+type = "bug"
+title = "Rendered output looks over-compressed"
+description = "Rendered movies read as visibly over-compressed. The 36 Mbps average bitrate was too low for 4K 24fps HEVC and smoothed away the high-frequency grain the render adds; bumped to 60 Mbps, pending ladder validation."
+verify = "A rendered 4K clip at 60 Mbps inspected at full resolution shows no obvious blocking or banding, and grain survives encoding, against a higher-bitrate reference."
+covers = ["CAP-14"]
+after = []
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 12
+type = "story"
+title = "Make delivery bitrate configurable"
+description = "Replace the hardcoded delivery bitrate with a single user-facing setting. RenderEncodingContract.averageBitRate (60 Mbps) and CameraSession.swift's capture bitrate (36 Mbps) are both fixed constants today; drive them from one configurable value, keeping the current values as defaults."
+verify = "Changing the bitrate setting in the app and in RenderCLI changes the encoded output's bitrate and its recorded metadata, and the render test suite still passes."
+covers = ["CAP-14"]
+after = []
+hitl = false
+risk = "low"
