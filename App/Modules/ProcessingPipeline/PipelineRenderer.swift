@@ -430,7 +430,13 @@ final class PipelineRenderer: @unchecked Sendable {
                         usleep(1000)
                         pollCount += 1
                         if pollCount > 5000 {  // 5s timeout
-                            continuation.resume(throwing: RenderError.writerFailed(nil))
+                            // The writer has not failed, it simply never asked for
+                            // more video — report that honestly instead of claiming
+                            // an asset-writer failure.
+                            continuation.resume(throwing: RenderError.stageFailed(
+                                "video-backpressure",
+                                "The video writer did not accept frames for 5 seconds (audio input: \(audioWriterInput != nil))."
+                            ))
                             return
                         }
                     }
@@ -471,7 +477,10 @@ final class PipelineRenderer: @unchecked Sendable {
                     frameIndex += 1
                 }
 
-                // Wait for audio passthrough to complete before continuing
+                // Wait for audio passthrough to complete before continuing.
+                // The audio thread marks its own input finished when it drains;
+                // this is a redundant safety net in case that work item never
+                // ran (marking finished twice is harmless).
                 audioDone?.wait()
                 audioWriterInput?.markAsFinished()
 
@@ -559,6 +568,19 @@ final class PipelineRenderer: @unchecked Sendable {
     ) {
         guard let audioOutput = audioReader?.outputs.first as? AVAssetReaderTrackOutput,
               let audioWriter = audioWriterInput else { return }
+
+        // Mark the audio input finished as soon as the audio is exhausted.
+        //
+        // This must happen HERE, not in the video loop. Audio is a cheap
+        // passthrough while video frames go through three GPU passes, so the
+        // audio thread races far ahead of the video and reaches end-of-track
+        // long before the video does. AVAssetWriter will not hand out more
+        // video buffers while it is still waiting on another input, so leaving
+        // the audio input open deadlocked the writer: the video input never
+        // became ready, the frame loop timed out, and the render failed (or, on
+        // device, appeared to hang).
+        defer { audioWriter.markAsFinished() }
+
         while true {
             var pollCount = 0
             while !audioWriter.isReadyForMoreMediaData {
@@ -901,7 +923,10 @@ enum RenderError: LocalizedError {
         case .noCommandQueue: return "Failed to create Metal command queue."
         case .noVideoTrack: return "Source video has no video track."
         case .readerFailed(let err): return "Asset reader failed: \(err?.localizedDescription ?? "unknown")"
-        case .writerFailed(let err): return "Asset writer failed: \(err?.localizedDescription ?? "unknown")"
+        case .writerFailed(let err):
+            guard let err else { return "Asset writer failed: nil error" }
+            let nsError = err as NSError
+            return "Asset writer failed: \(err.localizedDescription) [\(nsError.domain) \(nsError.code)] \(nsError.userInfo)"
         case .missingShader(let name): return "Missing shader: \(name)"
         case .missingFunction(let name): return "Missing Metal function: \(name)"
         case .missingResource(let name): return "Missing resource: \(name)"
