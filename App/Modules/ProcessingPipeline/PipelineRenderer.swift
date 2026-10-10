@@ -188,25 +188,46 @@ final class PipelineRenderer: @unchecked Sendable {
         }
 
         // Process video frames + audio passthrough
-        let counters = try await processFrames(
-            readerOutput: readerOutput,
-            adaptor: adaptor,
-            writerInput: writerInput,
-            writer: writer,
-            config: config,
-            audioReader: audioReader,
-            audioWriterInput: audioWriterInput
-        )
+        let counters: RenderDiagnosticsManifest.Counters
+        do {
+            counters = try await processFrames(
+                readerOutput: readerOutput,
+                adaptor: adaptor,
+                writerInput: writerInput,
+                writer: writer,
+                config: config,
+                audioReader: audioReader,
+                audioWriterInput: audioWriterInput
+            )
+        } catch {
+            abandonWriter(writer, outputURL: outputURL, readers: [reader, audioReader])
+            throw error
+        }
 
         // Finalize
         writerInput.markAsFinished()
         await writer.finishWriting()
 
         if let error = writer.error {
+            abandonWriter(writer, outputURL: outputURL, readers: [reader, audioReader])
             throw RenderError.writerFailed(error)
         }
 
         return (outputURL, counters)
+    }
+
+    /// Tear down a failed render and delete its partial output.
+    ///
+    /// An abandoned AVAssetWriter leaves a truncated file behind — no moov atom,
+    /// so nothing can play it. That is worse than no file at all: it sits in the
+    /// documents directory looking like a render, and a size-only check reports it
+    /// as a finished job. Failures must leave no successful-looking partial output.
+    private func abandonWriter(_ writer: AVAssetWriter, outputURL: URL, readers: [AVAssetReader?]) {
+        writer.cancelWriting()
+        for case let reader? in readers {
+            reader.cancelReading()
+        }
+        try? FileManager.default.removeItem(at: outputURL)
     }
 
     /// Runs the unchanged renderer while collecting a self-contained diagnostic bundle.
