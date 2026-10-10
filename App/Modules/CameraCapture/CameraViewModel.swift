@@ -89,30 +89,40 @@ final class CameraViewModel {
     }
 
     private func configureAndStart() {
-        do {
-            try session.configure()
-            session.start()
-
-            // Mic is added by configure() when already authorized; request it
-            // here (after start) only for the first-launch grant case.
-            requestMicrophoneAccess()
-            startExposurePolling()
-            refreshExposure()
-            // Default to 180° shutter priority: shutter locked to 1/48s, ISO auto-meters.
-            session.enableShutterPriority()
-            startShutterPriorityLoop()
-
-            if let device = session.activeDevice {
-                focusManager = FocusManager(device: device)
+        // Configure asynchronously: session setup touches camera hardware and
+        // used to block the main thread, which froze launch until the run loop
+        // was allowed to spin ("app doesn't load until I hit stop").
+        session.configure { [weak self] error in
+            guard let self else { return }
+            if let error {
+                self.errorMessage = error.localizedDescription
+                return
             }
+            self.startSession()
+        }
+    }
 
-            session.onFinish { [weak self] result in
-                Task { @MainActor in
-                    await self?.handleRecordingFinished(result)
-                }
+    /// Runs on the main queue once the session has been configured.
+    private func startSession() {
+        session.start()
+
+        // Mic is added by configure() when already authorized; request it
+        // here (after start) only for the first-launch grant case.
+        requestMicrophoneAccess()
+        startExposurePolling()
+        refreshExposure()
+        // Default to 180° shutter priority: shutter locked to 1/48s, ISO auto-meters.
+        session.enableShutterPriority()
+        startShutterPriorityLoop()
+
+        if let device = session.activeDevice {
+            focusManager = FocusManager(device: device)
+        }
+
+        session.onFinish { [weak self] result in
+            Task { @MainActor in
+                await self?.handleRecordingFinished(result)
             }
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
@@ -155,17 +165,25 @@ final class CameraViewModel {
     }
 
     /// Switch the active lens and refresh tap-to-focus for the new device.
-    func selectLens(_ lens: CameraLens) throws {
-        try session.selectCamera(lens)
-        if let device = session.activeDevice {
-            focusManager = FocusManager(device: device)
-        }
-        // configureDevice resets to auto exposure on the device swap; re-apply
-        // manual exposure or shutter priority so the 180° shutter survives lens changes.
-        if isManualExposure {
-            try session.lockManualExposure(iso: manualISO)
-        } else {
-            session.enableShutterPriority()
+    /// Completion runs on the main queue; `nil` error means the swap succeeded.
+    func selectLens(_ lens: CameraLens, completion: @escaping (Error?) -> Void) {
+        session.selectCamera(lens) { [weak self] error in
+            guard let self else { return }
+            if let error {
+                completion(error)
+                return
+            }
+            if let device = self.session.activeDevice {
+                self.focusManager = FocusManager(device: device)
+            }
+            // configureDevice resets to auto exposure on the device swap; re-apply
+            // manual exposure or shutter priority so the 180° shutter survives lens changes.
+            if self.isManualExposure {
+                try? self.session.lockManualExposure(iso: self.manualISO)
+            } else {
+                self.session.enableShutterPriority()
+            }
+            completion(nil)
         }
     }
 

@@ -409,13 +409,12 @@ struct ContentView: View {
 
     private func selectLens(_ lens: CameraLens) {
         guard lens != selectedLens else { return }
-        Task {
-            do {
-                try cameraViewModel.selectLens(lens)
+        cameraViewModel.selectLens(lens) { error in
+            if let error {
+                cameraViewModel.errorMessage = "Camera switch failed: \(error.localizedDescription)"
+            } else {
                 selectedLens = lens
                 zoomFactor = 1.0
-            } catch {
-                cameraViewModel.errorMessage = "Camera switch failed: \(error.localizedDescription)"
             }
         }
     }

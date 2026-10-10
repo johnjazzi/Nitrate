@@ -59,36 +59,49 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
 
     // MARK: - Setup
 
-    func configure() throws {
-        guard !isConfigured else { return }
+    /// Configure the session without blocking the caller's thread.
+    ///
+    /// Session configuration touches camera hardware and can take hundreds of
+    /// milliseconds (longer on first launch or after the app resumes). Calling
+    /// this from the main thread with `sessionQueue.sync` froze app launch and
+    /// lens switching until the run loop was allowed to spin. `completion` runs
+    /// on the main queue with `nil` on success, or the failure to report.
+    func configure(completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+        sessionQueue.async { [weak self] in
+            let error = self?.performConfigure()
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
+        }
+    }
+
+    /// Shared synchronous configure body. MUST be called on `sessionQueue`.
+    private func performConfigure() -> Error? {
+        guard !isConfigured else { return nil }
         var configError: Error?
-        sessionQueue.sync {
-            session.beginConfiguration()
-            defer { session.commitConfiguration() }
 
-            session.sessionPreset = .hd4K3840x2160
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
 
-            guard let device = AVCaptureDevice.default(
-                activeLens.deviceType,
-                for: .video,
-                position: activeLens.position
-            ) else {
-                configError = CameraError.noCameraAvailable
-                return
-            }
+        session.sessionPreset = .hd4K3840x2160
 
-            do {
-                addMicrophoneInputLocked()
-                try addDevice(device)
-                try configureDevice(device)
-                configureMovieOutput()
-                isConfigured = true
-            } catch {
-                configError = error
-            }
+        guard let device = AVCaptureDevice.default(
+            activeLens.deviceType,
+            for: .video,
+            position: activeLens.position
+        ) else {
+            return CameraError.noCameraAvailable
         }
 
-        if let error = configError { throw error }
+        do {
+            addMicrophoneInputLocked()
+            try addDevice(device)
+            try configureDevice(device)
+            configureMovieOutput()
+            isConfigured = true
+        } catch {
+            configError = error
+        }
+
+        return configError
     }
 
     /// Add the microphone input from any thread (idempotent). Audio is optional:
@@ -254,33 +267,43 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     }
 
     /// Switch to a specific lens (rear wide/ultrawide/tele, or front).
-    func selectCamera(_ lens: CameraLens) throws {
-        guard activeLens != lens else { return }
+    ///
+    /// Async for the same reason as `configure(completion:)`: swapping the video
+    /// input reconfigures capture hardware and must not block the main thread.
+    /// `completion` runs on the main queue with `nil` on success.
+    func selectCamera(_ lens: CameraLens, completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+        guard activeLens != lens else {
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(nil) } }
+            return
+        }
 
-        var switchError: Error?
-        sessionQueue.sync {
-            session.beginConfiguration()
-            defer { session.commitConfiguration() }
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            var switchError: Error?
+
+            self.session.beginConfiguration()
+            defer { self.session.commitConfiguration() }
 
             guard let device = AVCaptureDevice.default(
                 lens.deviceType,
                 for: .video,
                 position: lens.position
             ) else {
-                switchError = CameraError.noCameraAvailable
+                let error = CameraError.noCameraAvailable
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
                 return
             }
 
             do {
-                try addDevice(device)
-                try configureDevice(device)
-                activeLens = lens
+                try self.addDevice(device)
+                try self.configureDevice(device)
+                self.activeLens = lens
             } catch {
                 switchError = error
             }
-        }
 
-        if let error = switchError { throw error }
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(switchError) } }
+        }
     }
 
     // MARK: - Zoom
