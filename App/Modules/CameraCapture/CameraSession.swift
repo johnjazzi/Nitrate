@@ -46,6 +46,10 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     /// Applied on the next configureDevice or immediately via setWhiteBalance.
     private var whiteBalanceTemperature: Float?
 
+    /// True while 180° shutter priority is active (shutter locked to 1/48s,
+    /// ISO auto-meters). Cleared by manual exposure, which pins both.
+    private(set) var isShutterPriority = false
+
     /// Currently selected lens (rear wide/ultrawide/tele, or front).
     private(set) var activeLens: CameraLens = .wide
     /// Current device (accessible for view model queries)
@@ -124,14 +128,17 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     }
 
     private func addDevice(_ device: AVCaptureDevice) throws {
+        // Remove the existing video input FIRST. A session (with a movie output
+        // attached) can't accept a second video input, so canAddInput() would
+        // fail on every lens switch while the old input is still present.
+        if let existing = videoDeviceInput {
+            session.removeInput(existing)
+            videoDeviceInput = nil
+        }
+
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else {
             throw CameraError.cannotAddInput
-        }
-
-        // Remove existing input if present
-        if let existing = videoDeviceInput {
-            session.removeInput(existing)
         }
 
         session.addInput(input)
@@ -299,6 +306,43 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         activeDevice?.videoZoomFactor ?? 1.0
     }
 
+    /// Focus the active lens at a normalized device point (0–1).
+    func setFocusPoint(_ point: CGPoint) throws {
+        guard let device = activeDevice,
+              device.isFocusPointOfInterestSupported,
+              device.isFocusModeSupported(.autoFocus) else { return }
+        try device.lockForConfiguration()
+        device.focusPointOfInterest = point
+        device.focusMode = .autoFocus
+        device.unlockForConfiguration()
+    }
+
+    /// Manual focus: lock the lens at a specific raw lens position (0–1).
+    func setManualFocusPosition(_ lensPosition: Float) throws {
+        guard let device = activeDevice,
+              device.isLockingFocusWithCustomLensPositionSupported else { return }
+        try device.lockForConfiguration()
+        device.setFocusModeLocked(lensPosition: min(max(lensPosition, 0), 1), completionHandler: nil)
+        device.unlockForConfiguration()
+    }
+
+    /// Return the lens to continuous auto-focus.
+    func resetAutoFocus() throws {
+        guard let device = activeDevice,
+              device.isFocusModeSupported(.continuousAutoFocus) else { return }
+        try device.lockForConfiguration()
+        device.focusMode = .continuousAutoFocus
+        device.unlockForConfiguration()
+    }
+
+    var isManualFocusSupported: Bool {
+        activeDevice?.isLockingFocusWithCustomLensPositionSupported ?? false
+    }
+
+    var maxZoomFactor: CGFloat {
+        activeDevice?.activeFormat.videoMaxZoomFactor ?? 5.0
+    }
+
     /// Current sensor ISO (0 if no active device). Read from any thread for display.
     var currentISO: Float {
         activeDevice?.iso ?? 0
@@ -366,10 +410,97 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         device.unlockForConfiguration()
     }
 
+    // MARK: - Shutter Priority (180° film shutter)
+
+    /// Lock the shutter to 180° (1/48s at 24fps) and let ISO auto-meter.
+    /// AVFoundation has no native shutter-priority mode, so we meter briefly in
+    /// continuous-auto, then hold the fixed shutter at the freshly metered ISO.
+    /// Call `refreshShutterPriority()` periodically to keep ISO tracking the scene.
+    func enableShutterPriority() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.isShutterPriority = true
+            self.pinShutterToFilm()
+        }
+    }
+
+    func disableShutterPriority() {
+        sessionQueue.async { [weak self] in
+            self?.isShutterPriority = false
+        }
+    }
+
+    /// Re-meter and re-pin the 180° shutter (no-op when shutter priority is off
+    /// or while recording — exposure is frozen during a take).
+    func refreshShutterPriority() {
+        sessionQueue.async { [weak self] in
+            guard let self, self.isShutterPriority, !self.movieOutput.isRecording else { return }
+            self.pinShutterToFilm()
+        }
+    }
+
+    /// Immediately pin the 180° shutter at the current metered ISO (no auto-meter
+    /// window). Called when recording starts so the shutter never floats mid-take.
+    func pinShutterForRecording() {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.activeDevice else { return }
+            try? self.setExposure(iso: device.iso, shutter: Self.filmShutterDuration)
+        }
+    }
+
+    private func pinShutterToFilm() {
+        guard let device = activeDevice else { return }
+        // Brief auto-meter so the device evaluates scene brightness.
+        try? device.lockForConfiguration()
+        if device.isExposureModeSupported(.continuousAutoExposure) {
+            device.exposureMode = .continuousAutoExposure
+        }
+        device.unlockForConfiguration()
+
+        // Hold the fixed shutter at the freshly metered ISO after the meter settles.
+        sessionQueue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self, self.isShutterPriority, let device = self.activeDevice else { return }
+            try? self.setExposure(iso: device.iso, shutter: Self.filmShutterDuration)
+        }
+    }
+
     // MARK: - Recording
 
     func startRecording(to url: URL) throws {
+        // Record the 180° shutter contract + actual sensor values in the source
+        // .mov so the clip is self-describing (render output re-documents the
+        // film-standard 180°/1/48 separately).
+        movieOutput.metadata = captureMetadataItems()
         movieOutput.startRecording(to: url, recordingDelegate: self)
+    }
+
+    /// Shutter speed/angle + ISO at the moment recording starts. The shutter is
+    /// locked to 180° (1/48s at 24fps) in manual exposure; auto mode reports its
+    /// actual metered value so the metadata stays honest.
+    private func captureMetadataItems() -> [AVMetadataItem] {
+        guard let device = activeDevice else { return [] }
+        let shutterSeconds = device.exposureDuration.seconds
+        let angle = Int((shutterSeconds * 24.0 * 360.0).rounded())
+        let speed = shutterSeconds > 0 ? Self.fractionString(seconds: shutterSeconds) : "auto"
+        return [
+            Self.captureItem("shutter-speed", speed),
+            Self.captureItem("shutter-angle", "\(angle)"),
+            Self.captureItem("capture-iso", "\(Int(device.iso))")
+        ]
+    }
+
+    private static func captureItem(_ key: String, _ value: String) -> AVMetadataItem {
+        let item = AVMutableMetadataItem()
+        item.keySpace = .quickTimeMetadata
+        item.key = "com.filmemulation.\(key)" as NSString
+        item.value = value as NSString
+        item.dataType = kCMMetadataBaseDataType_UTF8 as String
+        return item
+    }
+
+    private static func fractionString(seconds: Double) -> String {
+        let reciprocal = (1.0 / seconds).rounded()
+        return reciprocal >= 2 ? "1/\(Int(reciprocal))" : String(format: "%.4fs", seconds)
     }
 
     func stopRecording() {

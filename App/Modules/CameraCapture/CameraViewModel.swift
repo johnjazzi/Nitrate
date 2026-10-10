@@ -35,6 +35,7 @@ final class CameraViewModel {
     private var recordingTimer: Timer?
     private var spacePollingTimer: Timer?
     private var exposurePollingTimer: Timer?
+    private var shutterPriorityTimer: Timer?
 
     // MARK: - Actions
 
@@ -97,6 +98,9 @@ final class CameraViewModel {
             requestMicrophoneAccess()
             startExposurePolling()
             refreshExposure()
+            // Default to 180° shutter priority: shutter locked to 1/48s, ISO auto-meters.
+            session.enableShutterPriority()
+            startShutterPriorityLoop()
 
             if let device = session.activeDevice {
                 focusManager = FocusManager(device: device)
@@ -116,6 +120,8 @@ final class CameraViewModel {
         session.stop()
         stopPolling()
         stopExposurePolling()
+        stopShutterPriorityLoop()
+        session.disableShutterPriority()
     }
 
     func startRecording() {
@@ -126,6 +132,8 @@ final class CameraViewModel {
 
         let outputURL = tempFileURL()
         do {
+            // Freeze the 180° shutter + ISO for the take (no auto-meter mid-take).
+            session.pinShutterForRecording()
             try session.startRecording(to: outputURL)
             isRecording = true
             recordingDuration = 0
@@ -153,9 +161,11 @@ final class CameraViewModel {
             focusManager = FocusManager(device: device)
         }
         // configureDevice resets to auto exposure on the device swap; re-apply
-        // manual exposure so the 180° shutter + ISO lock survives lens changes.
+        // manual exposure or shutter priority so the 180° shutter survives lens changes.
         if isManualExposure {
             try session.lockManualExposure(iso: manualISO)
+        } else {
+            session.enableShutterPriority()
         }
     }
 
@@ -171,6 +181,7 @@ final class CameraViewModel {
 
     func setManualISO(_ iso: Float) {
         manualISO = iso
+        session.disableShutterPriority()
         do {
             try session.lockManualExposure(iso: iso)
             isManualExposure = true
@@ -185,6 +196,7 @@ final class CameraViewModel {
             do {
                 try session.setAutoExposure()
                 isManualExposure = false
+                session.enableShutterPriority()
                 refreshExposure()
             } catch {
                 errorMessage = "Failed to unlock exposure: \(error.localizedDescription)"
@@ -210,6 +222,18 @@ final class CameraViewModel {
     private func stopExposurePolling() {
         exposurePollingTimer?.invalidate()
         exposurePollingTimer = nil
+    }
+
+    private func startShutterPriorityLoop() {
+        stopShutterPriorityLoop()
+        shutterPriorityTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.session.refreshShutterPriority() }
+        }
+    }
+
+    private func stopShutterPriorityLoop() {
+        shutterPriorityTimer?.invalidate()
+        shutterPriorityTimer = nil
     }
 
     func dismissError() {

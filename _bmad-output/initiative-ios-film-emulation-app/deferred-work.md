@@ -10,3 +10,7 @@
 - source_plan: `plan-embed-render-settings-in-movies.md`
   summary: Make AE lock preserve current exposure and report completion accurately.
   evidence: CameraSession.lockCurrentExposure sets autoExpose, permitting remetering before lock, while UI immediately indicates lock and samples ISO. Pre-existing capture/UI work.
+
+- source_plan: `tracking/epic-render-quality-vertical-slice/tickets.toml` (story 2)
+  summary: RESOLVED 2026-10-09 — advanced the declared input interpretation; contract stays user-declared.
+  evidence: Apple documents Apple Log as BT.2020 primaries (`AVCaptureColorSpace.appleLog`), so the 4 shipped 500T recipes in both `stocks.json` copies now declare `input.gamut = "Rec.2020"` (was "unverified") and bump `version` to `500t-current-v2`, which makes the diagnostic bundle identify the revised recipe. Provenance was NOT advanced — the LUTs resolve an Apple Log 2 source, so feeding raw sRGB/Rec.2020 would be transformed by the cube rather than verified; `RenderRecipe.colorContractVerified` stays false. `Tests/RenderContractTests.swift` (`recipeRoundTripAndRevisionEvidence`) pins the new declared gamut/transfer/provenance; 19/19 RenderCLI tests pass; generic iOS build exit 0.

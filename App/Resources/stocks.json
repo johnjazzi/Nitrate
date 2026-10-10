@@ -43,9 +43,9 @@
       "secondaryTint": "#1A4A5C",
       "recipe": {
         "schemaVersion": 1,
-        "version": "500t-current-v1",
+        "version": "500t-current-v2",
         "input": {
-          "gamut": "unverified",
+          "gamut": "Rec.2020",
           "transfer": "Apple Log 2",
           "provenance": "user-declared"
         },
@@ -87,9 +87,9 @@
       "secondaryTint": "#153A4A",
       "recipe": {
         "schemaVersion": 1,
-        "version": "500t-current-v1",
+        "version": "500t-current-v2",
         "input": {
-          "gamut": "unverified",
+          "gamut": "Rec.2020",
           "transfer": "Apple Log 2",
           "provenance": "user-declared"
         },
@@ -131,9 +131,9 @@
       "secondaryTint": "#8B4A30",
       "recipe": {
         "schemaVersion": 1,
-        "version": "500t-current-v1",
+        "version": "500t-current-v2",
         "input": {
-          "gamut": "unverified",
+          "gamut": "Rec.2020",
           "transfer": "Apple Log 2",
           "provenance": "user-declared"
         },
@@ -175,9 +175,9 @@
       "secondaryTint": "#7A3E25",
       "recipe": {
         "schemaVersion": 1,
-        "version": "500t-current-v1",
+        "version": "500t-current-v2",
         "input": {
-          "gamut": "unverified",
+          "gamut": "Rec.2020",
           "transfer": "Apple Log 2",
           "provenance": "user-declared"
         },

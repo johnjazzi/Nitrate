@@ -21,7 +21,7 @@ covers = ["CAP-6", "CAP-14"]
 after = [1]
 hitl = false
 risk = "high"
-unknown = "Output domain user-declared Rec.709 (Etsy Apple Log 2→Rec.709 pack, m00585). Story 3 added a structural LUT golden (Tests/LUTContractTests.swift: neutral-axis monotonic, bounded cast, highlight roll-off, no clipping) — but the contract stays 'user-declared', NOT colorimetrically 'verified' (structural ≠ reference-accurate; input gamut still unverified)."
+unknown = "Output domain user-declared Rec.709 (Etsy Apple Log 2→Rec.709 pack, m00585). Story 3 added a structural LUT golden (Tests/LUTContractTests.swift: neutral-axis monotonic, bounded cast, highlight roll-off, no clipping). Input gamut is now declared Rec.2020 (Apple documents Apple Log as BT.2020 primaries) and the 500T recipes bumped to 500t-current-v2; the contract stays 'user-declared', NOT colorimetrically 'verified' (structural ≠ reference-accurate; the LUTs resolve an Apple Log 2 source, so an sRGB/raw-Rec.2020 input is transformed by the cube, not measured here)."
 
 [[entry]]
 id = 3

@@ -270,6 +270,7 @@ enum RenderMovieMetadata {
             "iso": String(Int(config.defaultISO)), "iso-role": "selected-render-exposure-index",
             "halation-level": String(config.halationStrength), "glow-level": String(config.glowStrength),
             "grain-size": String(config.grainSize), "recipe-version": config.effectiveRecipe.version,
+            "shutter-speed": "1/48", "shutter-angle": "180",
             "encoding-codec": RenderEncodingContract.codec,
             "encoding-bitrate-target": String(bitrate),
             "color-contract-verified": String(config.effectiveRecipe.colorContractVerified),
@@ -300,7 +301,7 @@ enum RenderMovieMetadata {
     }
 
     private static func humanReadableSummary(_ config: FilmStockConfig, bitrate: Int) -> String {
-        "ISO \(Int(config.defaultISO)) · halation \(config.halationStrength) · glow \(config.glowStrength) · "
+        "ISO \(Int(config.defaultISO)) · 180° shutter · halation \(config.halationStrength) · glow \(config.glowStrength) · "
             + "grain \(config.grainSize) · \(RenderEncodingContract.codec) @ \(bitrate / 1_000_000) Mbps"
     }
 }

@@ -44,6 +44,8 @@ struct RenderContractTests {
             #expect(values["com.filmemulation.iso"] == String(Int(config.defaultISO)))
             #expect(values["com.filmemulation.halation-level"] == String(config.halationStrength))
             #expect(values["com.filmemulation.iso-role"] == "selected-render-exposure-index")
+            #expect(values["com.filmemulation.shutter-speed"] == "1/48")
+            #expect(values["com.filmemulation.shutter-angle"] == "180")
             #expect(values["com.filmemulation.render-settings-schema"] == "1")
             let json = try #require(values["com.filmemulation.render-settings"])
             let snapshot = try JSONDecoder().decode(RenderDiagnosticsManifest.RecipeSnapshot.self, from: Data(json.utf8))
@@ -65,6 +67,17 @@ struct RenderContractTests {
         let json = try #require(values["com.filmemulation.render-settings"])
         let snapshot = try JSONDecoder().decode(RenderDiagnosticsManifest.RecipeSnapshot.self, from: Data(json.utf8))
         #expect(snapshot.averageBitRate == 80_000_000)
+    }
+
+    @Test func metadataDocumentsFilmShutterContract() throws {
+        let config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
+        let items = try RenderMovieMetadata.make(config: config)
+        var values: [String: String] = [:]
+        for item in items {
+            if let key = item.key as? String, let value = item.value as? String { values[key] = value }
+        }
+        #expect(values["com.filmemulation.shutter-speed"] == "1/48")
+        #expect(values["com.filmemulation.shutter-angle"] == "180")
     }
 
     @Test func deliveryContractTagsSDRRec709() {
@@ -128,7 +141,7 @@ struct RenderContractTests {
     @Test func recipeRoundTripAndRevisionEvidence() throws {
         var config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
         let first = RenderDiagnosticsManifest.RecipeSnapshot(config: config, averageBitRate: RenderEncodingContract.averageBitRate, codec: RenderEncodingContract.codec)
-        config.recipe?.version = "500t-current-v2"
+        config.recipe?.version = "500t-current-v3"
         let second = RenderDiagnosticsManifest.RecipeSnapshot(config: config, averageBitRate: RenderEncodingContract.averageBitRate, codec: RenderEncodingContract.codec)
         let data = try JSONEncoder().encode(second)
         let decoded = try JSONDecoder().decode(RenderDiagnosticsManifest.RecipeSnapshot.self, from: data)
@@ -141,6 +154,12 @@ struct RenderContractTests {
         #expect(decoded.effectiveRecipe.output.transfer == "Rec.709")
         #expect(decoded.effectiveRecipe.output.gamut == "Rec.709")
         #expect(decoded.effectiveRecipe.output.provenance == "user-declared")
+        // Apple Log is documented as BT.2020 primaries, so the shipped 500T
+        // recipes declare the input gamut. The contract is still user-declared.
+        #expect(decoded.effectiveRecipe.input.gamut == "Rec.2020")
+        #expect(decoded.effectiveRecipe.input.transfer == "Apple Log 2")
+        #expect(decoded.effectiveRecipe.input.provenance == "user-declared")
+        #expect(!decoded.colorContractVerified)
     }
 
     @Test func invalidParametersIdentifyTheStock() throws {
