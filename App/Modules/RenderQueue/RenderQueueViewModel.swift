@@ -19,6 +19,9 @@ final class RenderQueueViewModel {
 
     var jobs: [RenderJob] = []
     var rendererErrorMessage: String?
+    /// Set when the queue hands the user back the unprocessed source clip, so
+    /// the UI can state plainly that no render happened.
+    var renderingUnavailableMessage: String?
     var isProcessing: Bool { queue.operationCount > 0 }
     var pendingCount: Int { jobs.filter { $0.status == .pending }.count }
     var currentJob: RenderJob? { jobs.first { $0.status == .processing } }
@@ -35,12 +38,14 @@ final class RenderQueueViewModel {
     /// Enqueue a new render job after recording completes.
     func enqueue(sourceURL: URL, stockId: String, iso: Float) {
         if renderer == nil {
-            rendererErrorMessage = rendererInitError ?? "Metal pipeline could not start. Reboot the app."
+            renderingUnavailableMessage = rendererInitError ?? "Metal pipeline could not start. Reboot the app."
+            rendererErrorMessage = renderingUnavailableMessage
             Task { await saveToPhotoLibrary(sourceURL) }
             return
         }
         if library == nil || library?.config(for: stockId, iso: iso) == nil {
-            rendererErrorMessage = "Film stock not found: \(stockId)"
+            renderingUnavailableMessage = "Film stock not found: \(stockId)"
+            rendererErrorMessage = renderingUnavailableMessage
             Task { await saveToPhotoLibrary(sourceURL) }
             return
         }
@@ -152,6 +157,10 @@ final class RenderQueueViewModel {
         processNext()
     }
 
+    /// Copy a clip into Photos. When a render fails this receives the SOURCE
+    /// clip, which is why a failed job used to look like "the render worked but
+    /// has no grain and no metadata". The failure reason surfaces through the
+    /// job's error message in the queue UI.
     nonisolated private func saveToPhotoLibrary(_ url: URL) async {
         let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
         let authorized: Bool

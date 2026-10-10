@@ -820,11 +820,34 @@ final class PipelineRenderer: @unchecked Sendable {
         return resources
     }
 
+    /// Unique output URL. The timestamp alone is only second-resolution, so two
+    /// renders started within the same second collided: AVAssetWriter will not
+    /// overwrite an existing file and failed with "Cannot Save", which the queue
+    /// then masked by saving the *source* clip to Photos. Add a short random
+    /// suffix and skip any name that already exists on disk.
     private func tempOutputURL() -> URL {
         // Use documents directory so output persists for viewing/sharing.
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let name = "render_\(Int(Date().timeIntervalSince1970)).mov"
-        return docs.appendingPathComponent(name)
+        return Self.uniqueOutputURL(in: docs)
+    }
+
+    /// Pick a render output name that no other render can collide with.
+    ///
+    /// Extracted so it can be tested without a Metal device: the collision it
+    /// prevents previously surfaced as a failed render whose fallback saved the
+    /// unprocessed source clip, which looked like "the grade and grain were not
+    /// applied" rather than like an error.
+    static func uniqueOutputURL(in directory: URL, now: Date = Date()) -> URL {
+        let stamp = Int(now.timeIntervalSince1970)
+        for _ in 0..<16 {
+            let suffix = String(UInt32.random(in: 0..<0x10000), radix: 16)
+            let candidate = directory.appendingPathComponent("render_\(stamp)_\(suffix).mov")
+            if !FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        // Astronomically unlikely; keep the render working rather than fail.
+        return directory.appendingPathComponent("render_\(UUID().uuidString).mov")
     }
 }
 
