@@ -15,6 +15,7 @@ final class PipelineRenderer: @unchecked Sendable {
     // Cached pipeline states
     private var pass1Pipeline: MTLComputePipelineState?
     private var pass2Pipeline: MTLComputePipelineState?
+    private var spatialStage: SpatialEffectsStage?
     private var grainTexture: MTLTexture?
     private var textureCache: CVMetalTextureCache?
 
@@ -193,7 +194,6 @@ final class PipelineRenderer: @unchecked Sendable {
             writerInput: writerInput,
             writer: writer,
             config: config,
-            frameRate: nominalFrameRate,
             audioReader: audioReader,
             audioWriterInput: audioWriterInput
         )
@@ -387,12 +387,9 @@ final class PipelineRenderer: @unchecked Sendable {
         writerInput: AVAssetWriterInput,
         writer: AVAssetWriter,
         config: FilmStockConfig,
-        frameRate: Float,
         audioReader: AVAssetReader?,
         audioWriterInput: AVAssetWriterInput?
     ) async throws -> RenderDiagnosticsManifest.Counters {
-        let pass1State = pass1Pipeline!
-        let pass2State = pass2Pipeline!
         guard let lut = lutTexture else {
             throw RenderError.missingResource("LUT texture not loaded")
         }
@@ -455,55 +452,21 @@ final class PipelineRenderer: @unchecked Sendable {
                         firstFrame = false
                     }
 
-                    // Get an output pixel buffer from the adaptor's pool
-                    var outputPixelBuffer: CVPixelBuffer?
-                    guard let pool = adaptor.pixelBufferPool else {
-                        continuation.resume(throwing: RenderError.stageFailed("pixel-buffer-pool", "Writer pixel buffer pool is unavailable."))
-                        return
-                    }
-                    let allocationStatus = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &outputPixelBuffer)
-                    guard allocationStatus == kCVReturnSuccess, let outBuf = outputPixelBuffer else {
-                        continuation.resume(throwing: RenderError.stageFailed("pixel-buffer-allocation", "Unable to allocate output pixel buffer (\(allocationStatus))."))
-                        return
-                    }
-
-                    // Process: input → pass1 → intermediate → pass2 → output
-                    let pass1Output = self.runPass1(
+                    // Process: input → pass1 (LUT) → spatial halation/glow → pass2 (grain) → output
+                    switch self.renderFrame(
                         sourcePixelBuffer: sourcePixelBuffer,
-                        lut: lut,
-                        halationStrength: config.halationStrength,
-                        glowStrength: config.glowStrength,
-                        outputContrast: config.outputContrast,
-                        width: actualWidth,
-                        height: actualHeight
-                    )
-
-                    guard let intermediateTexture = pass1Output else {
-                        continuation.resume(throwing: RenderError.stageFailed("gpu-pass-1", "The LUT/halation/glow GPU pass did not complete."))
-                        return
-                    }
-
-                    let pass2Output = self.runPass2(
-                        inputTexture: intermediateTexture,
-                        outputPixelBuffer: outBuf,
+                        context: FrameRenderContext(adaptor: adaptor, config: config, lut: lut, writer: writer),
                         frameIndex: frameIndex,
-                        iso: config.defaultISO,
-                        grainSize: config.grainSize,
-                        width: actualWidth,
-                        height: actualHeight
-                    )
-
-                    guard pass2Output else {
-                        continuation.resume(throwing: RenderError.stageFailed("gpu-pass-2", "The grain GPU pass did not complete."))
+                        timestamp: timestamp,
+                        size: MTLSize(width: actualWidth, height: actualHeight, depth: 1)
+                    ) {
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
                         return
+                    case .success:
+                        break
                     }
                     counterBox.counters.processed += 1
-
-                    // Append processed frame
-                    guard adaptor.append(outBuf, withPresentationTime: timestamp) else {
-                        continuation.resume(throwing: RenderError.stageFailed("writer-append", writer.error?.localizedDescription ?? "Writer rejected a processed frame."))
-                        return
-                    }
                     counterBox.counters.appended += 1
                     frameIndex += 1
                 }
@@ -515,6 +478,73 @@ final class PipelineRenderer: @unchecked Sendable {
                 continuation.resume(returning: counterBox.counters)
             }
         }
+    }
+
+    /// Grade and encode a single frame: LUT pass, spatial halation/glow,
+    /// grain pass, then append. Returns the stage failure to report, if any.
+    private func renderFrame(
+        sourcePixelBuffer: CVPixelBuffer,
+        context: FrameRenderContext,
+        frameIndex: UInt32,
+        timestamp: CMTime,
+        size: MTLSize
+    ) -> Result<Void, Error> {
+        let adaptor = context.adaptor
+        let config = context.config
+        let width = size.width
+        let height = size.height
+
+        // Get an output pixel buffer from the adaptor's pool
+        guard let pool = adaptor.pixelBufferPool else {
+            return .failure(RenderError.stageFailed("pixel-buffer-pool", "Writer pixel buffer pool is unavailable."))
+        }
+        var outputPixelBuffer: CVPixelBuffer?
+        let allocationStatus = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &outputPixelBuffer)
+        guard allocationStatus == kCVReturnSuccess, let outBuf = outputPixelBuffer else {
+            return .failure(RenderError.stageFailed("pixel-buffer-allocation", "Unable to allocate output pixel buffer (\(allocationStatus))."))
+        }
+
+        guard let graded = runPass1(
+            sourcePixelBuffer: sourcePixelBuffer,
+            lut: context.lut,
+            halationStrength: config.halationStrength,
+            glowStrength: config.glowStrength,
+            outputContrast: config.outputContrast,
+            width: width,
+            height: height
+        ) else {
+            return .failure(RenderError.stageFailed("gpu-pass-1", "The LUT GPU pass did not complete."))
+        }
+
+        guard let spatialStage,
+              let diffused = spatialStage.apply(
+                graded: graded,
+                commandQueue: commandQueue,
+                halationStrength: config.halationStrength,
+                glowStrength: config.glowStrength,
+                width: width,
+                height: height
+              ) else {
+            return .failure(RenderError.stageFailed("gpu-spatial", "The spatial halation/glow stage did not complete."))
+        }
+
+        let grained = runPass2(
+            inputTexture: diffused,
+            outputPixelBuffer: outBuf,
+            frameIndex: frameIndex,
+            iso: config.defaultISO,
+            grainSize: config.grainSize,
+            width: width,
+            height: height
+        )
+        guard grained else {
+            return .failure(RenderError.stageFailed("gpu-pass-2", "The grain GPU pass did not complete."))
+        }
+
+        guard adaptor.append(outBuf, withPresentationTime: timestamp) else {
+            return .failure(RenderError.stageFailed("writer-append", context.writer.error?.localizedDescription ?? "Writer rejected a processed frame."))
+        }
+        return .success(())
     }
 
     /// Copies audio samples from the dedicated audio reader to the writer
@@ -641,6 +671,7 @@ final class PipelineRenderer: @unchecked Sendable {
         return commandBuffer.status == .completed
     }
 
+
     // MARK: - Texture Helpers
 
     /// Create a Metal texture from a CVPixelBuffer using the texture cache.
@@ -677,19 +708,13 @@ final class PipelineRenderer: @unchecked Sendable {
         return device.makeTexture(descriptor: desc)
     }
 
+
     // MARK: - Shader & Grain Loading
 
     private func loadMetalShaders() throws {
         // Try Bundle.main first (works for iOS app and macOS tool when metallib is bundled).
         if let library = try? device.makeDefaultLibrary(bundle: Bundle.main) {
-            guard let pass1 = library.makeFunction(name: "pass1_lut_halation_glow") else {
-                throw RenderError.missingFunction("pass1_lut_halation_glow")
-            }
-            guard let pass2 = library.makeFunction(name: "pass2_grain") else {
-                throw RenderError.missingFunction("pass2_grain")
-            }
-            pass1Pipeline = try device.makeComputePipelineState(function: pass1)
-            pass2Pipeline = try device.makeComputePipelineState(function: pass2)
+            try makePipelines(from: library)
             return
         }
         // Fallback: look for default.metallib next to the executable (macOS CLI).
@@ -698,17 +723,23 @@ final class PipelineRenderer: @unchecked Sendable {
         let metallibURL = exeDir.appendingPathComponent("default.metallib")
         if FileManager.default.fileExists(atPath: metallibURL.path) {
             let library = try device.makeLibrary(URL: metallibURL)
-            guard let pass1 = library.makeFunction(name: "pass1_lut_halation_glow") else {
-                throw RenderError.missingFunction("pass1_lut_halation_glow")
-            }
-            guard let pass2 = library.makeFunction(name: "pass2_grain") else {
-                throw RenderError.missingFunction("pass2_grain")
-            }
-            pass1Pipeline = try device.makeComputePipelineState(function: pass1)
-            pass2Pipeline = try device.makeComputePipelineState(function: pass2)
+            try makePipelines(from: library)
             return
         }
         throw RenderError.missingShader("default.metallib not found in bundle or next to executable")
+    }
+
+    /// Resolve every compute kernel the pipeline needs from one library.
+    private func makePipelines(from library: MTLLibrary) throws {
+        func pipeline(_ name: String) throws -> MTLComputePipelineState {
+            guard let function = library.makeFunction(name: name) else {
+                throw RenderError.missingFunction(name)
+            }
+            return try device.makeComputePipelineState(function: function)
+        }
+        pass1Pipeline = try pipeline("pass1_lut_halation_glow")
+        pass2Pipeline = try pipeline("pass2_grain")
+        spatialStage = try SpatialEffectsStage(device: device, library: library)
     }
 
     private func loadGrainVolume() throws {
@@ -804,6 +835,15 @@ struct GrainUniforms {
     var iso: Float
     var grainSize: Float
     var padding: Float = 0
+}
+
+/// Everything one frame needs to be graded and appended, bundled so the frame
+/// loop's per-frame helper keeps a manageable parameter list.
+private struct FrameRenderContext {
+    let adaptor: AVAssetWriterInputPixelBufferAdaptor
+    let config: FilmStockConfig
+    let lut: MTLTexture
+    let writer: AVAssetWriter
 }
 
 /// Frame processing is serialized on `renderQueue`; this box avoids crossing a mutable

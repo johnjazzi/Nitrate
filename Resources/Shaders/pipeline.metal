@@ -7,11 +7,16 @@ constexpr sampler linear_sampler(
     address::clamp_to_edge
 );
 
-/// Pass 1: LUT (3D color lookup) + Halation + Glow
-/// Fused into a single fragment shader per AD-6.
+/// Pass 1: LUT (3D color lookup) + contrast.
 ///
 /// Input: Apple Log encoded image
-/// Output: color-graded image with halation and glow
+/// Output: color-graded image
+///
+/// Halation and glow used to be applied here as per-pixel terms. They are now
+/// spatial (`spatial.metal`, story 1.4), so this pass only grades. The function
+/// name and its binding layout are a versioned contract and are unchanged; the
+/// `halationStrength` / `glowStrength` buffers are still bound for signature
+/// stability but no longer read.
 
 kernel void pass1_lut_halation_glow(
     texture2d<float, access::read>  input  [[texture(0)]],
@@ -32,19 +37,9 @@ kernel void pass1_lut_halation_glow(
     // code values. Do not introduce an extra contrast curve before sampling.
     float3 lutSample = lut.sample(linear_sampler, color.rgb).rgb;
 
-    // Soften the print contrast to match the reference look (post-LUT, pre-effects).
+    // Soften the print contrast to match the reference look (post-LUT).
     lutSample = (lutSample - 0.5f) * outputContrast + 0.5f;
 
-    // Halation: bloom in highlights from red channel scattering
-    // Simulated by adding a warm diffusion to bright areas
-    float luminance = dot(color.rgb, float3(0.2126f, 0.7152f, 0.0722f));
-    float halationMask = smoothstep(0.7f, 0.95f, luminance);
-    float3 halation = float3(1.0f, 0.4f, 0.2f) * halationStrength * halationMask;
-
-    // Glow: soft light diffusion across the frame
-    float3 glow = float3(0.1f, 0.05f, 0.0f) * glowStrength;
-
-    float3 result = lutSample + halation + glow;
-
-    output.write(float4(result, color.a), gid);
+    // Halation and glow are added by the spatial stage that follows.
+    output.write(float4(lutSample, color.a), gid);
 }
