@@ -1,0 +1,10 @@
+only_rules:
+  - unused_optional_binding
+  - unused_setter_value
+  - unused_control_flow_label
+  - unused_enumerated
+  - return_value_from_void_function
+
+excluded:
+  - build
+  - FilmEmulation.xcodeproj

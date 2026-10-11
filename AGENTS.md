@@ -32,3 +32,22 @@ item.
   remove custom movie metadata without explicit instruction.
 - Do not claim visual/colorimetric calibration from passing unit tests; the
   LUT/delivery contract is "user-declared", not "verified".
+
+## Automated developer checks
+
+- See `docs/development.md` for the verification commands and signing setup.
+- Implementation subagents run `python3 scripts/verify.py lint` for quick feedback.
+  The coordinating agent owns compiler checks and final verification; avoid
+  duplicate Xcode builds across agents.
+- Run `python3 scripts/verify.py check` for cached lint and incremental unsigned
+  iOS compilation, and `python3 scripts/verify.py verify` at task completion for
+  lint, RenderCLI tests, a generic iOS build, and `git diff --check`.
+  Both commands must run outside the sandbox for Xcode/Metal access.
+- `python3 scripts/verify.py watch` offers debounced lint/compiler checks while
+  editing. Start it outside the sandbox only when needed; stop it before final
+  verification. It does not replace the final test suite.
+- Use `python3 scripts/verify.py device` for an explicitly requested signed
+  device build. Keep automatic signing and the team in `project.yml`; routine
+  verification disables signing and never changes account settings.
+- Read the concise diagnostics and the indicated log before retrying a failure.
+  Do not rerun an unchanged failing command or repeatedly dump full build logs.

@@ -20,6 +20,10 @@ build/
 *.o
 *.LinkFileList
 
+# Python developer tooling
+__pycache__/
+*.pyc
+
 # Swift Package Manager
 .build/
 Packages/

@@ -54,6 +54,13 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.filmemulation.app
         CODE_SIGN_STYLE: Automatic
         PROVISIONING_PROFILE_SPECIFIER: ""
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    preBuildScripts:
+      - name: SwiftLint
+        script: |
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          python3 "$SRCROOT/scripts/verify.py" lint
+        basedOnDependencyAnalysis: false
 
   RenderCLI:
     type: tool
