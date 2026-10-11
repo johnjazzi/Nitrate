@@ -18,7 +18,15 @@ struct RulerScale: Sendable {
 
     /// Equal travel changes the value by a constant amount. Used by EV, where
     /// every 0.1 stop should cost the same finger movement.
-    static let linear = RulerScale(toPosition: { $0 }, fromPosition: { $0 })
+    ///
+    /// `pointsPerStep` matters: the ruler works in POINTS, so a scale that
+    /// returned raw values would squeeze the whole range into the control.
+    static func linear(pointsPerStep: Double) -> RulerScale {
+        RulerScale(
+            toPosition: { $0 * pointsPerStep },
+            fromPosition: { $0 / pointsPerStep }
+        )
+    }
 
     /// Exponential travel: the value changes by `rate(value)` per point, where
     /// the rate grows linearly with the value itself.
@@ -116,12 +124,18 @@ struct RulerSlider: View {
     var majorValues: Set<Double> = []
     /// Formats a major tick's label. Defaults to a signed one-decimal readout.
     var tickLabel: (Double) -> String = { String(format: "%+.1f", $0) }
-    /// Maps value ↔ scroll position. `.linear` means equal travel = equal change.
-    var scale: RulerScale = .linear
+    /// Maps value ↔ scroll position, in points. `nil` means linear travel at
+    /// `pointsPerStep` points per step (equal travel = equal change).
+    var scale: RulerScale?
     /// When set, the value snaps to the nearest entry rather than to `step`
     /// multiples, and ticks are drawn at those entries. Used for value sets
     /// that are not evenly spaced (ISO's 1/3-stop ladder).
     var ladder: [Double]?
+    /// Extra ticks drawn between consecutive `ladder` entries. Purely visual —
+    /// snapping still lands on the ladder itself. Needed because a 1/3-stop
+    /// ladder is far apart once the scale turns exponential at high ISO, and a
+    /// window that can only fit one tick reads as empty.
+    var ladderSubdivisions: Int = 1
     var tint: Color = .white
     /// On-screen height of the ruler window.
     var length: CGFloat = 96
@@ -137,6 +151,12 @@ struct RulerSlider: View {
     /// constructed generator would not be warmed up and would tick unreliably.
     @State private var haptic = UISelectionFeedbackGenerator()
     #endif
+
+    /// The scale actually used for layout: the caller's, or linear travel at the
+    /// configured detent size.
+    private var effectiveScale: RulerScale {
+        scale ?? .linear(pointsPerStep: Double(pointsPerStep))
+    }
 
     var body: some View {
         Canvas { context, size in
@@ -163,7 +183,7 @@ struct RulerSlider: View {
         // alone produces no movement and therefore no change.
         DragGesture(minimumDistance: 0)
             .onChanged { gesture in
-                let start = dragStartPosition ?? scale.toPosition(value)
+                let start = dragStartPosition ?? effectiveScale.toPosition(value)
                 if dragStartPosition == nil {
                     dragStartPosition = start
                     #if canImport(UIKit)
@@ -179,7 +199,7 @@ struct RulerSlider: View {
 
     /// Convert a scroll position to a value, snap it, and tick if it moved.
     private func setPosition(_ position: Double) {
-        setValue(scale.fromPosition(position))
+        setValue(effectiveScale.fromPosition(position))
     }
 
     /// Clamp to the range, snap to the nearest detent, and fire one haptic tick
@@ -231,7 +251,7 @@ struct RulerSlider: View {
 
     private func draw(in context: inout GraphicsContext, size: CGSize) {
         let centerY = size.height / 2
-        let centerPosition = scale.toPosition(value)
+        let centerPosition = effectiveScale.toPosition(value)
 
         for tick in visibleTicks(halfHeight: Double(size.height / 2)) {
             let tickY = centerY - CGFloat(tick.position - centerPosition)
@@ -274,19 +294,13 @@ struct RulerSlider: View {
     /// back to values through the scale, so this works whether the spacing is
     /// linear or exponential.
     private func visibleTicks(halfHeight: Double) -> [Tick] {
-        let centerPosition = scale.toPosition(value)
-        let valueTop = scale.fromPosition(centerPosition + halfHeight)
-        let valueBottom = scale.fromPosition(centerPosition - halfHeight)
-
         if let ladder {
-            return ladder.map { entry in
-                Tick(
-                    value: entry,
-                    position: scale.toPosition(entry),
-                    isMajor: isMajorValue(entry)
-                )
-            }
+            return ladderTicks(ladder)
         }
+
+        let centerPosition = effectiveScale.toPosition(value)
+        let valueTop = effectiveScale.fromPosition(centerPosition + halfHeight)
+        let valueBottom = effectiveScale.fromPosition(centerPosition - halfHeight)
 
         let anchor = majorAnchor ?? range.lowerBound
         guard step > 0 else { return [] }
@@ -303,10 +317,37 @@ struct RulerSlider: View {
                   tickValue <= range.upperBound + 1e-9 else { return nil }
             return Tick(
                 value: tickValue,
-                position: scale.toPosition(tickValue),
+                position: effectiveScale.toPosition(tickValue),
                 isMajor: isMajorTick(tickValue)
             )
         }
+    }
+
+    /// Ticks for a fixed value ladder, optionally with sub-ticks between the
+    /// entries. Sub-ticks are interpolated GEOMETRICALLY, because the ladders
+    /// this serves (ISO) are ratio-based — 1/3 stop — so the midpoint between
+    /// 100 and 125 is √(100·125) ≈ 111.8, not 112.5.
+    private func ladderTicks(_ ladder: [Double]) -> [Tick] {
+        var ticks: [Tick] = []
+        for (index, entry) in ladder.enumerated() {
+            ticks.append(Tick(
+                value: entry,
+                position: effectiveScale.toPosition(entry),
+                isMajor: isMajorValue(entry)
+            ))
+            guard index + 1 < ladder.count, ladderSubdivisions > 1, entry > 0 else { continue }
+            let next = ladder[index + 1]
+            for subdivision in 1..<ladderSubdivisions {
+                let fraction = Double(subdivision) / Double(ladderSubdivisions)
+                let value = entry * pow(next / entry, fraction)
+                ticks.append(Tick(
+                    value: value,
+                    position: effectiveScale.toPosition(value),
+                    isMajor: false
+                ))
+            }
+        }
+        return ticks
     }
 
     /// True when `tickValue` is one of the explicitly labelled values, or a

@@ -206,6 +206,7 @@ struct CameraControlBar: View {
                     tickLabel: { "\(Int($0.rounded()))" },
                     scale: isoScale,
                     ladder: isoLadder,
+                    ladderSubdivisions: 3,
                     tint: .yellow,
                     length: 84
                 )
