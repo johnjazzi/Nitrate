@@ -46,8 +46,13 @@ item.
 - `python3 scripts/verify.py watch` offers debounced lint/compiler checks while
   editing. Start it outside the sandbox only when needed; stop it before final
   verification. It does not replace the final test suite.
-- Use `python3 scripts/verify.py device` for an explicitly requested signed
-  device build. Keep automatic signing and the team in `project.yml`; routine
+- Use `python3 scripts/verify.py device` for signed device builds.
+  Keep automatic signing and the team in `project.yml`; routine
   verification disables signing and never changes account settings.
+- The user has requested automatic builds at completion. After every iOS code
+  change, run `python3 scripts/verify.py verify` and then
+  `python3 scripts/verify.py device` outside the sandbox. Run the signed device
+  build last so the final app artifact is signed and ready to run from Xcode.
+  The coordinating agent owns both passes; implementation subagents use lint.
 - Read the concise diagnostics and the indicated log before retrying a failure.
   Do not rerun an unchanged failing command or repeatedly dump full build logs.
