@@ -138,7 +138,7 @@ struct ContentView: View {
                         .padding(.horizontal, 8)
                 }
             }
-            .gesture(
+            .simultaneousGesture(
                 MagnificationGesture()
                     .onChanged { value in
                         // Damped (0.45) so a small pinch doesn't jump the zoom.
@@ -146,26 +146,10 @@ struct ContentView: View {
                         let target = min(max(pinchBaseZoom * damped, 1.0),
                                           Double(cameraViewModel.session.maxZoomFactor))
                         zoomFactor = target
-                        Task { try? cameraViewModel.session.setZoom(CGFloat(target)) }
+                        cameraViewModel.session.setZoom(CGFloat(target))
                     }
                     .onEnded { _ in pinchBaseZoom = zoomFactor }
             )
-            .overlay {
-                GeometryReader { geometry in
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture { location in
-                            let normalizedPoint = CGPoint(
-                                x: location.x / geometry.size.width,
-                                y: location.y / geometry.size.height
-                            )
-                            Task {
-                                try? cameraViewModel.session.setFocusPoint(normalizedPoint)
-                                try? cameraViewModel.session.setExposurePoint(normalizedPoint)
-                            }
-                        }
-                }
-            }
     }
 
     // MARK: - Top Bar

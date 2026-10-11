@@ -771,7 +771,7 @@ final class PipelineRenderer: @unchecked Sendable {
         height: Int
     ) -> MTLTexture? {
         // Create source texture from CVPixelBuffer via texture cache
-        guard let sourceTexture = makeTexture(from: sourcePixelBuffer, format: .rgba16Float),
+        guard let source = makeTexture(from: sourcePixelBuffer, format: .rgba16Float),
               let intermediateTexture = makeIntermediateTexture(width: width, height: height) else {
             return nil
         }
@@ -786,7 +786,7 @@ final class PipelineRenderer: @unchecked Sendable {
         var contrast = outputContrast
 
         encoder.setComputePipelineState(pass1Pipeline!)
-        encoder.setTexture(sourceTexture, index: 0)
+        encoder.setTexture(source.texture, index: 0)
         encoder.setTexture(intermediateTexture, index: 1)
         encoder.setTexture(lut, index: 2)
         encoder.setBytes(&halation, length: MemoryLayout<Float>.size, index: 0)
@@ -803,6 +803,7 @@ final class PipelineRenderer: @unchecked Sendable {
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        withExtendedLifetime(source.cvTexture) {}
 
         return commandBuffer.status == .completed ? intermediateTexture : nil
     }
@@ -818,7 +819,7 @@ final class PipelineRenderer: @unchecked Sendable {
         width: Int,
         height: Int
     ) -> Bool {
-        guard let outputTexture = makeTexture(from: outputPixelBuffer, format: .bgra8Unorm) else {
+        guard let output = makeTexture(from: outputPixelBuffer, format: .bgra8Unorm) else {
             return false
         }
 
@@ -831,7 +832,7 @@ final class PipelineRenderer: @unchecked Sendable {
 
         encoder.setComputePipelineState(pass2Pipeline!)
         encoder.setTexture(inputTexture, index: 0)
-        encoder.setTexture(outputTexture, index: 1)
+        encoder.setTexture(output.texture, index: 1)
         encoder.setTexture(grainTexture!, index: 2)
         encoder.setBytes(&uniforms, length: MemoryLayout<GrainUniforms>.size, index: 0)
 
@@ -845,6 +846,7 @@ final class PipelineRenderer: @unchecked Sendable {
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        withExtendedLifetime(output.cvTexture) {}
 
         return commandBuffer.status == .completed
     }
@@ -853,12 +855,17 @@ final class PipelineRenderer: @unchecked Sendable {
     // MARK: - Texture Helpers
 
     /// Create a Metal texture from a CVPixelBuffer using the texture cache.
-    private func makeTexture(from pixelBuffer: CVPixelBuffer, format: MTLPixelFormat) -> MTLTexture? {
+    private struct PixelBufferTexture {
+        let cvTexture: CVMetalTexture
+        let texture: MTLTexture
+    }
+
+    private func makeTexture(from pixelBuffer: CVPixelBuffer, format: MTLPixelFormat) -> PixelBufferTexture? {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
 
         var cvTexture: CVMetalTexture?
-        CVMetalTextureCacheCreateTextureFromImage(
+        let status = CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             textureCache!,
             pixelBuffer,
@@ -870,8 +877,9 @@ final class PipelineRenderer: @unchecked Sendable {
             &cvTexture
         )
 
-        guard let cvTexture else { return nil }
-        return CVMetalTextureGetTexture(cvTexture)
+        guard status == kCVReturnSuccess, let cvTexture,
+              let texture = CVMetalTextureGetTexture(cvTexture) else { return nil }
+        return PixelBufferTexture(cvTexture: cvTexture, texture: texture)
     }
 
     /// Create an intermediate RGBA16Float texture for pass output.

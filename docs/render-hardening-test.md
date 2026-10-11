@@ -27,6 +27,31 @@ verification build does not install an app on the phone.
    chosen stock and render exposure-index settings. Check the current manual
    controls alongside the loading indicator, counter, and error banner.
 
+## Camera reliability checks
+
+1. Record several very short clips in quick succession. Confirm each has a
+   distinct file and appears in the queue. Leave one pending or failed, quit,
+   and relaunch after temporary files are cleared; its original must still be
+   available for rendering or raw fallback.
+2. Start a recording immediately after a shutter re-meter, then switch to
+   manual ISO and change lenses between takes. Confirm ISO stays fixed during
+   each take and the controls continue responding. Stop and restart quickly;
+   the duration should advance once and stop advancing after every terminal
+   recording callback.
+3. Deny camera access, open Settings from the permission message, grant camera
+   access, and return. Confirm the camera starts once and the resolved message
+   clears. Repeat by backgrounding while configuration is still starting; a
+   hidden camera must not start after its delayed callback.
+4. Tap an off-center subject with the rear and front cameras in both full and
+   framed preview. Confirm focus and exposure target the tapped subject while
+   pinch zoom remains available.
+5. Use VoiceOver to find the record control and confirm its action changes
+   between “Start recording” and “Stop recording”. Invoke the named exposure
+   mode action without using the long press.
+6. During repeated preview and recording, watch for missing or corrupted
+   frames. Device stress is needed to supplement the synthetic Metal fixtures;
+   passing unit tests does not establish hardware stability.
+
 The automated reliability tests separately force a render failure after frames
 have been processed, and exercise raw-original Photos save success and failure.
 A raw-only recovery must remain a failed render and say explicitly whether the

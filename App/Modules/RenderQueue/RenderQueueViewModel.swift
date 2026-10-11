@@ -10,10 +10,12 @@ import CoreGraphics
 final class RenderQueueViewModel {
     typealias RenderOperation = @MainActor (RenderJob) async throws -> URL
     typealias SaveOperation = @MainActor (URL) async throws -> Void
+    typealias PostDeliveryOperation = @MainActor (URL, UUID) async -> Void
 
     private let persister: QueuePersister
     private let injectedRender: RenderOperation?
     private let saveOperation: SaveOperation
+    private let postDeliveryOperation: PostDeliveryOperation?
     private var worker: Task<Void, Never>?
     private var renderer: PipelineRenderer?
     private var didInitialize = false
@@ -47,10 +49,12 @@ final class RenderQueueViewModel {
     var completedJobs: [RenderJob] { jobs.filter { $0.status == .completed } }
 
     init(persistenceURL: URL? = nil, render: RenderOperation? = nil, save: SaveOperation? = nil,
+         postDelivery: PostDeliveryOperation? = nil,
          sessionId: String = RenderJob.currentSessionId) {
         persister = QueuePersister(storageURL: persistenceURL)
         injectedRender = render
         saveOperation = save ?? Self.saveToPhotoLibrary
+        postDeliveryOperation = postDelivery
         self.sessionId = sessionId
     }
 
@@ -177,7 +181,14 @@ final class RenderQueueViewModel {
                 $0.outputSavedToPhotos = true
                 $0.errorMessage = nil
             }
-            await dumpFrames(from: outputURL, jobId: jobId)
+            // Make successful delivery durable before optional diagnostics can
+            // suspend or fail. Recovery must never save this movie again.
+            persistJobs()
+            if let postDeliveryOperation {
+                await postDeliveryOperation(outputURL, jobId)
+            } else {
+                await dumpFrames(from: outputURL, jobId: jobId)
+            }
         } catch {
             let outputExists = job(jobId)?.outputURL != nil
             if outputExists {

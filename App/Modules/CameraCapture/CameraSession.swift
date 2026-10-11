@@ -75,7 +75,11 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     /// Current device (accessible for view model queries)
     private(set) var activeDevice: AVCaptureDevice?
 
-    private var onRecordingFinished: ((Result<URL, Error>) -> Void)?
+    private var onRecordingFinished: (@MainActor @Sendable (Result<RecordingCompletion, Error>) -> Void)?
+    private var onCameraError: (@MainActor @Sendable (Error) -> Void)?
+    private var meterGeneration = CameraMeteringGeneration()
+    private var recordingStartPending = false
+    private var recordingGeneration: UInt64 = 0
 
     // MARK: - Setup
 
@@ -295,13 +299,13 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     /// input reconfigures capture hardware and must not block the main thread.
     /// `completion` runs on the main queue with `nil` on success.
     func selectCamera(_ lens: CameraLens, completion: @escaping @MainActor @Sendable (Error?) -> Void) {
-        guard activeLens != lens else {
-            DispatchQueue.main.async { MainActor.assumeIsolated { completion(nil) } }
-            return
-        }
-
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            guard self.activeLens != lens else {
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(nil) } }
+                return
+            }
+            self.invalidateMetering()
             var switchError: Error?
 
             self.session.beginConfiguration()
@@ -334,20 +338,28 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     // MARK: - Zoom
 
     /// Set zoom factor (1.0–5.0). Clamped to device capabilities.
-    func setZoom(_ factor: CGFloat) throws {
-        guard let device = activeDevice else { return }
-        try device.lockForConfiguration()
-        device.videoZoomFactor = min(max(factor, 1.0), device.activeFormat.videoMaxZoomFactor)
-        device.unlockForConfiguration()
+    func setZoom(_ factor: CGFloat) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.activeDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                device.videoZoomFactor = min(max(factor, 1.0), device.activeFormat.videoMaxZoomFactor)
+            } catch { self.reportCameraError(error) }
+        }
     }
 
     /// Ramp zoom smoothly.
-    func rampZoom(to factor: CGFloat, rate: Float = 2.0) throws {
-        guard let device = activeDevice else { return }
-        try device.lockForConfiguration()
-        device.ramp(toVideoZoomFactor: min(max(factor, 1.0), device.activeFormat.videoMaxZoomFactor),
-                    withRate: rate)
-        device.unlockForConfiguration()
+    func rampZoom(to factor: CGFloat, rate: Float = 2.0) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.activeDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                device.ramp(toVideoZoomFactor: min(max(factor, 1.0), device.activeFormat.videoMaxZoomFactor),
+                            withRate: rate)
+            } catch { self.reportCameraError(error) }
+        }
     }
 
     var currentZoomFactor: CGFloat {
@@ -355,32 +367,63 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     }
 
     /// Focus the active lens at a normalized device point (0–1).
-    func setFocusPoint(_ point: CGPoint) throws {
-        guard let device = activeDevice,
-              device.isFocusPointOfInterestSupported,
-              device.isFocusModeSupported(.autoFocus) else { return }
-        try device.lockForConfiguration()
-        device.focusPointOfInterest = point
-        device.focusMode = .autoFocus
-        device.unlockForConfiguration()
+    func setFocusAndExposurePoint(_ point: CGPoint) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.activeDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                if device.isFocusPointOfInterestSupported, device.isFocusModeSupported(.autoFocus) {
+                    device.focusPointOfInterest = point
+                    device.focusMode = .autoFocus
+                }
+                if device.isExposurePointOfInterestSupported {
+                    device.exposurePointOfInterest = point
+                }
+            } catch { self.reportCameraError(error) }
+        }
+    }
+
+    func setPortraitMode(isEnabled: Bool, completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+        sessionQueue.async { [weak self] in
+            var operationError: Error?
+            if let device = self?.activeDevice, !device.activeFormat.supportedDepthDataFormats.isEmpty {
+                do {
+                    try device.lockForConfiguration()
+                    defer { device.unlockForConfiguration() }
+                    device.activeDepthDataFormat = isEnabled
+                        ? device.activeFormat.supportedDepthDataFormats.first
+                        : nil
+                } catch { operationError = error }
+            }
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(operationError) } }
+        }
     }
 
     /// Manual focus: lock the lens at a specific raw lens position (0–1).
-    func setManualFocusPosition(_ lensPosition: Float) throws {
-        guard let device = activeDevice,
-              device.isLockingFocusWithCustomLensPositionSupported else { return }
-        try device.lockForConfiguration()
-        device.setFocusModeLocked(lensPosition: min(max(lensPosition, 0), 1), completionHandler: nil)
-        device.unlockForConfiguration()
+    func setManualFocusPosition(_ lensPosition: Float) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.activeDevice,
+                  device.isLockingFocusWithCustomLensPositionSupported else { return }
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                device.setFocusModeLocked(lensPosition: min(max(lensPosition, 0), 1), completionHandler: nil)
+            } catch { self.reportCameraError(error) }
+        }
     }
 
     /// Return the lens to continuous auto-focus.
-    func resetAutoFocus() throws {
-        guard let device = activeDevice,
-              device.isFocusModeSupported(.continuousAutoFocus) else { return }
-        try device.lockForConfiguration()
-        device.focusMode = .continuousAutoFocus
-        device.unlockForConfiguration()
+    func resetAutoFocus() {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.activeDevice,
+                  device.isFocusModeSupported(.continuousAutoFocus) else { return }
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                device.focusMode = .continuousAutoFocus
+            } catch { self.reportCameraError(error) }
+        }
     }
 
     var isManualFocusSupported: Bool {
@@ -410,43 +453,84 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     // MARK: - Exposure Controls
 
     /// Lock exposure at a specific ISO and shutter duration.
-    func setExposure(iso: Float, shutter: CMTime) throws {
-        guard let device = activeDevice else { return }
+    private func setExposureLocked(iso: Float, shutter: CMTime, on device: AVCaptureDevice) throws {
         try device.lockForConfiguration()
-
+        defer { device.unlockForConfiguration() }
         let clampedISO = min(max(iso, device.activeFormat.minISO), device.activeFormat.maxISO)
-        let clampedShutter = min(max(shutter,
-                                     device.activeFormat.minExposureDuration),
-                                device.activeFormat.maxExposureDuration)
-
+        let clampedShutter = min(max(shutter, device.activeFormat.minExposureDuration),
+                                 device.activeFormat.maxExposureDuration)
         device.setExposureModeCustom(duration: clampedShutter, iso: clampedISO) { _ in }
-        device.unlockForConfiguration()
     }
 
     /// 180° shutter angle at 24fps = 1/48s.
     static let filmShutterDuration = CMTime(value: 1, timescale: 48)
 
     /// Lock exposure to the film standard: 180° shutter (1/48s) at a fixed ISO.
-    func lockManualExposure(iso: Float) throws {
-        try setExposure(iso: iso, shutter: Self.filmShutterDuration)
+    func lockManualExposure(iso: Float, completion: (@MainActor @Sendable (Error?) -> Void)? = nil) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.invalidateMetering()
+            var operationError: Error?
+            if self.movieOutput.isRecording || self.recordingStartPending {
+                operationError = CameraError.exposureChangeDuringRecording
+            } else if let device = self.activeDevice {
+                do {
+                    try self.setExposureLocked(iso: iso, shutter: Self.filmShutterDuration, on: device)
+                    self.isShutterPriority = false
+                }
+                catch { operationError = error }
+            }
+            if let completion {
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(operationError) } }
+            } else if let operationError {
+                self.reportCameraError(operationError)
+            }
+        }
     }
 
     /// Switch to continuous auto exposure (default).
-    func setAutoExposure() throws {
-        guard let device = activeDevice,
-              device.isExposureModeSupported(.continuousAutoExposure) else { return }
-        try device.lockForConfiguration()
-        device.exposureMode = .continuousAutoExposure
-        device.unlockForConfiguration()
+    func setAutoExposure(completion: (@MainActor @Sendable (Error?) -> Void)? = nil) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.invalidateMetering()
+            var operationError: Error?
+            if self.movieOutput.isRecording || self.recordingStartPending {
+                operationError = CameraError.exposureChangeDuringRecording
+            } else if let device = self.activeDevice, device.isExposureModeSupported(.continuousAutoExposure) {
+                do {
+                    try device.lockForConfiguration()
+                    defer { device.unlockForConfiguration() }
+                    device.exposureMode = .continuousAutoExposure
+                } catch { operationError = error }
+            }
+            if let completion {
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(operationError) } }
+            } else if let operationError {
+                self.reportCameraError(operationError)
+            }
+        }
     }
 
     /// Lock the current auto-exposure values (AE lock).
-    func lockCurrentExposure() throws {
-        guard let device = activeDevice,
-              device.isExposureModeSupported(.autoExpose) else { return }
-        try device.lockForConfiguration()
-        device.exposureMode = .autoExpose
-        device.unlockForConfiguration()
+    func lockCurrentExposure(completion: (@MainActor @Sendable (Error?) -> Void)? = nil) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            var operationError: Error?
+            if self.movieOutput.isRecording || self.recordingStartPending {
+                operationError = CameraError.exposureChangeDuringRecording
+            } else if let device = self.activeDevice, device.isExposureModeSupported(.autoExpose) {
+                do {
+                    try device.lockForConfiguration()
+                    defer { device.unlockForConfiguration() }
+                    device.exposureMode = .autoExpose
+                } catch { operationError = error }
+            }
+            if let completion {
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(operationError) } }
+            } else if let operationError {
+                self.reportCameraError(operationError)
+            }
+        }
     }
 
     /// EV compensation applied to the auto-exposure target, in stops.
@@ -475,18 +559,10 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.exposureBiasEV = clamped
-            guard self.isShutterPriority, !self.movieOutput.isRecording else { return }
+            guard self.isShutterPriority, !self.movieOutput.isRecording,
+                  !self.recordingStartPending else { return }
             self.pinShutterToFilm()
         }
-    }
-
-    /// Set exposure point of interest (normalized 0-1 coordinates on the preview).
-    func setExposurePoint(_ point: CGPoint) throws {
-        guard let device = activeDevice,
-              device.isExposurePointOfInterestSupported else { return }
-        try device.lockForConfiguration()
-        device.exposurePointOfInterest = point
-        device.unlockForConfiguration()
     }
 
     // MARK: - Shutter Priority (180° film shutter)
@@ -498,14 +574,18 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     func enableShutterPriority() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            guard !self.movieOutput.isRecording, !self.recordingStartPending else { return }
             self.isShutterPriority = true
+            self.invalidateMetering()
             self.pinShutterToFilm()
         }
     }
 
     func disableShutterPriority() {
         sessionQueue.async { [weak self] in
-            self?.isShutterPriority = false
+            guard let self else { return }
+            self.isShutterPriority = false
+            self.invalidateMetering()
         }
     }
 
@@ -513,47 +593,99 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     /// or while recording — exposure is frozen during a take).
     func refreshShutterPriority() {
         sessionQueue.async { [weak self] in
-            guard let self, self.isShutterPriority, !self.movieOutput.isRecording else { return }
+            guard let self, self.isShutterPriority, !self.movieOutput.isRecording,
+                  !self.recordingStartPending else { return }
             self.pinShutterToFilm()
         }
     }
 
-    /// Immediately pin the 180° shutter at the current metered ISO (no auto-meter
-    /// window). Called when recording starts so the shutter never floats mid-take.
-    func pinShutterForRecording() {
-        sessionQueue.async { [weak self] in
-            guard let self, let device = self.activeDevice else { return }
-            try? self.setExposure(iso: device.iso, shutter: Self.filmShutterDuration)
-        }
+    func onCameraOperationError(_ handler: @escaping @MainActor @Sendable (Error) -> Void) {
+        sessionQueue.async { [weak self] in self?.onCameraError = handler }
     }
 
     private func pinShutterToFilm() {
         guard let device = activeDevice else { return }
         // Brief auto-meter so the device evaluates scene brightness.
-        try? device.lockForConfiguration()
-        if device.isExposureModeSupported(.continuousAutoExposure) {
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            guard device.isExposureModeSupported(.continuousAutoExposure) else { return }
             device.exposureMode = .continuousAutoExposure
+        } catch {
+            reportCameraError(error)
+            return
         }
-        device.unlockForConfiguration()
 
         // Hold the fixed shutter at the freshly metered ISO after the meter
         // settles, scaled by the EV compensation (2^EV stops). `setExposure`
         // clamps the result to the device's ISO range.
+        let generation = meterGeneration.issue()
         sessionQueue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            guard let self, self.isShutterPriority, let device = self.activeDevice else { return }
+            guard let self, self.meterGeneration.accepts(generation), self.isShutterPriority,
+                  !self.movieOutput.isRecording, !self.recordingStartPending,
+                  let device = self.activeDevice else { return }
             let compensated = device.iso * powf(2.0, self.exposureBiasEV)
-            try? self.setExposure(iso: compensated, shutter: Self.filmShutterDuration)
+            do { try self.setExposureLocked(iso: compensated, shutter: Self.filmShutterDuration, on: device) }
+            catch { self.reportCameraError(error) }
         }
+    }
+
+    private func invalidateMetering() {
+        meterGeneration.invalidate()
+    }
+
+    private func reportCameraError(_ error: Error) {
+        guard let handler = onCameraError else { return }
+        DispatchQueue.main.async { MainActor.assumeIsolated { handler(error) } }
     }
 
     // MARK: - Recording
 
-    func startRecording(to url: URL) throws {
-        // Record the 180° shutter contract + actual sensor values in the source
-        // .mov so the clip is self-describing (render output re-documents the
-        // film-standard 180°/1/48 separately).
+    func startRecording(to url: URL, completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.invalidateMetering()
+            guard !self.recordingStartPending, !self.movieOutput.isRecording else {
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.recordingInProgress) } }
+                return
+            }
+            guard !FileManager.default.fileExists(atPath: url.path) else {
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.destinationAlreadyExists) } }
+                return
+            }
+            guard let device = self.activeDevice else {
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.noCameraAvailable) } }
+                return
+            }
+            self.recordingStartPending = true
+            self.recordingGeneration &+= 1
+            let generation = self.recordingGeneration
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                let iso = min(max(device.iso, device.activeFormat.minISO), device.activeFormat.maxISO)
+                let shutter = min(max(Self.filmShutterDuration, device.activeFormat.minExposureDuration),
+                                  device.activeFormat.maxExposureDuration)
+                device.setExposureModeCustom(duration: shutter, iso: iso) { [weak self] _ in
+                    self?.sessionQueue.async {
+                        guard let self, self.recordingGeneration == generation,
+                              self.recordingStartPending else { return }
+                        self.startMovieOutput(to: url, completion: completion)
+                    }
+                }
+            } catch {
+                self.recordingStartPending = false
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
+            }
+        }
+    }
+
+    private func startMovieOutput(to url: URL,
+                                  completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+        // Exposure has completed before metadata is sampled and output starts.
         movieOutput.metadata = captureMetadataItems()
         movieOutput.startRecording(to: url, recordingDelegate: self)
+        DispatchQueue.main.async { MainActor.assumeIsolated { completion(nil) } }
     }
 
     /// Shutter speed/angle + ISO at the moment recording starts. The shutter is
@@ -586,27 +718,59 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     }
 
     func stopRecording() {
-        movieOutput.stopRecording()
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.invalidateMetering()
+            if self.recordingStartPending {
+                self.recordingStartPending = false
+                self.recordingGeneration &+= 1
+            }
+            if self.movieOutput.isRecording { self.movieOutput.stopRecording() }
+        }
     }
 
     var isRecording: Bool {
         movieOutput.isRecording
     }
 
-    func onFinish(_ handler: @escaping (Result<URL, Error>) -> Void) {
-        onRecordingFinished = handler
+    func onFinish(_ handler: @escaping @MainActor @Sendable (Result<RecordingCompletion, Error>) -> Void) {
+        sessionQueue.async { [weak self] in self?.onRecordingFinished = handler }
     }
 
     // MARK: - AVCaptureFileOutputRecordingDelegate
+
+    /// Bridges a value that is safe to use but not statically `Sendable` — an
+    /// `Error` existential and a `URL` — across the session queue to MainActor.
+    /// Matches the existing `AudioCopyResultBox`/`FrameCounterBox` pattern in
+    /// this codebase; `Error` cannot be marked `Sendable` by the caller.
+    struct RecordingCompletionResult: @unchecked Sendable {
+        let result: Result<RecordingCompletion, Error>
+    }
 
     func fileOutput(_ output: AVCaptureFileOutput,
                     didFinishRecordingTo outputFileURL: URL,
                     from connections: [AVCaptureConnection],
                     error: Error?) {
-        if let error {
-            onRecordingFinished?(.failure(error))
+        let playableFlag = (error as NSError?)?.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? NSNumber
+        let result: Result<RecordingCompletion, Error>
+        if RecordingCompletionPolicy.shouldPublish(errorExists: error != nil,
+                                                   finishedPlayable: playableFlag?.boolValue) {
+            result = .success(RecordingCompletion(url: outputFileURL, warning: error))
         } else {
-            onRecordingFinished?(.success(outputFileURL))
+            result = .failure(error ?? CameraError.recordingFailed)
+        }
+        // `result` straddles isolation boundaries: it carries a URL and an Error
+        // (which cannot be statically Sendable). Wrap it so the send to the main
+        // actor is explicit rather than inferred.
+        let payload = RecordingCompletionResult(result: result)
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.recordingStartPending = false
+            let handler = self.onRecordingFinished
+            let completion = payload.result
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { handler?(completion) }
+            }
         }
     }
 
@@ -623,7 +787,9 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
 
     func stop() {
         sessionQueue.async { [weak self] in
-            guard let self, self.session.isRunning else { return }
+            guard let self else { return }
+            self.invalidateMetering()
+            guard self.session.isRunning else { return }
             self.session.stopRunning()
         }
     }
@@ -634,6 +800,10 @@ enum CameraError: LocalizedError {
     case cannotAddInput
     case cannotAddOutput
     case appleLogNotSupported
+    case recordingInProgress
+    case destinationAlreadyExists
+    case recordingFailed
+    case exposureChangeDuringRecording
 
     var errorDescription: String? {
         switch self {
@@ -645,6 +815,19 @@ enum CameraError: LocalizedError {
             return "Failed to add movie output to capture session."
         case .appleLogNotSupported:
             return "Apple Log color space is not supported on this device."
+        case .recordingInProgress:
+            return "A recording is already in progress."
+        case .destinationAlreadyExists:
+            return "The recording destination already exists."
+        case .recordingFailed:
+            return "The recording could not be finalized."
+        case .exposureChangeDuringRecording:
+            return "Exposure cannot be changed during a recording."
         }
     }
+}
+
+struct RecordingCompletion: @unchecked Sendable {
+    let url: URL
+    let warning: Error?
 }

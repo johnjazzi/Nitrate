@@ -3,6 +3,7 @@ import AVFoundation
 
 /// Clean camera preview only — controls live in ContentView.
 struct CameraView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State var viewModel: CameraViewModel
     @State private var previewLayer: AVCaptureVideoPreviewLayer?
 
@@ -12,8 +13,18 @@ struct CameraView: View {
                 guard let layer = previewLayer else { return }
                 viewModel.handleFocusTap(at: location, in: layer)
             }
-            .onAppear { viewModel.onAppear() }
+            .onAppear {
+                if scenePhase == .active { viewModel.onAppear() }
+                else { viewModel.onSceneInactive() }
+            }
             .onDisappear { viewModel.onDisappear() }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active {
+                    viewModel.onSceneActive()
+                } else {
+                    viewModel.onSceneInactive()
+                }
+            }
     }
 }
 

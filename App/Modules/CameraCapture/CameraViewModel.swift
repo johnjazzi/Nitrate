@@ -8,7 +8,6 @@ import Observation
 final class CameraViewModel {
     let session = CameraSession()
     let exposure = ExposureManager()
-    private var focusManager: FocusManager?
 
     // MARK: - Observable State
 
@@ -19,6 +18,7 @@ final class CameraViewModel {
     var isSpaceLow = false
     var isSpaceCritical = false
     var errorMessage: String?
+    var recordingWarning: String?
     private(set) var lastRecordedURL: URL?
 
     // Exposure (live from the device, polled every 0.5s)
@@ -39,6 +39,14 @@ final class CameraViewModel {
     private var spacePollingTimer: Timer?
     private var exposurePollingTimer: Timer?
     private var shutterPriorityTimer: Timer?
+    private var recordingTimerGeneration = RecordingTimerGeneration()
+    private var isStartingRecording = false
+    private var captureGeneration: UInt64 = 0
+    private var exposureCommandGeneration: UInt64 = 0
+    private let originalStorage = CameraOriginalStorage()
+    private var lifecycleGate = CameraLifecycleGate()
+    private var configurationInFlight = false
+    private var cameraConfigured = false
 
     // MARK: - Actions
 
@@ -47,7 +55,36 @@ final class CameraViewModel {
         // requested after the session is configured, to avoid stacking two
         // system permission dialogs at launch (which can leave the app stuck
         // on the launch screen).
-        requestCameraAccess()
+        activateCameraIfNeeded()
+    }
+
+    func onSceneActive() {
+        activateCameraIfNeeded()
+    }
+
+    func onSceneInactive() {
+        guard lifecycleGate.isActive else { return }
+        lifecycleGate.deactivate()
+        exposureCommandGeneration &+= 1
+        if isStartingRecording {
+            captureGeneration &+= 1
+            isStartingRecording = false
+            session.stopRecording()
+        } else if isRecording {
+            session.stopRecording()
+        }
+        invalidateRecordingTimers()
+        cameraConfigured = false
+        session.stop()
+        session.disableShutterPriority()
+        stopPolling()
+        stopExposurePolling()
+        stopShutterPriorityLoop()
+    }
+
+    private func activateCameraIfNeeded() {
+        guard let generation = lifecycleGate.activate() else { return }
+        requestCameraAccess(generation: generation)
     }
 
     private func requestMicrophoneAccess() {
@@ -69,16 +106,21 @@ final class CameraViewModel {
         }
     }
 
-    private func requestCameraAccess() {
+    private func requestCameraAccess(generation: UInt64) {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
-            configureAndStart()
+            if errorMessage == "Camera access denied. Enable it in Settings."
+                || errorMessage == "Camera access is required to record video." {
+                errorMessage = nil
+            }
+            configureAndStart(generation: generation)
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 guard let self else { return }
                 Task { @MainActor in
+                    guard self.lifecycleGate.accepts(generation) else { return }
                     if granted {
-                        self.configureAndStart()
+                        self.configureAndStart(generation: generation)
                     } else {
                         self.errorMessage = "Camera access is required to record video."
                     }
@@ -91,22 +133,40 @@ final class CameraViewModel {
         }
     }
 
-    private func configureAndStart() {
+    private func configureAndStart(generation: UInt64) {
+        guard lifecycleGate.accepts(generation), !configurationInFlight, !cameraConfigured else { return }
+        configurationInFlight = true
         // Configure asynchronously: session setup touches camera hardware and
         // used to block the main thread, which froze launch until the run loop
         // was allowed to spin ("app doesn't load until I hit stop").
         session.configure { [weak self] error in
             guard let self else { return }
+            self.configurationInFlight = false
+            guard self.lifecycleGate.accepts(generation) else {
+                if self.lifecycleGate.isActive {
+                    self.configureAndStart(generation: self.lifecycleGate.generation)
+                }
+                return
+            }
             if let error {
                 self.errorMessage = error.localizedDescription
                 return
             }
+            self.cameraConfigured = true
             self.startSession()
         }
     }
 
     /// Runs on the main queue once the session has been configured.
     private func startSession() {
+        session.onCameraOperationError { [weak self] error in
+            self?.errorMessage = error.localizedDescription
+        }
+        session.onFinish { [weak self] result in
+            Task { @MainActor in
+                await self?.handleRecordingFinished(result)
+            }
+        }
         session.start()
 
         // Mic is added by configure() when already authorized; request it
@@ -114,75 +174,94 @@ final class CameraViewModel {
         requestMicrophoneAccess()
         startExposurePolling()
         refreshExposure()
-        // Default to 180° shutter priority: shutter locked to 1/48s, ISO auto-meters.
-        session.enableShutterPriority()
-        startShutterPriorityLoop()
-
-        if let device = session.activeDevice {
-            focusManager = FocusManager(device: device)
-        }
-
-        session.onFinish { [weak self] result in
-            Task { @MainActor in
-                await self?.handleRecordingFinished(result)
+        if isManualExposure {
+            session.lockManualExposure(iso: manualISO) { [weak self] error in
+                guard let self else { return }
+                if let error { self.errorMessage = "Failed to restore manual ISO: \(error.localizedDescription)" }
             }
+        } else {
+            // Default to 180° shutter priority: shutter locked to 1/48s, ISO auto-meters.
+            session.enableShutterPriority()
+            startShutterPriorityLoop()
         }
+
     }
 
     func onDisappear() {
-        session.stop()
-        stopPolling()
-        stopExposurePolling()
-        stopShutterPriorityLoop()
-        session.disableShutterPriority()
+        onSceneInactive()
     }
 
     func startRecording() {
+        guard !isStartingRecording, !isRecording else { return }
+        guard lifecycleGate.isActive, cameraConfigured else {
+            errorMessage = "Camera is not ready to record."
+            return
+        }
         guard !isSpaceCritical else {
             errorMessage = "Not enough free space. Please free up at least 500MB."
             return
         }
 
-        let outputURL = tempFileURL()
+        invalidateRecordingTimers()
+        exposureCommandGeneration &+= 1
+        isStartingRecording = true
+        recordingWarning = nil
+        captureGeneration &+= 1
+        let generation = captureGeneration
         do {
-            // Freeze the 180° shutter + ISO for the take (no auto-meter mid-take).
-            session.pinShutterForRecording()
-            try session.startRecording(to: outputURL)
-            isRecording = true
-            recordingDuration = 0
-            startRecordingTimer()
-            startSpacePolling()
+            let outputURL = try originalStorage.makeDestination()
+            session.startRecording(to: outputURL) { [weak self] error in
+                guard let self else { return }
+                guard self.captureGeneration == generation, self.lifecycleGate.isActive else {
+                    if error == nil { self.session.stopRecording() }
+                    return
+                }
+                self.isStartingRecording = false
+                if let error {
+                    self.isRecording = false
+                    self.invalidateRecordingTimers()
+                    self.errorMessage = "Failed to start recording: \(error.localizedDescription)"
+                    return
+                }
+                self.isRecording = true
+                self.recordingDuration = 0
+                self.startRecordingTimer()
+                self.startSpacePolling()
+            }
         } catch {
-            errorMessage = "Failed to start recording: \(error.localizedDescription)"
+            isStartingRecording = false
+            errorMessage = "Failed to prepare recording: \(error.localizedDescription)"
         }
     }
 
     func stopRecording() {
+        if isStartingRecording { captureGeneration &+= 1 }
+        isStartingRecording = false
         session.stopRecording()
-        stopRecordingTimer()
-        stopPolling()
+        invalidateRecordingTimers()
     }
 
     func handleFocusTap(at point: CGPoint, in previewLayer: AVCaptureVideoPreviewLayer) {
-        focusManager?.focus(at: point, in: previewLayer)
+        let devicePoint = previewLayer.captureDevicePointConverted(fromLayerPoint: point)
+        session.setFocusAndExposurePoint(devicePoint)
     }
 
     /// Switch the active lens and refresh tap-to-focus for the new device.
     /// Completion runs on the main queue; `nil` error means the swap succeeded.
     func selectLens(_ lens: CameraLens, completion: @escaping (Error?) -> Void) {
+        exposureCommandGeneration &+= 1
         session.selectCamera(lens) { [weak self] error in
             guard let self else { return }
             if let error {
                 completion(error)
                 return
             }
-            if let device = self.session.activeDevice {
-                self.focusManager = FocusManager(device: device)
-            }
             // configureDevice resets to auto exposure on the device swap; re-apply
             // manual exposure or shutter priority so the 180° shutter survives lens changes.
             if self.isManualExposure {
-                try? self.session.lockManualExposure(iso: self.manualISO)
+                self.session.lockManualExposure(iso: self.manualISO) { [weak self] error in
+                    if let error { self?.errorMessage = error.localizedDescription }
+                }
             } else {
                 self.session.enableShutterPriority()
             }
@@ -202,13 +281,18 @@ final class CameraViewModel {
 
     func setManualISO(_ iso: Float) {
         manualISO = iso
-        session.disableShutterPriority()
-        do {
-            try session.lockManualExposure(iso: iso)
+        exposureCommandGeneration &+= 1
+        let generation = exposureCommandGeneration
+        session.lockManualExposure(iso: iso) { [weak self] error in
+            guard let self else { return }
+            guard self.exposureCommandGeneration == generation,
+                  self.lifecycleGate.isActive, !self.isRecording else { return }
+            if let error {
+                self.errorMessage = "Failed to set ISO: \(error.localizedDescription)"
+                return
+            }
             isManualExposure = true
             refreshExposure()
-        } catch {
-            errorMessage = "Failed to set ISO: \(error.localizedDescription)"
         }
     }
 
@@ -241,13 +325,19 @@ final class CameraViewModel {
 
     func toggleManualExposure() {
         if isManualExposure {
-            do {
-                try session.setAutoExposure()
+            exposureCommandGeneration &+= 1
+            let generation = exposureCommandGeneration
+            session.setAutoExposure { [weak self] error in
+                guard let self else { return }
+                guard self.exposureCommandGeneration == generation,
+                      self.lifecycleGate.isActive, !self.isRecording else { return }
+                if let error {
+                    self.errorMessage = "Failed to unlock exposure: \(error.localizedDescription)"
+                    return
+                }
                 isManualExposure = false
                 session.enableShutterPriority()
                 refreshExposure()
-            } catch {
-                errorMessage = "Failed to unlock exposure: \(error.localizedDescription)"
             }
         } else {
             // Enter manual mode at the current metered ISO (no exposure jump).
@@ -306,17 +396,17 @@ final class CameraViewModel {
 
     // MARK: - Private
 
-    private func tempFileURL() -> URL {
-        let dir = FileManager.default.temporaryDirectory
-        let name = "clip_\(Int(Date().timeIntervalSince1970)).mov"
-        return dir.appendingPathComponent(name)
-    }
-
-    private func handleRecordingFinished(_ result: Result<URL, Error>) async {
+    private func handleRecordingFinished(_ result: Result<RecordingCompletion, Error>) async {
         isRecording = false
+        invalidateRecordingTimers()
         switch result {
-        case .success(let url):
-            lastRecordedURL = url
+        case .success(let completion):
+            lastRecordedURL = completion.url
+            if let warning = completion.warning {
+                let warningMessage = warning.localizedDescription
+                recordingWarning = warningMessage
+                errorMessage = "Recording saved, but ended with a warning: \(warningMessage)"
+            }
 
         case .failure(let error):
             errorMessage = "Recording failed: \(error.localizedDescription)"
@@ -324,14 +414,17 @@ final class CameraViewModel {
     }
 
     private func startRecordingTimer() {
+        recordingTimer?.invalidate()
+        let generation = recordingTimerGeneration.begin()
         recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.recordingTimerTick()
+                self?.recordingTimerTick(generation: generation)
             }
         }
     }
 
-    private func recordingTimerTick() {
+    private func recordingTimerTick(generation: UInt64) {
+        guard recordingTimerGeneration.accepts(generation), isRecording else { return }
         recordingDuration += 0.1
         // AD-8: auto-stop at 5 minutes
         if recordingDuration >= Self.maxClipDuration {
@@ -345,6 +438,7 @@ final class CameraViewModel {
     }
 
     private func startSpacePolling() {
+        spacePollingTimer?.invalidate()
         updateFreeSpace()
         // AD-8: poll every 5 seconds
         spacePollingTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -352,6 +446,12 @@ final class CameraViewModel {
                 self?.updateFreeSpace()
             }
         }
+    }
+
+    private func invalidateRecordingTimers() {
+        recordingTimerGeneration.end()
+        stopRecordingTimer()
+        stopPolling()
     }
 
     private func stopPolling() {

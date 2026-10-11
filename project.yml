@@ -96,6 +96,8 @@ targets:
       - path: App/Modules/RenderQueue/RenderJob.swift
       - path: App/Modules/RenderQueue/QueuePersister.swift
       - path: App/Modules/RenderQueue/RenderQueueViewModel.swift
+      - path: App/Modules/CameraCapture/CameraOriginalStorage.swift
+      - path: App/Modules/CameraCapture/CameraPolicies.swift
       - path: Resources/Shaders/
         type: metal
       - path: Resources/Grain

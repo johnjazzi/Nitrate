@@ -162,6 +162,36 @@ struct RenderQueueReliabilityTests {
         #expect(model.jobs.first?.outputSavedToPhotos == true)
     }
 
+    @Test func completedDeliveryPersistsBeforePostDeliveryDiagnostics() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        let gate = QueueTestGate()
+        var renders = 0
+        var saves = 0
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { _ in
+            renders += 1
+            return files.output
+        }, save: { _ in
+            saves += 1
+        }, postDelivery: { _, _ in
+            await gate.suspend()
+        })
+
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400)
+        try await waitUntil { saves == 1 && model.jobs.first?.outputSavedToPhotos == true }
+        let reloaded = RenderQueueViewModel(persistenceURL: files.persistence,
+                                            render: { _ in renders += 1; return files.output },
+                                            save: { _ in saves += 1 }, sessionId: launchSession)
+        reloaded.onAppear()
+        #expect(reloaded.jobs.first?.status == .completed)
+        #expect(reloaded.jobs.first?.outputSavedToPhotos == true)
+        try await Task.sleep(for: .milliseconds(25))
+        #expect(renders == 1)
+        #expect(saves == 1)
+        await gate.resume()
+    }
+
     @Test func processingJobsRecoverAndRepeatedAppearanceIsIdempotent() async throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }

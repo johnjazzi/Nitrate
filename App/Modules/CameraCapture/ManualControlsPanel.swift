@@ -55,7 +55,7 @@ struct ManualControlsPanel: View {
                 length: 110
             )
             .onChange(of: zoomFactor) { _, newValue in
-                Task { try? session.setZoom(CGFloat(newValue)) }
+                session.setZoom(CGFloat(newValue))
             }
         }
     }
@@ -73,17 +73,15 @@ struct ManualControlsPanel: View {
             .opacity(isManualFocus ? 1 : 0.4)
             .onChange(of: manualFocusPosition) { _, newValue in
                 guard isManualFocus else { return }
-                Task { try? session.setManualFocusPosition(Float(newValue)) }
+                session.setManualFocusPosition(Float(newValue))
             }
 
             Button {
                 isManualFocus.toggle()
-                Task {
-                    if isManualFocus {
-                        try? session.setManualFocusPosition(Float(manualFocusPosition))
-                    } else {
-                        try? session.resetAutoFocus()
-                    }
+                if isManualFocus {
+                    session.setManualFocusPosition(Float(manualFocusPosition))
+                } else {
+                    session.resetAutoFocus()
                 }
             } label: {
                 Text(isManualFocus ? "AF" : "MF")

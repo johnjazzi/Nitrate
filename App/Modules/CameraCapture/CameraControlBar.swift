@@ -248,6 +248,11 @@ struct CameraControlBar: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(cameraViewModel.isManualExposure ? "Manual ISO" : "Auto exposure bias")
         .accessibilityHint("Long-press to switch between auto and manual exposure")
+        .accessibilityAction(named: Text(cameraViewModel.isManualExposure
+                                        ? "Switch to auto exposure"
+                                        : "Switch to manual exposure")) {
+            cameraViewModel.toggleManualExposure()
+        }
     }
 
     /// "+0.0" / "-1.3" style auto-exposure bias readout.
@@ -346,6 +351,7 @@ struct CameraControlBar: View {
                 }
             }
         }
+        .accessibilityLabel(cameraViewModel.isRecording ? "Stop recording" : "Start recording")
         .disabled(cameraViewModel.isSpaceCritical && !cameraViewModel.isRecording)
         .overlay(alignment: .top) {
             if cameraViewModel.isRecording {
