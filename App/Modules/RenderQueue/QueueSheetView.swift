@@ -80,6 +80,9 @@ struct QueueSheetView: View {
                                         if let error = job.errorMessage {
                                             Text(error).font(.caption).foregroundStyle(.red)
                                         }
+                                        if job.outputURL != nil {
+                                            Button("View video") { playbackJob = job }
+                                        }
                                         Button("Retry") { viewModel.retry(jobId: job.id) }
                                             .buttonStyle(.bordered)
                                     }
@@ -105,7 +108,7 @@ struct QueueSheetView: View {
                 }
             }
             .animation(.default, value: viewModel.jobs)
-            .navigationTitle("Queue")
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

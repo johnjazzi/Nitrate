@@ -91,8 +91,23 @@ targets:
       - path: Tests
       - path: App/Modules/ProcessingPipeline/
       - path: App/Modules/FilmStockLibrary/
+      - path: App/Modules/RenderQueue/RenderJob.swift
+      - path: App/Modules/RenderQueue/QueuePersister.swift
+      - path: App/Modules/RenderQueue/RenderQueueViewModel.swift
+      - path: Resources/Shaders/
+        type: metal
+      - path: Resources/Grain
+        type: folder
+        buildPhase: resources
+      - path: App/Resources/LUTs
+        type: folder
+        buildPhase: resources
+      - path: Resources/stocks.json
+        buildPhase: resources
     dependencies:
       - sdk: Metal.framework
       - sdk: AVFoundation.framework
+      - sdk: Photos.framework
+      - sdk: ImageIO.framework
     settings:
       SWIFT_VERSION: "6.0"

@@ -15,6 +15,9 @@ struct RenderJob: Codable, Identifiable, Equatable {
     var status: JobStatus = .pending
     var outputURL: URL?
     var errorMessage: String?
+    /// Delivery outcomes are optional so older queue JSON remains readable.
+    var sourceSavedToPhotos: Bool? = nil
+    var outputSavedToPhotos: Bool? = nil
 
     init(sourceURL: URL, stockId: String, iso: Float,
          trimStart: CMTime? = nil, trimEnd: CMTime? = nil,
@@ -27,6 +30,8 @@ struct RenderJob: Codable, Identifiable, Equatable {
         self.trimEndSeconds = trimEnd.map { $0.seconds }
         self.createdAt = Date()
         self.sessionId = sessionId ?? RenderJob.currentSessionId
+        self.sourceSavedToPhotos = nil
+        self.outputSavedToPhotos = nil
     }
 
     var trimStart: CMTime? {

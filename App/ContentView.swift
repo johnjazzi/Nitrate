@@ -32,10 +32,6 @@ struct ContentView: View {
     @State private var isManualFocus = false
     @State private var pinchBaseZoom: Double = 1.0
 
-    /// Queue animations: spinning ring while rendering, green flash on completion.
-    @State private var ringRotation: Double = 0
-    @State private var showCompletionFlash = false
-
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -478,62 +474,10 @@ struct ContentView: View {
 
     private var queueButton: some View {
         VStack(spacing: 2) {
-            ZStack(alignment: .topTrailing) {
-                // Progress circle when processing
-                if renderQueueViewModel.isProcessing {
-                    ZStack {
-                        Circle()
-                            .stroke(.white.opacity(0.2), lineWidth: 2.5)
-                            .frame(width: 34, height: 34)
-                        Circle()
-                            .trim(from: 0, to: 0.75)
-                            .stroke(.orange, lineWidth: 2.5)
-                            .frame(width: 34, height: 34)
-                            .rotationEffect(.degrees(ringRotation))
-                            .onAppear {
-                                ringRotation = 0
-                                withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
-                                    ringRotation = 360
-                                }
-                            }
-                    }
-                    Image(systemName: "list.bullet").font(.title2)
-                } else if showCompletionFlash {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(.green)
-                        .transition(.scale(scale: 1.6).combined(with: .opacity))
-                } else {
-                    Image(systemName: "list.bullet").font(.title2)
-                }
-
-                // Badge with count
-                let count = renderQueueViewModel.pendingCount + (renderQueueViewModel.isProcessing ? 1 : 0)
-                if count > 0 {
-                    Text("\(count)")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(3)
-                        .background(renderQueueViewModel.isProcessing ? .orange : .red)
-                        .clipShape(Circle())
-                        .offset(x: 10, y: -6)
-                }
-            }
-            Text("Queue").font(.caption2)
+            RenderStatusButton(viewModel: renderQueueViewModel) { showQueueSheet = true }
             freeSpaceBar.frame(width: 48, height: 3)
         }
-        .foregroundStyle(.white)
         .frame(maxWidth: .infinity)
-        .contentShape(Rectangle())
-        .onTapGesture { showQueueSheet = true }
-        .animation(.spring(response: 0.35, dampingFraction: 0.6), value: showCompletionFlash)
-        .onChange(of: renderQueueViewModel.completedJobs.count) { oldCount, newCount in
-            guard newCount > oldCount else { return }
-            showCompletionFlash = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-                withAnimation(.easeOut(duration: 0.25)) { showCompletionFlash = false }
-            }
-        }
     }
 
     private func bottomButton(icon: String, label: String, action: @escaping () -> Void) -> some View {

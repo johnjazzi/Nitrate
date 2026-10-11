@@ -11,6 +11,10 @@ final class PipelineRenderer: @unchecked Sendable {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let renderQueue = DispatchQueue(label: "pipeline.render")
+    private let resourceBundle: Bundle
+    private let renderFailureAfterFrames: UInt32?
+    private let audioAppendRejectionAfterSamples: Int?
+    private let outputDirectory: URL?
 
     // Cached pipeline states
     private var pass1Pipeline: MTLComputePipelineState?
@@ -22,7 +26,16 @@ final class PipelineRenderer: @unchecked Sendable {
     // Current LUT texture (loaded per-render based on stock config)
     private var lutTexture: MTLTexture?
 
-    init() throws {
+    init(
+        resourceBundle: Bundle = .main,
+        renderFailureAfterFrames: UInt32? = nil,
+        audioAppendRejectionAfterSamples: Int? = nil,
+        outputDirectory: URL? = nil
+    ) throws {
+        self.resourceBundle = resourceBundle
+        self.renderFailureAfterFrames = renderFailureAfterFrames
+        self.audioAppendRejectionAfterSamples = audioAppendRejectionAfterSamples
+        self.outputDirectory = outputDirectory
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw RenderError.noMetalDevice
         }
@@ -62,6 +75,7 @@ final class PipelineRenderer: @unchecked Sendable {
         trimRange: CMTimeRange? = nil,
         bitrate: Int = RenderEncodingContract.averageBitRate
     ) async throws -> (outputURL: URL, counters: RenderDiagnosticsManifest.Counters) {
+        try Task.checkCancellation()
         try config.validate()
         // Load the LUT for this stock
         try loadLUT(named: config.lutName)
@@ -81,6 +95,7 @@ final class PipelineRenderer: @unchecked Sendable {
         let duration = try await asset.load(.duration)
         let nominalFrameRate = try await videoTrack.load(.nominalFrameRate)
         let preferredTransform = try await videoTrack.load(.preferredTransform)
+        try Task.checkCancellation()
 
         let renderWidth = naturalSize.width
         let renderHeight = naturalSize.height
@@ -102,6 +117,9 @@ final class PipelineRenderer: @unchecked Sendable {
         ]
         let readerOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: readerOutputSettings)
         readerOutput.alwaysCopiesSampleData = false
+        guard reader.canAdd(readerOutput) else {
+            throw RenderError.stageFailed("video-reader-setup", "The video reader cannot accept the source track.")
+        }
         reader.add(readerOutput)
         reader.timeRange = trimRange ?? CMTimeRange(start: .zero, duration: duration)
 
@@ -115,6 +133,9 @@ final class PipelineRenderer: @unchecked Sendable {
             let ar = try AVAssetReader(asset: asset)
             let audioOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
             audioOutput.alwaysCopiesSampleData = false
+            guard ar.canAdd(audioOutput) else {
+                throw RenderError.stageFailed("audio-reader-setup", "The audio reader cannot accept the source track.")
+            }
             ar.add(audioOutput)
             ar.timeRange = trimRange ?? CMTimeRange(start: .zero, duration: duration)
             audioReader = ar
@@ -122,7 +143,20 @@ final class PipelineRenderer: @unchecked Sendable {
 
         // Writer setup
         let outputURL = tempOutputURL()
-        let writer = try AVAssetWriter(url: outputURL, fileType: .mov)
+        let writer: AVAssetWriter
+        do {
+            writer = try AVAssetWriter(url: outputURL, fileType: .mov)
+        } catch {
+            try? FileManager.default.removeItem(at: outputURL)
+            throw error
+        }
+        let cancellationHandle = RenderCancellationHandle(writer: writer, videoReader: reader, audioReader: audioReader)
+        var renderSucceeded = false
+        defer {
+            if !renderSucceeded {
+                Self.abandonWriter(outputURL: outputURL, cancellationHandle: cancellationHandle)
+            }
+        }
 
         let videoCompression: [String: Any] = [
             AVVideoAverageBitRateKey: bitrate,
@@ -161,6 +195,9 @@ final class PipelineRenderer: @unchecked Sendable {
             sourcePixelBufferAttributes: sourcePixelBufferAttributes
         )
 
+        guard writer.canAdd(writerInput) else {
+            throw RenderError.stageFailed("video-writer-setup", "The movie writer cannot accept the video input.")
+        }
         writer.add(writerInput)
         writer.metadata = try RenderMovieMetadata.make(config: config, bitrate: bitrate)
 
@@ -171,49 +208,65 @@ final class PipelineRenderer: @unchecked Sendable {
             let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil,
                                                   sourceFormatHint: audioDesc)
             audioInput.expectsMediaDataInRealTime = false
+            guard writer.canAdd(audioInput) else {
+                throw RenderError.stageFailed("audio-writer-setup", "The movie writer cannot accept the audio input.")
+            }
             writer.add(audioInput)
             audioWriterInput = audioInput
         }
 
-        guard writer.startWriting() else {
-            throw RenderError.writerFailed(writer.error)
-        }
-        writer.startSession(atSourceTime: .zero)
-
-        guard reader.startReading() else {
-            throw RenderError.readerFailed(reader.error)
-        }
-        if let audioReader, !audioReader.startReading() {
-            throw RenderError.readerFailed(audioReader.error)
-        }
-
-        // Process video frames + audio passthrough
-        let counters: RenderDiagnosticsManifest.Counters
         do {
-            counters = try await processFrames(
+            guard writer.startWriting() else {
+                throw RenderError.writerFailed(writer.error)
+            }
+            // Reader sample timestamps remain on the source timeline. Starting the
+            // writer session at the trim origin maps the selected range to output 0.
+            let sessionStart = (trimRange ?? CMTimeRange(start: .zero, duration: duration)).start
+            writer.startSession(atSourceTime: sessionStart)
+
+            guard reader.startReading() else {
+                throw RenderError.readerFailed(reader.error)
+            }
+            if let audioReader, !audioReader.startReading() {
+                throw RenderError.readerFailed(audioReader.error)
+            }
+
+            let counters = try await processFrames(
+                videoReader: reader,
                 readerOutput: readerOutput,
                 adaptor: adaptor,
                 writerInput: writerInput,
                 writer: writer,
                 config: config,
                 audioReader: audioReader,
-                audioWriterInput: audioWriterInput
+                audioWriterInput: audioWriterInput,
+                cancellationHandle: cancellationHandle
             )
+            try Task.checkCancellation()
+            guard counters.processed > 0 else {
+                throw RenderError.stageFailed("video-reader", "The selected source range contained no video frames.")
+            }
+
+            await withTaskCancellationHandler {
+                await writer.finishWriting()
+            } onCancel: {
+                cancellationHandle.cancel()
+            }
+            try Task.checkCancellation()
+            guard cancellationHandle.writerStatus == .completed else {
+                throw RenderError.writerFailed(cancellationHandle.writerError)
+            }
+            guard cancellationHandle.videoReaderStatus == .completed else {
+                throw RenderError.readerFailed(cancellationHandle.videoReaderError)
+            }
+            if audioReader != nil, cancellationHandle.audioReaderStatus != .completed {
+                throw RenderError.readerFailed(cancellationHandle.audioReaderError)
+            }
+            renderSucceeded = true
+            return (outputURL, counters)
         } catch {
-            abandonWriter(writer, outputURL: outputURL, readers: [reader, audioReader])
             throw error
         }
-
-        // Finalize
-        writerInput.markAsFinished()
-        await writer.finishWriting()
-
-        if let error = writer.error {
-            abandonWriter(writer, outputURL: outputURL, readers: [reader, audioReader])
-            throw RenderError.writerFailed(error)
-        }
-
-        return (outputURL, counters)
     }
 
     /// Tear down a failed render and delete its partial output.
@@ -222,11 +275,8 @@ final class PipelineRenderer: @unchecked Sendable {
     /// so nothing can play it. That is worse than no file at all: it sits in the
     /// documents directory looking like a render, and a size-only check reports it
     /// as a finished job. Failures must leave no successful-looking partial output.
-    private func abandonWriter(_ writer: AVAssetWriter, outputURL: URL, readers: [AVAssetReader?]) {
-        writer.cancelWriting()
-        for case let reader? in readers {
-            reader.cancelReading()
-        }
+    private static func abandonWriter(outputURL: URL, cancellationHandle: RenderCancellationHandle) {
+        cancellationHandle.cancel()
         try? FileManager.default.removeItem(at: outputURL)
     }
 
@@ -306,7 +356,7 @@ final class PipelineRenderer: @unchecked Sendable {
     /// Parse a .cube LUT file and load it as a 3D Metal texture.
     private func loadLUT(named filename: String) throws {
         guard let path = findBundleFile(named: filename) ??
-                Bundle.main.path(forResource: filename.replacingOccurrences(of: ".cube", with: ""),
+                resourceBundle.path(forResource: filename.replacingOccurrences(of: ".cube", with: ""),
                                  ofType: "cube", inDirectory: "LUTs") else {
             throw RenderError.missingResource("LUT file not found: \(filename)")
         }
@@ -403,30 +453,35 @@ final class PipelineRenderer: @unchecked Sendable {
     // MARK: - Frame Processing
 
     private func processFrames(
+        videoReader: AVAssetReader,
         readerOutput: AVAssetReaderTrackOutput,
         adaptor: AVAssetWriterInputPixelBufferAdaptor,
         writerInput: AVAssetWriterInput,
         writer: AVAssetWriter,
         config: FilmStockConfig,
         audioReader: AVAssetReader?,
-        audioWriterInput: AVAssetWriterInput?
+        audioWriterInput: AVAssetWriterInput?,
+        cancellationHandle: RenderCancellationHandle
     ) async throws -> RenderDiagnosticsManifest.Counters {
         guard let lut = lutTexture else {
             throw RenderError.missingResource("LUT texture not loaded")
         }
 
-        var frameIndex: UInt32 = 0
-        var firstFrame = true
-        var actualWidth = 0
-        var actualHeight = 0
         let counterBox = FrameCounterBox()
+        let audioResult = AudioCopyResultBox()
 
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<RenderDiagnosticsManifest.Counters, Error>) in
+        return try await withTaskCancellationHandler {
+          try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<RenderDiagnosticsManifest.Counters, Error>) in
             renderQueue.async { [weak self] in
                 guard let self else {
-                    continuation.resume(returning: counterBox.counters)
+                    continuation.resume(throwing: RenderError.stageFailed("renderer", "Renderer was released before frame processing."))
                     return
                 }
+                // These mutable values are owned exclusively by renderQueue.
+                var frameIndex: UInt32 = 0
+                var firstFrame = true
+                var actualWidth = 0
+                var actualHeight = 0
 
                 // Start audio passthrough on a parallel queue. The audio
                 // reader is dedicated to audio, so it is only touched from
@@ -434,19 +489,64 @@ final class PipelineRenderer: @unchecked Sendable {
                 let audioDone: DispatchWorkItem? = {
                     guard audioReader != nil, audioWriterInput != nil else { return nil }
                     let work = DispatchWorkItem { [weak self] in
-                        self?.copyAudioSamples(from: audioReader, to: audioWriterInput, writer: writer)
+                        guard let self else {
+                            audioResult.set(.failure(RenderError.stageFailed("audio-copy", "Renderer was released during audio copy.")))
+                            return
+                        }
+                        let result = self.copyAudioSamples(
+                            from: audioReader,
+                            to: audioWriterInput,
+                            cancellationHandle: cancellationHandle
+                        )
+                        audioResult.set(result)
+                        if case .failure = result { cancellationHandle.cancel() }
                     }
                     DispatchQueue.global(qos: .utility).async(execute: work)
                     return work
                 }()
 
-                while writerInput.isReadyForMoreMediaData || writer.status == .writing {
-                    // Wait until the writer input is ready or writer fails
+                var videoFailure: Error?
+                var reachedVideoEOF = false
+                while !reachedVideoEOF {
+                    if let audioFailure = audioResult.getFailure {
+                        videoFailure = audioFailure
+                        break
+                    }
+                    if cancellationHandle.writerStatus == .cancelled {
+                        videoFailure = CancellationError()
+                        break
+                    }
+
+                    // Read first so writer backpressure cannot hide reader EOF.
+                    guard let sampleBuffer = cancellationHandle.copyNextVideoSample(from: readerOutput) else {
+                        switch cancellationHandle.videoReaderStatus {
+                        case .completed:
+                            cancellationHandle.markVideoFinished(writerInput)
+                            reachedVideoEOF = true
+                        case .failed:
+                            videoFailure = RenderError.readerFailed(cancellationHandle.videoReaderError)
+                        case .cancelled:
+                            videoFailure = CancellationError()
+                        default:
+                            videoFailure = RenderError.stageFailed("video-reader", "Video ended before the reader completed.")
+                        }
+                        break
+                    }
+                    counterBox.counters.decoded += 1
+
+                    // A sample is already pending; wait for writer readiness.
                     var pollCount = 0
                     while !writerInput.isReadyForMoreMediaData {
-                        if writer.status == .failed || writer.status == .cancelled {
-                            continuation.resume(throwing: RenderError.writerFailed(writer.error))
-                            return
+                        if let audioFailure = audioResult.getFailure {
+                            videoFailure = audioFailure
+                            break
+                        }
+                        let writerStatus = cancellationHandle.writerStatus
+                        if writerStatus == .failed || writerStatus == .cancelled {
+                            videoFailure = writerStatus == .cancelled
+                                ? CancellationError()
+                                : RenderError.writerFailed(cancellationHandle.writerError)
+                            break
                         }
                         usleep(1000)
                         pollCount += 1
@@ -454,22 +554,18 @@ final class PipelineRenderer: @unchecked Sendable {
                             // The writer has not failed, it simply never asked for
                             // more video — report that honestly instead of claiming
                             // an asset-writer failure.
-                            continuation.resume(throwing: RenderError.stageFailed(
+                            videoFailure = RenderError.stageFailed(
                                 "video-backpressure",
                                 "The video writer did not accept frames for 5 seconds (audio input: \(audioWriterInput != nil))."
-                            ))
-                            return
+                            )
+                            break
                         }
                     }
-
-                    guard let sampleBuffer = readerOutput.copyNextSampleBuffer() else {
-                        break
-                    }
-                    counterBox.counters.decoded += 1
+                    if videoFailure != nil { break }
 
                     guard let sourcePixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-                        continuation.resume(throwing: RenderError.stageFailed("decode", "Sample buffer has no pixel buffer."))
-                        return
+                        videoFailure = RenderError.stageFailed("decode", "Sample buffer has no pixel buffer.")
+                        break
                     }
                     let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
@@ -482,31 +578,52 @@ final class PipelineRenderer: @unchecked Sendable {
                     // Process: input → pass1 (LUT) → spatial halation/glow → pass2 (grain) → output
                     switch self.renderFrame(
                         sourcePixelBuffer: sourcePixelBuffer,
-                        context: FrameRenderContext(adaptor: adaptor, config: config, lut: lut, writer: writer),
+                        context: FrameRenderContext(
+                            adaptor: adaptor,
+                            config: config,
+                            lut: lut,
+                            cancellationHandle: cancellationHandle
+                        ),
                         frameIndex: frameIndex,
                         timestamp: timestamp,
                         size: MTLSize(width: actualWidth, height: actualHeight, depth: 1)
                     ) {
                     case .failure(let error):
-                        continuation.resume(throwing: error)
-                        return
+                        videoFailure = audioResult.getFailure ?? error
+                        break
                     case .success:
                         break
                     }
+                    if videoFailure != nil { break }
                     counterBox.counters.processed += 1
                     counterBox.counters.appended += 1
                     frameIndex += 1
                 }
 
-                // Wait for audio passthrough to complete before continuing.
-                // The audio thread marks its own input finished when it drains;
-                // this is a redundant safety net in case that work item never
-                // ran (marking finished twice is harmless).
+                if videoFailure != nil {
+                    // Cancel writer/reader to release an audio worker blocked on
+                    // writer backpressure, then join it before returning.
+                    cancellationHandle.cancel()
+                }
                 audioDone?.wait()
-                audioWriterInput?.markAsFinished()
 
-                continuation.resume(returning: counterBox.counters)
+                if let videoFailure {
+                    continuation.resume(throwing: videoFailure)
+                } else if let audioFailure = audioResult.getFailure {
+                    continuation.resume(throwing: audioFailure)
+                } else if cancellationHandle.videoReaderStatus == .failed {
+                    continuation.resume(throwing: RenderError.readerFailed(cancellationHandle.videoReaderError))
+                } else if cancellationHandle.videoReaderStatus != .completed {
+                    continuation.resume(throwing: CancellationError())
+                } else if cancellationHandle.audioReaderStatus == .failed {
+                    continuation.resume(throwing: RenderError.readerFailed(cancellationHandle.audioReaderError))
+                } else {
+                    continuation.resume(returning: counterBox.counters)
+                }
             }
+          }
+        } onCancel: {
+            cancellationHandle.cancel()
         }
     }
 
@@ -519,6 +636,9 @@ final class PipelineRenderer: @unchecked Sendable {
         timestamp: CMTime,
         size: MTLSize
     ) -> Result<Void, Error> {
+        if let renderFailureAfterFrames, frameIndex >= renderFailureAfterFrames {
+            return .failure(RenderError.stageFailed("injected-frame-failure", "Synthetic writer failure after \(frameIndex) frames."))
+        }
         let adaptor = context.adaptor
         let config = context.config
         let width = size.width
@@ -571,8 +691,8 @@ final class PipelineRenderer: @unchecked Sendable {
             return .failure(RenderError.stageFailed("gpu-pass-2", "The grain GPU pass did not complete."))
         }
 
-        guard adaptor.append(outBuf, withPresentationTime: timestamp) else {
-            return .failure(RenderError.stageFailed("writer-append", context.writer.error?.localizedDescription ?? "Writer rejected a processed frame."))
+        guard context.cancellationHandle.appendVideo(outBuf, withPresentationTime: timestamp, using: adaptor) else {
+            return .failure(RenderError.stageFailed("writer-append", context.cancellationHandle.writerError?.localizedDescription ?? "Writer rejected a processed frame."))
         }
         return .success(())
     }
@@ -585,10 +705,12 @@ final class PipelineRenderer: @unchecked Sendable {
     private func copyAudioSamples(
         from audioReader: AVAssetReader?,
         to audioWriterInput: AVAssetWriterInput?,
-        writer: AVAssetWriter
-    ) {
-        guard let audioOutput = audioReader?.outputs.first as? AVAssetReaderTrackOutput,
-              let audioWriter = audioWriterInput else { return }
+        cancellationHandle: RenderCancellationHandle
+    ) -> Result<Void, Error> {
+        guard let audioReader, let audioWriter = audioWriterInput else { return .success(()) }
+        guard let audioOutput = audioReader.outputs.first as? AVAssetReaderTrackOutput else {
+            return .failure(RenderError.stageFailed("audio-reader", "The audio reader has no track output."))
+        }
 
         // Mark the audio input finished as soon as the audio is exhausted.
         //
@@ -600,26 +722,39 @@ final class PipelineRenderer: @unchecked Sendable {
         // the audio input open deadlocked the writer: the video input never
         // became ready, the frame loop timed out, and the render failed (or, on
         // device, appeared to hang).
-        defer { audioWriter.markAsFinished() }
-
+        var appendedSamples = 0
         while true {
+            guard let sample = cancellationHandle.copyNextAudioSample(from: audioOutput) else {
+                switch cancellationHandle.audioReaderStatus {
+                case .completed:
+                    cancellationHandle.markAudioFinished(audioWriter)
+                    return .success(())
+                case .failed: return .failure(RenderError.readerFailed(cancellationHandle.audioReaderError))
+                case .cancelled: return .failure(CancellationError())
+                default: return .failure(RenderError.stageFailed("audio-reader", "Audio ended before the reader completed."))
+                }
+            }
+
+            if let audioAppendRejectionAfterSamples, appendedSamples >= audioAppendRejectionAfterSamples {
+                return .failure(RenderError.stageFailed("audio-append", "Synthetic audio append rejection."))
+            }
             var pollCount = 0
             while !audioWriter.isReadyForMoreMediaData {
-                if writer.status == .failed || writer.status == .cancelled {
-                    return
+                let writerStatus = cancellationHandle.writerStatus
+                if writerStatus == .failed || writerStatus == .cancelled {
+                    if writerStatus == .cancelled { return .failure(CancellationError()) }
+                    return .failure(RenderError.stageFailed("audio-writer", cancellationHandle.writerError?.localizedDescription ?? "Writer failed while copying audio."))
                 }
                 usleep(1000)
                 pollCount += 1
                 if pollCount > 30_000 {  // 30s safety timeout
-                    return
+                    return .failure(RenderError.stageFailed("audio-backpressure", "The audio writer did not accept samples for 30 seconds."))
                 }
             }
-            guard let sample = audioOutput.copyNextSampleBuffer() else {
-                return  // end of audio
+            if !cancellationHandle.appendAudio(sample, using: audioWriter) {
+                return .failure(RenderError.stageFailed("audio-append", cancellationHandle.writerError?.localizedDescription ?? "The audio writer rejected a sample."))
             }
-            if !audioWriter.append(sample) {
-                return  // append rejected despite readiness
-            }
+            appendedSamples += 1
         }
     }
 
@@ -755,13 +890,13 @@ final class PipelineRenderer: @unchecked Sendable {
     // MARK: - Shader & Grain Loading
 
     private func loadMetalShaders() throws {
-        // Try Bundle.main first (works for iOS app and macOS tool when metallib is bundled).
-        if let library = try? device.makeDefaultLibrary(bundle: Bundle.main) {
+        // Resolve from the app or test bundle that owns the renderer resources.
+        if let library = try? device.makeDefaultLibrary(bundle: resourceBundle) {
             try makePipelines(from: library)
             return
         }
         // Fallback: look for default.metallib next to the executable (macOS CLI).
-        let exePath = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        let exePath = resourceBundle.executablePath ?? CommandLine.arguments[0]
         let exeDir = URL(fileURLWithPath: exePath).deletingLastPathComponent()
         let metallibURL = exeDir.appendingPathComponent("default.metallib")
         if FileManager.default.fileExists(atPath: metallibURL.path) {
@@ -789,8 +924,8 @@ final class PipelineRenderer: @unchecked Sendable {
         // Folder references can land differently depending on Xcode version.
         // Enumerate the bundle to find grain3d.raw wherever it landed.
         let grainPath = findBundleFile(named: "grain3d.raw")
-            ?? Bundle.main.path(forResource: "grain3d", ofType: "raw", inDirectory: "Grain")
-            ?? Bundle.main.path(forResource: "grain3d", ofType: "raw")
+            ?? resourceBundle.path(forResource: "grain3d", ofType: "raw", inDirectory: "Grain")
+            ?? resourceBundle.path(forResource: "grain3d", ofType: "raw")
         guard let grainPath else {
             throw RenderError.missingResource("Grain/grain3d.raw not found in bundle")
         }
@@ -833,7 +968,7 @@ final class PipelineRenderer: @unchecked Sendable {
 
     /// Recursively search the bundle for a file by name. Handles folder references.
     private func findBundleFile(named filename: String) -> String? {
-        guard let resourcePath = Bundle.main.resourcePath else { return nil }
+        guard let resourcePath = resourceBundle.resourcePath else { return nil }
         let enumerator = FileManager.default.enumerator(
             at: URL(fileURLWithPath: resourcePath),
             includingPropertiesForKeys: nil
@@ -854,7 +989,7 @@ final class PipelineRenderer: @unchecked Sendable {
         if let grain = findBundleFile(named: "grain3d.raw") {
             resources.append(RenderDiagnostics.resource(kind: "grain", url: URL(fileURLWithPath: grain)))
         }
-        if let executablePath = Bundle.main.executablePath {
+        if let executablePath = resourceBundle.executablePath {
             let metallib = URL(fileURLWithPath: executablePath).deletingLastPathComponent().appendingPathComponent("default.metallib")
             if FileManager.default.fileExists(atPath: metallib.path) {
                 resources.append(RenderDiagnostics.resource(kind: "metallib", url: metallib))
@@ -870,7 +1005,7 @@ final class PipelineRenderer: @unchecked Sendable {
     /// suffix and skip any name that already exists on disk.
     private func tempOutputURL() -> URL {
         // Use documents directory so output persists for viewing/sharing.
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let docs = outputDirectory ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         return Self.uniqueOutputURL(in: docs)
     }
 
@@ -909,13 +1044,149 @@ private struct FrameRenderContext {
     let adaptor: AVAssetWriterInputPixelBufferAdaptor
     let config: FilmStockConfig
     let lut: MTLTexture
-    let writer: AVAssetWriter
+    let cancellationHandle: RenderCancellationHandle
 }
 
 /// Frame processing is serialized on `renderQueue`; this box avoids crossing a mutable
 /// value capture into that closure while retaining exact per-run diagnostic counters.
 private final class FrameCounterBox: @unchecked Sendable {
     var counters = RenderDiagnosticsManifest.Counters()
+}
+
+/// Captures the result from the dedicated audio-copy worker for the render queue.
+private final class AudioCopyResultBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<Void, Error>?
+
+    func set(_ value: Result<Void, Error>) {
+        lock.lock()
+        result = value
+        lock.unlock()
+    }
+
+    var getFailure: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard case .failure(let error) = result else { return nil }
+        return error
+    }
+}
+
+/// Serializes reader cancellation with sample copies and writer cancellation
+/// with appends. Each worker releases its lane lock before waiting for
+/// backpressure, so cancellation can acquire the lock and unblock it.
+private final class RenderCancellationHandle: @unchecked Sendable {
+    private let writer: AVAssetWriter
+    private let videoReader: AVAssetReader
+    private let audioReader: AVAssetReader?
+    private let writerLock = NSLock()
+    private let videoReaderLock = NSLock()
+    private let audioReaderLock = NSLock()
+
+    init(writer: AVAssetWriter, videoReader: AVAssetReader, audioReader: AVAssetReader?) {
+        self.writer = writer
+        self.videoReader = videoReader
+        self.audioReader = audioReader
+    }
+
+    func cancel() {
+        // Workers never hold a reader lock while acquiring the writer lock.
+        // Cancel the writer first to release backpressure, then stop each
+        // reader only after any in-flight copy has returned.
+        writerLock.lock()
+        writer.cancelWriting()
+        writerLock.unlock()
+
+        videoReaderLock.lock()
+        videoReader.cancelReading()
+        videoReaderLock.unlock()
+
+        if let audioReader {
+            audioReaderLock.lock()
+            audioReader.cancelReading()
+            audioReaderLock.unlock()
+        }
+    }
+
+    func copyNextVideoSample(from output: AVAssetReaderTrackOutput) -> CMSampleBuffer? {
+        videoReaderLock.lock()
+        defer { videoReaderLock.unlock() }
+        return output.copyNextSampleBuffer()
+    }
+
+    func copyNextAudioSample(from output: AVAssetReaderTrackOutput) -> CMSampleBuffer? {
+        audioReaderLock.lock()
+        defer { audioReaderLock.unlock() }
+        return output.copyNextSampleBuffer()
+    }
+
+    var videoReaderStatus: AVAssetReader.Status {
+        videoReaderLock.lock()
+        defer { videoReaderLock.unlock() }
+        return videoReader.status
+    }
+
+    var videoReaderError: Error? {
+        videoReaderLock.lock()
+        defer { videoReaderLock.unlock() }
+        return videoReader.error
+    }
+
+    var audioReaderStatus: AVAssetReader.Status {
+        guard let audioReader else { return .unknown }
+        audioReaderLock.lock()
+        defer { audioReaderLock.unlock() }
+        return audioReader.status
+    }
+
+    var audioReaderError: Error? {
+        guard let audioReader else { return nil }
+        audioReaderLock.lock()
+        defer { audioReaderLock.unlock() }
+        return audioReader.error
+    }
+
+    var writerStatus: AVAssetWriter.Status {
+        writerLock.lock()
+        defer { writerLock.unlock() }
+        return writer.status
+    }
+
+    var writerError: Error? {
+        writerLock.lock()
+        defer { writerLock.unlock() }
+        return writer.error
+    }
+
+    func appendVideo(
+        _ buffer: CVPixelBuffer,
+        withPresentationTime time: CMTime,
+        using adaptor: AVAssetWriterInputPixelBufferAdaptor
+    ) -> Bool {
+        writerLock.lock()
+        defer { writerLock.unlock() }
+        guard writer.status != .cancelled else { return false }
+        return adaptor.append(buffer, withPresentationTime: time)
+    }
+
+    func appendAudio(_ sample: CMSampleBuffer, using input: AVAssetWriterInput) -> Bool {
+        writerLock.lock()
+        defer { writerLock.unlock() }
+        guard writer.status != .cancelled else { return false }
+        return input.append(sample)
+    }
+
+    func markVideoFinished(_ input: AVAssetWriterInput) {
+        writerLock.lock()
+        defer { writerLock.unlock() }
+        input.markAsFinished()
+    }
+
+    func markAudioFinished(_ input: AVAssetWriterInput) {
+        writerLock.lock()
+        defer { writerLock.unlock() }
+        input.markAsFinished()
+    }
 }
 
 enum RenderError: LocalizedError {

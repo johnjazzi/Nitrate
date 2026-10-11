@@ -5,9 +5,13 @@ import Foundation
 final class QueuePersister {
     private let storageURL: URL
 
-    init() {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        storageURL = documents.appendingPathComponent("renderQueue.json")
+    init(storageURL: URL? = nil) {
+        if let storageURL {
+            self.storageURL = storageURL
+        } else {
+            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            self.storageURL = documents.appendingPathComponent("renderQueue.json")
+        }
     }
 
     /// Save jobs array to disk.
