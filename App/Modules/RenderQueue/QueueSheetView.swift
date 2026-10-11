@@ -195,18 +195,37 @@ private struct VideoPreviewSheet: View {
 private struct JobRow: View {
     let job: RenderJob
     var isCurrent = false
+    @Environment(\.locale) private var locale
 
     var body: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(job.stockId).font(.caption.weight(.semibold))
                 Text("ISO \(Int(job.iso))").font(.caption2).foregroundStyle(.secondary)
+                HStack(spacing: 3) {
+                    Text("Queued")
+                    Text(job.createdAt.formatted(queuedDateFormat))
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityElement(children: .combine)
             }
             Spacer()
             statusLabel
         }
         .padding(.vertical, 4)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: job.status)
+    }
+
+    private var queuedDateFormat: Date.FormatStyle {
+        .dateTime
+            .year()
+            .month(.abbreviated)
+            .day()
+            .hour()
+            .minute()
+            .second()
+            .locale(locale)
     }
 
     private var statusLabel: some View {
