@@ -1,5 +1,8 @@
 # Render reliability phone check
 
+This integration branch combines the camera-control edits with render
+hardening. Use its generated Xcode project to test both changes in one app.
+
 Build and run the FilmEmulation scheme from this branch on a supported iPhone.
 Automatic signing uses the team already set in `project.yml`. The unsigned
 verification build does not install an app on the phone.
@@ -19,6 +22,10 @@ verification build does not install an app on the phone.
    green. Grant access, then tap Retry; it should save the retained movie.
 5. Turn on Reduce Motion in Accessibility. The loading indicator should remain
    visible without rotating, and its status should be readable with VoiceOver.
+6. Change the lens and exposure between clips while older clips are processing.
+   Confirm the camera controls still respond and each queued clip retains its
+   chosen stock and render exposure-index settings. Check the current manual
+   controls alongside the loading indicator, counter, and error banner.
 
 The automated reliability tests separately force a render failure after frames
 have been processed, and exercise raw-original Photos save success and failure.
