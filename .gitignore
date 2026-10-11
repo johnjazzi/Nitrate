@@ -39,3 +39,7 @@ Thumbs.db
 *.tar.gz
 # BMAD transient build state
 _bmad/render/
+
+# Private planning documents — local only, never published
+planning-docs/
+_bmad-output/
