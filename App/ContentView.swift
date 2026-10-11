@@ -26,15 +26,13 @@ struct ContentView: View {
     @State private var selectedLens: CameraLens = .wide
     @State private var availableLenses: [CameraLens] = []
 
-    /// Focus/zoom control panel — one toggle, vertical, right edge.
-    @State private var showFocusControls = false
-    @State private var manualFocusPosition: Double = 0.5
-    @State private var isManualFocus = false
+    /// Pinch-zoom baseline (ISO/EV controls live in `CameraControlBar`).
     @State private var pinchBaseZoom: Double = 1.0
 
-    /// Queue animations: spinning ring while rendering, green flash on completion.
-    @State private var ringRotation: Double = 0
-    @State private var showCompletionFlash = false
+    /// Manual zoom/focus pop-over. ISO lives in the control bar instead.
+    @State private var showManualControls = false
+    @State private var manualFocusPosition: Double = 0.5
+    @State private var isManualFocus = false
 
     var body: some View {
         ZStack {
@@ -48,12 +46,21 @@ struct ContentView: View {
 
                 Spacer()
 
-                bottomBar
-                    .padding(.top, showFramedPreview ? 8 : 0)
-                    .padding(.bottom, 40)
-            }
+                if showManualControls {
+                    ManualControlsPanel(
+                        session: cameraViewModel.session,
+                        zoomFactor: $zoomFactor,
+                        manualFocusPosition: $manualFocusPosition,
+                        isManualFocus: $isManualFocus,
+                        onDismiss: { withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false } }
+                    )
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
 
-            focusZoomControlsLayer
+                controlBar
+                    .padding(.top, showFramedPreview ? 8 : 0)
+                    .padding(.bottom, 20)
+            }
 
             errorOverlays
         }
@@ -146,8 +153,6 @@ struct ContentView: View {
                                 x: location.x / geometry.size.width,
                                 y: location.y / geometry.size.height
                             )
-                            // Tap-to-focus also returns to autofocus.
-                            isManualFocus = false
                             Task {
                                 try? cameraViewModel.session.setFocusPoint(normalizedPoint)
                                 try? cameraViewModel.session.setExposurePoint(normalizedPoint)
@@ -159,6 +164,8 @@ struct ContentView: View {
 
     // MARK: - Top Bar
 
+    /// Active stock lives in the control bar's selector row; the top toolbar
+    /// owns app settings, imports and the live exposure readout.
     private var topBar: some View {
         VStack(spacing: 2) {
             HStack(spacing: 12) {
@@ -200,44 +207,15 @@ struct ContentView: View {
                     }
                 }
 
-                // Camera lens selector (front/ultrawide/tele/normal)
-                Menu {
-                    ForEach(availableLenses) { lens in
-                        Button {
-                            selectLens(lens)
-                        } label: {
-                            if lens == selectedLens {
-                                Label(lens.rawValue, systemImage: "checkmark")
-                            } else {
-                                Text(lens.rawValue)
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: selectedLens.systemImage)
-                            .font(.caption)
-                        Text(selectedLens.rawValue)
-                            .font(.caption.weight(.semibold))
-                        Image(systemName: "chevron.down")
-                            .font(.caption2)
-                    }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(.black.opacity(0.4))
-                    .clipShape(Capsule())
-                }
-
-                // Focus + zoom controls toggle (vertical panel, right edge)
+                // Manual zoom/focus pop-over over the preview.
                 Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { showFocusControls.toggle() }
+                    withAnimation(.easeInOut(duration: 0.2)) { showManualControls.toggle() }
                 } label: {
-                    Image(systemName: showFocusControls ? "slider.vertical.3" : "camera.filters")
-                        .font(.caption)
-                        .foregroundStyle(showFocusControls ? .black : .white)
-                        .padding(10)
-                        .background(showFocusControls ? Color.yellow : Color.black.opacity(0.4))
+                    Image(systemName: showManualControls ? "slider.vertical.3" : "camera.filters")
+                        .font(.title2)
+                        .foregroundStyle(showManualControls ? .black : .white)
+                        .padding(12)
+                        .background(showManualControls ? Color.yellow : Color.black.opacity(0.4))
                         .clipShape(Circle())
                 }
 
@@ -247,7 +225,7 @@ struct ContentView: View {
             HStack {
                 Spacer()
 
-                // Live exposure readout; ISO controls live in the focus/zoom panel.
+                // Live exposure readout; ISO/EV controls live in the selector row.
                 Text("ISO \(Int(cameraViewModel.liveISO)) · \(shutterText)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.9))
@@ -260,145 +238,6 @@ struct ContentView: View {
         }
         .padding(.leading, 16)
         .padding(.top, 8)
-    }
-
-    /// Vertical focus + zoom + ISO controls on the right edge (one toggle shows/hides).
-    private var focusZoomControlsLayer: some View {
-        HStack {
-            Spacer()
-            if showFocusControls {
-                HStack(alignment: .top, spacing: 14) {
-                    // ZOOM
-                    controlColumn(title: "ZOOM", readout: String(format: "%.1fx", zoomFactor)) {
-                        verticalSlider(
-                            $zoomFactor,
-                            range: 1.0...Double(max(cameraViewModel.session.maxZoomFactor, 1.0)),
-                            step: 0.1,
-                            tint: .white
-                        ) { value in
-                            Task { try? cameraViewModel.session.setZoom(CGFloat(value)) }
-                        }
-                    }
-
-                    // FOCUS
-                    controlColumn(title: "FOCUS", readout: isManualFocus ? "MF" : "AF") {
-                        verticalSlider(
-                            $manualFocusPosition,
-                            range: 0...1,
-                            step: 0.01,
-                            tint: isManualFocus ? .yellow : .white.opacity(0.45)
-                        ) { value in
-                            guard isManualFocus else { return }
-                            Task { try? cameraViewModel.session.setManualFocusPosition(Float(value)) }
-                        }
-                        .disabled(!isManualFocus)
-                        .opacity(isManualFocus ? 1 : 0.4)
-
-                        Button {
-                            toggleManualFocus()
-                        } label: {
-                            Text(isManualFocus ? "AF" : "MF")
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(isManualFocus ? .black : .white)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(isManualFocus ? Color.yellow : Color.white.opacity(0.2))
-                                .clipShape(Capsule())
-                        }
-                    }
-
-                    // ISO
-                    controlColumn(title: "ISO", readout: "\(Int(cameraViewModel.liveISO))") {
-                        verticalSlider(
-                            isoBinding,
-                            range: isoSliderRange,
-                            step: 50,
-                            tint: cameraViewModel.isManualExposure ? .yellow : .white.opacity(0.45)
-                        ) { value in
-                            cameraViewModel.setManualISO(Float(value))
-                        }
-                        .disabled(!cameraViewModel.isManualExposure)
-                        .opacity(cameraViewModel.isManualExposure ? 1 : 0.4)
-
-                        Button {
-                            cameraViewModel.toggleManualExposure()
-                        } label: {
-                            Text(cameraViewModel.isManualExposure ? "Auto" : "Manual")
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(cameraViewModel.isManualExposure ? .black : .white)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(cameraViewModel.isManualExposure ? Color.yellow : Color.white.opacity(0.2))
-                                .clipShape(Capsule())
-                        }
-                    }
-                }
-                .padding(.vertical, 14)
-                .padding(.horizontal, 14)
-                .background(.black.opacity(0.5))
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-                .padding(.trailing, 12)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
-            }
-        }
-    }
-
-    /// One labelled column of the vertical control panel.
-    private func controlColumn<Content: View>(
-        title: String,
-        readout: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(spacing: 8) {
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.white.opacity(0.7))
-            content()
-            Text(readout)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.white.opacity(0.9))
-        }
-    }
-
-    /// A rotated (vertical) slider that reports changes through `action`.
-    private func verticalSlider(
-        _ value: Binding<Double>,
-        range: ClosedRange<Double>,
-        step: Double,
-        tint: Color,
-        action: @escaping (Double) -> Void
-    ) -> some View {
-        Slider(value: value, in: range, step: step)
-            .tint(tint)
-            .frame(width: 140, height: 26)
-            .rotationEffect(.degrees(-90))
-            .frame(width: 26, height: 140)
-            .onChange(of: value.wrappedValue) { _, newValue in action(newValue) }
-    }
-
-    /// Device ISO range as a Double slider range.
-    private var isoSliderRange: ClosedRange<Double> {
-        let range = cameraViewModel.session.isoRange
-        return Double(range.lowerBound)...Double(range.upperBound)
-    }
-
-    /// Binding for the manual-ISO slider.
-    private var isoBinding: Binding<Double> {
-        Binding(
-            get: { Double(cameraViewModel.manualISO) },
-            set: { cameraViewModel.setManualISO(Float($0)) }
-        )
-    }
-
-    private func toggleManualFocus() {
-        isManualFocus.toggle()
-        Task {
-            if isManualFocus {
-                try? cameraViewModel.session.setManualFocusPosition(Float(manualFocusPosition))
-            } else {
-                try? cameraViewModel.session.resetAutoFocus()
-            }
-        }
     }
 
     private var shutterText: String {
@@ -419,182 +258,23 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Bottom Bar
+    // MARK: - Control Bar
 
-    private var bottomBar: some View {
-        HStack(spacing: 0) {
-            // Left: Stock chip or stock button — fixed width for centering
-            Group {
-                if let stock = selectedStock {
-                    stockChip(stock)
-                } else {
-                    bottomButton(icon: "film", label: "Stock") { showStockSheet = true }
-                }
-            }
-            .frame(width: 90)
-
-            recordButton.frame(maxWidth: .infinity)
-
-            // Right: Queue button — fixed width to match left
-            queueButton
-                .frame(width: 90)
-        }
-        .frame(height: 90)
-    }
-
-    // MARK: - Stock Chip
-
-    /// Duotone stripe card with ISO + D/T badge overlaid in black.
-    /// 5 horizontal slices: 1,2,5 = primary color; 3,4 = secondary.
-    private func stockChip(_ stock: FilmStockConfig) -> some View {
-        Button {
-            showStockSheet = true
-        } label: {
-            ZStack {
-                // Duotone stripe card
-                VStack(spacing: 0) {
-                    ForEach(0..<5) { idx in
-                        let isPrimary = idx == 0 || idx == 1 || idx == 4
-                        (isPrimary ? stock.primaryColor : stock.secondaryColor)
-                            .frame(height: 6)
-                    }
-                }
-                .frame(width: 56, height: 40)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-
-                // ISO + D/T overlay
-                Text("\(Int(currentISO))\(stock.lightType)")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
-                    .background(.ultraThinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 3))
-            }
-        }
-    }
-
-    // MARK: - Queue Button
-
-    private var queueButton: some View {
-        VStack(spacing: 2) {
-            ZStack(alignment: .topTrailing) {
-                // Progress circle when processing
-                if renderQueueViewModel.isProcessing {
-                    ZStack {
-                        Circle()
-                            .stroke(.white.opacity(0.2), lineWidth: 2.5)
-                            .frame(width: 34, height: 34)
-                        Circle()
-                            .trim(from: 0, to: 0.75)
-                            .stroke(.orange, lineWidth: 2.5)
-                            .frame(width: 34, height: 34)
-                            .rotationEffect(.degrees(ringRotation))
-                            .onAppear {
-                                ringRotation = 0
-                                withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
-                                    ringRotation = 360
-                                }
-                            }
-                    }
-                    Image(systemName: "list.bullet").font(.title2)
-                } else if showCompletionFlash {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(.green)
-                        .transition(.scale(scale: 1.6).combined(with: .opacity))
-                } else {
-                    Image(systemName: "list.bullet").font(.title2)
-                }
-
-                // Badge with count
-                let count = renderQueueViewModel.pendingCount + (renderQueueViewModel.isProcessing ? 1 : 0)
-                if count > 0 {
-                    Text("\(count)")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(3)
-                        .background(renderQueueViewModel.isProcessing ? .orange : .red)
-                        .clipShape(Circle())
-                        .offset(x: 10, y: -6)
-                }
-            }
-            Text("Queue").font(.caption2)
-            freeSpaceBar.frame(width: 48, height: 3)
-        }
-        .foregroundStyle(.white)
-        .frame(maxWidth: .infinity)
-        .contentShape(Rectangle())
-        .onTapGesture { showQueueSheet = true }
-        .animation(.spring(response: 0.35, dampingFraction: 0.6), value: showCompletionFlash)
-        .onChange(of: renderQueueViewModel.completedJobs.count) { oldCount, newCount in
-            guard newCount > oldCount else { return }
-            showCompletionFlash = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-                withAnimation(.easeOut(duration: 0.25)) { showCompletionFlash = false }
-            }
-        }
-    }
-
-    private func bottomButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon).font(.title2)
-                Text(label).font(.caption2)
-            }
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity)
-        }
-    }
-
-    private var recordButton: some View {
-        Button {
-            if cameraViewModel.isRecording {
-                cameraViewModel.stopRecording()
-            } else {
-                cameraViewModel.startRecording()
-            }
-        } label: {
-            ZStack {
-                Circle()
-                    .fill(cameraViewModel.isRecording ? .red : .white)
-                    .frame(width: 72, height: 72)
-                if cameraViewModel.isRecording {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(.white)
-                        .frame(width: 24, height: 24)
-                } else {
-                    Circle()
-                        .stroke(.white, lineWidth: 4)
-                        .frame(width: 82, height: 82)
-                }
-            }
-        }
-        .disabled(cameraViewModel.isSpaceCritical && !cameraViewModel.isRecording)
-        .overlay(alignment: .top) {
-            if cameraViewModel.isRecording {
-                Text(formatDuration(cameraViewModel.recordingDuration))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(.red.opacity(0.8))
-                    .clipShape(Capsule())
-                    .offset(y: -18)
-            }
-        }
-    }
-
-    private var freeSpaceBar: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(Color.white.opacity(0.15))
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(cameraViewModel.isSpaceCritical ? Color.red : Color.white.opacity(0.5))
-                    .frame(width: max(0, geo.size.width * CGFloat(cameraViewModel.freeSpacePercent)))
-            }
-        }
+    /// Two-row bottom stack (selector row + action row). Lives in its own file
+    /// (`CameraControlBar.swift`) so this screen stays inside the file limit.
+    private var controlBar: some View {
+        CameraControlBar(
+            cameraViewModel: cameraViewModel,
+            renderQueueViewModel: renderQueueViewModel,
+            availableLenses: availableLenses,
+            selectedLens: selectedLens,
+            selectedStock: selectedStock,
+            currentISO: currentISO,
+            onSelectLens: { selectLens($0) },
+            onShowQueueSheet: { showQueueSheet = true },
+            onShowStockSheet: { showStockSheet = true },
+            formatDuration: { formatDuration($0) }
+        )
     }
 
     // MARK: - Error Overlays

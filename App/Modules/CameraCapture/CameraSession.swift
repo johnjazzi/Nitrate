@@ -30,6 +30,26 @@ enum CameraLens: String, CaseIterable, Identifiable {
         case .front: return "camera.rotate"
         }
     }
+
+    /// Compact x-factor shown on the lens pills in the control bar.
+    var zoomLabel: String {
+        switch self {
+        case .ultraWide: return ".5x"
+        case .wide: return "1x"
+        case .telephoto: return "4x"
+        case .front: return "Front"
+        }
+    }
+
+    /// Equivalent full-frame focal length for the zoom label (display only).
+    var focalLengthMM: Int {
+        switch self {
+        case .ultraWide: return 13
+        case .wide: return 24
+        case .telephoto: return 96
+        case .front: return 24
+        }
+    }
 }
 
 /// AD-3: Manages the AVCaptureSession — Apple Log, HEVC H.265, 4K, 24fps, clean preview.
@@ -227,10 +247,13 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     }
 
     private func configureMovieOutput() {
-        if let connection = movieOutput.connection(with: .video) {
-            if connection.isVideoStabilizationSupported {
-                connection.preferredVideoStabilizationMode = .standard
-            }
+        // No video connection yet (e.g. output just re-added before the input
+        // settled) — settings can be applied once it exists; skip rather than
+        // crash on the force-unwrap.
+        guard let connection = movieOutput.connection(with: .video) else { return }
+
+        if connection.isVideoStabilizationSupported {
+            connection.preferredVideoStabilizationMode = .standard
         }
 
         let compressionSettings: [String: Any] = [
@@ -243,7 +266,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         movieOutput.setOutputSettings(
             [AVVideoCodecKey: AVVideoCodecType.hevc,
              AVVideoCompressionPropertiesKey: compressionSettings],
-            for: movieOutput.connection(with: .video)!
+            for: connection
         )
     }
 
@@ -297,6 +320,8 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
             do {
                 try self.addDevice(device)
                 try self.configureDevice(device)
+                // addDevice dropped movieOutput's settings; re-apply them.
+                self.configureMovieOutput()
                 self.activeLens = lens
             } catch {
                 switchError = error
@@ -424,6 +449,37 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         device.unlockForConfiguration()
     }
 
+    /// EV compensation applied to the auto-exposure target, in stops.
+    ///
+    /// Deliberately OUR value, not `AVCaptureDevice.exposureTargetBias`. The 180°
+    /// shutter lock drives the device in custom (manual) exposure mode, where the
+    /// device's own bias has no effect; worse, every re-meter switches exposure
+    /// mode and Apple resets that bias to 0, so reading it back made the control
+    /// appear to revert. Compensation is applied by scaling the metered ISO
+    /// instead, which survives the shutter-priority re-meter.
+    private(set) var exposureBiasEV: Float = 0
+
+    /// Supported EV compensation range, bounded to a film-useful ±3 EV span
+    /// (fallback ±3 EV before the device is ready).
+    var exposureBiasRange: ClosedRange<Float> {
+        guard let device = activeDevice else { return -3...3 }
+        return max(device.minExposureTargetBias, -3)...min(device.maxExposureTargetBias, 3)
+    }
+
+    /// Set EV compensation and re-pin the shutter-priority exposure so the change
+    /// is visible immediately. No-op in manual ISO mode, where the ISO chooser
+    /// drives exposure directly.
+    func setExposureBiasEV(_ ev: Float) {
+        let range = exposureBiasRange
+        let clamped = min(max(ev, range.lowerBound), range.upperBound)
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.exposureBiasEV = clamped
+            guard self.isShutterPriority, !self.movieOutput.isRecording else { return }
+            self.pinShutterToFilm()
+        }
+    }
+
     /// Set exposure point of interest (normalized 0-1 coordinates on the preview).
     func setExposurePoint(_ point: CGPoint) throws {
         guard let device = activeDevice,
@@ -480,10 +536,13 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         }
         device.unlockForConfiguration()
 
-        // Hold the fixed shutter at the freshly metered ISO after the meter settles.
+        // Hold the fixed shutter at the freshly metered ISO after the meter
+        // settles, scaled by the EV compensation (2^EV stops). `setExposure`
+        // clamps the result to the device's ISO range.
         sessionQueue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             guard let self, self.isShutterPriority, let device = self.activeDevice else { return }
-            try? self.setExposure(iso: device.iso, shutter: Self.filmShutterDuration)
+            let compensated = device.iso * powf(2.0, self.exposureBiasEV)
+            try? self.setExposure(iso: compensated, shutter: Self.filmShutterDuration)
         }
     }
 

@@ -26,6 +26,9 @@ final class CameraViewModel {
     var liveShutterSeconds: Double = 0
     var isManualExposure = false
     var manualISO: Float = 400
+    /// Auto-exposure target bias in EV (live value; polled with the exposure
+    /// readout). Only drives the scene while the device meters automatically.
+    var liveExposureBias: Float = 0
 
     // AD-8: Max clip duration
     static let maxClipDuration: TimeInterval = 300 // 5 minutes
@@ -209,6 +212,33 @@ final class CameraViewModel {
         }
     }
 
+    // MARK: - Auto-Exposure Bias
+
+    /// EV compensation range supported by the active device.
+    var exposureBiasRange: ClosedRange<Float> {
+        session.exposureBiasRange
+    }
+
+    /// True when the device reports a usable (non-degenerate) EV range.
+    var isExposureBiasAvailable: Bool {
+        let range = session.exposureBiasRange
+        return range.upperBound > range.lowerBound
+    }
+
+    /// Set EV compensation (stops). Clamped to the device range and applied on
+    /// the session queue; manual ISO mode is unaffected.
+    ///
+    /// `liveExposureBias` is authoritative and optimistic so the ruler tracks
+    /// the finger. It is deliberately NOT re-read from the device: the shutter
+    /// lock uses custom exposure mode, where the device's own bias is always 0,
+    /// and the shutter-priority re-meter resets it regardless.
+    func setExposureBias(_ bias: Float) {
+        let range = session.exposureBiasRange
+        let clamped = min(max(bias, range.lowerBound), range.upperBound)
+        liveExposureBias = clamped
+        session.setExposureBiasEV(clamped)
+    }
+
     func toggleManualExposure() {
         if isManualExposure {
             do {
@@ -228,6 +258,9 @@ final class CameraViewModel {
     private func refreshExposure() {
         liveISO = session.currentISO
         liveShutterSeconds = session.currentShutterSeconds
+        // NOTE: liveExposureBias is intentionally NOT refreshed here. It is our
+        // own compensation value, not the device's (which reads 0 in custom
+        // exposure mode and is reset by every shutter-priority re-meter).
     }
 
     private func startExposurePolling() {
