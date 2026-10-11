@@ -7,20 +7,25 @@ final class FilmStockLibrary {
     private(set) var stocks: [FilmStockConfig] = []
     private let isoDefaultsKey = "film_stock_iso_defaults"
     private let selectedStockKey = "film_stock_selected_id"
+    private let userDefaults: UserDefaults
+
+    init(userDefaults: UserDefaults = .standard) {
+        self.userDefaults = userDefaults
+    }
 
     /// Persisted last-selected stock ID.
     var lastSelectedStockId: String? {
-        UserDefaults.standard.string(forKey: selectedStockKey)
+        userDefaults.string(forKey: selectedStockKey)
     }
 
     /// Persist the active stock selection.
     func setSelectedStock(_ stockId: String) {
-        UserDefaults.standard.set(stockId, forKey: selectedStockKey)
+        userDefaults.set(stockId, forKey: selectedStockKey)
     }
 
     /// Load stocks from bundled stocks.json.
-    func load() throws {
-        guard let url = Bundle.main.url(forResource: "stocks", withExtension: "json") else {
+    func load(from resourceURL: URL? = nil) throws {
+        guard let url = resourceURL ?? Bundle.main.url(forResource: "stocks", withExtension: "json") else {
             throw StockError.missingResource("stocks.json not found in bundle.")
         }
 
@@ -39,7 +44,7 @@ final class FilmStockLibrary {
         return template.overridingISO(iso)
     }
 
-    /// Returns v1 video stocks only (Kodak 250D and 500T).
+    /// Returns stocks available for video rendering.
     func videoStocks() -> [FilmStockConfig] {
         stocks.filter { $0.category == .video }
     }
@@ -51,15 +56,21 @@ final class FilmStockLibrary {
 
     /// Persist the last-used ISO per stock across sessions.
     func saveLastISO(for stockId: String, iso: Float) {
-        var defaults = UserDefaults.standard.dictionary(forKey: isoDefaultsKey) as? [String: Float] ?? [:]
+        var defaults = isoValues()
         defaults[stockId] = iso
-        UserDefaults.standard.set(defaults, forKey: isoDefaultsKey)
+        userDefaults.set(defaults, forKey: isoDefaultsKey)
     }
 
     /// Restore the last-used ISO for a stock, or fall back to the stock's default.
     func lastISO(for stockId: String) -> Float {
-        let defaults = UserDefaults.standard.dictionary(forKey: isoDefaultsKey) as? [String: Float] ?? [:]
+        let defaults = isoValues()
         return defaults[stockId] ?? stocks.first(where: { $0.stockId == stockId })?.defaultISO ?? 400
+    }
+
+    private func isoValues() -> [String: Float] {
+        (userDefaults.dictionary(forKey: isoDefaultsKey) ?? [:]).reduce(into: [:]) { values, item in
+            if let number = item.value as? NSNumber { values[item.key] = number.floatValue }
+        }
     }
 }
 

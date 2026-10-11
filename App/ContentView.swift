@@ -21,6 +21,19 @@ struct ContentView: View {
     @State private var selectedStock: FilmStockConfig?
     @State private var currentISO: Float = 400
 
+    init(cameraViewModel: CameraViewModel, library: FilmStockLibrary,
+         renderQueueViewModel: RenderQueueViewModel, purchaseViewModel: PurchaseViewModel) {
+        self.cameraViewModel = cameraViewModel
+        self.library = library
+        self.renderQueueViewModel = renderQueueViewModel
+        self.purchaseViewModel = purchaseViewModel
+        let stock = library.lastSelectedStockId.flatMap { id in
+            library.videoStocks().first { $0.stockId == id }
+        }
+        _selectedStock = State(initialValue: stock)
+        _currentISO = State(initialValue: stock.map { library.lastISO(for: $0.stockId) } ?? 400)
+    }
+
     /// Camera controls state
     @State private var zoomFactor: Double = 1.0
     @State private var selectedLens: CameraLens = .wide
@@ -85,14 +98,7 @@ struct ContentView: View {
             if !availableLenses.contains(selectedLens) {
                 selectedLens = availableLenses.first ?? .wide
             }
-
-            // Restore persisted stock selection
-            if let lastId = library.lastSelectedStockId,
-               let stock = library.videoStocks().first(where: { $0.stockId == lastId }) {
-                selectedStock = stock
-                currentISO = library.lastISO(for: stock.stockId)
-                applyStockWhiteBalance(stock)
-            }
+            if let selectedStock { applyStockWhiteBalance(selectedStock) }
         }
         .onChange(of: selectedStock) { _, newStock in
             if let stock = newStock {
@@ -401,6 +407,7 @@ private struct StockSheetView: View {
                     localSelection = selectedStock ?? stocks.first
                     iso = localSelection.flatMap { library.lastISO(for: $0.stockId) } ?? 400
                 }
+                persistPreferences()
             }
             .onDisappear {
                 if let stock = localSelection {
@@ -410,6 +417,8 @@ private struct StockSheetView: View {
                     library.setISO(iso, for: stock.stockId)
                 }
             }
+            .onChange(of: localSelection) { _, _ in persistPreferences() }
+            .onChange(of: iso) { _, _ in persistPreferences() }
         }
     }
 
@@ -443,6 +452,12 @@ private struct StockSheetView: View {
                 Text("6400").font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func persistPreferences() {
+        guard let stock = localSelection else { return }
+        library.setSelectedStock(stock.stockId)
+        library.setISO(iso, for: stock.stockId)
     }
 
     private func renderButton(sourceURL: URL) -> some View {

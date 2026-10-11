@@ -1,18 +1,18 @@
 {
   "stocks": [
     {
-      "stockId": "kodak250d_f3513di",
-      "displayName": "250D F3513DI",
+      "stockId": "cinestill50d_k2383",
+      "displayName": "50D K2383",
       "category": "video",
-      "lutName": "250D F3513DI - Apple Log 2.cube",
-      "halationStrength": 0.15,
-      "glowStrength": 0.05,
-      "grainSize": 1.0,
+      "lutName": "50D K2383 - Apple Log 2.cube",
+      "halationStrength": 0.3,
+      "glowStrength": 0.06,
+      "grainSize": 0.6,
       "outputContrast": 0.6,
       "colorTemperature": 5600,
-      "defaultISO": 250,
-      "primaryTint": "#E8C46C",
-      "secondaryTint": "#C4953A"
+      "defaultISO": 50,
+      "primaryTint": "#C04035",
+      "secondaryTint": "#5E1510"
     },
     {
       "stockId": "kodak250d_k2383",
@@ -29,48 +29,18 @@
       "secondaryTint": "#A67C2E"
     },
     {
-      "stockId": "kodak500t_f3513di",
-      "displayName": "500T F3513DI",
+      "stockId": "kodak200t_k2383",
+      "displayName": "200T K2383",
       "category": "video",
-      "lutName": "500T F3513DI - Apple Log 2.cube",
-      "halationStrength": 0.2,
-      "glowStrength": 0.08,
-      "grainSize": 1.3,
+      "lutName": "200T K2383 - Apple Log 2.cube",
+      "halationStrength": 0.12,
+      "glowStrength": 0.04,
+      "grainSize": 0.8,
       "outputContrast": 0.6,
       "colorTemperature": 3200,
-      "defaultISO": 500,
-      "primaryTint": "#4A90A4",
-      "secondaryTint": "#1A4A5C",
-      "recipe": {
-        "schemaVersion": 1,
-        "version": "500t-current-v3",
-        "input": {
-          "gamut": "Rec.2020",
-          "transfer": "Apple Log 2",
-          "provenance": "user-declared"
-        },
-        "output": {
-          "gamut": "Rec.709",
-          "transfer": "Rec.709",
-          "provenance": "user-declared"
-        },
-        "domainMin": [
-          0,
-          0,
-          0
-        ],
-        "domainMax": [
-          1,
-          1,
-          1
-        ],
-        "domainProvenance": "implicit-cube-default",
-        "lutAlgorithm": "resolve-rgb-red-fastest-linear-clamp-v1",
-        "halationAlgorithm": "input-luma-spatial-highlight-addition-v2",
-        "glowAlgorithm": "blurred-warm-highlight-addition-v2",
-        "grainAlgorithm": "hashed-128-volume-iso-subtractive-dither-v1",
-        "deliveryAlgorithm": "clamp-bgra8-hevc-rec709-tagged-v1"
-      }
+      "defaultISO": 200,
+      "primaryTint": "#5E7EA5",
+      "secondaryTint": "#223550"
     },
     {
       "stockId": "kodak500t_k2383",
@@ -115,150 +85,6 @@
         "grainAlgorithm": "hashed-128-volume-iso-subtractive-dither-v1",
         "deliveryAlgorithm": "clamp-bgra8-hevc-rec709-tagged-v1"
       }
-    },
-    {
-      "stockId": "kodak500t85a_f3513di",
-      "displayName": "500T 85A F3513DI",
-      "category": "video",
-      "lutName": "500T 85A F3513DI - Apple Log 2.cube",
-      "halationStrength": 0.2,
-      "glowStrength": 0.08,
-      "grainSize": 1.3,
-      "outputContrast": 0.6,
-      "colorTemperature": 5600,
-      "defaultISO": 500,
-      "primaryTint": "#D4956B",
-      "secondaryTint": "#8B4A30",
-      "recipe": {
-        "schemaVersion": 1,
-        "version": "500t-current-v3",
-        "input": {
-          "gamut": "Rec.2020",
-          "transfer": "Apple Log 2",
-          "provenance": "user-declared"
-        },
-        "output": {
-          "gamut": "Rec.709",
-          "transfer": "Rec.709",
-          "provenance": "user-declared"
-        },
-        "domainMin": [
-          0,
-          0,
-          0
-        ],
-        "domainMax": [
-          1,
-          1,
-          1
-        ],
-        "domainProvenance": "implicit-cube-default",
-        "lutAlgorithm": "resolve-rgb-red-fastest-linear-clamp-v1",
-        "halationAlgorithm": "input-luma-spatial-highlight-addition-v2",
-        "glowAlgorithm": "blurred-warm-highlight-addition-v2",
-        "grainAlgorithm": "hashed-128-volume-iso-subtractive-dither-v1",
-        "deliveryAlgorithm": "clamp-bgra8-hevc-rec709-tagged-v1"
-      }
-    },
-    {
-      "stockId": "kodak500t85a_k2383",
-      "displayName": "500T 85A K2383",
-      "category": "video",
-      "lutName": "500T 85A K2383 - Apple Log 2.cube",
-      "halationStrength": 0.2,
-      "glowStrength": 0.08,
-      "grainSize": 1.3,
-      "outputContrast": 0.6,
-      "colorTemperature": 5600,
-      "defaultISO": 500,
-      "primaryTint": "#C48055",
-      "secondaryTint": "#7A3E25",
-      "recipe": {
-        "schemaVersion": 1,
-        "version": "500t-current-v3",
-        "input": {
-          "gamut": "Rec.2020",
-          "transfer": "Apple Log 2",
-          "provenance": "user-declared"
-        },
-        "output": {
-          "gamut": "Rec.709",
-          "transfer": "Rec.709",
-          "provenance": "user-declared"
-        },
-        "domainMin": [
-          0,
-          0,
-          0
-        ],
-        "domainMax": [
-          1,
-          1,
-          1
-        ],
-        "domainProvenance": "implicit-cube-default",
-        "lutAlgorithm": "resolve-rgb-red-fastest-linear-clamp-v1",
-        "halationAlgorithm": "input-luma-spatial-highlight-addition-v2",
-        "glowAlgorithm": "blurred-warm-highlight-addition-v2",
-        "grainAlgorithm": "hashed-128-volume-iso-subtractive-dither-v1",
-        "deliveryAlgorithm": "clamp-bgra8-hevc-rec709-tagged-v1"
-      }
-    },
-    {
-      "stockId": "kodak200t_f3513di",
-      "displayName": "200T F3513DI",
-      "category": "video",
-      "lutName": "200T F3513DI - Apple Log 2.cube",
-      "halationStrength": 0.12,
-      "glowStrength": 0.04,
-      "grainSize": 0.8,
-      "outputContrast": 0.6,
-      "colorTemperature": 3200,
-      "defaultISO": 200,
-      "primaryTint": "#6B8DB5",
-      "secondaryTint": "#2A4060"
-    },
-    {
-      "stockId": "kodak200t_k2383",
-      "displayName": "200T K2383",
-      "category": "video",
-      "lutName": "200T K2383 - Apple Log 2.cube",
-      "halationStrength": 0.12,
-      "glowStrength": 0.04,
-      "grainSize": 0.8,
-      "outputContrast": 0.6,
-      "colorTemperature": 3200,
-      "defaultISO": 200,
-      "primaryTint": "#5E7EA5",
-      "secondaryTint": "#223550"
-    },
-    {
-      "stockId": "cinestill50d_f3513di",
-      "displayName": "50D F3513DI",
-      "category": "photo",
-      "lutName": "50D F3513DI - Apple Log 2.cube",
-      "halationStrength": 0.3,
-      "glowStrength": 0.06,
-      "grainSize": 0.6,
-      "outputContrast": 0.6,
-      "colorTemperature": 5600,
-      "defaultISO": 50,
-      "primaryTint": "#D4453A",
-      "secondaryTint": "#6B1A15"
-    },
-    {
-      "stockId": "cinestill50d_k2383",
-      "displayName": "50D K2383",
-      "category": "photo",
-      "lutName": "50D K2383 - Apple Log 2.cube",
-      "halationStrength": 0.3,
-      "glowStrength": 0.06,
-      "grainSize": 0.6,
-      "outputContrast": 0.6,
-      "colorTemperature": 5600,
-      "defaultISO": 50,
-      "primaryTint": "#C04035",
-      "secondaryTint": "#5E1510"
     }
   ]
 }

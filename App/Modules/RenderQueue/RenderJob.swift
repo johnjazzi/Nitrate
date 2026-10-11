@@ -10,7 +10,7 @@ struct RenderJob: Codable, Identifiable, Equatable {
     let trimStartSeconds: Double?
     let trimEndSeconds: Double?
     let createdAt: Date
-    let sessionId: String
+    var sessionId: String
 
     var status: JobStatus = .pending
     var outputURL: URL?
@@ -21,14 +21,14 @@ struct RenderJob: Codable, Identifiable, Equatable {
 
     init(sourceURL: URL, stockId: String, iso: Float,
          trimStart: CMTime? = nil, trimEnd: CMTime? = nil,
-         sessionId: String? = nil) {
+         sessionId: String? = nil, createdAt: Date = Date()) {
         self.id = UUID()
         self.sourceURL = sourceURL
         self.stockId = stockId
         self.iso = iso
         self.trimStartSeconds = trimStart.map { $0.seconds }
         self.trimEndSeconds = trimEnd.map { $0.seconds }
-        self.createdAt = Date()
+        self.createdAt = createdAt
         self.sessionId = sessionId ?? RenderJob.currentSessionId
         self.sourceSavedToPhotos = nil
         self.outputSavedToPhotos = nil
@@ -54,15 +54,6 @@ struct RenderJob: Codable, Identifiable, Equatable {
         case failed
     }
 
-    static var currentSessionId: String {
-        let key = "render_queue_session_id"
-        if let existing = UserDefaults.standard.string(forKey: key) { return existing }
-        let fresh = UUID().uuidString
-        UserDefaults.standard.set(fresh, forKey: key)
-        return fresh
-    }
-
-    static func advanceSession() {
-        UserDefaults.standard.set(UUID().uuidString, forKey: "render_queue_session_id")
-    }
+    /// Stable for this process, independent of persisted queue state and view lifecycle.
+    static let currentSessionId = UUID().uuidString
 }

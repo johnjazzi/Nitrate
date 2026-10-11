@@ -7,7 +7,7 @@ struct RenderContractTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        for (index, stockID) in ["kodak500t_f3513di", "kodak250d_f3513di"].enumerated() {
+        for (index, stockID) in ["kodak500t_k2383", "kodak250d_k2383"].enumerated() {
             let config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == stockID })
                 .overridingISO(index == 0 ? 600 : 4900.5)
             let url = directory.appendingPathComponent("\(index).mov")
@@ -97,7 +97,7 @@ struct RenderContractTests {
         let cli = try stocks("Resources/stocks.json")
         #expect(app == cli)
         for config in app { try config.validate() }
-        let template = try #require(app.first { $0.stockId == "kodak500t_f3513di" })
+        let template = try #require(app.first { $0.stockId == "kodak500t_k2383" })
         #expect(template.grainSize == 1.3)
         let low = template.overridingISO(250)
         let high = template.overridingISO(1000)
@@ -121,18 +121,14 @@ struct RenderContractTests {
 
     @Test func colorTemperatureDecodesPerStock() throws {
         // White balance is fixed per stock: daylight 5600K, tungsten 3200K.
-        // 500T 85A = tungsten film shot through a daylight-converting 85A
-        // filter, so it is balanced for daylight (5600K).
         let app = try stocks("App/Resources/stocks.json")
         func temp(_ id: String) throws -> Float {
             try #require(app.first { $0.stockId == id }).colorTemperature
         }
         #expect(try temp("kodak500t_k2383") == 3200)
-        #expect(try temp("kodak500t_f3513di") == 3200)
         #expect(try temp("kodak200t_k2383") == 3200)
         #expect(try temp("kodak250d_k2383") == 5600)
         #expect(try temp("cinestill50d_k2383") == 5600)
-        #expect(try temp("kodak500t85a_k2383") == 5600)
         // Tungsten stocks must NOT fall back to the daylight default (5600),
         // which would be the silent-failure mode of a `let`-declared property.
         #expect(try temp("kodak500t_k2383") != 5600)

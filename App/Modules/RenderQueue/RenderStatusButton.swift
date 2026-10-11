@@ -12,7 +12,7 @@ struct RenderStatusButton: View {
     }
 
     private var failedCount: Int {
-        viewModel.jobs.filter { $0.status == .failed }.count
+        viewModel.currentSessionFailures.count
     }
 
     private var hasError: Bool {
@@ -20,8 +20,8 @@ struct RenderStatusButton: View {
     }
 
     private var isComplete: Bool {
-        outstandingCount == 0 && !hasError && viewModel.jobs.last?.status == .completed
-            && viewModel.jobs.last?.outputSavedToPhotos == true
+        outstandingCount == 0 && !hasError && viewModel.currentSessionResults.first?.status == .completed
+            && viewModel.currentSessionResults.first?.outputSavedToPhotos == true
     }
 
     var body: some View {

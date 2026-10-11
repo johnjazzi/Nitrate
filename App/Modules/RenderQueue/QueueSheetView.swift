@@ -11,22 +11,18 @@ struct QueueSheetView: View {
     @State private var shareTarget: RenderJob?
     @State private var playbackJob: RenderJob?
 
-    private var sessionJobs: [RenderJob] {
-        viewModel.jobs.filter { $0.sessionId == RenderJob.currentSessionId }
+    private var visibleQueuedJobs: [RenderJob] {
+        viewModel.outstandingJobs
     }
-
-    private var olderCount: Int {
-        viewModel.jobs.count - sessionJobs.count
+    private var visibleHistory: [RenderJob] {
+        showAll ? viewModel.historyJobs : viewModel.currentSessionResults
     }
-
-    private var visibleJobs: [RenderJob] {
-        showAll ? viewModel.jobs : sessionJobs
-    }
+    private var isEmpty: Bool { visibleQueuedJobs.isEmpty && visibleHistory.isEmpty }
 
     var body: some View {
         NavigationStack {
             Group {
-                if visibleJobs.isEmpty {
+                if isEmpty {
                     ContentUnavailableView(
                         "No Render Jobs",
                         systemImage: "tray",
@@ -34,10 +30,10 @@ struct QueueSheetView: View {
                     )
                 } else {
                     List {
-                        if let current = visibleJobs.first(where: { $0.status == .processing }) {
+                        if let current = visibleQueuedJobs.first(where: { $0.status == .processing }) {
                             Section("Processing") { JobRow(job: current, isCurrent: true) }
                         }
-                        let pending = visibleJobs.filter { $0.status == .pending }
+                        let pending = visibleQueuedJobs.filter { $0.status == .pending }
                         if !pending.isEmpty {
                             Section("Pending (\(pending.count))") {
                                 ForEach(pending) { job in
@@ -50,57 +46,30 @@ struct QueueSheetView: View {
                                 }
                             }
                         }
-                        let completed = visibleJobs.filter { $0.status == .completed }
-                        if !completed.isEmpty {
-                            Section("Completed (\(completed.count))") {
-                                ForEach(completed) { job in
-                                    Button {
-                                        playbackJob = job
-                                    } label: {
-                                        JobRow(job: job)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .swipeActions(edge: .leading) {
-                                        Button {
-                                            shareVideo(job)
-                                        } label: {
-                                            Label("Share", systemImage: "square.and.arrow.up")
+                        if !visibleHistory.isEmpty {
+                            Section("History (\(visibleHistory.count))") {
+                                ForEach(visibleHistory) { job in
+                                    if job.status == .completed {
+                                        Button { playbackJob = job } label: { JobRow(job: job) }
+                                            .buttonStyle(.plain)
+                                            .swipeActions(edge: .leading) {
+                                                Button { shareVideo(job) } label: {
+                                                    Label("Share", systemImage: "square.and.arrow.up")
+                                                }.tint(.blue)
+                                            }
+                                    } else {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            JobRow(job: job)
+                                            if let error = job.errorMessage {
+                                                Text(error).font(.caption).foregroundStyle(.red)
+                                            }
+                                            if job.outputURL != nil {
+                                                Button("View video") { playbackJob = job }
+                                            }
+                                            Button("Retry") { viewModel.retry(jobId: job.id) }
+                                                .buttonStyle(.bordered)
                                         }
-                                        .tint(.blue)
                                     }
-                                }
-                            }
-                        }
-                        let failed = visibleJobs.filter { $0.status == .failed }
-                        if !failed.isEmpty {
-                            Section("Failed (\(failed.count))") {
-                                ForEach(failed) { job in
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        JobRow(job: job)
-                                        if let error = job.errorMessage {
-                                            Text(error).font(.caption).foregroundStyle(.red)
-                                        }
-                                        if job.outputURL != nil {
-                                            Button("View video") { playbackJob = job }
-                                        }
-                                        Button("Retry") { viewModel.retry(jobId: job.id) }
-                                            .buttonStyle(.bordered)
-                                    }
-                                }
-                            }
-                        }
-
-                        if !showAll && olderCount > 0 {
-                            Section {
-                                Button {
-                                    showAll = true
-                                } label: {
-                                    HStack {
-                                        Image(systemName: "clock.badge.checkmark")
-                                        Text("Show all (\(olderCount) older jobs)")
-                                    }
-                                    .font(.footnote)
-                                    .foregroundStyle(.blue)
                                 }
                             }
                         }
@@ -111,6 +80,9 @@ struct QueueSheetView: View {
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(showAll ? "This session" : "Show all") { showAll.toggle() }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { isPresented = false }
                 }

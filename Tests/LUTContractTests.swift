@@ -18,7 +18,7 @@ struct LUTContractTests {
 
     @Test func allStockLUTsTrackNeutralAxisWithoutClipping() throws {
         let stocks = try loadStocks()
-        #expect(stocks.count == 10)
+        #expect(stocks.count == 4)
         for config in stocks {
             let (_, values) = try parseCubeLUT(config.lutName)
             let axis = neutralAxis(values: values)

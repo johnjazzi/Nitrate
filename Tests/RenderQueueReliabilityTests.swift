@@ -4,6 +4,7 @@ import Testing
 @Suite("Render queue reliability", .serialized)
 @MainActor
 struct RenderQueueReliabilityTests {
+    private let launchSession = "this-launch"
     private func scratch() throws -> (directory: URL, source: URL, output: URL, persistence: URL) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -172,12 +173,97 @@ struct RenderQueueReliabilityTests {
         let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { _ in
             renders += 1
             return files.output
-        }, save: { _ in })
+        }, save: { _ in }, sessionId: launchSession)
         model.onAppear()
         model.onAppear()
         try await waitUntil { model.jobs.first?.status == .completed }
         #expect(renders == 1)
         #expect(model.jobs.first?.id == original.id)
+        #expect(model.jobs.first?.sessionId == launchSession)
+    }
+
+    @Test func terminalHistoryScopesToLaunchAndSortsMixedStatusesNewestFirst() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        var oldSuccess = RenderJob(sourceURL: files.source, stockId: "old", iso: 400,
+                                   sessionId: "previous", createdAt: Date(timeIntervalSince1970: 10))
+        oldSuccess.status = .completed
+        var oldPending = RenderJob(sourceURL: files.source, stockId: "pending", iso: 400,
+                                   sessionId: "previous", createdAt: Date(timeIntervalSince1970: 15))
+        oldPending.status = .pending
+        var currentFailure = RenderJob(sourceURL: files.source, stockId: "failed", iso: 400,
+                                       sessionId: launchSession, createdAt: Date(timeIntervalSince1970: 20))
+        currentFailure.status = .failed
+        var currentSuccess = RenderJob(sourceURL: files.source, stockId: "newest", iso: 400,
+                                       sessionId: launchSession, createdAt: Date(timeIntervalSince1970: 30))
+        currentSuccess.status = .completed
+        try QueuePersister(storageURL: files.persistence).save([oldSuccess, oldPending, currentFailure, currentSuccess])
+
+        let gate = QueueTestGate()
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { _ in
+            await gate.suspend()
+            return files.output
+        }, save: { _ in }, sessionId: launchSession)
+        model.onAppear()
+        #expect(model.currentSessionResults.map(\.stockId) == ["newest", "failed"])
+        #expect(model.historyJobs.map(\.stockId) == ["newest", "failed", "old"])
+        #expect(model.outstandingJobs.map(\.stockId) == ["pending"])
+        try Data([4, 5, 6]).write(to: files.output)
+        await gate.resume()
+        try await waitUntil { model.outstandingJobs.isEmpty }
+        #expect(model.currentSessionResults.contains { $0.id == oldPending.id })
+    }
+
+    @Test func retryMovesHistoricalFailureIntoCurrentSession() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        var historical = RenderJob(sourceURL: files.source, stockId: "old", iso: 400, sessionId: "previous")
+        historical.status = .failed
+        try QueuePersister(storageURL: files.persistence).save([historical])
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { _ in files.output },
+                                         save: { _ in }, sessionId: launchSession)
+        model.onAppear()
+        model.retry(jobId: historical.id)
+        try await waitUntil { model.jobs.first?.status == .completed }
+        #expect(model.jobs.first?.sessionId == launchSession)
+        #expect(model.currentSessionResults.map(\.id) == [historical.id])
+    }
+
+    @Test func historicalFailureDoesNotSetCurrentLaunchBanner() throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        var historical = RenderJob(sourceURL: files.source, stockId: "old", iso: 400, sessionId: "previous")
+        historical.status = .failed
+        historical.errorMessage = "old failure"
+        try QueuePersister(storageURL: files.persistence).save([historical])
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { _ in files.output },
+                                         save: { _ in }, sessionId: launchSession)
+        model.onAppear()
+        #expect(model.currentSessionFailures.isEmpty)
+        #expect(model.rendererErrorMessage == nil)
+        #expect(model.historyJobs.count == 1)
+    }
+
+    @Test func successfulRetryClearsCurrentSessionFailureBanner() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        var failed = RenderJob(sourceURL: files.source, stockId: "test", iso: 400, sessionId: launchSession)
+        failed.status = .failed
+        failed.errorMessage = "Photos unavailable"
+        try QueuePersister(storageURL: files.persistence).save([failed])
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { _ in files.output },
+                                         save: { _ in }, sessionId: launchSession)
+        model.onAppear()
+        model.externalErrorMessage = "Stock library failed"
+        model.retry(jobId: failed.id)
+        try await waitUntil { model.jobs.first?.status == .completed }
+        #expect(model.rendererErrorMessage == "Stock library failed")
+        model.externalErrorMessage = nil
+        model.remove(jobId: failed.id)
+        #expect(model.rendererErrorMessage == nil)
+        #expect(model.currentSessionFailures.isEmpty)
     }
 
     @Test func oldQueueJsonWithoutDeliveryFieldsStillDecodes() throws {
@@ -224,6 +310,8 @@ struct RenderQueueReliabilityTests {
             render: { _ in files.output },
             save: { _ in }
         )
+        model.externalErrorMessage = "Stock library failed to load."
+        #expect(model.rendererErrorMessage == "Stock library failed to load.")
         model.onAppear()
         #expect(model.jobs.isEmpty)
         #expect(model.rendererErrorMessage?.contains("Queue state could not be loaded") == true)

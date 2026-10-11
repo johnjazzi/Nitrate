@@ -18,22 +18,40 @@ final class RenderQueueViewModel {
     private var renderer: PipelineRenderer?
     private var didInitialize = false
     private var persistenceErrorMessage: String?
+    private var loadErrorMessage: String?
     private var canPersist = true
+    private let sessionId: String
 
     var library: FilmStockLibrary?
     var jobs: [RenderJob] = []
     var rendererErrorMessage: String?
+    var externalErrorMessage: String? {
+        didSet { publishQueueMessage() }
+    }
     var renderingUnavailableMessage: String?
     var isProcessing: Bool { worker != nil }
     var pendingCount: Int { jobs.filter { $0.status == .pending }.count }
     var outstandingCount: Int { jobs.filter { $0.status == .pending || $0.status == .processing }.count }
     var currentJob: RenderJob? { jobs.first { $0.status == .processing } }
+    var currentSessionJobs: [RenderJob] { jobs.filter { $0.sessionId == sessionId } }
+    var outstandingJobs: [RenderJob] { jobs.filter { $0.status == .pending || $0.status == .processing } }
+    var currentSessionResults: [RenderJob] {
+        currentSessionJobs.filter { $0.status == .completed || $0.status == .failed }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+    var currentSessionFailures: [RenderJob] { currentSessionResults.filter { $0.status == .failed } }
+    var historyJobs: [RenderJob] {
+        jobs.filter { $0.status == .completed || $0.status == .failed }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
     var completedJobs: [RenderJob] { jobs.filter { $0.status == .completed } }
 
-    init(persistenceURL: URL? = nil, render: RenderOperation? = nil, save: SaveOperation? = nil) {
+    init(persistenceURL: URL? = nil, render: RenderOperation? = nil, save: SaveOperation? = nil,
+         sessionId: String = RenderJob.currentSessionId) {
         persister = QueuePersister(storageURL: persistenceURL)
         injectedRender = render
         saveOperation = save ?? Self.saveToPhotoLibrary
+        self.sessionId = sessionId
     }
 
     func onAppear() {
@@ -44,12 +62,15 @@ final class RenderQueueViewModel {
             let persisted = try persister.load()
             jobs = persisted.map { job in
                 var recovered = job
-                if recovered.status == .processing { recovered.status = .pending }
+                if recovered.status == .processing {
+                    recovered.status = .pending
+                    recovered.sessionId = sessionId
+                }
                 return recovered
             }
         } catch {
             canPersist = false
-            persistenceErrorMessage = "Queue state could not be loaded: \(error.localizedDescription)"
+            loadErrorMessage = "Queue state could not be loaded: \(error.localizedDescription)"
             publishQueueMessage()
             return
         }
@@ -62,7 +83,7 @@ final class RenderQueueViewModel {
             return
         }
         rendererErrorMessage = nil
-        jobs.append(RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso))
+        jobs.append(RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso, sessionId: sessionId))
         persistJobs()
         processNext()
     }
@@ -71,6 +92,7 @@ final class RenderQueueViewModel {
         guard let index = jobs.firstIndex(where: { $0.id == jobId }), jobs[index].status == .failed else { return }
         jobs[index].status = .pending
         jobs[index].errorMessage = nil
+        jobs[index].sessionId = sessionId
         persistJobs()
         processNext()
     }
@@ -105,16 +127,22 @@ final class RenderQueueViewModel {
     }
 
     private func publishQueueMessage() {
-        if let failedMessage = jobs.reversed().first(where: { $0.status == .failed })?.errorMessage {
+        if let loadErrorMessage {
+            rendererErrorMessage = loadErrorMessage
+        } else if let persistenceErrorMessage {
+            rendererErrorMessage = persistenceErrorMessage
+        } else if let externalErrorMessage {
+            rendererErrorMessage = externalErrorMessage
+        } else if let failedMessage = currentSessionFailures.first?.errorMessage {
             rendererErrorMessage = failedMessage
         } else {
-            rendererErrorMessage = persistenceErrorMessage
+            rendererErrorMessage = nil
         }
     }
 
     private func processNext() {
         guard worker == nil, let job = jobs.first(where: { $0.status == .pending }) else { return }
-        update(job.id) { $0.status = .processing; $0.errorMessage = nil }
+        update(job.id) { $0.status = .processing; $0.errorMessage = nil; $0.sessionId = sessionId }
         persistJobs()
         worker = Task { [weak self] in
             guard let self else { return }
