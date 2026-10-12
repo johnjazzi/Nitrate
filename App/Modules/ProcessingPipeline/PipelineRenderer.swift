@@ -766,6 +766,8 @@ final class PipelineRenderer: @unchecked Sendable {
                 commandQueue: commandQueue,
                 halationStrength: config.halationStrength,
                 glowStrength: config.glowStrength,
+                halationRadiusFraction: config.halationRadiusFraction,
+                halationTint: config.halationTint,
                 width: width,
                 height: height
               ) else {

@@ -129,6 +129,13 @@ kernel void spatial_blur_v(
 /// `strength` carries the stock's halation or glow value and `tint` its colour
 /// cast, so this is a plain additive screen-in of tinted light with the image's
 /// luminance modulating the effect so shadows stay clean.
+///
+/// Halation is a RING, not a filled disc: light reflects off the film base and
+/// re-exposes the emulsion *around* the source, not on top of it. The blurred
+/// mask is therefore reduced by the source's own highlight contribution so the
+/// added light lands in the tail outside the boundary. `ringTailBalance` mixes
+/// between the pure ring (1) and the raw blurred mask — a softer glow — (0);
+/// glow passes 0 so it stays a plain bloom rather than acquiring a hole.
 kernel void spatial_composite(
     texture2d<float, access::read>  graded   [[texture(0)]],
     texture2d<float, access::sample> mask     [[texture(1)]],
@@ -136,6 +143,9 @@ kernel void spatial_composite(
     constant float& strength                  [[buffer(0)]],
     constant float& shadowFloor               [[buffer(1)]],
     constant float3& tint                     [[buffer(2)]],
+    constant float& ringTailBalance           [[buffer(3)]],
+    constant float& thresholdLow              [[buffer(4)]],
+    constant float& thresholdHigh             [[buffer(5)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
@@ -151,12 +161,19 @@ kernel void spatial_composite(
     float2 uv = (float2(gid) + 0.5f) / size;
     float spread = mask.sample(spatial_linear_sampler, uv).r;
 
+    // The source's own highlight contribution, recomputed at full resolution
+    // with the same window the mask kernel used. Subtracting it from the blurred
+    // mask empties the centre of the highlight and leaves the tail lit — a ring.
+    float sourceHighlight = smoothstep(thresholdLow, thresholdHigh, spatial_luma(base.rgb));
+    float ring = max(0.0f, spread - sourceHighlight);
+    float contribution = mix(spread, ring, ringTailBalance);
+
     // Fade the added light out of the deepest shadows so halation and glow
     // never lift the black point (the old constant glow term did exactly that).
     float luminance = spatial_luma(base.rgb);
     float shadowWeight = smoothstep(0.0f, shadowFloor, luminance);
 
-    float3 result = base.rgb + tint * spread * strength * shadowWeight;
+    float3 result = base.rgb + tint * contribution * strength * shadowWeight;
 
     output.write(float4(result, base.a), gid);
 }
