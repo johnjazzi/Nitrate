@@ -57,18 +57,74 @@ struct CameraPolicyTests {
         #expect(CameraSampleValidationPolicy.hasHEVCEncoder(["apcs", "apcn"]) == false)
         #expect(CameraSampleValidationPolicy.hasHEVCEncoder(["hvc1"]))
         let profile = "Main10_AutoLevel"
+        // Bind as AVVideoCodecType: AVFoundation boxes AVVideoCodecKey that way,
+        // so a String cast silently yields nil and rejects valid HEVC settings.
         #expect(CameraSampleValidationPolicy.acceptsHEVCMain10Settings(
-            codec: "hvc1", width: 3840, height: 2160, profile: profile, expectedProfile: profile
+            codec: .hevc, width: 3840, height: 2160, profile: profile, expectedProfile: profile
         ))
         #expect(!CameraSampleValidationPolicy.acceptsHEVCMain10Settings(
-            codec: "apcs", width: 3840, height: 2160, profile: profile, expectedProfile: profile
+            codec: .proRes422, width: 3840, height: 2160, profile: profile, expectedProfile: profile
         ))
         #expect(!CameraSampleValidationPolicy.acceptsHEVCMain10Settings(
-            codec: "hvc1", width: 1920, height: 1080, profile: profile, expectedProfile: profile
+            codec: .hevc, width: 1920, height: 1080, profile: profile, expectedProfile: profile
         ))
         #expect(!CameraSampleValidationPolicy.acceptsHEVCMain10Settings(
-            codec: "hvc1", width: 3840, height: 2160, profile: "Main_AutoLevel", expectedProfile: profile
+            codec: .hevc, width: 3840, height: 2160, profile: "Main_AutoLevel", expectedProfile: profile
         ))
+    }
+
+    @Test func recordedOriginalRequestsAACAudioRatherThanTheDeviceRecommendation() {
+        let settings = CameraSampleValidationPolicy.aacAudioSettings(
+            sampleRate: 48_000, channels: 1, averageBitRate: 192_000)
+        #expect((settings[AVFormatIDKey] as? UInt32) == kAudioFormatMPEG4AAC)
+        #expect((settings[AVSampleRateKey] as? Double) == 48_000)
+        #expect((settings[AVNumberOfChannelsKey] as? Int) == 1)
+        #expect((settings[AVEncoderBitRateKey] as? Int) == 192_000)
+        // lpcm must never survive as the recorded codec.
+        #expect(settings[AVFormatIDKey] as? UInt32 != kAudioFormatLinearPCM)
+    }
+
+    @Test func aacSampleRateIsCoercedToASupportedValue() {
+        #expect(CameraSampleValidationPolicy.normalizedAACSampleRate(48_000) == 48_000)
+        #expect(CameraSampleValidationPolicy.normalizedAACSampleRate(44_100) == 44_100)
+        #expect(CameraSampleValidationPolicy.normalizedAACSampleRate(0) == 48_000)
+        #expect(CameraSampleValidationPolicy.normalizedAACSampleRate(22_050) == 48_000)
+    }
+
+    @Test func explicitMain10SettingsDoNotDependOnCaptureOutputCodecRecommendation() throws {
+        let captureOutputCodecs = ["apch", "apcn", "apcs", "apco"]
+        #expect(!CameraSampleValidationPolicy.hasHEVCEncoder(captureOutputCodecs))
+
+        let profile = "Main10_AutoLevel"
+        let logTransferKey = "AVVideoLogTransferFunctionKey"
+        let logTransferValue = "AVVideoLogTransferFunction_AppleLog2"
+        let matrixKey = "AVVideoYCbCrMatrixKey"
+        let matrixValue = "AVVideoYCbCrMatrix_ITU_R_2020"
+        let settings = CameraSampleValidationPolicy.explicitHEVCMain10Settings(
+            profile: profile,
+            averageBitRate: 96_000_000,
+            colorProperties: [logTransferKey: logTransferValue, matrixKey: matrixValue]
+        )
+
+        let settingCodec = try #require(settings[AVVideoCodecKey] as? AVVideoCodecType)
+        #expect(settingCodec == .hevc)
+        #expect(!captureOutputCodecs.contains(settingCodec.rawValue))
+        // Production reads the codec back with the same bridging; this is the
+        // guard that silently rejected valid settings on device when it cast
+        // AVVideoCodecKey to String instead of AVVideoCodecType.
+        #expect(CameraSampleValidationPolicy.acceptsHEVCMain10Settings(
+            codec: settingCodec, width: 3840, height: 2160, profile: profile, expectedProfile: profile
+        ))
+        #expect((settings[AVVideoWidthKey] as? NSNumber)?.intValue == 3840)
+        #expect((settings[AVVideoHeightKey] as? NSNumber)?.intValue == 2160)
+        let compression = try #require(settings[AVVideoCompressionPropertiesKey] as? [String: Any])
+        #expect(compression[AVVideoProfileLevelKey] as? String == profile)
+        #expect((compression[AVVideoAverageBitRateKey] as? NSNumber)?.intValue == 96_000_000)
+        #expect((compression[AVVideoMaxKeyFrameIntervalKey] as? NSNumber)?.intValue == 48)
+        let colors = try #require(settings[AVVideoColorPropertiesKey] as? [String: String])
+        #expect(colors == [logTransferKey: logTransferValue, matrixKey: matrixValue])
+        #expect(colors[AVVideoColorPrimariesKey] == nil)
+        #expect(colors[AVVideoTransferFunctionKey] == nil)
     }
 
     @Test func sampleValidationRejectsWrongColorDomainPixelFormatAndGeometry() {

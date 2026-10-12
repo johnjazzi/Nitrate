@@ -210,14 +210,15 @@ enum CameraCapturePreservationProbe {
         guard videoPTS.isValid, videoPTS.isNumeric else { throw PreservationError.invalidTimestamps }
 
         let audioTrack = tracks.first(where: { $0.mediaType == .audio })
-        if requiresAudio, audioTrack == nil { throw PreservationError.missingAACAudio }
+        if requiresAudio, audioTrack == nil { throw PreservationError.missingAACAudio("no audio track") }
         var audioSkew = 0.0
         var endDifference = 0.0
         if let audioTrack {
             let audioFormats = try await audioTrack.load(.formatDescriptions)
-            guard let audioFormat = audioFormats.first,
-                  CMFormatDescriptionGetMediaSubType(audioFormat) == kAudioFormatMPEG4AAC else {
-                throw PreservationError.missingAACAudio
+            let audioSubtype = audioFormats.first.map { CMFormatDescriptionGetMediaSubType($0) }
+            guard audioSubtype == kAudioFormatMPEG4AAC else {
+                let found = audioSubtype.map { String(format: "%08X", $0) } ?? "none"
+                throw PreservationError.missingAACAudio("found audio subtype \(found)")
             }
             let audioRange = try await audioTrack.load(.timeRange)
             try validateTimeRange(audioRange)
@@ -280,7 +281,7 @@ enum CameraCapturePreservationProbe {
         case cannotDecodeVideo
         case pixelValuesExceededTolerance(luma: Float, chroma: Float)
         case invalidTimestamps
-        case missingAACAudio
+        case missingAACAudio(String)
         case invalidAudioTiming
         case audioOutOfSync(skew: Double, endDifference: Double)
 
@@ -292,7 +293,7 @@ enum CameraCapturePreservationProbe {
             case .pixelValuesExceededTolerance(let luma, let chroma):
                 return String(format: "Preservation check failed: YUV mean errors %.4f/%.4f exceed limits %.2f/%.2f.", luma, chroma, lumaTolerance, chromaTolerance)
             case .invalidTimestamps: return "Preservation check failed: the movie contains invalid capture-clock timestamps or durations."
-            case .missingAACAudio: return "Preservation check failed: required AAC audio is missing or uses another codec."
+            case .missingAACAudio(let detail): return "Preservation check failed: required AAC audio is missing or uses another codec (\(detail))."
             case .invalidAudioTiming: return "Preservation check failed: the audio track could not be inspected."
             case .audioOutOfSync(let skew, let endDifference):
                 return String(format: "Preservation check failed: A/V first-sample skew %.3fs or end-duration difference %.3fs exceeds %.2fs.", skew, endDifference, synchronizationTolerance)

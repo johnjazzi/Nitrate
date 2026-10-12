@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 import CoreVideo
 
 /// Select a declared Log 2 4K/24fps format from device capability evidence.
@@ -122,9 +123,48 @@ enum CameraSampleValidationPolicy {
         codecTypes.contains("hvc1")
     }
 
-    static func acceptsHEVCMain10Settings(codec: String?, width: Int?, height: Int?,
+    static func explicitHEVCMain10Settings(profile: String, averageBitRate: Int,
+                                           colorProperties: [String: String]) -> [String: Any] {
+        [
+            AVVideoCodecKey: AVVideoCodecType.hevc,
+            AVVideoWidthKey: 3840,
+            AVVideoHeightKey: 2160,
+            AVVideoCompressionPropertiesKey: [
+                AVVideoProfileLevelKey: profile,
+                AVVideoAverageBitRateKey: averageBitRate,
+                AVVideoMaxKeyFrameIntervalKey: 48
+            ],
+            AVVideoColorPropertiesKey: colorProperties
+        ]
+    }
+
+    /// Explicit AAC settings for the recorded original.
+    ///
+    /// `AVCaptureAudioDataOutput.recommendedAudioSettingsForAssetWriter` can
+    /// return uncompressed `lpcm` for the built-in microphone. The original is
+    /// contracted to carry AAC, so request it explicitly instead of trusting
+    /// the recommendation.
+    static func aacAudioSettings(sampleRate: Double, channels: Int = 1,
+                                 averageBitRate: Int) -> [String: Any] {
+        [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: channels,
+            AVEncoderBitRateKey: averageBitRate
+        ]
+    }
+
+    /// AAC sample rates the encoder accepts; other rates are coerced.
+    static func normalizedAACSampleRate(_ requested: Double) -> Double {
+        requested == 44_100 ? 44_100 : 48_000
+    }
+
+    /// Bind `AVVideoCodecKey` as `AVVideoCodecType`, not `String`. AVFoundation
+    /// boxes that value as an `AVVideoCodecType`, so casting it to `String`
+    /// always yields nil and would reject valid HEVC settings on device.
+    static func acceptsHEVCMain10Settings(codec: AVVideoCodecType?, width: Int?, height: Int?,
                                            profile: String?, expectedProfile: String) -> Bool {
-        codec == "hvc1" && width == 3840 && height == 2160 && profile == expectedProfile
+        codec == .hevc && width == 3840 && height == 2160 && profile == expectedProfile
     }
 }
 

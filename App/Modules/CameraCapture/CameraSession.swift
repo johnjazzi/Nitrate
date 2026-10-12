@@ -382,8 +382,7 @@ final class CameraSession: NSObject {
         ) { pixelFormat in
             videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat)]
             if let rejection = configureWriterForDataOutput(pixelFormat: pixelFormat,
-                                                            candidates: candidates,
-                                                            advertisedPixelFormats: supportedPixelFormats) {
+                                                            candidates: candidates) {
                 candidateFailures.append("\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)): \(rejection)")
                 return false
             } else {
@@ -396,34 +395,24 @@ final class CameraSession: NSObject {
     }
 
     private func configureWriterForDataOutput(pixelFormat: UInt32,
-                                              candidates: [UInt32],
-                                              advertisedPixelFormats: [UInt32]) -> String? {
+                                              candidates: [UInt32]) -> String? {
         let codecs = videoOutput.availableVideoCodecTypesForAssetWriter(writingTo: .mov)
         let codecNames = codecs.map(\.rawValue)
         let codecList = codecNames.isEmpty ? "none" : codecNames.joined(separator: ", ")
-        guard CameraSampleValidationPolicy.hasHEVCEncoder(codecNames) else {
-            return "HEVC is not advertised for MOV writing (codecs: \(codecList); " +
-                "advertised pixel formats: \(CameraSampleValidationPolicy.fourCCListDescription(advertisedPixelFormats)))"
+        guard #available(iOS 27.0, *) else {
+            return "Apple Log 2 writer color tags require iOS 27 (running version is older)"
         }
-        guard var settings = videoOutput.recommendedVideoSettings(forVideoCodecType: .hevc,
-                                                                  assetWriterOutputFileType: .mov) else {
-            return "AVCaptureVideoDataOutput returned no HEVC settings (codecs: \(codecList); " +
-                "advertised pixel formats: \(CameraSampleValidationPolicy.fourCCListDescription(advertisedPixelFormats)))"
-        }
-        guard settings[AVVideoCodecKey] as? String == AVVideoCodecType.hevc.rawValue else {
-            let recommendedCodec = settings[AVVideoCodecKey] as? String ?? "missing"
-            return "recommended settings identify codec \(recommendedCodec), expected hvc1 " +
-                "(advertised codecs: \(codecList))"
-        }
-        settings[AVVideoWidthKey] = 3840
-        settings[AVVideoHeightKey] = 2160
-        var compression = settings[AVVideoCompressionPropertiesKey] as? [String: Any] ?? [:]
-        compression[AVVideoProfileLevelKey] = kVTProfileLevel_HEVC_Main10_AutoLevel as String
-        compression[AVVideoAverageBitRateKey] = DeliverySettings.averageBitRate
-        compression[AVVideoMaxKeyFrameIntervalKey] = 48
-        settings[AVVideoCompressionPropertiesKey] = compression
+        let settings = CameraSampleValidationPolicy.explicitHEVCMain10Settings(
+            profile: kVTProfileLevel_HEVC_Main10_AutoLevel as String,
+            averageBitRate: DeliverySettings.averageBitRate,
+            colorProperties: [
+                AVVideoLogTransferFunctionKey: AVVideoLogTransferFunction_AppleLog2,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
+            ]
+        )
+        let compression = settings[AVVideoCompressionPropertiesKey] as? [String: Any] ?? [:]
         guard CameraSampleValidationPolicy.acceptsHEVCMain10Settings(
-            codec: settings[AVVideoCodecKey] as? String,
+            codec: settings[AVVideoCodecKey] as? AVVideoCodecType,
             width: (settings[AVVideoWidthKey] as? NSNumber)?.intValue,
             height: (settings[AVVideoHeightKey] as? NSNumber)?.intValue,
             profile: compression[AVVideoProfileLevelKey] as? String,
@@ -433,16 +422,8 @@ final class CameraSession: NSObject {
             let width = (settings[AVVideoWidthKey] as? NSNumber)?.intValue ?? 0
             let height = (settings[AVVideoHeightKey] as? NSNumber)?.intValue ?? 0
             return "constructed settings are not HEVC Main10 3840x2160 " +
-                "(codec: \(settings[AVVideoCodecKey] as? String ?? "missing"), " +
+                "(codec: \((settings[AVVideoCodecKey] as? AVVideoCodecType)?.rawValue ?? "missing"), " +
                 "size: \(width)x\(height), profile: \(profile))"
-        }
-        if #available(iOS 27.0, *) {
-            settings[AVVideoColorPropertiesKey] = [
-                AVVideoLogTransferFunctionKey: AVVideoLogTransferFunction_AppleLog2,
-                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
-            ]
-        } else {
-            return "Apple Log 2 writer color tags require iOS 27 (running version is older)"
         }
         let probeURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("hevc-main10-capability-\(UUID().uuidString).mov")
@@ -455,15 +436,16 @@ final class CameraSession: NSObject {
         guard writer.canApply(outputSettings: settings, forMediaType: .video) else {
             let profile = compression[AVVideoProfileLevelKey] as? String ?? "missing"
             return "AVAssetWriter.canApply rejected HEVC Main10 3840x2160 " +
-                "(profile: \(profile), pixel formats: " +
-                "\(CameraSampleValidationPolicy.fourCCListDescription(candidates)); codecs: \(codecList))"
+                "(profile: \(profile), input pixel format: " +
+                "\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)); " +
+                "capture-output MOV codecs (diagnostic only): \(codecList))"
         }
         acceptedPixelFormats = [pixelFormat]
         acceptedVideoSettings = settings
         print("Capture writer capability: hvc1 Main10 3840x2160; selected pixel format " +
               "\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)); " +
               "advertised ten-bit formats: \(CameraSampleValidationPolicy.fourCCListDescription(candidates)); " +
-              "advertised codecs: \(codecList)")
+              "capture-output MOV codecs (diagnostic only): \(codecList)")
         return nil
     }
 
@@ -957,13 +939,20 @@ final class CameraSession: NSObject {
             failPendingStart(CameraError.writerUnavailable("the active format has not been negotiated"))
             return
         }
-        let audioSettings = microphoneAdded
-            ? audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov)
+        // The device can recommend uncompressed `lpcm` for the built-in mic; the
+        // original is contracted to AAC, so request it explicitly.
+        let audioSettings: [String: Any]? = microphoneAdded
+            ? CameraSampleValidationPolicy.aacAudioSettings(
+                sampleRate: CameraSampleValidationPolicy.normalizedAACSampleRate(
+                    AVAudioSession.sharedInstance().sampleRate),
+                averageBitRate: DeliverySettings.aacAverageBitRate)
             : nil
-        if microphoneAdded, audioSettings == nil {
-            failPendingStart(CameraError.writerUnavailable("AAC audio settings are unavailable"))
-            return
+#if DEBUG
+        if let audioSettings {
+            print("HEVC Log2 audio settings: \(String(describing: audioSettings)); " +
+                  "recommended=\(String(describing: audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov)))")
         }
+#endif
         guard recorderCompletionBridge.begin(epoch: generation) else {
             failPendingStart(CameraError.recordingInProgress)
             return

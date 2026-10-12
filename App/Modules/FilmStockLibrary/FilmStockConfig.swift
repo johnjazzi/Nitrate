@@ -221,6 +221,8 @@ enum RenderEncodingContract {
 /// overrides the bitrate via `--bitrate` instead of this store.
 enum DeliverySettings {
     static let defaultAverageBitRate = 60_000_000
+    /// AAC bitrate for the recorded original's audio track.
+    static let aacAverageBitRate = 192_000
     private static let bitrateKey = "delivery.averageBitRate"
 
     static var averageBitRate: Int {
