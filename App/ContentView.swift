@@ -48,7 +48,22 @@ struct ContentView: View {
     @State private var manualFocusPosition: Double = 0.5
     @State private var isManualFocus = false
 
+#if DEBUG
+    /// Frozen frame + live tuning sheet (DEBUG builds only).
+    @State private var debugFrameViewModel: DebugFrameViewModel?
+#endif
+
     var body: some View {
+        #if DEBUG
+        debugEnabledBody
+        #else
+        shippingBody
+        #endif
+    }
+
+    /// The shipping camera screen. Kept as its own property so the DEBUG build
+    /// can wrap it with the debug single-frame sheet without duplicating it.
+    private var shippingBody: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
@@ -110,6 +125,31 @@ struct ContentView: View {
             }
         }
     }
+
+#if DEBUG
+    /// Shipping screen plus the debug single-frame sheet, presented only when the
+    /// DEBUG button captures a frame.
+    private var debugEnabledBody: some View {
+        shippingBody.sheet(item: $debugFrameViewModel) { viewModel in
+            DebugFrameSheet(viewModel: viewModel)
+        }
+    }
+
+    /// Capture one frame from the live camera and open the debug sheet on it.
+    private func openDebugFrame() {
+        guard let stock = selectedStock else {
+            cameraViewModel.errorMessage = "Select a film stock before opening the debug frame."
+            return
+        }
+        cameraViewModel.captureDebugFrame { buffer in
+            guard let buffer else {
+                cameraViewModel.errorMessage = "Debug frame capture failed — is the camera running?"
+                return
+            }
+            debugFrameViewModel = DebugFrameViewModel(frame: buffer, config: stock)
+        }
+    }
+#endif
 
     // MARK: - Helpers
 
@@ -209,6 +249,22 @@ struct ContentView: View {
                         .padding(12)
                 }
                 .buttonStyle(CameraRaisedButtonStyle(faceColor: showManualControls ? .yellow : Color(red: 0.16, green: 0.17, blue: 0.19)))
+
+#if DEBUG
+                // Debug single-frame tuning (grain / halation / glow). Debug
+                // builds only; opens a sheet over a frozen live frame.
+                Button {
+                    openDebugFrame()
+                } label: {
+                    Text("DEBUG")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(.yellow)
+                        .clipShape(Capsule())
+                }
+#endif
 
                 Spacer()
             }

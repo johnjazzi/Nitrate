@@ -61,6 +61,15 @@ final class CameraSession: NSObject {
     private let sampleBufferQueue = DispatchQueue(label: "camera.sample-buffer-writer")
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
+#if DEBUG
+    /// Debug single-frame tap: an independent second video output with its own
+    /// delegate, so the recorder's `videoOutput` and delegate stay untouched. Its
+    /// connection is disabled except while a debug frame is requested, so the
+    /// recording path is unaffected in steady state.
+    private let debugFrameOutput = AVCaptureVideoDataOutput()
+    private let debugFrameQueue = DispatchQueue(label: "camera.debug-frame")
+    private let debugFrameTap = CameraDebugFrameTap()
+#endif
     private lazy var sampleBufferRecorder = CameraSampleBufferRecorder(queue: sampleBufferQueue)
     private var acceptedPixelFormats: Set<UInt32> = []
     private var acceptedVideoSettings: [String: Any] = [:]
@@ -1424,6 +1433,62 @@ final class CameraSession: NSObject {
     }
 
 #if DEBUG
+    /// Debug-only: grab a single frame from the live camera as a `CVPixelBuffer`
+    /// in the same RGBA-half layout the offline renderer decodes, so the debug
+    /// single-frame render can feed it straight to pass1.
+    ///
+    /// Uses a dedicated second video output whose connection stays disabled
+    /// except while a frame is requested, so the recorder's `videoOutput` and
+    /// delegate are never touched. Only runs when the session is not recording,
+    /// and reconfigures nothing but its own output. `completion` runs on
+    /// `sessionQueue`.
+    func captureDebugFrame(completion: @escaping @Sendable (CVPixelBuffer?) -> Void) {
+        sessionQueue.async { [weak self] in
+            guard let self, self.isConfigured, self.session.isRunning,
+                  !self.isRecordingOrPending,
+                  let pixelFormat = self.acceptedPixelFormats.first,
+                  self.attachDebugFrameOutput(pixelFormat: pixelFormat),
+                  let connection = self.debugFrameOutput.connection(with: .video) else {
+                completion(nil)
+                return
+            }
+            let request = CameraDebugFrameRequest()
+            connection.isEnabled = true
+            self.debugFrameTap.request { [weak self] buffer in
+                guard let self else { return }
+                self.sessionQueue.async {
+                    guard request.finish() else { return }
+                    connection.isEnabled = false
+                    completion(DebugFrameConverter.rgbaHalfBuffer(from: buffer))
+                }
+            }
+            self.sessionQueue.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard request.finish() else { return }
+                self?.debugFrameOutput.connection(with: .video)?.isEnabled = false
+                completion(nil)
+            }
+        }
+    }
+
+    /// Add (once) or refresh the debug tap's output. Returns false if the session
+    /// refuses the output, leaving the recording path untouched either way.
+    private func attachDebugFrameOutput(pixelFormat: UInt32) -> Bool {
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+        let settings: [String: Any] = [kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat)]
+        if session.outputs.contains(where: { $0 === debugFrameOutput }) {
+            debugFrameOutput.videoSettings = settings
+            return true
+        }
+        guard session.canAddOutput(debugFrameOutput) else { return false }
+        debugFrameOutput.alwaysDiscardsLateVideoFrames = true
+        debugFrameOutput.videoSettings = settings
+        debugFrameOutput.setSampleBufferDelegate(debugFrameTap, queue: debugFrameQueue)
+        session.addOutput(debugFrameOutput)
+        debugFrameOutput.connection(with: .video)?.isEnabled = false
+        return true
+    }
+
     func startDebugSmokeCapture() {
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured, self.session.isRunning, !self.isRecordingOrPending else {
