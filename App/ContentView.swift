@@ -148,7 +148,8 @@ struct ContentView: View {
                 cameraViewModel.errorMessage = "Debug frame capture failed — is the camera running?"
                 return
             }
-            debugFrameViewModel = DebugFrameViewModel(frame: buffer, config: stock)
+            debugFrameViewModel = DebugFrameViewModel(frame: buffer, config: stock,
+                                                      stocks: library.videoStocks())
         }
     }
 #endif

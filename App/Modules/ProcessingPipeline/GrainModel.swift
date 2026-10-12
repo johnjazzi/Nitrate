@@ -42,6 +42,29 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     /// form, so exported metadata reads "35mm", not "thirtyFiveMillimetre".
     var displayName: String { rawValue }
 
+    /// Accept both the current short values ("8mm") and the legacy long case
+    /// names ("eightMillimetre") that earlier builds persisted. Without this a
+    /// stored render queue written before the rename fails to decode and the
+    /// whole queue is reported as unreadable.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        if let gauge = PrintGauge(rawValue: raw) {
+            self = gauge
+            return
+        }
+        switch raw {
+        case "eightMillimetre": self = .eightMillimetre
+        case "sixteenMillimetre": self = .sixteenMillimetre
+        case "thirtyFiveMillimetre": self = .thirtyFiveMillimetre
+        case "seventyFiveMillimetre": self = .seventyFiveMillimetre
+        default:
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Unknown print gauge: \(raw)"
+            ))
+        }
+    }
+
     /// The neutral gauge: identity size and amplitude.
     static let neutral: PrintGauge = .thirtyFiveMillimetre
 }

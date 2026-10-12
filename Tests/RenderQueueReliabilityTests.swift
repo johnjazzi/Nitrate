@@ -351,6 +351,30 @@ struct RenderQueueReliabilityTests {
         #expect(try Data(contentsOf: files.persistence) == corruptData)
         #expect(model.rendererErrorMessage?.contains("Queue state could not be loaded") == true)
     }
+
+    @Test func oneUnreadablePersistedJobDoesNotDiscardTheQueue() throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let valid = RenderJob(sourceURL: files.source, stockId: "keep", iso: 400,
+                              printGauge: .thirtyFiveMillimetre)
+        let encoded = try JSONEncoder().encode([valid])
+        var jobs = try #require(try JSONSerialization.jsonObject(with: encoded) as? [[String: Any]])
+
+        // A job written before the gauge labels were shortened, and a wholly
+        // malformed entry: neither may take the readable job down with it.
+        var legacy = jobs[0]
+        legacy["printGauge"] = "thirtyFiveMillimetre"
+        var malformed = jobs[0]
+        malformed["iso"] = "not-a-number"
+        let data = try JSONSerialization.data(withJSONObject: [legacy, malformed])
+        try data.write(to: files.persistence)
+
+        let loaded = try QueuePersister(storageURL: files.persistence).load()
+        #expect(loaded.count == 1)
+        #expect(loaded.first?.stockId == "keep")
+        // The legacy long-form value still resolves to the same gauge.
+        #expect(loaded.first?.printGauge == .thirtyFiveMillimetre)
+    }
 }
 
 private enum QueueTestError: Error, LocalizedError {

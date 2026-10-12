@@ -57,8 +57,10 @@ private struct DebugFrameRenderInput: @unchecked Sendable {
 @Observable
 final class DebugFrameViewModel: Identifiable {
     let id = UUID()
-    let config: FilmStockConfig
+    private(set) var config: FilmStockConfig
     var parameters: PipelineRenderer.DebugFrameParameters
+    /// Stocks the sheet can grade the frozen frame with.
+    let stocks: [FilmStockConfig]
     private(set) var image: CGImage?
     private(set) var lastRenderMilliseconds: Double = 0
     private(set) var message: String?
@@ -67,12 +69,22 @@ final class DebugFrameViewModel: Identifiable {
     private let renderer: PipelineRenderer?
     private var renderTask: Task<Void, Never>?
 
-    init(frame: CVPixelBuffer, config: FilmStockConfig) {
+    init(frame: CVPixelBuffer, config: FilmStockConfig, stocks: [FilmStockConfig] = []) {
         self.frame = frame
         self.config = config
+        self.stocks = stocks.isEmpty ? [config] : stocks
         self.parameters = PipelineRenderer.DebugFrameParameters(config: config)
         self.renderer = try? PipelineRenderer()
         if renderer == nil { message = "Metal pipeline unavailable." }
+        scheduleRender()
+    }
+
+    /// Grade the frozen frame with a different stock. Every dial is re-seeded
+    /// from the new stock so the sheet lands on that stock's shipping look.
+    func selectStock(_ stock: FilmStockConfig) {
+        guard stock.stockId != config.stockId else { return }
+        config = stock
+        parameters = PipelineRenderer.DebugFrameParameters(config: stock)
         scheduleRender()
     }
 
@@ -129,6 +141,7 @@ struct DebugFrameSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     preview
+                    stockSection
                     realizedValues
                     grainSection
                     halationSection
@@ -160,6 +173,24 @@ struct DebugFrameSheet: View {
                     .frame(height: 200)
                     .overlay { ProgressView() }
             }
+        }
+    }
+
+    private var stockSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Stock").font(.headline)
+            Picker("Stock", selection: Binding(
+                get: { viewModel.config.stockId },
+                set: { id in
+                    guard let stock = viewModel.stocks.first(where: { $0.stockId == id }) else { return }
+                    viewModel.selectStock(stock)
+                }
+            )) {
+                ForEach(viewModel.stocks, id: \.stockId) { stock in
+                    Text(stock.displayName).tag(stock.stockId)
+                }
+            }
+            .pickerStyle(.menu)
         }
     }
 

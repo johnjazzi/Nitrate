@@ -28,7 +28,20 @@ final class QueuePersister {
         }
         let data = try Data(contentsOf: storageURL)
         let decoder = JSONDecoder()
-        return try decoder.decode([RenderJob].self, from: data)
+        // Decode element-wise: a single job written by an older build (or with a
+        // value this build no longer understands) must not make the whole queue
+        // unreadable. Unreadable entries are dropped, the rest are kept.
+        return try decoder.decode([FailableJob].self, from: data).compactMap(\.job)
+    }
+
+    /// One array element that decodes to `nil` instead of throwing, so a bad
+    /// entry is skipped rather than failing the whole load.
+    private struct FailableJob: Decodable {
+        let job: RenderJob?
+
+        init(from decoder: Decoder) throws {
+            job = try? RenderJob(from: decoder)
+        }
     }
 
     /// Clear persisted state.

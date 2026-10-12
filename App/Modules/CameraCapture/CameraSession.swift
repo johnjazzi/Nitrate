@@ -844,6 +844,21 @@ final class CameraSession: NSObject {
         device.setExposureModeCustom(duration: duration, iso: iso) { _ in }
     }
 
+    /// The aperture a custom-exposure write should hold: the user's explicit
+    /// choice, else the device's current value reconciled to a supported stop,
+    /// else the format's first stop. `device.lensAperture` reads 0 while the
+    /// device is still settling, so it cannot be trusted raw — using it directly
+    /// made the recording start throw `apertureExposureUnsupported` and refuse
+    /// the take. Returns nil when the active format has no variable iris.
+    @available(iOS 27.0, *)
+    private func heldAperture(on device: AVCaptureDevice) -> Float? {
+        let capability = Self.apertureCapability(for: device)
+        guard capability.isVariable else { return nil }
+        return selectedLensAperture
+            ?? CameraAperturePolicy.reconcile(device.lensAperture, with: capability)
+            ?? capability.stops.first
+    }
+
     @available(iOS 27.0, *)
     private func apertureParameters(for device: AVCaptureDevice,
                                     mode: CameraAperturePolicy.ExposureMode,
@@ -1230,25 +1245,33 @@ final class CameraSession: NSObject {
                         self.beginSampleBufferRecording(to: url, generation: generation)
                     }
                 }
-                if #available(iOS 27.0, *), Self.apertureCapability(for: device).isVariable {
-                    let measuredAperture = device.lensAperture
-                    guard let pin = CameraAperturePolicy.recordingPin(
-                        selectedAperture: self.selectedLensAperture, measuredAperture: measuredAperture
-                    ) else { throw CameraError.apertureExposureUnsupported }
+                if #available(iOS 27.0, *), let heldAperture = self.heldAperture(on: device) {
                     let parameters = CameraAperturePolicy.ExposureParameters(
-                        aperture: pin.aperture, duration: shutter, iso: iso)
+                        aperture: heldAperture, duration: shutter, iso: iso)
                     let applied = try CameraAperturePolicy.performIfSupported(parameters, supports: {
                         device.activeFormat.supportsExposureModeCustom(
                             lensAperture: $0.aperture, duration: $0.duration, iso: $0.iso)
                     }) {
                         try device.lockForConfiguration()
                         defer { device.unlockForConfiguration() }
-                        device.setExposureModeCustom(lensAperture: pin.aperture,
+                        device.setExposureModeCustom(lensAperture: parameters.aperture,
                                                      duration: shutter, iso: iso,
                                                      completionHandler: completionHandler)
                     }
-                    guard applied else { throw CameraError.apertureExposureUnsupported }
-                    self.recordingAperturePin = pin
+                    if applied {
+                        self.recordingAperturePin = CameraAperturePolicy.RecordingPin(
+                            aperture: heldAperture, restoresAuto: self.selectedLensAperture == nil)
+                    } else {
+                        // The format rejected a lens-aperture custom exposure;
+                        // start the take with the iris left where it is rather
+                        // than refusing to record.
+                        try device.lockForConfiguration()
+                        do {
+                            defer { device.unlockForConfiguration() }
+                            device.setExposureModeCustom(duration: shutter, iso: iso,
+                                                         completionHandler: completionHandler)
+                        }
+                    }
                 } else {
                     try device.lockForConfiguration()
                     do {
