@@ -1062,7 +1062,8 @@ final class CameraSession: NSObject {
     /// Lock the shutter to 180° (1/48s at 24fps) and let ISO auto-meter.
     /// AVFoundation has no native shutter-priority mode, so we meter briefly in
     /// continuous-auto, then hold the fixed shutter at the freshly metered ISO.
-    /// Call `refreshShutterPriority()` periodically to keep ISO tracking the scene.
+    /// `refreshShutterPriority()` re-acquires only when no pin is held, so the
+    /// periodic tick does not step the preview.
     func enableShutterPriority() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
@@ -1099,15 +1100,16 @@ final class CameraSession: NSObject {
         let duration = min(max(Self.filmShutterDuration, device.activeFormat.minExposureDuration),
                            device.activeFormat.maxExposureDuration)
         let ev = exposureBiasEV
-        // Deadband gate. Without it every 1.5 s tick dropped the device back
-        // into auto exposure — a visible exposure step — and re-pinned at a
-        // half-converged sample, so the pin chased its own metering. While the
-        // held exposure is still within the deadband there is nothing to do.
-        guard force || ExposureStabilizer.shouldRemeasure(
-            meteredOffsetEV: device.exposureTargetOffset,
-            targetEV: ev,
-            hasPin: pinnedExposure != nil
-        ) else { return }
+        // Acquire a pin once, then leave the device alone.
+        //
+        // Re-metering re-enters auto exposure — the shutter-priority branch
+        // writes `AVCaptureDevice.autoISO` — so the preview snapped to the
+        // auto/default exposure and back on every 1.5 s tick. A held pin is
+        // already on target by construction, so there is nothing to re-measure
+        // without leaving custom exposure. The pin is cleared by a lens change,
+        // an EV change, or re-enabling shutter priority, and the next tick
+        // re-acquires it.
+        guard force || pinnedExposure == nil else { return }
         if #available(iOS 27.0, *), Self.apertureCapability(for: device).isVariable {
             do {
                 try applyCustomExposureHoldingAperture(on: device, mode: .shutterPriority,

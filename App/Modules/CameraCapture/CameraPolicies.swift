@@ -535,21 +535,6 @@ enum ExposureStabilizer {
     /// our own pin rather than an independent measurement.
     static let echoToleranceStops: Float = 0.02
 
-    /// Whether a fresh meter is worth taking at all.
-    ///
-    /// The held exposure's offset from the device target is a cheap,
-    /// non-disturbing meter: re-entering auto exposure to re-meter is what
-    /// visibly stepped the preview, so it must not happen while the pin is
-    /// still inside the deadband. Fails open (re-measures) when there is no pin
-    /// yet or the offset is unavailable.
-    static func shouldRemeasure(meteredOffsetEV: Float, targetEV: Float, hasPin: Bool,
-                                deadbandStops: Float = ExposureStabilizer.deadbandStops) -> Bool {
-        guard hasPin else { return true }
-        guard meteredOffsetEV.isFinite, targetEV.isFinite,
-              deadbandStops.isFinite, deadbandStops >= 0 else { return true }
-        return abs(meteredOffsetEV - targetEV) > deadbandStops
-    }
-
     /// Decide the ISO to write from a fresh meter reading.
     ///
     /// Holds when the compensated target is within `deadbandStops` of the pin,

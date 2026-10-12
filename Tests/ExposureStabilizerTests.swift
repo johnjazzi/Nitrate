@@ -57,21 +57,6 @@ struct ExposureStabilizerTests {
                                            minimum: 25, maximum: 6400) == .apply(iso: 400))
     }
 
-    @Test func remeasureGateHoldsInsideTheDeadbandAndFailsOpen() {
-        // No pin yet: always worth measuring.
-        #expect(ExposureStabilizer.shouldRemeasure(meteredOffsetEV: 0, targetEV: 0, hasPin: false))
-        // Held pin sitting on target, or within a third of a stop of it.
-        #expect(!ExposureStabilizer.shouldRemeasure(meteredOffsetEV: 0.0, targetEV: 0.0, hasPin: true))
-        #expect(!ExposureStabilizer.shouldRemeasure(meteredOffsetEV: 0.2, targetEV: 0.0, hasPin: true))
-        // The target bias is accounted for: -0.4 EV target holds at -0.4 EV.
-        #expect(!ExposureStabilizer.shouldRemeasure(meteredOffsetEV: -0.4, targetEV: -0.4, hasPin: true))
-        // The scene drifted past the deadband: re-meter.
-        #expect(ExposureStabilizer.shouldRemeasure(meteredOffsetEV: -0.6, targetEV: 0.0, hasPin: true))
-        #expect(ExposureStabilizer.shouldRemeasure(meteredOffsetEV: 0.9, targetEV: -0.4, hasPin: true))
-        // An unreadable meter fails open rather than freezing the pin.
-        #expect(ExposureStabilizer.shouldRemeasure(meteredOffsetEV: .nan, targetEV: 0, hasPin: true))
-    }
-
     // MARK: - Indicator mapping
 
     @Test func indicatorReportsAMatchOnlyWhenTheMeterAgreesWithTheTarget() {
