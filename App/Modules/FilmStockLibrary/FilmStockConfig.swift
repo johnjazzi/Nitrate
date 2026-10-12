@@ -33,6 +33,12 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
     var colorTemperature: Float = 5600
     var defaultISO: Float
     var recipe: RenderRecipe? = nil
+    /// Print gauge owning grain size and amplitude (m00459/m00581). Optional so
+    /// a stocks.json without the key decodes to the neutral 35mm reference.
+    var printGauge: PrintGauge? = nil
+
+    /// The gauge actually applied to the render: the selected gauge or 35mm.
+    var effectivePrintGauge: PrintGauge { printGauge ?? .neutral }
 
     /// Copy the complete value so per-shot ISO cannot discard recipe or display metadata.
     func overridingISO(_ iso: Float) -> FilmStockConfig {

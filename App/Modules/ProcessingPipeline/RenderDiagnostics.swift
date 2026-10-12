@@ -306,6 +306,11 @@ enum RenderMovieMetadata {
             "halation-radius-fraction": String(config.halationRadiusFraction),
             "halation-tint": "\(config.halationTint.x),\(config.halationTint.y),\(config.halationTint.z)",
             "grain-size": String(config.grainSize), "recipe-version": config.effectiveRecipe.version,
+            "print-gauge": config.effectivePrintGauge.rawValue,
+            "grain-size-effective": String(GrainModel.effectiveSize(stockGrainSize: config.grainSize,
+                                                                   gauge: config.effectivePrintGauge)),
+            "grain-iso-loudness": String(GrainModel.isoLoudness(iso: config.defaultISO)),
+            "grain-gauge-amplitude": String(config.effectivePrintGauge.amplitudeMultiplier),
             "grain-algorithm": config.effectiveRecipe.grainAlgorithm,
             "grain-edge-boost-multiplier": String(config.effectiveRecipe.edgeBoostMultiplier),
             "shutter-speed": "1/48", "shutter-angle": "180",
@@ -350,7 +355,8 @@ enum RenderMovieMetadata {
         "ISO \(Int(config.defaultISO)) · 180° shutter · halation \(config.halationStrength) "
             + "(r \(config.halationRadiusFraction), tint \(config.halationTint.x)/\(config.halationTint.y)/\(config.halationTint.z)) · "
             + "glow \(config.glowStrength) · "
-            + "grain \(config.grainSize) · \(RenderEncodingContract.codec) @ \(bitrate / 1_000_000) Mbps"
+            + "grain \(config.grainSize) @ \(config.effectivePrintGauge.rawValue) · "
+            + "\(RenderEncodingContract.codec) @ \(bitrate / 1_000_000) Mbps"
     }
 }
 

@@ -33,6 +33,7 @@ struct GrainShadowTests {
         var iso: Float
         var grainSize: Float
         var edgeBoostMultiplier: Float = 0
+        var gaugeAmplitude: Float = 1.0
     }
 
     private final class BundleToken {}
@@ -207,7 +208,8 @@ struct GrainShadowTests {
         input inputOverride: MTLTexture? = nil,
         width requestedWidth: Int? = nil,
         height requestedHeight: Int? = nil,
-        edgeBoostMultiplier: Float = 0
+        edgeBoostMultiplier: Float = 0,
+        gaugeAmplitude: Float = 1.0
     ) throws -> PixelStats {
         let width = requestedWidth ?? inputOverride?.width ?? side
         let height = requestedHeight ?? inputOverride?.height ?? side
@@ -215,7 +217,7 @@ struct GrainShadowTests {
         let output = try texture(device: device, format: .bgra8Unorm, usage: [.shaderWrite], width: width, height: height)
         var uniforms = GrainUniforms(
             frameIndex: frame, iso: iso, grainSize: grainSize,
-            edgeBoostMultiplier: edgeBoostMultiplier
+            edgeBoostMultiplier: edgeBoostMultiplier, gaugeAmplitude: gaugeAmplitude
         )
         guard let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else {
             throw TestFailure("Could not encode production grain kernel")
@@ -568,6 +570,49 @@ struct GrainShadowTests {
     }
 
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func printGaugeChangesFootprintAndAmplitudeIndependently() throws {
+        let (device, queue, pipeline, volume) = try Self.setup()
+        let color = SIMD3<Float>(repeating: 0.5)
+        let iso: Float = 500
+        let stockSize: Float = 1.3
+        // ISO is fixed; only the gauge varies. Size and amplitude both come from
+        // the gauge, and 35mm is the neutral 1.0 reference.
+        let fine = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: color, iso: iso,
+            grainSize: GrainModel.effectiveSize(stockGrainSize: stockSize, gauge: .seventyFiveMillimetre),
+            frame: 23, gaugeAmplitude: PrintGauge.seventyFiveMillimetre.amplitudeMultiplier
+        )
+        let coarse = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: color, iso: iso,
+            grainSize: GrainModel.effectiveSize(stockGrainSize: stockSize, gauge: .eightMillimetre),
+            frame: 23, gaugeAmplitude: PrintGauge.eightMillimetre.amplitudeMultiplier
+        )
+        let neutral = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: color, iso: iso,
+            grainSize: GrainModel.effectiveSize(stockGrainSize: stockSize, gauge: .thirtyFiveMillimetre),
+            frame: 23, gaugeAmplitude: PrintGauge.thirtyFiveMillimetre.amplitudeMultiplier
+        )
+        // Size axis: the coarse gauge must be more spatially correlated.
+        let fineNeighbors = Self.horizontalNeighborPairs(fine.channels[0])
+        let coarseNeighbors = Self.horizontalNeighborPairs(coarse.channels[0])
+        let fineCorrelation = Self.correlation(fineNeighbors.left, fineNeighbors.right)
+        let coarseCorrelation = Self.correlation(coarseNeighbors.left, coarseNeighbors.right)
+        #expect(coarseCorrelation > fineCorrelation,
+                "footprint must grow from 75mm to 8mm: \(fineCorrelation) -> \(coarseCorrelation)")
+        // Amplitude axis: 75mm is measurably quieter than the 35mm neutral.
+        let neutralEnergy = neutral.variance.x + neutral.variance.y + neutral.variance.z
+        let fineEnergy = fine.variance.x + fine.variance.y + fine.variance.z
+        #expect(fineEnergy < neutralEnergy,
+                "75mm must be quieter than 35mm at fixed ISO: \(fineEnergy) -> \(neutralEnergy)")
+        // 75mm is effectively grain-free: realized energy collapses to ~0.15².
+        #expect(fineEnergy < neutralEnergy * 0.1,
+                "75mm realized energy should collapse with the 0.15 multiplier: \(fineEnergy) vs \(neutralEnergy)")
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
     func grainChangesOverTimeWithoutFrameCyclingAndIsDeterministicPerFrame() throws {
         let (device, queue, pipeline, volume) = try Self.setup()
         let color = SIMD3<Float>(repeating: 0.5)
@@ -710,7 +755,17 @@ struct GrainShadowTests {
         }
         let offTransitionVariance = transitionResidualVariance(off)
         let onTransitionVariance = transitionResidualVariance(on)
-        #expect(onTransitionVariance > offTransitionVariance * 1.15,
+        // The margin here is amplitude-dependent: edge boost multiplies the grain
+        // excursion, but the shader's headroom budget (which keeps bright pixels
+        // off 8-bit clipping) compresses that excursion once absolute grain is
+        // loud. Under the pre-print-gauge linear ISO law this ratio exceeded 1.15;
+        // with the σD ∝ ISO^0.46 law at ISO 500 it measures ~1.07, because the
+        // excursion now saturates the budget. The property under test — edge boost
+        // raises transition residual variance — still holds; only the old margin
+        // was calibrated to the old amplitude. Verified: rescaling baseAmount to
+        // the previous absolute level restores >1.15, so this is the amplitude
+        // change, not a defect in the edge path.
+        #expect(onTransitionVariance > offTransitionVariance * 1.05,
                 "edge boost should increase real-volume residual variance at the transition: \(offTransitionVariance) -> \(onTransitionVariance)")
         #expect(distantDelta == 0, "pixels outside the source gradient must remain byte-identical")
         #expect(on.alphaMismatches == 0)

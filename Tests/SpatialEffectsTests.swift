@@ -318,7 +318,6 @@ struct SpatialEffectsTests {
 
         #expect(tailAdded > 0.01, "the tail outside the highlight must be lit (was \(tailAdded))")
         #expect(centreAdded < tailAdded,
-                "added light at the highlight centre (\(centreAdded)) must be less than in the tail "
-                    + "(\(tailAdded)) — halation must be a ring, not a filled disc")
+                "added light at the highlight centre (\(centreAdded)) must be less than in the tail (\(tailAdded)) — halation must be a ring, not a filled disc")
     }
 }

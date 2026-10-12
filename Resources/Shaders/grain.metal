@@ -10,9 +10,10 @@ constexpr sampler grain_sampler(
 /// Grain uniforms passed from CPU per frame (AD-9).
 struct GrainUniforms {
     uint  frameIndex;   // Current frame number for z-slice selection
-    float iso;           // ISO value scaling grain intensity
-    float grainSize;     // grain particle size (film stock specific)
+    float iso;           // ISO value scaling grain loudness (not size)
+    float grainSize;     // effective grain footprint (stock size × gauge size)
     float edgeBoostMultiplier;
+    float gaugeAmplitude; // print gauge amplitude multiplier (m00581)
 };
 
 /// Pass 2: 3D noise volume grain with temporal coherence (AD-9).
@@ -70,9 +71,13 @@ kernel void pass2_grain(
     float iso = isfinite(uniforms.iso) ? max(uniforms.iso, 0.0f) : 0.0f;
     float grainSize = isfinite(uniforms.grainSize) && uniforms.grainSize > 0.0f
         ? uniforms.grainSize : 1.0f;
-    float intensity = iso / 400.0f;
+    float gaugeAmplitude = isfinite(uniforms.gaugeAmplitude) ? max(uniforms.gaugeAmplitude, 0.0f) : 1.0f;
+    // ISO owns loudness, not size. σD ∝ ISO^0.46 (reference 50 to match the
+    // measured 50D anchor): speed rises with crystal projected area and
+    // σD ∝ √area, so σD ∝ √speed — a 10× ISO change is ~2.9× σD, not 10×.
+    float isoLoudness = pow(max(iso, 0.0f) / 50.0f, 0.46f);
     float sizeSoftness = smoothstep(0.55f, 1.5f, grainSize) * 0.10f;
-    float isoSoftness = smoothstep(0.25f, 2.0f, intensity) * 0.05f;
+    float isoSoftness = smoothstep(0.25f, 2.0f, isoLoudness) * 0.05f;
     float3 base = mix(source, softened, clamp(sizeSoftness + isoSoftness, 0.0f, 0.18f));
 
     // Frame-level irrational offsets retain spatial continuity while avoiding
@@ -85,7 +90,12 @@ kernel void pass2_grain(
     // which creates visible global grain pumping. In-plane offsets continue to
     // animate the field, including after the 128-plane index wraps.
     float zSlice = (fmod(frame, 128.0f) + 0.5f) / 128.0f;
-    float footprint = grainSize * (0.85f + 0.15f * sqrt(max(intensity, 0.0f)));
+    // The print gauge owns size, so footprint must not depend on ISO. Below a
+    // footprint of ~1.0 the 128³ volume is undersampled (lag-1 correlation
+    // collapses) and finer size yields aliased noise, not finer grain. Floor the
+    // effective size off that regime; 75mm's remaining graininess is removed by
+    // the amplitude multiplier instead. grainSize is already stock × gauge.
+    float footprint = clamp(grainSize, 0.95f, 8.0f);
     float2 pixelCoord = float2(gid) / (128.0f * max(footprint, 0.1f));
     // A slowly varying vector displacement breaks the 128-texel repeat without
     // introducing pixelwise UV jumps. Its incommensurate scale keeps the field
@@ -107,7 +117,7 @@ kernel void pass2_grain(
     float luminance = dot(base, float3(0.2126f, 0.7152f, 0.0722f));
     float latitude = smoothstep(0.015f, 0.13f, luminance)
         * (1.0f - smoothstep(0.78f, 0.98f, luminance));
-    float amount = 0.55f * intensity * (0.8f + 0.2f * min(grainSize, 2.0f)) * edgeFactor;
+    float amount = 0.55f * isoLoudness * gaugeAmplitude * edgeFactor;
     float3 excursion = grain * (amount * latitude);
     excursion += fine * (0.004f * latitude);
 
