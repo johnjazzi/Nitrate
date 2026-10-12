@@ -6,10 +6,10 @@ import Testing
 /// must stay monotonic, reach a lifted-but-not-clipped black point, roll off to
 /// near-white without hard-clipping, and never introduce a wild per-channel cast.
 ///
-/// These are structural invariants, NOT a colorimetric claim. The input gamut is
-/// now declared "Rec.2020" (Apple documents Apple Log as BT.2020 primaries), but
-/// the output stays declared rather than measured, so
-/// `RenderRecipe.colorContractVerified` is still false.
+/// These are structural invariants, not a colorimetric claim. The recipes retain
+/// declared/unverified color provenance; these tests do not establish the LUT's
+/// authored input gamut or output calibration. Apple Log and Apple Log 2 have
+/// different primaries. `RenderRecipe.colorContractVerified` remains false.
 struct LUTContractTests {
     // Tolerant bounds derived from the shipped Resolve .cube set (33³, all 10 LUTs).
     private let blackFloorRange: ClosedRange<Float> = 0.01...0.06

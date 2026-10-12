@@ -35,9 +35,14 @@ kernel void pass1_lut_halation_glow(
 
     // The Resolve .cube assets are authored directly for normalized Apple Log 2
     // code values. Do not introduce an extra contrast curve before sampling.
-    float3 lutSample = lut.sample(linear_sampler, color.rgb).rgb;
+    // A .cube domain knot i/(N-1) maps to the center of Metal texel i at
+    // (i+0.5)/N. Convert domain coordinates to those normalized texel centers
+    // before sampling so linear filtering interpolates the intended grid.
+    float3 lutSize = float3(lut.get_width(), lut.get_height(), lut.get_depth());
+    float3 lutCoordinates = (color.rgb * (lutSize - 1.0f) + 0.5f) / lutSize;
+    float3 lutSample = lut.sample(linear_sampler, lutCoordinates).rgb;
 
-    // Soften the print contrast to match the reference look (post-LUT).
+    // Optional post-LUT contrast; shipped presets use neutral 1.0.
     lutSample = (lutSample - 0.5f) * outputContrast + 0.5f;
 
     // Halation and glow are added by the spatial stage that follows.

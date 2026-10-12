@@ -129,7 +129,7 @@ struct RenderRecipe: Codable, Equatable, Sendable {
         input: .init(gamut: "unverified", transfer: "unverified", provenance: "unverified"),
         output: .init(gamut: "unverified", transfer: "unverified", provenance: "unverified"),
         domainMin: [0, 0, 0], domainMax: [1, 1, 1], domainProvenance: "implicit-cube-default",
-        lutAlgorithm: "resolve-rgb-red-fastest-linear-clamp-v1",
+        lutAlgorithm: "resolve-rgb-red-fastest-texel-center-linear-clamp-v2",
         halationAlgorithm: "input-luma-spatial-highlight-addition-v2",
         glowAlgorithm: "blurred-warm-highlight-addition-v2",
         grainAlgorithm: "hashed-128-volume-iso-subtractive-dither-v1",

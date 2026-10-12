@@ -89,3 +89,33 @@ remain in `project.yml`; no per-build account reconfiguration is needed.
 BMAD rendering now succeeds outside the sandbox with PyPI access; the prior DNS
 failure was a sandbox network restriction. Logs remain under ignored
 `build/verification`.
+
+## Digital ColorChecker sampler check
+
+Luna `color_contract_luna` added 24 published numeric patches from Table 2's
+bottom BabelColor Avg. sRGB column in the 2006 paper (20-chart spectral average,
+IEC 61966-2-1 / D65):
+[RGB coordinates of the Macbeth ColorChecker](https://babelcolor.com/index_htm_files/RGB%20Coordinates%20of%20the%20Macbeth%20ColorChecker.pdf).
+The coordinator independently checked all 24 triples against that table. They
+are numerical LUT probes, not retagged Apple Log 2 images or camera calibration.
+
+The production Metal kernel failed both initial chart tests. Even a 33-cube
+identity LUT changed the dark-skin probe by up to .007374 per channel and the
+light-skin probe by .008350. The real 50D cube's first probe differed from the
+independent CPU trilinear result by .006811. This established a sampler defect:
+`.cube` knots i/(N-1) were passed directly to a normalized texture sampler whose
+texel centers are (i+.5)/N.
+
+Luna corrected only sample coordinates to `(x*(N-1)+.5)/N`, preserving direct
+RGB/red-fastest upload and LUT data. Both focused GPU tests then passed, including
+all 33³ identity grid knots, chart probes, ramps, corners and domain clamping,
+and all four shipped creative cubes. Identity tolerance is .0001 and creative
+cube tolerance .001; neither was weakened to hide the original failures.
+The coordinator packed the large knot set into a bounded-width 2D test texture
+and added explicit per-channel finiteness checks.
+
+Current sampling identity is `resolve-rgb-red-fastest-texel-center-linear-clamp-v2`;
+the explicit 500T recipe is v4. Older algorithm metadata still decodes but fails
+current execution validation rather than silently reusing a different algorithm.
+This correction and neutral contrast improve adherence to the LUT definition;
+creative matching to Blackmagic remains uncalibrated.

@@ -1,0 +1,31 @@
+{
+  "reference": "BabelColor Avg. sRGB coordinates, Table 2 (2006)",
+  "source": "https://babelcolor.com/index_htm_files/RGB%20Coordinates%20of%20the%20Macbeth%20ColorChecker.pdf",
+  "sourceNotes": "24 8-bit sRGB RGB coordinates from the spectral average of 20 ColorChecker charts with pre-November-2014 formulations. sRGB / IEC 61966-2-1, D65 white point. These values are normalized sample probes only; they are not Apple Log 2 values or calibration targets.",
+  "patches": [
+    { "name": "dark skin", "rgb8": [115, 81, 67] },
+    { "name": "light skin", "rgb8": [196, 149, 129] },
+    { "name": "blue sky", "rgb8": [93, 123, 157] },
+    { "name": "foliage", "rgb8": [90, 108, 65] },
+    { "name": "blue flower", "rgb8": [130, 129, 176] },
+    { "name": "bluish green", "rgb8": [99, 191, 171] },
+    { "name": "orange", "rgb8": [220, 123, 45] },
+    { "name": "purplish blue", "rgb8": [72, 92, 168] },
+    { "name": "moderate red", "rgb8": [195, 84, 98] },
+    { "name": "purple", "rgb8": [91, 59, 105] },
+    { "name": "yellow green", "rgb8": [160, 189, 62] },
+    { "name": "orange yellow", "rgb8": [229, 161, 41] },
+    { "name": "blue", "rgb8": [43, 62, 147] },
+    { "name": "green", "rgb8": [71, 149, 72] },
+    { "name": "red", "rgb8": [176, 48, 56] },
+    { "name": "yellow", "rgb8": [238, 200, 22] },
+    { "name": "magenta", "rgb8": [188, 84, 150] },
+    { "name": "cyan", "rgb8": [0, 136, 166] },
+    { "name": "white 9.5 (.05 D)", "rgb8": [245, 245, 240] },
+    { "name": "neutral 8 (.23 D)", "rgb8": [200, 201, 201] },
+    { "name": "neutral 6.5 (.44 D)", "rgb8": [160, 161, 161] },
+    { "name": "neutral 5 (.70 D)", "rgb8": [120, 121, 121] },
+    { "name": "neutral 3.5 (1.05 D)", "rgb8": [83, 84, 85] },
+    { "name": "black 2 (1.5 D)", "rgb8": [50, 50, 50] }
+  ]
+}
