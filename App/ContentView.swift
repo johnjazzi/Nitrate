@@ -61,7 +61,7 @@ struct ContentView: View {
 
                 if showManualControls {
                     ManualControlsPanel(
-                        session: cameraViewModel.session,
+                        cameraViewModel: cameraViewModel,
                         zoomFactor: $zoomFactor,
                         manualFocusPosition: $manualFocusPosition,
                         isManualFocus: $isManualFocus,

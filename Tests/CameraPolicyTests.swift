@@ -5,6 +5,98 @@ import Testing
 
 @Suite("Camera lifecycle and recording policies")
 struct CameraPolicyTests {
+    @Test func apertureStopsAreFiniteBoundedAndDescribeFixedOrVariableHardware() {
+        let stops = CameraAperturePolicy.recommendedStops(
+            [2.8, .nan, 1.4, 8, .infinity, 1.4], minimum: 1.4, maximum: 5.6)
+        #expect(stops == [1.4, 2.8])
+        #expect(CameraAperturePolicy.capability(
+            recommended: [2.8], minimum: 1.4, maximum: 5.6) == .fixed(2.8))
+        #expect(CameraAperturePolicy.capability(
+            recommended: [1.4, 2.8], minimum: 1.4, maximum: 5.6) == .variable([1.4, 2.8]))
+        #expect(CameraAperturePolicy.capability(
+            recommended: [.nan, 8], minimum: 1.4, maximum: 5.6) == .unavailable)
+        #expect(CameraAperturePolicy.recommendedStops([1, 2], minimum: 3, maximum: 2).isEmpty)
+    }
+
+    @Test func apertureSelectionReconcilesToNearestSupportedStopAfterLensChange() {
+        let variable: CameraAperturePolicy.Capability = .variable([1.4, 2, 2.8, 4])
+        #expect(CameraAperturePolicy.reconcile(2.5, with: variable) == 2.8)
+        #expect(CameraAperturePolicy.reconcile(1.2, with: .fixed(2)) == 2)
+        #expect(CameraAperturePolicy.reconcile(nil, with: variable) == nil)
+        #expect(CameraAperturePolicy.reconcile(2, with: .unavailable) == nil)
+    }
+
+    @Test func apertureExposureCompositionPreservesManualISOAndAutomaticISO() {
+        let duration = CMTime(value: 1, timescale: 48)
+        let shutterPriority = CameraAperturePolicy.exposureParameters(
+            selectedAperture: 2.8, autoAperture: -1, mode: .shutterPriority,
+            manualISO: 640, autoISO: -2, minISO: 25, maxISO: 6400, duration: duration)
+        #expect(shutterPriority?.aperture == 2.8)
+        #expect(shutterPriority?.duration == duration)
+        #expect(shutterPriority?.iso == -2)
+
+        let manual = CameraAperturePolicy.exposureParameters(
+            selectedAperture: nil, autoAperture: -1, mode: .manual,
+            manualISO: 7000, autoISO: -2, minISO: 25, maxISO: 6400, duration: duration)
+        #expect(manual?.aperture == -1)
+        #expect(manual?.iso == 6400)
+        #expect(CameraAperturePolicy.exposureParameters(
+            selectedAperture: .infinity, autoAperture: -1, mode: .manual,
+            manualISO: 100, autoISO: -2, minISO: 25, maxISO: 6400, duration: duration) == nil)
+    }
+
+    @Test func unsupportedExactApertureCombinationDoesNotRunTheDeviceMutation() throws {
+        let parameters = try #require(CameraAperturePolicy.exposureParameters(
+            selectedAperture: 2.8, autoAperture: -1, mode: .manual,
+            manualISO: 400, autoISO: -2, minISO: 25, maxISO: 6400,
+            duration: CMTime(value: 1, timescale: 48)))
+        var mutationCount = 0
+        let rejected = CameraAperturePolicy.performIfSupported(parameters, supports: { _ in false }) {
+            mutationCount += 1
+        }
+        #expect(!rejected)
+        #expect(mutationCount == 0)
+
+        let accepted = CameraAperturePolicy.performIfSupported(parameters, supports: { $0 == parameters }) {
+            mutationCount += 1
+        }
+        #expect(accepted)
+        #expect(mutationCount == 1)
+    }
+
+    @Test func shutterPriorityEVScalesMeteredISOAndManualISOStaysPinned() throws {
+        let positiveEV = try #require(CameraAperturePolicy.evCompensatedISO(
+            meteredISO: 100, ev: 1, minimum: 25, maximum: 6400))
+        let negativeEV = try #require(CameraAperturePolicy.evCompensatedISO(
+            meteredISO: 100, ev: -1, minimum: 25, maximum: 6400))
+        #expect(positiveEV == 200)
+        #expect(negativeEV == 50)
+
+        let manual = try #require(CameraAperturePolicy.exposureParameters(
+            selectedAperture: 2.8, autoAperture: -1, mode: .manual,
+            manualISO: 640, autoISO: -2, minISO: 25, maxISO: 6400,
+            duration: CMTime(value: 1, timescale: 48)))
+        #expect(manual.iso == 640)
+        #expect(manual.aperture == 2.8)
+    }
+
+    @Test func recordingPinFreezesMeasuredAutoApertureAndRestoresChoice() throws {
+        let autoPin = try #require(CameraAperturePolicy.recordingPin(
+            selectedAperture: nil, measuredAperture: 2.4))
+        #expect(autoPin.aperture == 2.4)
+        #expect(autoPin.restoresAuto)
+        #expect(CameraAperturePolicy.selectedApertureAfterRecording(pin: autoPin) == nil)
+        // Start failure and normal writer completion share this terminal policy.
+        #expect(CameraAperturePolicy.selectedApertureAfterRecording(pin: autoPin) == nil)
+
+        let explicitPin = try #require(CameraAperturePolicy.recordingPin(
+            selectedAperture: 2.8, measuredAperture: 2.4))
+        #expect(explicitPin.aperture == 2.8)
+        #expect(!explicitPin.restoresAuto)
+        #expect(CameraAperturePolicy.selectedApertureAfterRecording(pin: explicitPin) == 2.8)
+        #expect(CameraAperturePolicy.recordingPin(selectedAperture: nil, measuredAperture: .nan) == nil)
+    }
+
     @Test func captureFormatSearchFindsLog2AlternativeAndRejectsUnsupportedLens() {
         let unsupported: [CameraCaptureFormatPolicy.Candidate] = [
             .init(width: 3840, height: 2160, supportsAppleLog2: false, supports24FPS: true),

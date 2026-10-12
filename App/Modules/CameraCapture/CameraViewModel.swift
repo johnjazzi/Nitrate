@@ -24,6 +24,10 @@ final class CameraViewModel {
     // Exposure (live from the device, polled every 0.5s)
     var liveISO: Float = 0
     var liveShutterSeconds: Double = 0
+    var liveAperture: Float?
+    var apertureStops: [Float] = []
+    var apertureIsVariable = false
+    var selectedLensAperture: Float?
     var isManualExposure = false
     var manualISO: Float = 400
     /// Auto-exposure target bias in EV (live value; polled with the exposure
@@ -43,6 +47,8 @@ final class CameraViewModel {
     private var isStartingRecording = false
     private var captureGeneration: UInt64 = 0
     private var exposureCommandGeneration: UInt64 = 0
+    private var apertureSnapshotRequestGeneration: UInt64 = 0
+    private var apertureCameraRevision: UInt64 = 0
     private let originalStorage = CameraOriginalStorage()
     private var lifecycleGate = CameraLifecycleGate()
     private var configurationInFlight = false
@@ -273,9 +279,11 @@ final class CameraViewModel {
             if self.isManualExposure {
                 self.session.lockManualExposure(iso: self.manualISO) { [weak self] error in
                     if let error { self?.errorMessage = error.localizedDescription }
+                    self?.refreshExposure()
                 }
             } else {
                 self.session.enableShutterPriority()
+                self.refreshExposure()
             }
             completion(nil)
         }
@@ -305,6 +313,16 @@ final class CameraViewModel {
             }
             isManualExposure = true
             refreshExposure()
+        }
+    }
+
+    func setLensAperture(_ aperture: Float?) {
+        session.setLensAperture(aperture) { [weak self] error in
+            guard let self else { return }
+            if let error {
+                self.errorMessage = "Failed to set aperture: \(error.localizedDescription)"
+            }
+            self.refreshExposure()
         }
     }
 
@@ -360,6 +378,18 @@ final class CameraViewModel {
     private func refreshExposure() {
         liveISO = session.currentISO
         liveShutterSeconds = session.currentShutterSeconds
+        apertureSnapshotRequestGeneration &+= 1
+        let requestGeneration = apertureSnapshotRequestGeneration
+        session.readApertureSnapshot { [weak self] snapshot in
+            guard let self,
+                  self.apertureSnapshotRequestGeneration == requestGeneration,
+                  snapshot.cameraRevision >= self.apertureCameraRevision else { return }
+            self.apertureCameraRevision = snapshot.cameraRevision
+            self.liveAperture = snapshot.measured
+            self.apertureStops = snapshot.capability.stops
+            self.apertureIsVariable = snapshot.capability.isVariable
+            self.selectedLensAperture = snapshot.selected
+        }
         // NOTE: liveExposureBias is intentionally NOT refreshed here. It is our
         // own compensation value, not the device's (which reads 0 in custom
         // exposure mode and is reset by every shutter-priority re-meter).

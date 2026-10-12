@@ -42,6 +42,120 @@ enum CameraCaptureFormatPolicy {
     }
 }
 
+/// Pure aperture policy for the iOS 27 lens-aperture controls. Values displayed
+/// in the UI come only from the active format's recommended stops.
+enum CameraAperturePolicy {
+    enum Capability: Equatable, Sendable {
+        case unavailable
+        case fixed(Float)
+        case variable([Float])
+
+        var stops: [Float] {
+            switch self {
+            case .unavailable: return []
+            case .fixed(let value): return [value]
+            case .variable(let values): return values
+            }
+        }
+
+        var isVariable: Bool {
+            if case .variable = self { return true }
+            return false
+        }
+    }
+
+    enum ExposureMode {
+        case shutterPriority
+        case manual
+    }
+
+    struct ExposureParameters: Equatable {
+        let aperture: Float
+        let duration: CMTime
+        let iso: Float
+    }
+
+    struct RecordingPin: Equatable {
+        let aperture: Float
+        let restoresAuto: Bool
+    }
+
+    static func performIfSupported(_ parameters: ExposureParameters,
+                                   supports: (ExposureParameters) -> Bool,
+                                   apply: () throws -> Void) rethrows -> Bool {
+        guard supports(parameters) else { return false }
+        try apply()
+        return true
+    }
+
+    static func recordingPin(selectedAperture: Float?, measuredAperture: Float) -> RecordingPin? {
+        guard measuredAperture.isFinite, measuredAperture > 0 else { return nil }
+        return RecordingPin(aperture: selectedAperture ?? measuredAperture,
+                            restoresAuto: selectedAperture == nil)
+    }
+
+    static func selectedApertureAfterRecording(pin: RecordingPin) -> Float? {
+        pin.restoresAuto ? nil : pin.aperture
+    }
+
+    static func evCompensatedISO(meteredISO: Float, ev: Float,
+                                 minimum: Float, maximum: Float) -> Float? {
+        guard meteredISO.isFinite, meteredISO > 0, ev.isFinite,
+              minimum.isFinite, maximum.isFinite, minimum <= maximum else { return nil }
+        return min(max(meteredISO * powf(2, ev), minimum), maximum)
+    }
+
+    static func recommendedStops(_ recommended: [Float], minimum: Float, maximum: Float) -> [Float] {
+        guard minimum.isFinite, maximum.isFinite, minimum <= maximum else { return [] }
+        return Array(Set(recommended.filter {
+            $0.isFinite && $0 >= minimum && $0 <= maximum
+        })).sorted()
+    }
+
+    static func capability(recommended: [Float], minimum: Float, maximum: Float) -> Capability {
+        let stops = recommendedStops(recommended, minimum: minimum, maximum: maximum)
+        switch stops.count {
+        case 0: return .unavailable
+        case 1: return .fixed(stops[0])
+        default: return .variable(stops)
+        }
+    }
+
+    /// `nil` represents Auto. Explicit choices are reconciled to the nearest
+    /// stop reported by the new active format.
+    static func reconcile(_ selected: Float?, with capability: Capability) -> Float? {
+        guard let selected else { return nil }
+        let stops = capability.stops
+        guard !stops.isEmpty else { return nil }
+        return stops.min { abs($0 - selected) < abs($1 - selected) }
+    }
+
+    static func exposureParameters(selectedAperture: Float?, autoAperture: Float,
+                                   mode: ExposureMode, manualISO: Float,
+                                   autoISO: Float, minISO: Float, maxISO: Float,
+                                   duration: CMTime) -> ExposureParameters? {
+        guard autoAperture.isFinite, minISO.isFinite, maxISO.isFinite,
+              minISO <= maxISO, duration.isNumeric,
+              selectedAperture.map({ $0.isFinite && $0 > 0 }) ?? true else { return nil }
+        let iso: Float
+        switch mode {
+        case .shutterPriority: iso = autoISO
+        case .manual:
+            guard manualISO.isFinite else { return nil }
+            iso = min(max(manualISO, minISO), maxISO)
+        }
+        return ExposureParameters(aperture: selectedAperture ?? autoAperture,
+                                  duration: duration, iso: iso)
+    }
+}
+
+struct CameraApertureSnapshot: Sendable {
+    let capability: CameraAperturePolicy.Capability
+    let measured: Float?
+    let selected: Float?
+    let cameraRevision: UInt64
+}
+
 enum CameraSampleValidationPolicy {
     static var appleLog2Identifier: String {
         if #available(iOS 26.0, macOS 26.0, tvOS 26.0, *) {
