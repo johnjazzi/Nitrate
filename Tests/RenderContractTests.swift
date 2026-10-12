@@ -84,6 +84,8 @@ struct RenderContractTests {
                 if let key = item.key as? String, let value = try await item.load(.stringValue) { values[key] = value }
             }
             #expect(values["com.filmemulation.film-stock"] == config.stockId)
+            // Daylight/tungsten tag travels with the render.
+            #expect(values["com.filmemulation.light-type"] == config.lightType)
             #expect(values["com.filmemulation.iso"] == String(Int(config.defaultISO)))
             #expect(values["com.filmemulation.halation-level"] == String(config.halationStrength))
             #expect(values["com.filmemulation.iso-role"] == "selected-render-exposure-index")

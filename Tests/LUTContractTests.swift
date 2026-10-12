@@ -26,6 +26,18 @@ struct LUTContractTests {
         }
     }
 
+    @Test func shippedStocksCarryTheExpectedDaylightOrTungstenTag() throws {
+        let stocks = try loadStocks()
+        let expected = ["cinestill50d_k2383": "D", "kodak250d_k2383": "D",
+                        "kodak200t_k2383": "T", "kodak500t_k2383": "T"]
+        for config in stocks {
+            #expect(config.lightType == expected[config.stockId],
+                    "\(config.stockId) tagged \(config.lightType)")
+            // The tag follows the white-balance temperature, not the name.
+            #expect((config.lightType == "D") == (config.colorTemperature > 4500))
+        }
+    }
+
     @Test func lutCountsMatchStockGridSize() throws {
         // The renderer uploads the full 33³ grid; a truncated .cube would throw
         // before this, but pin the expected size so a repackaged LUT is noticed.
