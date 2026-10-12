@@ -368,7 +368,7 @@ struct CameraControlBar: View {
                     .font(.caption.weight(.semibold).monospacedDigit())
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                Text("REC LEFT")
+                Text("~ REC LEFT")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(.white.opacity(0.75))
                     .lineLimit(1)
