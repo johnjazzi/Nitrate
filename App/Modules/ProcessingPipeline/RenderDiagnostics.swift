@@ -309,7 +309,6 @@ enum RenderMovieMetadata {
             "print-gauge": config.effectivePrintGauge.rawValue,
             "grain-size-effective": String(GrainModel.effectiveSize(stockGrainSize: config.grainSize,
                                                                    gauge: config.effectivePrintGauge)),
-            "grain-iso-loudness": String(GrainModel.isoLoudness(iso: config.defaultISO)),
             "grain-gauge-amplitude": String(config.effectivePrintGauge.amplitudeMultiplier),
             "grain-algorithm": config.effectiveRecipe.grainAlgorithm,
             "grain-edge-boost-multiplier": String(config.effectiveRecipe.edgeBoostMultiplier),

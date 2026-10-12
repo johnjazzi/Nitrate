@@ -1,9 +1,10 @@
 import Foundation
 
-/// AD-9 / m00459 / m00581: the print gauge owns grain *size*; ISO owns
-/// *loudness*. The gauge also scales amplitude at the fine end, because size
-/// alone cannot make grain disappear — the sampling floor below pins the
-/// footprint before the noise volume is undersampled.
+/// AD-9 / m00459 / m00581, revised: the print gauge owns grain entirely — both
+/// *size* (footprint) and *presence* (amplitude). ISO is the exposure index and
+/// does not scale grain. Size alone cannot make grain disappear, because the
+/// sampling floor below pins the footprint before the noise volume is
+/// undersampled, so the fine end is delivered by the amplitude multiplier.
 ///
 /// Multipliers are documented starting points, not measurements.
 enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
@@ -12,24 +13,26 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     case thirtyFiveMillimetre
     case seventyFiveMillimetre
 
-    /// Multiplies the stock's grain size to reach a gauge's footprint.
-    /// 35mm is the neutral 1.0 reference.
+    /// Multiplies the stock's grain size to reach a gauge's footprint. 35mm is
+    /// the neutral 1.0 reference. Coarse gauges must be *visibly* coarser, not a
+    /// token step: 8mm is 6x the neutral footprint (2.5x read as "too small" on
+    /// device).
     var sizeMultiplier: Float {
         switch self {
-        case .eightMillimetre: return 2.5
-        case .sixteenMillimetre: return 1.6
+        case .eightMillimetre: return 6.0
+        case .sixteenMillimetre: return 3.0
         case .thirtyFiveMillimetre: return 1.0
         case .seventyFiveMillimetre: return 0.55
         }
     }
 
-    /// Scales grain amplitude independently of size. Coarse gauges are louder,
-    /// 75mm is nearly silent — that is where "almost grain-free" is delivered,
-    /// by amplitude, not by pushing size into the aliased regime.
+    /// Scales grain presence. Coarse gauges are louder, 75mm is nearly silent —
+    /// that is where "almost grain-free" is delivered, by amplitude, not by
+    /// pushing size into the aliased regime.
     var amplitudeMultiplier: Float {
         switch self {
-        case .eightMillimetre: return 1.10
-        case .sixteenMillimetre: return 1.00
+        case .eightMillimetre: return 1.30
+        case .sixteenMillimetre: return 1.10
         case .thirtyFiveMillimetre: return 1.00
         case .seventyFiveMillimetre: return 0.15
         }
@@ -50,28 +53,21 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
 }
 
 /// Pure grain math shared by the Metal kernel and the CPU-side uniforms so the
-/// two axes stay separable and unit-testable without a GPU.
+/// gauge's two axes stay unit-testable without a GPU.
 enum GrainModel {
-    /// Kodak diffuse RMS granularity reference: the 50D anchor.
-    static let isoReference: Float = 50
-    /// σD ∝ ISO^0.46. Speed rises with crystal projected area and σD ∝ √area,
-    /// so σD ∝ √speed — a 10× ISO change gives 2.86× σD, not 10×.
-    static let isoLoudnessExponent: Float = 0.46
+    /// Single loudness scale: presence is `baseAmount · gaugeAmplitude`. There is
+    /// no ISO term — ISO is exposure only.
     static let baseAmount: Float = 0.55
-    /// Below footprint ≈ 1.0 the 128³ volume is undersampled: lag-1 correlation
-    /// collapses and finer size yields aliased noise, not finer grain. Floor the
-    /// effective size so the axis cannot reach the aliased regime.
+    /// Below footprint ~1.0 the 128-cubed volume is undersampled: lag-1
+    /// correlation collapses and finer size yields aliased noise, not finer
+    /// grain. Floor the effective size so the axis cannot reach that regime.
     static let footprintFloor: Float = 0.95
-    static let footprintCeiling: Float = 8.0
+    /// Ceiling for the coarse end. Raised alongside the 8mm multiplier so the
+    /// coarse gauge is not silently clipped back to a small footprint.
+    static let footprintCeiling: Float = 16.0
 
-    /// Sublinear ISO loudness, normalized so ISO 50 → 1.0.
-    static func isoLoudness(iso: Float) -> Float {
-        let safe = iso.isFinite && iso > 0 ? iso : isoReference
-        return pow(safe / isoReference, isoLoudnessExponent)
-    }
-
-    /// Effective footprint: stock size × gauge size, clamped off the sampling
-    /// floor. At 75mm on a 1.3 stock this is 1.3 × 0.55 = 0.715 → floored to
+    /// Effective footprint: stock size x gauge size, clamped off the sampling
+    /// floor. At 75mm on a 1.3 stock this is 1.3 x 0.55 = 0.715 -> floored to
     /// 0.95. The remaining graininess at 75mm is removed by the 0.15 amplitude
     /// multiplier, not by pushing size further into the aliased zone.
     static func effectiveSize(stockGrainSize: Float, gauge: PrintGauge) -> Float {
@@ -79,8 +75,9 @@ enum GrainModel {
         return min(max(safeStock * gauge.sizeMultiplier, footprintFloor), footprintCeiling)
     }
 
-    /// Composition rule: amount = 0.55 · isoLoudness · gaugeAmplitude · edgeFactor.
-    static func amount(iso: Float, gauge: PrintGauge, edgeFactor: Float = 1.0) -> Float {
-        baseAmount * isoLoudness(iso: iso) * gauge.amplitudeMultiplier * edgeFactor
+    /// Composition rule: amount = baseAmount x gaugeAmplitude x edgeFactor.
+    /// The gauge owns presence; ISO does not scale grain.
+    static func amount(gauge: PrintGauge, edgeFactor: Float = 1.0) -> Float {
+        baseAmount * gauge.amplitudeMultiplier * edgeFactor
     }
 }

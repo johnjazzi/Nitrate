@@ -481,25 +481,28 @@ struct GrainShadowTests {
     }
 
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func midtoneTextureRemainsVisibleAndScalesWithISO() throws {
+    func midtoneTextureRemainsVisibleAndScalesWithGauge() throws {
         let (device, queue, pipeline, volume) = try Self.setup()
         let color = SIMD3<Float>(repeating: 0.5)
-        var lowVariance = 0.0
-        var highVariance = 0.0
+        var quietVariance = 0.0
+        var loudVariance = 0.0
         for frame in Self.frames {
-            let low = try Self.run(
+            let quiet = try Self.run(
                 device: device, queue: queue, pipeline: pipeline, volume: volume,
-                color: color, iso: 100, grainSize: 1.3, frame: frame
+                color: color, iso: 400, grainSize: 1.3, frame: frame,
+                gaugeAmplitude: PrintGauge.seventyFiveMillimetre.amplitudeMultiplier
             )
-            let high = try Self.run(
+            let loud = try Self.run(
                 device: device, queue: queue, pipeline: pipeline, volume: volume,
-                color: color, iso: 2000, grainSize: 1.3, frame: frame
+                color: color, iso: 400, grainSize: 1.3, frame: frame,
+                gaugeAmplitude: PrintGauge.eightMillimetre.amplitudeMultiplier
             )
-            lowVariance += low.variance.x + low.variance.y + low.variance.z
-            highVariance += high.variance.x + high.variance.y + high.variance.z
+            quietVariance += quiet.variance.x + quiet.variance.y + quiet.variance.z
+            loudVariance += loud.variance.x + loud.variance.y + loud.variance.z
         }
-        #expect(lowVariance > 0, "Midtone grain should remain visible at ISO 100")
-        #expect(highVariance > lowVariance * 4, "Midtone grain should scale with ISO: \(lowVariance) -> \(highVariance)")
+        #expect(loudVariance > 0, "Midtone grain should remain visible at 8mm")
+        #expect(loudVariance > quietVariance * 10,
+                "Midtone grain should scale with the gauge: \(quietVariance) -> \(loudVariance)")
     }
 
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
@@ -507,23 +510,25 @@ struct GrainShadowTests {
         let (device, queue, pipeline, volume) = try Self.setup()
         for endpoint: Float in [0, 1] {
             let color = SIMD3<Float>(endpoint, 0.5, 0.5)
-            let low = try Self.run(
+            let quiet = try Self.run(
                 device: device, queue: queue, pipeline: pipeline, volume: volume,
-                color: color, iso: 100, grainSize: 1.3, frame: 41
+                color: color, iso: 400, grainSize: 1.3, frame: 41,
+                gaugeAmplitude: PrintGauge.seventyFiveMillimetre.amplitudeMultiplier
             )
-            let high = try Self.run(
+            let loud = try Self.run(
                 device: device, queue: queue, pipeline: pipeline, volume: volume,
-                color: color, iso: 2000, grainSize: 1.3, frame: 41
+                color: color, iso: 400, grainSize: 1.3, frame: 41,
+                gaugeAmplitude: PrintGauge.eightMillimetre.amplitudeMultiplier
             )
             let expectedEndpoint = endpoint == 0 ? 0.0 : 1.0
-            #expect(low.mean.x == expectedEndpoint && high.mean.x == expectedEndpoint,
-                    "endpoint channel should stay exact: endpoint=\(endpoint), low=\(low.mean.x), high=\(high.mean.x)")
-            #expect(low.variance.x == 0 && high.variance.x == 0,
+            #expect(quiet.mean.x == expectedEndpoint && loud.mean.x == expectedEndpoint,
+                    "endpoint channel should stay exact: endpoint=\(endpoint), quiet=\(quiet.mean.x), loud=\(loud.mean.x)")
+            #expect(quiet.variance.x == 0 && loud.variance.x == 0,
                     "endpoint channel should stay quiet: endpoint=\(endpoint)")
             for channel in 1..<3 {
-                #expect(low.variance[channel] > 0, "midrange channel needs visible low-ISO grain: \(color), \(low.variance)")
-                #expect(high.variance[channel] > low.variance[channel] * 4,
-                        "midrange channel grain should scale with ISO: \(color), \(low.variance) -> \(high.variance)")
+                #expect(quiet.variance[channel] > 0, "midrange channel needs visible 75mm grain: \(color), \(quiet.variance)")
+                #expect(loud.variance[channel] > quiet.variance[channel] * 10,
+                        "midrange channel grain should scale with the gauge: \(color), \(quiet.variance) -> \(loud.variance)")
             }
         }
     }
@@ -755,17 +760,7 @@ struct GrainShadowTests {
         }
         let offTransitionVariance = transitionResidualVariance(off)
         let onTransitionVariance = transitionResidualVariance(on)
-        // The margin here is amplitude-dependent: edge boost multiplies the grain
-        // excursion, but the shader's headroom budget (which keeps bright pixels
-        // off 8-bit clipping) compresses that excursion once absolute grain is
-        // loud. Under the pre-print-gauge linear ISO law this ratio exceeded 1.15;
-        // with the σD ∝ ISO^0.46 law at ISO 500 it measures ~1.07, because the
-        // excursion now saturates the budget. The property under test — edge boost
-        // raises transition residual variance — still holds; only the old margin
-        // was calibrated to the old amplitude. Verified: rescaling baseAmount to
-        // the previous absolute level restores >1.15, so this is the amplitude
-        // change, not a defect in the edge path.
-        #expect(onTransitionVariance > offTransitionVariance * 1.05,
+        #expect(onTransitionVariance > offTransitionVariance * 1.15,
                 "edge boost should increase real-volume residual variance at the transition: \(offTransitionVariance) -> \(onTransitionVariance)")
         #expect(distantDelta == 0, "pixels outside the source gradient must remain byte-identical")
         #expect(on.alphaMismatches == 0)

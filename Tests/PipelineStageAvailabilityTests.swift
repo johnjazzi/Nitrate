@@ -139,13 +139,14 @@ struct PipelineStageAvailabilityTests {
         device: MTLDevice,
         queue: MTLCommandQueue,
         pipeline: MTLComputePipelineState,
-        iso: Float
+        gaugeAmplitude: Float
     ) throws -> Double {
         let input = try makeFlatInput(device: device)
         let output = try makeOutput(device: device)
         let grainVolume = try makeGrainVolume(device: device)
 
-        var uniforms = GrainUniforms(frameIndex: 0, iso: iso, grainSize: 1.3, edgeBoostMultiplier: 0)
+        var uniforms = GrainUniforms(frameIndex: 0, iso: 400, grainSize: 1.3,
+                                     edgeBoostMultiplier: 0, gaugeAmplitude: gaugeAmplitude)
         let buffer = try #require(queue.makeCommandBuffer())
         let encoder = try #require(buffer.makeComputeCommandEncoder())
         encoder.setComputePipelineState(pipeline)
@@ -179,20 +180,23 @@ struct PipelineStageAvailabilityTests {
     }
 
     /// The grain kernel must actually change the image, and more strongly at a
-    /// higher ISO. This is the property that was silently lost when the CPU and
+    /// coarser print gauge. Grain presence is owned by the gauge; ISO does not
+    /// scale it. This is the property that was silently lost when the CPU and
     /// Metal grain uniform layouts disagreed.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func grainKernelAddsNoiseThatScalesWithISO() throws {
+    func grainKernelAddsNoiseThatScalesWithGauge() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let library = try Self.projectLibrary(device: device)
         let function = try #require(library.makeFunction(name: "pass2_grain"))
         let pipeline = try device.makeComputePipelineState(function: function)
 
-        let lowISO = try Self.redStdDev(device: device, queue: queue, pipeline: pipeline, iso: 100)
-        let highISO = try Self.redStdDev(device: device, queue: queue, pipeline: pipeline, iso: 2000)
+        let quiet = try Self.redStdDev(device: device, queue: queue, pipeline: pipeline,
+                                       gaugeAmplitude: PrintGauge.seventyFiveMillimetre.amplitudeMultiplier)
+        let loud = try Self.redStdDev(device: device, queue: queue, pipeline: pipeline,
+                                      gaugeAmplitude: PrintGauge.eightMillimetre.amplitudeMultiplier)
 
-        #expect(lowISO > 0.2, "grain must visibly perturb a flat frame (std \(lowISO))")
-        #expect(highISO > lowISO * 2, "grain must scale with ISO (\(lowISO) -> \(highISO))")
+        #expect(loud > 0.2, "grain must visibly perturb a flat frame (std \(loud))")
+        #expect(loud > quiet * 2, "grain must scale with the gauge (\(quiet) -> \(loud))")
     }
 }
