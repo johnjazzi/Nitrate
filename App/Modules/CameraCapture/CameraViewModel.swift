@@ -51,6 +51,15 @@ final class CameraViewModel {
     /// Auto-exposure target bias in EV (live value; polled with the exposure
     /// readout). Only drives the scene while the device meters automatically.
     var liveExposureBias: Float = 0
+    /// Live metered exposure offset from the device target, in EV (positive =
+    /// over). Drives the under/over indicator. `hasExposureMeter` is false until
+    /// the device is configured, so the indicator can fall back cleanly.
+    var liveExposureTargetOffset: Float = 0
+    var hasExposureMeter = false
+    /// Normalised (0–1) preview point where exposure is metered: the frame
+    /// centre by default, the tapped point after a tap-to-focus. Anchors the
+    /// exposure box on the preview.
+    var meteringPoint = CGPoint(x: 0.5, y: 0.5)
 
     // AD-8: Max clip duration
     static let maxClipDuration: TimeInterval = 300 // 5 minutes
@@ -307,6 +316,13 @@ final class CameraViewModel {
     }
 #endif
 
+    /// Record where the exposure box should sit, in normalised preview
+    /// coordinates. Called from the preview's tap handler alongside the focus
+    /// tap, so the box follows the metering point.
+    func setMeteringPoint(_ point: CGPoint) {
+        meteringPoint = CGPoint(x: min(max(point.x, 0), 1), y: min(max(point.y, 0), 1))
+    }
+
     /// Switch the active lens and refresh tap-to-focus for the new device.
     /// Completion runs on the main queue; `nil` error means the swap succeeded.
     func selectLens(_ lens: CameraLens, completion: @escaping (Error?) -> Void) {
@@ -474,6 +490,8 @@ final class CameraViewModel {
     private func refreshExposure() {
         liveISO = session.currentISO
         liveShutterSeconds = session.currentShutterSeconds
+        liveExposureTargetOffset = session.currentExposureTargetOffset
+        hasExposureMeter = session.hasExposureMeter
         apertureSnapshotRequestGeneration &+= 1
         let requestGeneration = apertureSnapshotRequestGeneration
         session.readApertureSnapshot { [weak self] snapshot in

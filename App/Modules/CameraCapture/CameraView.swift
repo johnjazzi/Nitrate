@@ -6,12 +6,32 @@ struct CameraView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State var viewModel: CameraViewModel
     @State private var previewLayer: AVCaptureVideoPreviewLayer?
+    @State private var previewSize: CGSize = .zero
 
     var body: some View {
         CameraPreviewRepresentable(previewLayer: $previewLayer, session: viewModel.session.session)
+            .background(
+                GeometryReader { geometry in
+                    Color.clear
+                        .onAppear { previewSize = geometry.size }
+                        .onChange(of: geometry.size) { _, size in previewSize = size }
+                }
+            )
+            .overlay {
+                // Where exposure is metered. Hidden during a take so it never
+                // draws over the recording.
+                if !viewModel.isRecording {
+                    MeteringBoxView(point: viewModel.meteringPoint,
+                                    isManual: viewModel.isManualExposure)
+                }
+            }
             .onTapGesture { location in
                 guard let layer = previewLayer else { return }
                 viewModel.handleFocusTap(at: location, in: layer)
+                if previewSize.width > 0, previewSize.height > 0 {
+                    viewModel.setMeteringPoint(CGPoint(x: location.x / previewSize.width,
+                                                       y: location.y / previewSize.height))
+                }
             }
             .onAppear {
                 if scenePhase == .active { viewModel.onAppear() }

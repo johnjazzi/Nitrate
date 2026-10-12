@@ -89,6 +89,8 @@ struct ContentView: View {
 
                 Spacer()
 
+                exposureIndicator
+
                 controlBar
                     .padding(.top, showFramedPreview ? 8 : 0)
                     .padding(.bottom, 20)
@@ -324,6 +326,22 @@ struct ContentView: View {
             onShowStockSheet: { showStockSheet = true },
             formatDuration: { formatDuration($0) }
         )
+    }
+
+    // MARK: - Exposure Indicator
+
+    /// Under/over exposure indicator: the live metered EV against the target,
+    /// about two thirds of the screen width, sitting just above the control
+    /// rows. In manual ISO the target is 0 EV (the user dials ISO, not bias).
+    private var exposureIndicator: some View {
+        ExposureIndicatorView(
+            meteredEV: cameraViewModel.liveExposureTargetOffset,
+            targetEV: cameraViewModel.isManualExposure ? 0 : cameraViewModel.liveExposureBias,
+            isManual: cameraViewModel.isManualExposure,
+            isAvailable: cameraViewModel.hasExposureMeter
+        )
+        .containerRelativeFrame(.horizontal) { width, _ in width * 0.66 }
+        .padding(.bottom, 10)
     }
 
     // MARK: - Error Overlays
