@@ -39,12 +39,41 @@ struct CameraSampleBufferRecorderTests {
     }
 
     @available(macOS 14.2, iOS 17.2, *)
+    @Test func recorderUsesPortraitSampleDimensionsAndIdentityTrackTransform() async throws {
+        let rig = makeRig(FakeWriterBehavior())
+        let url = try begin(rig.recorder, events: rig.events)
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(width: 2160, height: 3840))
+        #expect(await rig.events.nextStarted() == nil)
+        let writer = try #require(rig.control.current)
+        #expect((rig.control.settings?[AVVideoWidthKey] as? NSNumber)?.intValue == 2160)
+        #expect((rig.control.settings?[AVVideoHeightKey] as? NSNumber)?.intValue == 3840)
+        #expect(rig.control.transform == .identity)
+        rig.recorder.stop()
+        await rig.waitForFinishToBeRequested(on: writer)
+        writer.completeFinalization(success: true)
+        #expect(await rig.events.nextFinished() == nil)
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func recorderRejectsDimensionChangesWithinClipBeforeAppendingChangedFrame() async throws {
+        let rig = makeRig(FakeWriterBehavior())
+        let url = try begin(rig.recorder, events: rig.events)
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 1))
+        #expect(await rig.events.nextStarted() == nil)
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(width: 2160, height: 3840, pts: 2))
+        #expect(await rig.events.nextFinished()?.contains("coded dimensions changed") == true)
+        #expect(rig.control.current?.appendedVideoCount == 1)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
     @Test func injectedSettingRejectionReportsStartAndTerminalFailure() async throws {
         let events = RecorderEventQueue()
         let queue = DispatchQueue(label: "test.writer-settings")
         let recorder = CameraSampleBufferRecorder(queue: queue, writerFactory: { _, _, _, _, _ in
             throw CameraSampleBufferRecorderError.unsupportedWriterSettings("test Main10")
-        }, outputValidator: { _, _, _ in })
+        }, outputValidator: { _, _, _, _ in })
         let url = try begin(recorder, events: events)
         recorder.submitVideoSampleForTesting(try Self.log2Sample())
         #expect(await events.nextStarted()?.contains("writer rejected") == true)
@@ -167,10 +196,11 @@ struct CameraSampleBufferRecorderTests {
     }
 
     @available(macOS 14.2, iOS 17.2, *)
-    private static func log2Sample(pts: Double = 1) throws -> CMSampleBuffer {
+    private static func log2Sample(width: Int = 3840, height: Int = 2160,
+                                   pts: Double = 1) throws -> CMSampleBuffer {
         var optionalBuffer: CVPixelBuffer?
         let attributes = [kCVPixelBufferIOSurfacePropertiesKey as String: [:]] as CFDictionary
-        let status = CVPixelBufferCreate(kCFAllocatorDefault, 3840, 2160,
+        let status = CVPixelBufferCreate(kCFAllocatorDefault, width, height,
             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange, attributes, &optionalBuffer)
         guard status == kCVReturnSuccess, let buffer = optionalBuffer else {
             throw RecorderTestError.pixelBuffer(status)
@@ -200,7 +230,6 @@ struct CameraSampleBufferRecorderTests {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-\(UUID().uuidString).mov")
         recorder.begin(to: url, videoSettings: ["codec": "hevc"], audioSettings: audioSettings,
             acceptedPixelFormats: [kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange], metadata: [],
-            transform: CameraSampleValidationPolicy.portraitTrackTransform(codedWidth: 3840, codedHeight: 2160),
             onStarted: { error in events.recordStarted(error?.localizedDescription) },
             onFinished: { result in
                 let error: String?
@@ -214,11 +243,11 @@ struct CameraSampleBufferRecorderTests {
         let events = RecorderEventQueue()
         let control = FakeWriterControl()
         let recorder = CameraSampleBufferRecorder(queue: DispatchQueue(label: "test.sample-buffer-recorder"),
-            writerFactory: { url, _, _, _, _ in
+            writerFactory: { url, settings, _, _, transform in
                 let writer = FakeCameraSampleBufferWriter(url: url, behavior: behavior)
-                control.install(writer)
+                control.install(writer, settings: settings, transform: transform)
                 return writer
-            }, outputValidator: { _, _, _ in })
+            }, outputValidator: { _, _, _, _ in })
         return RecorderRig(recorder: recorder, events: events, control: control)
     }
 }
@@ -249,13 +278,25 @@ private struct FakeWriterBehavior {
 private final class FakeWriterControl: @unchecked Sendable {
     private let lock = NSLock()
     private var writer: FakeCameraSampleBufferWriter?
+    private var appliedSettings: [String: Any]?
+    private var appliedTransform = CGAffineTransform.identity
+    var settings: [String: Any]? {
+        lock.lock(); defer { lock.unlock() }
+        return appliedSettings
+    }
+    var transform: CGAffineTransform {
+        lock.lock(); defer { lock.unlock() }
+        return appliedTransform
+    }
     var current: FakeCameraSampleBufferWriter? {
         lock.lock(); defer { lock.unlock() }
         return writer
     }
-    func install(_ writer: FakeCameraSampleBufferWriter) {
+    func install(_ writer: FakeCameraSampleBufferWriter, settings: [String: Any], transform: CGAffineTransform) {
         lock.lock(); defer { lock.unlock() }
         self.writer = writer
+        appliedSettings = settings
+        appliedTransform = transform
     }
 }
 
@@ -267,10 +308,12 @@ private final class FakeCameraSampleBufferWriter: CameraSampleBufferWriting, @un
     private var finishHandler: (() -> Void)?
     private var requestedFinish = false
     private var audioAppendCount = 0
+    private var videoAppendCount = 0
     var status: AVAssetWriter.Status { lock.lock(); defer { lock.unlock() }; return currentStatus }
     var error: Error? { lock.lock(); defer { lock.unlock() }; return currentStatus == .failed ? RecorderTestError.injected : nil }
     var finishWasRequested: Bool { lock.lock(); defer { lock.unlock() }; return requestedFinish }
     var appendedAudioCount: Int { lock.lock(); defer { lock.unlock() }; return audioAppendCount }
+    var appendedVideoCount: Int { lock.lock(); defer { lock.unlock() }; return videoAppendCount }
 
     init(url: URL, behavior: FakeWriterBehavior) {
         self.url = url
@@ -290,7 +333,7 @@ private final class FakeCameraSampleBufferWriter: CameraSampleBufferWriting, @un
 
     func append(_ sampleBuffer: CMSampleBuffer, for mediaType: AVMediaType) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        if mediaType == .audio { audioAppendCount += 1 }
+        if mediaType == .audio { audioAppendCount += 1 } else { videoAppendCount += 1 }
         let succeeds = mediaType == .audio ? behavior.audioAppendSucceeds : behavior.appendSucceeds
         if !succeeds { currentStatus = .failed }
         return succeeds

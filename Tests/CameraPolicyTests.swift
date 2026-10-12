@@ -154,6 +154,9 @@ struct CameraPolicyTests {
         #expect(CameraSampleValidationPolicy.acceptsHEVCMain10Settings(
             codec: .hevc, width: 3840, height: 2160, profile: profile, expectedProfile: profile
         ))
+        #expect(CameraSampleValidationPolicy.acceptsHEVCMain10Settings(
+            codec: .hevc, width: 2160, height: 3840, profile: profile, expectedProfile: profile
+        ))
         #expect(!CameraSampleValidationPolicy.acceptsHEVCMain10Settings(
             codec: .proRes422, width: 3840, height: 2160, profile: profile, expectedProfile: profile
         ))
@@ -209,6 +212,12 @@ struct CameraPolicyTests {
         ))
         #expect((settings[AVVideoWidthKey] as? NSNumber)?.intValue == 3840)
         #expect((settings[AVVideoHeightKey] as? NSNumber)?.intValue == 2160)
+        let portraitSettings = CameraSampleValidationPolicy.explicitHEVCMain10Settings(
+            width: 2160, height: 3840, profile: profile,
+            averageBitRate: 96_000_000, colorProperties: [logTransferKey: logTransferValue, matrixKey: matrixValue]
+        )
+        #expect((portraitSettings[AVVideoWidthKey] as? NSNumber)?.intValue == 2160)
+        #expect((portraitSettings[AVVideoHeightKey] as? NSNumber)?.intValue == 3840)
         let compression = try #require(settings[AVVideoCompressionPropertiesKey] as? [String: Any])
         #expect(compression[AVVideoProfileLevelKey] as? String == profile)
         #expect((compression[AVVideoAverageBitRateKey] as? NSNumber)?.intValue == 96_000_000)
@@ -222,20 +231,22 @@ struct CameraPolicyTests {
     @Test func sampleValidationRejectsWrongColorDomainPixelFormatAndGeometry() {
         let x420: UInt32 = 0x78343230
         let accepted: Set<UInt32> = [x420]
-        func valid(width: Int = 3840, pixel: UInt32 = x420,
+        func valid(width: Int = 3840, height: Int = 2160, pixel: UInt32 = x420,
                    log: String? = CameraSampleValidationPolicy.appleLog2Identifier,
                    matrix: String? = "ITU_R_2020", primaries: String? = nil,
                    transfer: String? = nil) -> Bool {
-            CameraSampleValidationPolicy.accepts(width: width, height: 2160, pixelFormat: pixel,
+            CameraSampleValidationPolicy.accepts(width: width, height: height, pixelFormat: pixel,
                 acceptedPixelFormats: accepted, logTransfer: log, matrix: matrix,
                 primaries: primaries, transfer: transfer)
         }
         #expect(valid())
+        #expect(valid(width: 2160, height: 3840))
         #expect(!valid(pixel: 0x42475241))
         #expect(!valid(log: "AppleLog2"))
         #expect(CameraSampleValidationPolicy.isAppleLog2(CameraSampleValidationPolicy.appleLog2Identifier))
         #expect(!valid(matrix: "ITU_R_709_2"))
-        #expect(!valid(width: 1920))
+        #expect(!valid(width: 1920, height: 1080))
+        #expect(!valid(width: 3840, height: 3840))
         #expect(!valid(primaries: "ITU_R_2020"))
         #expect(!valid(transfer: "ITU_R_2020"))
     }
@@ -247,7 +258,7 @@ struct CameraPolicyTests {
             matrix: nil, primaries: "ITU_R_2020", transfer: "ITU_R_2020"
         )
         #expect(reasons == [
-            "format dimensions are 1920x1080, expected 3840x2160",
+            "format dimensions are 1920x1080, expected 3840x2160 or 2160x3840",
             "pixel format BGRA was not negotiated",
             "Log transfer is AppleLog2, expected Apple Log 2",
             "YCbCr matrix is missing, expected ITU_R_2020",
@@ -297,6 +308,16 @@ struct CameraPolicyTests {
         ).1 == 3840)
         #expect(transform.a == 0 && transform.b == 1 && transform.c == -1 && transform.d == 0)
         #expect(transform.tx == 2160 && transform.ty == 0)
+        let nativePortrait = CameraSampleValidationPolicy.portraitTrackTransform(codedWidth: 2160, codedHeight: 3840)
+        #expect(nativePortrait == .identity)
+        #expect(CameraSampleValidationPolicy.displayDimensions(
+            codedWidth: 2160, codedHeight: 3840, transform: nativePortrait
+        ) == (2160, 3840))
+        #expect(CameraSampleValidationPolicy.CodedDimensions(width: 3840, height: 2160)
+            == .landscape4K)
+        #expect(CameraSampleValidationPolicy.CodedDimensions(width: 2160, height: 3840)
+            == .portrait4K)
+        #expect(CameraSampleValidationPolicy.CodedDimensions(width: 3840, height: 3840) == nil)
     }
 
     @Test func portraitTrackMatrixRoundTripsThroughAVAssetWriter() async throws {

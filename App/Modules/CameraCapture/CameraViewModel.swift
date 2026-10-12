@@ -48,6 +48,7 @@ final class CameraViewModel {
 
     private var recordingTimer: Timer?
     private var spacePollingTimer: Timer?
+    private var storageSnapshotRequestGeneration: UInt64 = 0
     private var exposurePollingTimer: Timer?
     private var shutterPriorityTimer: Timer?
     private var recordingTimerGeneration = RecordingTimerGeneration()
@@ -101,6 +102,7 @@ final class CameraViewModel {
         session.stop()
         session.disableShutterPriority()
         stopPolling()
+        storageSnapshotRequestGeneration &+= 1
         stopExposurePolling()
         stopShutterPriorityLoop()
     }
@@ -205,6 +207,7 @@ final class CameraViewModel {
         // here (after start) only for the first-launch grant case.
         requestMicrophoneAccess()
         startExposurePolling()
+        startSpacePolling()
         refreshExposure()
         if isManualExposure {
             session.lockManualExposure(iso: manualISO) { [weak self] error in
@@ -216,7 +219,6 @@ final class CameraViewModel {
             session.enableShutterPriority()
             startShutterPriorityLoop()
         }
-
     }
 
     func onDisappear() {
@@ -366,8 +368,21 @@ final class CameraViewModel {
                   !self.isSwitchingCameraLens, self.activeLens == .wide else { return }
             if let error {
                 self.errorMessage = "Failed to set aperture: \(error.localizedDescription)"
+            } else {
+                self.clearStaleApertureError()
             }
             self.refreshExposure()
+        }
+    }
+
+    private func clearStaleApertureError() {
+        guard let errorMessage else { return }
+        let apertureErrors = [
+            CameraError.apertureExposureUnsupported.localizedDescription,
+            CameraError.apertureUnavailable.localizedDescription
+        ]
+        if errorMessage.hasPrefix("Failed to set aperture:") || apertureErrors.contains(errorMessage) {
+            self.errorMessage = nil
         }
     }
 
@@ -488,22 +503,36 @@ final class CameraViewModel {
 
     func updateFreeSpace() {
         let url = URL(fileURLWithPath: NSHomeDirectory())
-        guard let values = try? url.resourceValues(forKeys: [
-            .volumeAvailableCapacityKey,
-            .volumeTotalCapacityKey
-        ]),
-              let available = values.volumeAvailableCapacity,
-              let total = values.volumeTotalCapacity,
-              available >= 0,
-              total > 0 else { return }
+        storageSnapshotRequestGeneration &+= 1
+        let requestGeneration = storageSnapshotRequestGeneration
 
-        // Keep the previous coherent snapshot if either capacity value cannot
-        // be read, rather than presenting an unavailable value as zero.
-        freeSpaceBytes = Int64(available)
-        totalSpaceBytes = Int64(total)
-        hasStorageSnapshot = true
-        isSpaceLow = freeSpaceBytes < Self.lowSpaceThreshold
-        isSpaceCritical = freeSpaceBytes < Self.criticalSpaceThreshold
+        // Volume capacity lookup may touch the filesystem. Keep it off the main
+        // actor so launch and resume remain responsive while the first estimate
+        // is being populated.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let values = try? url.resourceValues(forKeys: [
+                .volumeAvailableCapacityKey,
+                .volumeTotalCapacityKey
+            ]),
+                  let available = values.volumeAvailableCapacity,
+                  let total = values.volumeTotalCapacity,
+                  available >= 0,
+                  total > 0 else { return }
+            let freeBytes = Int64(available)
+            let totalBytes = Int64(total)
+
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.storageSnapshotRequestGeneration == requestGeneration else { return }
+                // Keep the previous coherent snapshot if either capacity value
+                // cannot be read, rather than presenting unavailable as zero.
+                self.freeSpaceBytes = freeBytes
+                self.totalSpaceBytes = totalBytes
+                self.hasStorageSnapshot = true
+                self.isSpaceLow = freeBytes < Self.lowSpaceThreshold
+                self.isSpaceCritical = freeBytes < Self.criticalSpaceThreshold
+            }
+        }
     }
 
     // MARK: - Private

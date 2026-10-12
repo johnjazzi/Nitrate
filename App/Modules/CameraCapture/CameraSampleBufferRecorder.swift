@@ -15,6 +15,7 @@ typealias CameraSampleBufferWriterFactory = (
     _ url: URL, _ videoSettings: [String: Any], _ audioSettings: [String: Any]?, _ metadata: [AVMetadataItem],
     _ transform: CGAffineTransform
 ) throws -> CameraSampleBufferWriting
+typealias CameraCaptureCodedDimensions = CameraSampleValidationPolicy.CodedDimensions
 
 /// A bounded sample-buffer writer. Each clip owns a distinct writer; recorder
 /// state is confined to the shared serial capture delegate queue.
@@ -29,6 +30,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     private var acceptedPixelFormats: Set<UInt32> = []
     private var metadata: [AVMetadataItem] = []
     private var transform = CGAffineTransform.identity
+    private var codedDimensions: CameraCaptureCodedDimensions?
     private var started: (@Sendable (Error?) -> Void)?
     private var finished: (@Sendable (Result<URL, Error>) -> Void)?
     private var sessionStartTime: CMTime?
@@ -39,7 +41,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     private var recentDropTimes: [Double] = []
     private var clipGeneration: UInt64 = 0
     private let writerFactory: CameraSampleBufferWriterFactory
-    private let outputValidator: (URL, CGAffineTransform, Int) throws -> Void
+    private let outputValidator: (URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void
 #if DEBUG
     private var preservationProbeEnabled = false
     private var sourceProbe: CameraYUVProbe?
@@ -48,7 +50,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
 
     init(queue: DispatchQueue,
          writerFactory: @escaping CameraSampleBufferWriterFactory = AVCameraSampleBufferWriter.make,
-         outputValidator: @escaping (URL, CGAffineTransform, Int) throws -> Void = CameraSampleBufferRecorder.validateOutput) {
+         outputValidator: @escaping (URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void = CameraSampleBufferRecorder.validateOutput) {
         self.queue = queue
         self.writerFactory = writerFactory
         self.outputValidator = outputValidator
@@ -60,7 +62,6 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         audioSettings: [String: Any]?,
         acceptedPixelFormats: Set<UInt32>,
         metadata: [AVMetadataItem],
-        transform: CGAffineTransform,
         preservationProbeEnabled: Bool = false,
         requiresAudioEvidence: Bool = false,
         onStarted: @escaping @Sendable (Error?) -> Void,
@@ -79,7 +80,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             self.audioSettings = audioSettings
             self.acceptedPixelFormats = acceptedPixelFormats
             self.metadata = metadata
-            self.transform = transform
+            self.transform = .identity
+            self.codedDimensions = nil
 #if DEBUG
             self.preservationProbeEnabled = preservationProbeEnabled
             self.sourceProbe = nil
@@ -144,6 +146,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             return
         }
         let dimensions = CMVideoFormatDescriptionGetDimensions(formatDescription)
+        let pixelBufferWidth = CVPixelBufferGetWidth(imageBuffer)
+        let pixelBufferHeight = CVPixelBufferGetHeight(imageBuffer)
         let pixelFormat = CVPixelBufferGetPixelFormatType(imageBuffer)
         let logTransfer: CFTypeRef?
         if #available(iOS 17.2, macOS 14.2, *) {
@@ -154,16 +158,20 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         let matrix = CVBufferCopyAttachment(imageBuffer, kCVImageBufferYCbCrMatrixKey, nil)
         let primaries = CVBufferCopyAttachment(imageBuffer, kCVImageBufferColorPrimariesKey, nil)
         let transfer = CVBufferCopyAttachment(imageBuffer, kCVImageBufferTransferFunctionKey, nil)
-        let validationRejections = CameraSampleValidationPolicy.rejectionReasons(
+        var validationRejections = CameraSampleValidationPolicy.rejectionReasons(
             width: Int(dimensions.width), height: Int(dimensions.height), pixelFormat: pixelFormat,
             acceptedPixelFormats: acceptedPixelFormats,
             logTransfer: logTransfer as? String, matrix: matrix as? String,
             primaries: primaries as? String, transfer: transfer as? String
         )
+        if Int(dimensions.width) != pixelBufferWidth || Int(dimensions.height) != pixelBufferHeight {
+            validationRejections.append("format description is \(dimensions.width)x\(dimensions.height), " +
+                                        "but pixel buffer is \(pixelBufferWidth)x\(pixelBufferHeight)")
+        }
 #if DEBUG
         if appendedVideoFrames == 0 {
             print("HEVC Log2 source: format=\(dimensions.width)x\(dimensions.height), " +
-                  "buffer=\(CVPixelBufferGetWidth(imageBuffer))x\(CVPixelBufferGetHeight(imageBuffer)), " +
+                  "buffer=\(pixelBufferWidth)x\(pixelBufferHeight), " +
                   "pixel=\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)), " +
                   "planes=\(CVPixelBufferGetPlaneCount(imageBuffer)), " +
                   "accepted=\(CameraSampleValidationPolicy.fourCCListDescription(acceptedPixelFormats.sorted())), " +
@@ -176,7 +184,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         guard validationRejections.isEmpty else {
             fail(CameraSampleBufferRecorderError.invalidVideoSample(
                 "\(dimensions.width)x\(dimensions.height) format description, " +
-                "\(CVPixelBufferGetWidth(imageBuffer))x\(CVPixelBufferGetHeight(imageBuffer)) pixel buffer, " +
+                "\(pixelBufferWidth)x\(pixelBufferHeight) pixel buffer, " +
                 "pixel format \(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)) " +
                 "(\(CVPixelBufferGetPlaneCount(imageBuffer)) planes), " +
                 "accepted formats \(CameraSampleValidationPolicy.fourCCListDescription(acceptedPixelFormats.sorted())); " +
@@ -185,6 +193,26 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                 "rejected: \(validationRejections.joined(separator: "; "))"
             ))
             return
+        }
+        guard let sampleDimensions = CameraCaptureCodedDimensions(
+            width: Int(dimensions.width), height: Int(dimensions.height)
+        ) else {
+            fail(CameraSampleBufferRecorderError.invalidVideoSample("unsupported coded dimensions"))
+            return
+        }
+        if let codedDimensions {
+            guard codedDimensions == sampleDimensions else {
+                fail(CameraSampleBufferRecorderError.invalidVideoSample(
+                    "coded dimensions changed from \(codedDimensions.width)x\(codedDimensions.height) " +
+                    "to \(sampleDimensions.width)x\(sampleDimensions.height) during the clip"
+                ))
+                return
+            }
+        } else {
+            codedDimensions = sampleDimensions
+            transform = sampleDimensions.portraitDeliveryTransform
+            videoSettings[AVVideoWidthKey] = NSNumber(value: sampleDimensions.width)
+            videoSettings[AVVideoHeightKey] = NSNumber(value: sampleDimensions.height)
         }
 #if DEBUG
         var firstFrameProbe: CameraYUVProbe?
@@ -301,7 +329,10 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                     return
                 }
                 do {
-                    try self.outputValidator(destination, self.transform, self.appendedAudioSamples)
+                    guard let dimensions = self.codedDimensions else {
+                        throw CameraSampleBufferRecorderError.invalidFinalMovie("missing latched coded dimensions")
+                    }
+                    try self.outputValidator(destination, dimensions, self.transform, self.appendedAudioSamples)
                 } catch {
                     self.complete(.failure(error))
                     return
@@ -312,11 +343,17 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                         self.complete(.failure(CameraSampleBufferRecorderError.invalidFinalMovie("missing captured YUV smoke probe")))
                         return
                     }
+                    guard let dimensions = self.codedDimensions else {
+                        self.complete(.failure(CameraSampleBufferRecorderError.invalidFinalMovie(
+                            "missing latched coded dimensions for preservation probe")))
+                        return
+                    }
                     let requiresAudio = self.requiresAudioEvidence
                     Task.detached(priority: .utility) {
                         do {
                             let evidence = try await CameraCapturePreservationProbe.inspect(
-                                url: destination, source: source, requiresAudio: requiresAudio
+                                url: destination, source: source, expectedDimensions: dimensions,
+                                requiresAudio: requiresAudio
                             )
                             self.queue.async {
                                 guard self.isCurrentClip(generation, writerIdentity: writerIdentity) else { return }
@@ -381,6 +418,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         audioSettings = nil
         acceptedPixelFormats = []
         metadata = []
+        transform = .identity
+        codedDimensions = nil
         started = nil
         finished = nil
         sessionStartTime = nil
@@ -401,7 +440,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             && writer.map(ObjectIdentifier.init) == writerIdentity
     }
 
-    private static func validateOutput(_ url: URL, transform: CGAffineTransform, appendedAudioSamples: Int) throws {
+    private static func validateOutput(_ url: URL, expectedDimensions: CameraCaptureCodedDimensions,
+                                       transform: CGAffineTransform, appendedAudioSamples: Int) throws {
         let asset = AVURLAsset(url: url)
         guard let track = asset.tracks(withMediaType: .video).first,
               let rawFormat = track.formatDescriptions.first else {
@@ -433,7 +473,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         let matrix = extensionValue(kCMFormatDescriptionExtension_YCbCrMatrix) as? String
         let primaries = extensionValue(kCMFormatDescriptionExtension_ColorPrimaries) as? String
         let transfer = extensionValue(kCMFormatDescriptionExtension_TransferFunction) as? String
-        guard codec == 0x68766331, dimensions.width == 3840, dimensions.height == 2160,
+        guard codec == 0x68766331,
+              dimensions.width == expectedDimensions.width, dimensions.height == expectedDimensions.height,
               bitDepth == 10, isMain10_420,
               CameraSampleValidationPolicy.isAppleLog2(logTransfer), matrix == "ITU_R_2020",
               primaries == nil, transfer == nil,
@@ -463,7 +504,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             throw CameraSampleBufferRecorderError.invalidFinalMovie("audio samples were appended without an audio track")
         }
         #if DEBUG
-        print("HEVC Log2 output validation: codec=hvc1, size=3840x2160, bits=10, log=\(String(describing: logTransfer)), matrix=\(String(describing: matrix)), audioSamples=\(appendedAudioSamples), transform=\(track.preferredTransform)")
+        print("HEVC Log2 output validation: codec=hvc1, size=\(expectedDimensions.width)x\(expectedDimensions.height), bits=10, log=\(String(describing: logTransfer)), matrix=\(String(describing: matrix)), display=2160x3840, audioSamples=\(appendedAudioSamples), transform=\(track.preferredTransform)")
         #endif
     }
 

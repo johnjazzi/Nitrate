@@ -137,12 +137,23 @@ struct CameraControlBar: View {
                 Button {
                     onSelectLens(lens)
                 } label: {
-                    Text(lens == .front ? "Front" : "\(lens.focalLengthMM)mm")
-                        .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                        .foregroundStyle(lens == selectedLens ? .black : .white)
-                        .frame(width: faceSize, height: faceSize)
+                    Group {
+                        if lens == .front {
+                            Text("Front")
+                                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        } else {
+                            VStack(spacing: -1) {
+                                Text("\(lens.focalLengthMM)")
+                                    .font(.system(size: 12, weight: .bold, design: .rounded).monospacedDigit())
+                                Text("mm")
+                                    .font(.system(size: 8, weight: .medium, design: .rounded))
+                            }
+                        }
+                    }
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .foregroundStyle(lens == selectedLens ? .black : .white)
+                    .frame(width: faceSize, height: faceSize)
                 }
                 .buttonStyle(CameraRaisedButtonStyle(
                     faceColor: lens == selectedLens ? .white : Color(red: 0.16, green: 0.17, blue: 0.19),

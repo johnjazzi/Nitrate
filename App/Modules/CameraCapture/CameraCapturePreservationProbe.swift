@@ -6,6 +6,8 @@ import Foundation
 /// Small normalized code-value samples from a fixed 3×3 grid. This intentionally
 /// does not retain the source CVPixelBuffer or perform a transfer/gamut decode.
 struct CameraYUVProbe: Sendable, Equatable {
+    let width: Int
+    let height: Int
     let lumaMeans: [Float]
     let cbMeans: [Float]
     let crMeans: [Float]
@@ -125,11 +127,13 @@ struct CameraYUVProbe: Sendable, Equatable {
                 crMeans.append(crTotal / divisor)
             }
         }
-        return CameraYUVProbe(lumaMeans: lumaMeans, cbMeans: cbMeans, crMeans: crMeans)
+        return CameraYUVProbe(width: width, height: height,
+                              lumaMeans: lumaMeans, cbMeans: cbMeans, crMeans: crMeans)
     }
 
     func maximumMeanError(comparedTo other: CameraYUVProbe) -> Difference {
-        guard lumaMeans.count == 9, cbMeans.count == 9, crMeans.count == 9,
+        guard width == other.width, height == other.height,
+              lumaMeans.count == 9, cbMeans.count == 9, crMeans.count == 9,
               other.lumaMeans.count == 9, other.cbMeans.count == 9, other.crMeans.count == 9 else {
             return Difference(maximumLumaMeanError: .infinity, maximumChromaMeanError: .infinity)
         }
@@ -160,13 +164,18 @@ enum CameraCapturePreservationProbe {
     private static let chromaTolerance: Float = 0.03
     private static let synchronizationTolerance: Double = 0.12
 
-    static func inspect(url: URL, source: CameraYUVProbe, requiresAudio: Bool) async throws -> String {
+    static func inspect(url: URL, source: CameraYUVProbe,
+                        expectedDimensions: CameraSampleValidationPolicy.CodedDimensions,
+                        requiresAudio: Bool) async throws -> String {
         try await Task.detached(priority: .utility) {
-            try await inspectOffQueue(url: url, source: source, requiresAudio: requiresAudio)
+            try await inspectOffQueue(url: url, source: source, expectedDimensions: expectedDimensions,
+                                      requiresAudio: requiresAudio)
         }.value
     }
 
-    private static func inspectOffQueue(url: URL, source: CameraYUVProbe, requiresAudio: Bool) async throws -> String {
+    private static func inspectOffQueue(url: URL, source: CameraYUVProbe,
+                                        expectedDimensions: CameraSampleValidationPolicy.CodedDimensions,
+                                        requiresAudio: Bool) async throws -> String {
         let asset = AVURLAsset(url: url)
         let tracks = try await asset.load(.tracks)
         guard let videoTrack = tracks.first(where: { $0.mediaType == .video }) else {
@@ -175,10 +184,19 @@ enum CameraCapturePreservationProbe {
         let videoFormats = try await videoTrack.load(.formatDescriptions)
         guard let videoFormat = videoFormats.first,
               CMFormatDescriptionGetMediaSubType(videoFormat) == 0x68766331,
-              CMVideoFormatDescriptionGetDimensions(videoFormat).width == 3840,
-              CMVideoFormatDescriptionGetDimensions(videoFormat).height == 2160,
+              CMVideoFormatDescriptionGetDimensions(videoFormat).width == expectedDimensions.width,
+              CMVideoFormatDescriptionGetDimensions(videoFormat).height == expectedDimensions.height,
+              source.width == expectedDimensions.width, source.height == expectedDimensions.height,
               let hvcC = hevcConfiguration(from: videoFormat),
               CameraHEVCProfilePolicy.isMain10_420(hvcC) else {
+            throw PreservationError.invalidVideoFormat
+        }
+        let transform = try await videoTrack.load(.preferredTransform)
+        let displayDimensions = CameraSampleValidationPolicy.displayDimensions(
+            codedWidth: expectedDimensions.width, codedHeight: expectedDimensions.height, transform: transform
+        )
+        guard transform == expectedDimensions.portraitDeliveryTransform,
+              displayDimensions.0 == 2160, displayDimensions.1 == 3840 else {
             throw PreservationError.invalidVideoFormat
         }
 
@@ -196,6 +214,10 @@ enum CameraCapturePreservationProbe {
         guard let firstVideoSample = decodedOutput.copyNextSampleBuffer(),
               let decodedBuffer = CMSampleBufferGetImageBuffer(firstVideoSample) else {
             throw reader.error ?? PreservationError.cannotDecodeVideo
+        }
+        guard CVPixelBufferGetWidth(decodedBuffer) == expectedDimensions.width,
+              CVPixelBufferGetHeight(decodedBuffer) == expectedDimensions.height else {
+            throw PreservationError.invalidVideoFormat
         }
         let decoded = try CameraYUVProbe.sample(decodedBuffer)
         let difference = source.maximumMeanError(comparedTo: decoded)
@@ -247,14 +269,11 @@ enum CameraCapturePreservationProbe {
         let audioEvidence = audioTrack == nil
             ? "audio=absent"
             : String(format: "audio=present, skew=%.3fs, end-delta=%.3fs", audioSkew, endDifference)
-        return String(
-            format: "HEVC Main10 4:2:0 3840x2160 decoded YUV passed (max luma error %.4f, chroma %.4f; limits %.2f/%.2f); %@",
-            difference.maximumLumaMeanError,
-            difference.maximumChromaMeanError,
-            lumaTolerance,
-            chromaTolerance,
-            audioEvidence
-        )
+        return "HEVC Main10 4:2:0 \(expectedDimensions.width)x\(expectedDimensions.height) " +
+            String(format: "decoded YUV passed (portrait display 2160x3840; max luma error %.4f, " +
+                   "chroma %.4f; limits %.2f/%.2f); %@",
+                   difference.maximumLumaMeanError, difference.maximumChromaMeanError,
+                   lumaTolerance, chromaTolerance, audioEvidence)
     }
 
     private static func hevcConfiguration(from format: CMFormatDescription) -> Data? {
@@ -288,7 +307,7 @@ enum CameraCapturePreservationProbe {
         var errorDescription: String? {
             switch self {
             case .missingVideo: return "Preservation check failed: movie has no video track."
-            case .invalidVideoFormat: return "Preservation check failed: video is not hvc1 HEVC Main10 4:2:0 at 3840×2160."
+            case .invalidVideoFormat: return "Preservation check failed: video dimensions, portrait transform, or hvc1 HEVC Main10 4:2:0 profile did not match the captured format."
             case .cannotDecodeVideo: return "Preservation check failed: the first ten-bit 4:2:0 video frame could not be decoded."
             case .pixelValuesExceededTolerance(let luma, let chroma):
                 return String(format: "Preservation check failed: YUV mean errors %.4f/%.4f exceed limits %.2f/%.2f.", luma, chroma, lumaTolerance, chromaTolerance)

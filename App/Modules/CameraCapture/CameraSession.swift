@@ -432,47 +432,52 @@ final class CameraSession: NSObject {
         guard #available(iOS 27.0, *) else {
             return "Apple Log 2 writer color tags require iOS 27 (running version is older)"
         }
-        let settings = CameraSampleValidationPolicy.explicitHEVCMain10Settings(
-            profile: kVTProfileLevel_HEVC_Main10_AutoLevel as String,
-            averageBitRate: DeliverySettings.averageBitRate,
-            colorProperties: [
-                AVVideoLogTransferFunctionKey: AVVideoLogTransferFunction_AppleLog2,
-                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
-            ]
-        )
-        let compression = settings[AVVideoCompressionPropertiesKey] as? [String: Any] ?? [:]
-        guard CameraSampleValidationPolicy.acceptsHEVCMain10Settings(
-            codec: settings[AVVideoCodecKey] as? AVVideoCodecType,
-            width: (settings[AVVideoWidthKey] as? NSNumber)?.intValue,
-            height: (settings[AVVideoHeightKey] as? NSNumber)?.intValue,
-            profile: compression[AVVideoProfileLevelKey] as? String,
-            expectedProfile: kVTProfileLevel_HEVC_Main10_AutoLevel as String
-        ) else {
-            let profile = compression[AVVideoProfileLevelKey] as? String ?? "missing"
-            let width = (settings[AVVideoWidthKey] as? NSNumber)?.intValue ?? 0
-            let height = (settings[AVVideoHeightKey] as? NSNumber)?.intValue ?? 0
-            return "constructed settings are not HEVC Main10 3840x2160 " +
-                "(codec: \((settings[AVVideoCodecKey] as? AVVideoCodecType)?.rawValue ?? "missing"), " +
-                "size: \(width)x\(height), profile: \(profile))"
+        let profile = kVTProfileLevel_HEVC_Main10_AutoLevel as String
+        let colorProperties = [
+            AVVideoLogTransferFunctionKey: AVVideoLogTransferFunction_AppleLog2,
+            AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
+        ]
+        let dimensions = [CameraSampleValidationPolicy.CodedDimensions.landscape4K,
+                          CameraSampleValidationPolicy.CodedDimensions.portrait4K]
+        var landscapeSettings: [String: Any]?
+        for codedSize in dimensions {
+            let settings = CameraSampleValidationPolicy.explicitHEVCMain10Settings(
+                width: codedSize.width, height: codedSize.height,
+                profile: profile, averageBitRate: DeliverySettings.averageBitRate,
+                colorProperties: colorProperties
+            )
+            let compression = settings[AVVideoCompressionPropertiesKey] as? [String: Any] ?? [:]
+            guard CameraSampleValidationPolicy.acceptsHEVCMain10Settings(
+                codec: settings[AVVideoCodecKey] as? AVVideoCodecType,
+                width: (settings[AVVideoWidthKey] as? NSNumber)?.intValue,
+                height: (settings[AVVideoHeightKey] as? NSNumber)?.intValue,
+                profile: compression[AVVideoProfileLevelKey] as? String,
+                expectedProfile: profile
+            ) else {
+                return "constructed settings are not HEVC Main10 at \(codedSize.width)x\(codedSize.height)"
+            }
+            let probeURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("hevc-main10-capability-\(UUID().uuidString).mov")
+            let writer: AVAssetWriter
+            do {
+                writer = try AVAssetWriter(outputURL: probeURL, fileType: .mov)
+            } catch {
+                return "could not create a temporary AVAssetWriter capability probe: \(error.localizedDescription)"
+            }
+            guard writer.canApply(outputSettings: settings, forMediaType: .video) else {
+                return "AVAssetWriter.canApply rejected HEVC Main10 \(codedSize.width)x\(codedSize.height) " +
+                    "(profile: \(profile), input pixel format: " +
+                    "\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)); " +
+                    "capture-output MOV codecs (diagnostic only): \(codecList))"
+            }
+            if codedSize == .landscape4K { landscapeSettings = settings }
         }
-        let probeURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("hevc-main10-capability-\(UUID().uuidString).mov")
-        let writer: AVAssetWriter
-        do {
-            writer = try AVAssetWriter(outputURL: probeURL, fileType: .mov)
-        } catch {
-            return "could not create a temporary AVAssetWriter capability probe: \(error.localizedDescription)"
-        }
-        guard writer.canApply(outputSettings: settings, forMediaType: .video) else {
-            let profile = compression[AVVideoProfileLevelKey] as? String ?? "missing"
-            return "AVAssetWriter.canApply rejected HEVC Main10 3840x2160 " +
-                "(profile: \(profile), input pixel format: " +
-                "\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)); " +
-                "capture-output MOV codecs (diagnostic only): \(codecList))"
+        guard let settings = landscapeSettings else {
+            return "landscape HEVC Main10 writer settings were not constructed"
         }
         acceptedPixelFormats = [pixelFormat]
         acceptedVideoSettings = settings
-        print("Capture writer capability: hvc1 Main10 3840x2160; selected pixel format " +
+        print("Capture writer capability: hvc1 Main10 3840x2160 and 2160x3840; selected pixel format " +
               "\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)); " +
               "advertised ten-bit formats: \(CameraSampleValidationPolicy.fourCCListDescription(candidates)); " +
               "capture-output MOV codecs (diagnostic only): \(codecList)")
@@ -800,16 +805,19 @@ final class CameraSession: NSObject {
                                     duration: CMTime,
                                     manualISO: Float) throws -> CameraAperturePolicy.ExposureParameters {
         guard !Self.apertureCapability(for: device).stops.isEmpty else { throw CameraError.apertureUnavailable }
-        guard let parameters = CameraAperturePolicy.exposureParameters(
+        let autoAperture = AVCaptureDevice.autoLensAperture
+        let autoISO = AVCaptureDevice.autoISO
+        let parameters = CameraAperturePolicy.exposureParameters(
             selectedAperture: selectedLensAperture,
-            autoAperture: AVCaptureDevice.autoLensAperture,
+            autoAperture: autoAperture,
             mode: mode,
             manualISO: manualISO,
-            autoISO: AVCaptureDevice.autoISO,
+            autoISO: autoISO,
             minISO: device.activeFormat.minISO,
             maxISO: device.activeFormat.maxISO,
             duration: duration
-        ) else { throw CameraError.apertureExposureUnsupported }
+        )
+        guard let parameters else { throw CameraError.apertureExposureUnsupported }
         return parameters
     }
 
@@ -1208,7 +1216,6 @@ final class CameraSession: NSObject {
             audioSettings: audioSettings,
             acceptedPixelFormats: acceptedPixelFormats,
             metadata: captureMetadataItems(),
-            transform: CameraSampleValidationPolicy.portraitTrackTransform(codedWidth: 3840, codedHeight: 2160),
             preservationProbeEnabled: preservationProbeEnabled,
             requiresAudioEvidence: microphoneAdded,
             onStarted: { [callbackContext] error in

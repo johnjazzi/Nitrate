@@ -184,6 +184,32 @@ struct CameraApertureSnapshot: Sendable {
 }
 
 enum CameraSampleValidationPolicy {
+    struct CodedDimensions: Equatable, Sendable {
+        let width: Int
+        let height: Int
+
+        static let landscape4K = CodedDimensions(validatedWidth: 3840, height: 2160)
+        static let portrait4K = CodedDimensions(validatedWidth: 2160, height: 3840)
+
+        private init(validatedWidth width: Int, height: Int) {
+            self.width = width
+            self.height = height
+        }
+
+        init?(width: Int, height: Int) {
+            guard (width == 3840 && height == 2160) || (width == 2160 && height == 3840) else {
+                return nil
+            }
+            self.init(validatedWidth: width, height: height)
+        }
+
+        var portraitDeliveryTransform: CGAffineTransform {
+            if self == .portrait4K { return .identity }
+            return CGAffineTransform(a: 0, b: 1, c: -1, d: 0,
+                                     tx: CGFloat(height), ty: 0)
+        }
+    }
+
     static var appleLog2Identifier: String {
         if #available(iOS 26.0, macOS 26.0, tvOS 26.0, *) {
             return kCVImageBufferLogTransferFunction_AppleLog2 as String
@@ -230,8 +256,8 @@ enum CameraSampleValidationPolicy {
                                  acceptedPixelFormats: Set<UInt32>, logTransfer: String?,
                                  matrix: String?, primaries: String?, transfer: String?) -> [String] {
         var reasons: [String] = []
-        if width != 3840 || height != 2160 {
-            reasons.append("format dimensions are \(width)x\(height), expected 3840x2160")
+        if CodedDimensions(width: width, height: height) == nil {
+            reasons.append("format dimensions are \(width)x\(height), expected 3840x2160 or 2160x3840")
         }
         if !acceptedPixelFormats.contains(pixelFormat) {
             reasons.append("pixel format \(fourCCDescription(pixelFormat)) was not negotiated")
@@ -273,7 +299,9 @@ enum CameraSampleValidationPolicy {
     }
 
     static func portraitTrackTransform(codedWidth: Int, codedHeight: Int) -> CGAffineTransform {
-        CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: CGFloat(codedHeight), ty: 0)
+        guard codedWidth > codedHeight else { return .identity }
+        return CGAffineTransform(a: 0, b: 1, c: -1, d: 0,
+                                 tx: CGFloat(codedHeight), ty: 0)
     }
 
     static func displayDimensions(codedWidth: Int, codedHeight: Int, transform: CGAffineTransform) -> (Int, Int) {
@@ -287,12 +315,12 @@ enum CameraSampleValidationPolicy {
         codecTypes.contains("hvc1")
     }
 
-    static func explicitHEVCMain10Settings(profile: String, averageBitRate: Int,
+    static func explicitHEVCMain10Settings(width: Int = 3840, height: Int = 2160, profile: String, averageBitRate: Int,
                                            colorProperties: [String: String]) -> [String: Any] {
         [
             AVVideoCodecKey: AVVideoCodecType.hevc,
-            AVVideoWidthKey: 3840,
-            AVVideoHeightKey: 2160,
+            AVVideoWidthKey: width,
+            AVVideoHeightKey: height,
             AVVideoCompressionPropertiesKey: [
                 AVVideoProfileLevelKey: profile,
                 AVVideoAverageBitRateKey: averageBitRate,
@@ -328,7 +356,9 @@ enum CameraSampleValidationPolicy {
     /// always yields nil and would reject valid HEVC settings on device.
     static func acceptsHEVCMain10Settings(codec: AVVideoCodecType?, width: Int?, height: Int?,
                                            profile: String?, expectedProfile: String) -> Bool {
-        codec == .hevc && width == 3840 && height == 2160 && profile == expectedProfile
+        guard let width, let height else { return false }
+        return codec == .hevc && CodedDimensions(width: width, height: height) != nil
+            && profile == expectedProfile
     }
 }
 
