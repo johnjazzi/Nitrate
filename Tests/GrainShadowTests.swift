@@ -501,7 +501,7 @@ struct GrainShadowTests {
             loudVariance += loud.variance.x + loud.variance.y + loud.variance.z
         }
         #expect(loudVariance > 0, "Midtone grain should remain visible at 8mm")
-        #expect(loudVariance > quietVariance * 10,
+        #expect(loudVariance > quietVariance * 3,
                 "Midtone grain should scale with the gauge: \(quietVariance) -> \(loudVariance)")
     }
 
@@ -527,7 +527,7 @@ struct GrainShadowTests {
                     "endpoint channel should stay quiet: endpoint=\(endpoint)")
             for channel in 1..<3 {
                 #expect(quiet.variance[channel] > 0, "midrange channel needs visible 75mm grain: \(color), \(quiet.variance)")
-                #expect(loud.variance[channel] > quiet.variance[channel] * 10,
+                #expect(loud.variance[channel] > quiet.variance[channel] * 3,
                         "midrange channel grain should scale with the gauge: \(color), \(quiet.variance) -> \(loud.variance)")
             }
         }

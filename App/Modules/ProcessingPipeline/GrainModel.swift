@@ -13,18 +13,17 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     case thirtyFiveMillimetre = "35mm"
     case seventyFiveMillimetre = "75mm"
 
-    /// Multiplies the stock's grain size to reach a gauge's footprint. 35mm is
-    /// the identity 1.0 reference.
+    /// Multiplies the stock's grain size to reach a gauge's footprint.
     ///
-    /// The one-rung-finer slide was reverted: 35mm came out far too subtle and
-    /// 8mm not coarse enough, and the fix belongs on this axis rather than on
-    /// presence. Only size was reverted — presence keeps its trimmed values.
+    /// Tuned in the debug single-frame mode with size and presence decoupled:
+    /// the earlier one-rung-finer slide was wrong on the size axis, and size —
+    /// not presence — is what makes a coarse gauge read as coarse.
     var sizeMultiplier: Float {
         switch self {
-        case .eightMillimetre: return 3.0
-        case .sixteenMillimetre: return 1.8
-        case .thirtyFiveMillimetre: return 1.0
-        case .seventyFiveMillimetre: return 0.55
+        case .eightMillimetre: return 4.0
+        case .sixteenMillimetre: return 3.0
+        case .thirtyFiveMillimetre: return 1.8
+        case .seventyFiveMillimetre: return 1.0
         }
     }
 
@@ -33,10 +32,10 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     /// pushing size into the aliased regime.
     var amplitudeMultiplier: Float {
         switch self {
-        case .eightMillimetre: return 1.00
-        case .sixteenMillimetre: return 0.95
-        case .thirtyFiveMillimetre: return 0.14
-        case .seventyFiveMillimetre: return 0.04
+        case .eightMillimetre: return 0.60
+        case .sixteenMillimetre: return 0.50
+        case .thirtyFiveMillimetre: return 0.40
+        case .seventyFiveMillimetre: return 0.25
         }
     }
 
@@ -67,9 +66,8 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
         }
     }
 
-    /// The reference gauge: 35mm carries the stock's authored grain size (size
-    /// multiplier 1.0), so it is what a render falls back to when no gauge is
-    /// selected.
+    /// The gauge a render falls back to when none is selected: 35mm, the middle
+    /// of the ladder and the standard look.
     static let neutral: PrintGauge = .thirtyFiveMillimetre
 }
 
