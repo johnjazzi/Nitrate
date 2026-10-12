@@ -1518,16 +1518,26 @@ final class CameraSession: NSObject {
     private func attachDebugFrameOutput(pixelFormat: UInt32) -> Bool {
         session.beginConfiguration()
         defer { session.commitConfiguration() }
-        let settings: [String: Any] = [kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat)]
-        if session.outputs.contains(where: { $0 === debugFrameOutput }) {
-            debugFrameOutput.videoSettings = settings
-            return true
+        if !session.outputs.contains(where: { $0 === debugFrameOutput }) {
+            guard session.canAddOutput(debugFrameOutput) else { return false }
+            debugFrameOutput.alwaysDiscardsLateVideoFrames = true
+            debugFrameOutput.setSampleBufferDelegate(debugFrameTap, queue: debugFrameQueue)
+            session.addOutput(debugFrameOutput)
         }
-        guard session.canAddOutput(debugFrameOutput) else { return false }
-        debugFrameOutput.alwaysDiscardsLateVideoFrames = true
-        debugFrameOutput.videoSettings = settings
-        debugFrameOutput.setSampleBufferDelegate(debugFrameTap, queue: debugFrameQueue)
-        session.addOutput(debugFrameOutput)
+        // `availableVideoCVPixelFormatTypes` is only meaningful once the output is
+        // part of a session, and setting a format it does not advertise raises
+        // NSInvalidArgumentException (a hard crash, not a catchable error). So
+        // request the recorder's negotiated format only when the output actually
+        // offers it, and otherwise leave the output's own default in place —
+        // `DebugFrameConverter` normalises whatever arrives to 64RGBAHalf anyway.
+        let available = debugFrameOutput.availableVideoPixelFormatTypes.map {
+            UInt32(truncating: $0 as NSNumber)
+        }
+        if available.contains(pixelFormat) {
+            debugFrameOutput.videoSettings = [
+                kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat)
+            ]
+        }
         debugFrameOutput.connection(with: .video)?.isEnabled = false
         return true
     }

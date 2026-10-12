@@ -159,7 +159,8 @@ struct ContentView: View {
         renderQueueViewModel.enqueue(
             sourceURL: sourceURL,
             stockId: stock.stockId,
-            iso: currentISO
+            iso: currentISO,
+            gauge: library.lastGauge(for: stock.stockId)
         )
     }
 

@@ -8,10 +8,10 @@ import Foundation
 ///
 /// Multipliers are documented starting points, not measurements.
 enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
-    case eightMillimetre
-    case sixteenMillimetre
-    case thirtyFiveMillimetre
-    case seventyFiveMillimetre
+    case eightMillimetre = "8mm"
+    case sixteenMillimetre = "16mm"
+    case thirtyFiveMillimetre = "35mm"
+    case seventyFiveMillimetre = "75mm"
 
     /// Multiplies the stock's grain size to reach a gauge's footprint. 35mm is
     /// the neutral 1.0 reference. Coarse gauges must be *visibly* coarser, not a
@@ -38,15 +38,9 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
         }
     }
 
-    /// Short label for the gauge selector (8mm / 16mm / 35mm / 75mm).
-    var displayName: String {
-        switch self {
-        case .eightMillimetre: return "8mm"
-        case .sixteenMillimetre: return "16mm"
-        case .thirtyFiveMillimetre: return "35mm"
-        case .seventyFiveMillimetre: return "75mm"
-        }
-    }
+    /// Short label for the gauge selector; the encoded value is the same short
+    /// form, so exported metadata reads "35mm", not "thirtyFiveMillimetre".
+    var displayName: String { rawValue }
 
     /// The neutral gauge: identity size and amplitude.
     static let neutral: PrintGauge = .thirtyFiveMillimetre
