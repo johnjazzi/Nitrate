@@ -1,5 +1,7 @@
 # Development handoff — October 12, 2026
 
+> **Superseded for current camera status:** see [Development state — October 12, 2026](development-state-2026-10-12.md) and the successful device evidence in `.pi/tmp/log2-fix-probe-2026-10-12/console-6.log` and `console-7.log`. This handoff remains as the morning snapshot.
+
 ## Repository state
 
 Grain work is committed as `9545624` (`feat: modulate film grain amplitude at image edges`), on top of camera baseline `7bf2822`. Camera retry/diagnostics is committed as `000c153`. Its full verification passed 100 tests with 0 failures or skips, generic iOS build, signed device build, and strict codesign. Logs: `.pi/tmp/x422-diagnostics-verify.log`, `.pi/tmp/x422-diagnostics-device.log`, `.pi/tmp/x422-diagnostics-codesign.log`; test summary: `.pi/tmp/test-summary.json`. Do not start another build in this session.
