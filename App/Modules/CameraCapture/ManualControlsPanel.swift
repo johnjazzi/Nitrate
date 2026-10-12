@@ -103,7 +103,7 @@ struct ManualControlsPanel: View {
         let measured = cameraViewModel.liveAperture
         let readout = measured.map { String(format: "f/%.1f", $0) } ?? "N/A"
         return controlColumn(title: "APERTURE", readout: readout) {
-            if cameraViewModel.apertureIsVariable {
+            if cameraViewModel.canSelectAperture {
                 Menu {
                     Button("Auto") { cameraViewModel.setLensAperture(nil) }
                     ForEach(cameraViewModel.apertureStops, id: \.self) { stop in
@@ -122,9 +122,13 @@ struct ManualControlsPanel: View {
                 .frame(height: 80)
                 .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 6))
             } else {
+                let stateLabel: String = {
+                    guard measured != nil else { return "—" }
+                    return cameraViewModel.apertureIsVariable ? "READ ONLY" : "FIXED"
+                }()
                 VStack(spacing: 6) {
                     Image(systemName: measured == nil ? "minus.circle" : "lock.fill")
-                    Text(measured == nil ? "—" : "FIXED")
+                    Text(stateLabel)
                         .font(.caption2.weight(.bold))
                 }
                 .foregroundStyle(.white.opacity(0.45))

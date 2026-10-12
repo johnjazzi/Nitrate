@@ -32,11 +32,12 @@ struct ContentView: View {
         }
         _selectedStock = State(initialValue: stock)
         _currentISO = State(initialValue: stock.map { library.lastISO(for: $0.stockId) } ?? 400)
+        _selectedLens = State(initialValue: cameraViewModel.activeLens)
     }
 
     /// Camera controls state
     @State private var zoomFactor: Double = 1.0
-    @State private var selectedLens: CameraLens = .wide
+    @State private var selectedLens: CameraLens
     @State private var availableLenses: [CameraLens] = []
 
     /// Pinch-zoom baseline (ISO/EV controls live in `CameraControlBar`).
@@ -239,10 +240,12 @@ struct ContentView: View {
     private func selectLens(_ lens: CameraLens) {
         guard lens != selectedLens else { return }
         cameraViewModel.selectLens(lens) { error in
+            // The view model follows committed session changes, including a
+            // successful earlier switch followed by a later request failure.
+            selectedLens = cameraViewModel.activeLens
             if let error {
                 cameraViewModel.errorMessage = "Camera switch failed: \(error.localizedDescription)"
             } else {
-                selectedLens = lens
                 zoomFactor = 1.0
             }
         }

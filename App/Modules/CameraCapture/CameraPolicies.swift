@@ -221,11 +221,34 @@ enum CameraSampleValidationPolicy {
     static func accepts(width: Int, height: Int, pixelFormat: UInt32,
                         acceptedPixelFormats: Set<UInt32>, logTransfer: String?, matrix: String?,
                         primaries: String?, transfer: String?) -> Bool {
-        width == 3840 && height == 2160 && acceptedPixelFormats.contains(pixelFormat)
-            && isAppleLog2(logTransfer)
-            && matrix == "ITU_R_2020"
-            && (primaries == nil || primaries == "Unspecified")
-            && (transfer == nil || transfer == "Unspecified")
+        rejectionReasons(width: width, height: height, pixelFormat: pixelFormat,
+            acceptedPixelFormats: acceptedPixelFormats, logTransfer: logTransfer,
+            matrix: matrix, primaries: primaries, transfer: transfer).isEmpty
+    }
+
+    static func rejectionReasons(width: Int, height: Int, pixelFormat: UInt32,
+                                 acceptedPixelFormats: Set<UInt32>, logTransfer: String?,
+                                 matrix: String?, primaries: String?, transfer: String?) -> [String] {
+        var reasons: [String] = []
+        if width != 3840 || height != 2160 {
+            reasons.append("format dimensions are \(width)x\(height), expected 3840x2160")
+        }
+        if !acceptedPixelFormats.contains(pixelFormat) {
+            reasons.append("pixel format \(fourCCDescription(pixelFormat)) was not negotiated")
+        }
+        if !isAppleLog2(logTransfer) {
+            reasons.append("Log transfer is \(logTransfer ?? "missing"), expected Apple Log 2")
+        }
+        if matrix != "ITU_R_2020" {
+            reasons.append("YCbCr matrix is \(matrix ?? "missing"), expected ITU_R_2020")
+        }
+        if let primaries, primaries != "Unspecified" {
+            reasons.append("color primaries is \(primaries), expected missing or Unspecified")
+        }
+        if let transfer, transfer != "Unspecified" {
+            reasons.append("transfer function is \(transfer), expected missing or Unspecified")
+        }
+        return reasons
     }
 
     static func isAppleLog2(_ identifier: String?) -> Bool {

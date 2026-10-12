@@ -240,6 +240,22 @@ struct CameraPolicyTests {
         #expect(!valid(transfer: "ITU_R_2020"))
     }
 
+    @Test func sampleValidationReportsEachRejectedFrontFrameField() {
+        let reasons = CameraSampleValidationPolicy.rejectionReasons(
+            width: 1920, height: 1080, pixelFormat: 0x42475241,
+            acceptedPixelFormats: [0x78343230], logTransfer: "AppleLog2",
+            matrix: nil, primaries: "ITU_R_2020", transfer: "ITU_R_2020"
+        )
+        #expect(reasons == [
+            "format dimensions are 1920x1080, expected 3840x2160",
+            "pixel format BGRA was not negotiated",
+            "Log transfer is AppleLog2, expected Apple Log 2",
+            "YCbCr matrix is missing, expected ITU_R_2020",
+            "color primaries is ITU_R_2020, expected missing or Unspecified",
+            "transfer function is ITU_R_2020, expected missing or Unspecified"
+        ])
+    }
+
     @Test func sampleClockRejectsPrerollAndNonIncreasingTimestamps() {
         #expect(!CameraSampleValidationPolicy.audioIsAfterSessionStart(sampleTime: 0.99, sessionStart: 1))
         #expect(CameraSampleValidationPolicy.audioIsAfterSessionStart(sampleTime: 1, sessionStart: 1))

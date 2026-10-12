@@ -9,6 +9,10 @@ final class CameraViewModel {
     let session = CameraSession()
     let exposure = ExposureManager()
 
+    init() {
+        activeLens = session.activeLens
+    }
+
     // MARK: - Observable State
 
     var isRecording = false
@@ -29,6 +33,8 @@ final class CameraViewModel {
     var apertureStops: [Float] = []
     var apertureIsVariable = false
     var selectedLensAperture: Float?
+    private(set) var activeLens: CameraLens
+    private(set) var isSwitchingCameraLens = false
     var isManualExposure = false
     var manualISO: Float = 400
     /// Auto-exposure target bias in EV (live value; polled with the exposure
@@ -50,6 +56,9 @@ final class CameraViewModel {
     private var exposureCommandGeneration: UInt64 = 0
     private var apertureSnapshotRequestGeneration: UInt64 = 0
     private var apertureCameraRevision: UInt64 = 0
+    private var cameraLensSwitchGeneration: UInt64 = 0
+    private var pendingLensSwitchCount = 0
+    private var apertureCommandGeneration: UInt64 = 0
     private let originalStorage = CameraOriginalStorage()
     private var lifecycleGate = CameraLifecycleGate()
     private var configurationInFlight = false
@@ -76,6 +85,10 @@ final class CameraViewModel {
         guard lifecycleGate.isActive else { return }
         lifecycleGate.deactivate()
         exposureCommandGeneration &+= 1
+        cameraLensSwitchGeneration &+= 1
+        apertureCommandGeneration &+= 1
+        isSwitchingCameraLens = pendingLensSwitchCount > 0
+        invalidateApertureUIState()
         if isStartingRecording {
             captureGeneration &+= 1
             isStartingRecording = false
@@ -269,24 +282,48 @@ final class CameraViewModel {
     /// Completion runs on the main queue; `nil` error means the swap succeeded.
     func selectLens(_ lens: CameraLens, completion: @escaping (Error?) -> Void) {
         exposureCommandGeneration &+= 1
+        cameraLensSwitchGeneration &+= 1
+        pendingLensSwitchCount += 1
+        apertureCommandGeneration &+= 1
+        isSwitchingCameraLens = true
+        invalidateApertureUIState()
         session.selectCamera(lens) { [weak self] error in
             guard let self else { return }
-            if let error {
-                completion(error)
-                return
+            if error == nil {
+                // Session switches are serialized. Record each successful
+                // commit even when a later request is still pending, so a
+                // subsequent failure leaves the UI on the actual camera.
+                self.activeLens = lens
             }
-            // configureDevice resets to auto exposure on the device swap; re-apply
-            // manual exposure or shutter priority so the 180° shutter survives lens changes.
-            if self.isManualExposure {
-                self.session.lockManualExposure(iso: self.manualISO) { [weak self] error in
-                    if let error { self?.errorMessage = error.localizedDescription }
-                    self?.refreshExposure()
+            self.pendingLensSwitchCount = max(0, self.pendingLensSwitchCount - 1)
+            self.isSwitchingCameraLens = self.pendingLensSwitchCount > 0
+
+            if self.pendingLensSwitchCount == 0 {
+                if self.lifecycleGate.isActive {
+                    self.restoreExposureAfterLensSwitch()
+                    self.refreshExposure()
+                } else {
+                    self.invalidateApertureUIState()
                 }
-            } else {
-                self.session.enableShutterPriority()
+            }
+            // Resolve every caller. ContentView commits each successful lens;
+            // failures remain visible while they never replace the committed
+            // selection.
+            completion(error)
+        }
+    }
+
+    private func restoreExposureAfterLensSwitch() {
+        if isManualExposure {
+            let generation = exposureCommandGeneration
+            session.lockManualExposure(iso: manualISO) { [weak self] error in
+                guard let self, self.exposureCommandGeneration == generation,
+                      !self.isSwitchingCameraLens else { return }
+                if let error { self.errorMessage = error.localizedDescription }
                 self.refreshExposure()
             }
-            completion(nil)
+        } else {
+            session.enableShutterPriority()
         }
     }
 
@@ -318,13 +355,28 @@ final class CameraViewModel {
     }
 
     func setLensAperture(_ aperture: Float?) {
+        guard canSelectAperture else { return }
+        apertureCommandGeneration &+= 1
+        let commandGeneration = apertureCommandGeneration
+        let switchGeneration = cameraLensSwitchGeneration
         session.setLensAperture(aperture) { [weak self] error in
             guard let self else { return }
+            guard self.apertureCommandGeneration == commandGeneration,
+                  self.cameraLensSwitchGeneration == switchGeneration,
+                  !self.isSwitchingCameraLens, self.activeLens == .wide else { return }
             if let error {
                 self.errorMessage = "Failed to set aperture: \(error.localizedDescription)"
             }
             self.refreshExposure()
         }
+    }
+
+    /// Aperture adjustment is intentionally limited to the physical rear main
+    /// camera. The state is also suppressed while its active format is changing.
+    var canSelectAperture: Bool {
+        activeLens == .wide && activeLens.position == .back
+            && lifecycleGate.isActive && cameraConfigured && !isSwitchingCameraLens
+            && apertureIsVariable && !apertureStops.isEmpty
     }
 
     // MARK: - Auto-Exposure Bias
@@ -394,6 +446,14 @@ final class CameraViewModel {
         // NOTE: liveExposureBias is intentionally NOT refreshed here. It is our
         // own compensation value, not the device's (which reads 0 in custom
         // exposure mode and is reset by every shutter-priority re-meter).
+    }
+
+    private func invalidateApertureUIState() {
+        apertureSnapshotRequestGeneration &+= 1
+        liveAperture = nil
+        apertureStops = []
+        apertureIsVariable = false
+        selectedLensAperture = nil
     }
 
     private func startExposurePolling() {

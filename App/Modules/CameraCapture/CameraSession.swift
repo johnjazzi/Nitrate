@@ -85,7 +85,14 @@ final class CameraSession: NSObject {
     private var apertureCameraRevision: UInt64 = 0
 
     /// Currently selected lens (rear wide/ultrawide/tele, or front).
-    private(set) var activeLens: CameraLens = .wide
+    private(set) var activeLens: CameraLens = {
+#if DEBUG
+        if CommandLine.arguments.contains("--smoke-front-hevc-log2-capture") {
+            return .front
+        }
+#endif
+        return .wide
+    }()
     /// Current device (accessible for view model queries)
     private(set) var activeDevice: AVCaptureDevice?
 
@@ -227,7 +234,6 @@ final class CameraSession: NSObject {
             throw CameraError.cannotAddOutput
         }
         session.addOutput(videoOutput)
-        configureRawLandscapeRecordingConnection()
     }
 
     /// Samples remain sensor-coded at 3840x2160; the MOV track matrix rotates
@@ -236,8 +242,13 @@ final class CameraSession: NSObject {
         guard let connection = videoOutput.connection(with: .video) else { return }
         connection.automaticallyAdjustsVideoMirroring = false
         if connection.isVideoMirroringSupported { connection.isVideoMirrored = false }
-        if #available(iOS 17.0, *), connection.isVideoRotationAngleSupported(0) {
-            connection.videoRotationAngle = 0
+        if #available(iOS 17.0, *) {
+            let supportsRawLandscapeAngle = connection.isVideoRotationAngleSupported(0)
+            if supportsRawLandscapeAngle { connection.videoRotationAngle = 0 }
+#if DEBUG
+            print("Camera data-output orientation: requested=0°, supported=\(supportsRawLandscapeAngle), " +
+                  "applied=\(connection.videoRotationAngle)°")
+#endif
         }
     }
 
@@ -287,6 +298,7 @@ final class CameraSession: NSObject {
                 try applySelectedAperture(on: device, mode: isShutterPriority ? .shutterPriority : .manual)
             }
         }
+        configureRawLandscapeRecordingConnection()
     }
 
     private func applyCaptureFormat(_ format: AVCaptureDevice.Format, to device: AVCaptureDevice) throws {

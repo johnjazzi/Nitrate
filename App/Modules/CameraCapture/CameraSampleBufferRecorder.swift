@@ -154,22 +154,35 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         let matrix = CVBufferCopyAttachment(imageBuffer, kCVImageBufferYCbCrMatrixKey, nil)
         let primaries = CVBufferCopyAttachment(imageBuffer, kCVImageBufferColorPrimariesKey, nil)
         let transfer = CVBufferCopyAttachment(imageBuffer, kCVImageBufferTransferFunctionKey, nil)
-#if DEBUG
-        if appendedVideoFrames == 0 {
-            print("HEVC Log2 source: pixel=0x\(String(pixelFormat, radix: 16)), bits=10, Log=\(String(describing: logTransfer)), matrix=\(String(describing: matrix)), primaries=\(String(describing: primaries)), transfer=\(String(describing: transfer)), pts=\(CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds)")
-        }
-#endif
-        let valid = CameraSampleValidationPolicy.accepts(
+        let validationRejections = CameraSampleValidationPolicy.rejectionReasons(
             width: Int(dimensions.width), height: Int(dimensions.height), pixelFormat: pixelFormat,
             acceptedPixelFormats: acceptedPixelFormats,
             logTransfer: logTransfer as? String, matrix: matrix as? String,
             primaries: primaries as? String, transfer: transfer as? String
         )
-        guard valid else {
+#if DEBUG
+        if appendedVideoFrames == 0 {
+            print("HEVC Log2 source: format=\(dimensions.width)x\(dimensions.height), " +
+                  "buffer=\(CVPixelBufferGetWidth(imageBuffer))x\(CVPixelBufferGetHeight(imageBuffer)), " +
+                  "pixel=\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)), " +
+                  "planes=\(CVPixelBufferGetPlaneCount(imageBuffer)), " +
+                  "accepted=\(CameraSampleValidationPolicy.fourCCListDescription(acceptedPixelFormats.sorted())), " +
+                  "Log=\(String(describing: logTransfer)), matrix=\(String(describing: matrix)), " +
+                  "primaries=\(String(describing: primaries)), transfer=\(String(describing: transfer)), " +
+                  "rejections=\(validationRejections.isEmpty ? "none" : validationRejections.joined(separator: "; ")), " +
+                  "pts=\(CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds)")
+        }
+#endif
+        guard validationRejections.isEmpty else {
             fail(CameraSampleBufferRecorderError.invalidVideoSample(
-                "\(dimensions.width)x\(dimensions.height), pixel format 0x\(String(pixelFormat, radix: 16)), " +
+                "\(dimensions.width)x\(dimensions.height) format description, " +
+                "\(CVPixelBufferGetWidth(imageBuffer))x\(CVPixelBufferGetHeight(imageBuffer)) pixel buffer, " +
+                "pixel format \(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)) " +
+                "(\(CVPixelBufferGetPlaneCount(imageBuffer)) planes), " +
+                "accepted formats \(CameraSampleValidationPolicy.fourCCListDescription(acceptedPixelFormats.sorted())); " +
                 "Log=\(String(describing: logTransfer)), matrix=\(String(describing: matrix)), " +
-                "primaries=\(String(describing: primaries)), transfer=\(String(describing: transfer))"
+                "primaries=\(String(describing: primaries)), transfer=\(String(describing: transfer)); " +
+                "rejected: \(validationRejections.joined(separator: "; "))"
             ))
             return
         }
