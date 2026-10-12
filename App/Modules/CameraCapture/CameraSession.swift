@@ -104,7 +104,6 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         var configError: Error?
 
         session.beginConfiguration()
-        defer { session.commitConfiguration() }
 
         session.automaticallyConfiguresCaptureDeviceForWideColor = false
         session.sessionPreset = .inputPriority
@@ -114,6 +113,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
             for: .video,
             position: activeLens.position
         ) else {
+            session.commitConfiguration()
             return CameraError.noCameraAvailable
         }
 
@@ -121,13 +121,17 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
             addMicrophoneInputLocked()
             try addDevice(device)
             try configureDevice(device)
-            configureMovieOutput()
-            isConfigured = true
         } catch {
             configError = error
         }
+        session.commitConfiguration()
+        guard configError == nil else { return configError }
+        do {
+            try configureMovieOutput()
+            isConfigured = true
+        } catch { return error }
 
-        return configError
+        return nil
     }
 
     /// Add the microphone input from any thread (idempotent). Audio is optional:
@@ -138,8 +142,11 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     func addMicrophoneInput() {
         sessionQueue.async { [weak self] in
             guard let self, !self.microphoneAdded else { return }
+            guard !self.movieOutput.isRecording, !self.recordingStartPending else {
+                self.reportCameraError(CameraError.exposureChangeDuringRecording)
+                return
+            }
             self.session.beginConfiguration()
-            defer { self.session.commitConfiguration() }
             self.addMicrophoneInputLocked()
             // Refresh the movie output only if the video connection already
             // exists (session already running). On first launch addDevice adds
@@ -149,7 +156,11 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
                 if self.session.canAddOutput(self.movieOutput) {
                     self.session.addOutput(self.movieOutput)
                 }
-                self.configureMovieOutput()
+                self.session.commitConfiguration()
+                do { try self.configureMovieOutput() }
+                catch { self.reportCameraError(error) }
+            } else {
+                self.session.commitConfiguration()
             }
         }
     }
@@ -232,11 +243,30 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
             return CameraCaptureFormatPolicy.Candidate(
                 width: dimensions.width, height: dimensions.height,
                 supportsAppleLog2: format.supportedColorSpaces.contains(.appleLog2),
-                supports24FPS: supports24FPS
+                supports24FPS: supports24FPS,
+                isTenBitBiPlanar420: {
+                    let subtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
+                    return subtype == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                        || subtype == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+                }()
             )
         }
         guard let index = CameraCaptureFormatPolicy.appleLog2Index(in: candidates) else { return nil }
         return formats[index]
+    }
+
+    private static func captureFormatSubtypeDescription(_ format: AVCaptureDevice.Format?) -> String {
+        guard let format else { return "no active video format" }
+        let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+        let subtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
+        let chars: [UInt8] = [
+            UInt8((subtype >> 24) & 0xff), UInt8((subtype >> 16) & 0xff),
+            UInt8((subtype >> 8) & 0xff), UInt8(subtype & 0xff)
+        ]
+        let printable = chars.allSatisfy { (32...126).contains($0) }
+            ? String(bytes: chars, encoding: .ascii) ?? String(format: "0x%08X", subtype)
+            : String(format: "0x%08X", subtype)
+        return "\(dimensions.width)x\(dimensions.height), subtype \(printable)"
     }
 
     /// Set the fixed white-balance temperature (Kelvin) for the selected film
@@ -269,28 +299,33 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
     }
 
-    private func configureMovieOutput() {
-        // No video connection yet (e.g. output just re-added before the input
-        // settled) — settings can be applied once it exists; skip rather than
-        // crash on the force-unwrap.
-        guard let connection = movieOutput.connection(with: .video) else { return }
+    private func configureMovieOutput() throws {
+        guard let connection = movieOutput.connection(with: .video) else {
+            throw CameraError.movieVideoConnectionUnavailable
+        }
 
         if connection.isVideoStabilizationSupported {
             connection.preferredVideoStabilizationMode = .standard
         }
 
-        let compressionSettings: [String: Any] = [
-            AVVideoAverageBitRateKey: DeliverySettings.averageBitRate,
-            AVVideoMaxKeyFrameIntervalKey: 48,
-            AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel as String
-        ]
+        let supportedKeys = Set(movieOutput.supportedOutputSettingsKeys(for: connection))
+        let settings = try CameraMovieCapabilityPolicy.settings(
+            availableCodecs: movieOutput.availableVideoCodecTypes.map(\.rawValue),
+            hevcCodec: AVVideoCodecType.hevc.rawValue,
+            availableSettingsKeys: supportedKeys,
+            formatDescription: Self.captureFormatSubtypeDescription(activeDevice?.activeFormat),
+            codecKey: AVVideoCodecKey,
+            compressionKey: AVVideoCompressionPropertiesKey,
+            averageBitRateKey: AVVideoAverageBitRateKey,
+            maxKeyFrameIntervalKey: AVVideoMaxKeyFrameIntervalKey,
+            profileLevelKey: AVVideoProfileLevelKey,
+            averageBitRate: DeliverySettings.averageBitRate,
+            maxKeyFrameInterval: 48,
+            main10Profile: kVTProfileLevel_HEVC_Main10_AutoLevel as String
+        )
 
         movieOutput.movieFragmentInterval = .invalid
-        movieOutput.setOutputSettings(
-            [AVVideoCodecKey: AVVideoCodecType.hevc,
-             AVVideoCompressionPropertiesKey: compressionSettings],
-            for: connection
-        )
+        movieOutput.setOutputSettings(settings, for: connection)
     }
 
     // MARK: - Camera Switching
@@ -320,15 +355,23 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     func selectCamera(_ lens: CameraLens, completion: @escaping @MainActor @Sendable (Error?) -> Void) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            guard self.activeLens != lens else {
+            if self.activeLens == lens, self.isConfigured {
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(nil) } }
+                return
+            }
+            guard !self.movieOutput.isRecording, !self.recordingStartPending else {
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.exposureChangeDuringRecording) } }
                 return
             }
             self.invalidateMetering()
             var switchError: Error?
-
+            let previousDevice = self.activeDevice
+            let previousFormat = previousDevice?.activeFormat
+            let previousColorSpace = previousDevice?.activeColorSpace
+            let previousMinFrameDuration = previousDevice?.activeVideoMinFrameDuration
+            let previousMaxFrameDuration = previousDevice?.activeVideoMaxFrameDuration
             self.session.beginConfiguration()
-            defer { self.session.commitConfiguration() }
+            var configurationOpen = true
 
             guard let device = AVCaptureDevice.default(
                 lens.deviceType,
@@ -336,12 +379,14 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
                 position: lens.position
             ) else {
                 let error = CameraError.noCameraAvailable
+                self.session.commitConfiguration()
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
                 return
             }
 
             guard #available(iOS 26.0, *), Self.appleLog2CaptureFormat(in: device.formats) != nil else {
                 let error = CameraError.appleLog2NotSupported
+                self.session.commitConfiguration()
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
                 return
             }
@@ -349,11 +394,55 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
             do {
                 try self.addDevice(device)
                 try self.configureDevice(device)
-                // addDevice dropped movieOutput's settings; re-apply them.
-                self.configureMovieOutput()
+                self.session.commitConfiguration()
+                configurationOpen = false
+                try self.configureMovieOutput()
                 self.activeLens = lens
+                self.isConfigured = true
             } catch {
-                switchError = error
+                let originalError = error
+                switchError = originalError
+                if configurationOpen {
+                    self.session.commitConfiguration()
+                    configurationOpen = false
+                }
+                // Re-adding an input resets its frame durations, so restore
+                // the prior capture configuration before committing rollback.
+                if let previousDevice {
+                    self.session.beginConfiguration()
+                    var rollbackError: Error?
+                    var previousDeviceRestored = false
+                    do {
+                        try self.addDevice(previousDevice)
+                        if let previousFormat, let previousColorSpace,
+                           let previousMinFrameDuration, let previousMaxFrameDuration {
+                            do {
+                                try previousDevice.lockForConfiguration()
+                                defer { previousDevice.unlockForConfiguration() }
+                                previousDevice.activeFormat = previousFormat
+                                previousDevice.activeColorSpace = previousColorSpace
+                                previousDevice.activeVideoMinFrameDuration = previousMinFrameDuration
+                                previousDevice.activeVideoMaxFrameDuration = previousMaxFrameDuration
+                            }
+                        }
+                        previousDeviceRestored = true
+                    } catch {
+                        rollbackError = error
+                    }
+                    self.session.commitConfiguration()
+                    self.activeDevice = previousDeviceRestored ? previousDevice : nil
+                    do { try self.configureMovieOutput() }
+                    catch { if rollbackError == nil { rollbackError = error } }
+                    if let rollbackError {
+                        self.isConfigured = false
+                        switchError = CameraError.lensRollbackFailed(original: originalError, rollback: rollbackError)
+                    } else {
+                        self.isConfigured = true
+                    }
+                } else {
+                    self.activeDevice = nil
+                    self.isConfigured = false
+                }
             }
 
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(switchError) } }
@@ -721,6 +810,12 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.appleLog2NotSupported) } }
             return
         }
+        do { try configureMovieOutput() }
+        catch {
+            recordingStartPending = false
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
+            return
+        }
         // Exposure has completed before metadata is sampled and output starts.
         movieOutput.metadata = captureMetadataItems()
         movieOutput.startRecording(to: url, recordingDelegate: self)
@@ -858,6 +953,8 @@ enum CameraError: LocalizedError {
     case destinationAlreadyExists
     case recordingFailed
     case exposureChangeDuringRecording
+    case movieVideoConnectionUnavailable
+    case lensRollbackFailed(original: Error, rollback: Error)
 
     var errorDescription: String? {
         switch self {
@@ -879,6 +976,10 @@ enum CameraError: LocalizedError {
             return "The recording could not be finalized."
         case .exposureChangeDuringRecording:
             return "Exposure cannot be changed during a recording."
+        case .movieVideoConnectionUnavailable:
+            return "The camera has no movie video connection."
+        case .lensRollbackFailed(let original, let rollback):
+            return "Camera switch failed (\(original.localizedDescription)); restoring the previous camera also failed (\(rollback.localizedDescription))."
         }
     }
 }

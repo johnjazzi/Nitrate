@@ -17,6 +17,41 @@ struct CameraPolicyTests {
         #expect(CameraCaptureFormatPolicy.appleLog2Index(in: candidates) == 3)
     }
 
+    @Test func preferredTenBitLog2FormatWinsButNoSubtypeEvidenceKeepsFirstMatch() {
+        let formats: [CameraCaptureFormatPolicy.Candidate] = [
+            .init(width: 3840, height: 2160, supportsAppleLog2: true, supports24FPS: true),
+            .init(width: 3840, height: 2160, supportsAppleLog2: true, supports24FPS: true,
+                  isTenBitBiPlanar420: true)
+        ]
+        #expect(CameraCaptureFormatPolicy.appleLog2Index(in: formats) == 1)
+        #expect(CameraCaptureFormatPolicy.appleLog2Index(in: [formats[0]]) == 0)
+    }
+
+    @Test func movieCapabilityPolicyValidatesCodecAndAdvertisedSettingsKeys() throws {
+        let baseKeys: Set<String> = ["codec", "compression"]
+        func settings(codecs: [String], keys: Set<String>) throws -> [String: Any] {
+            try CameraMovieCapabilityPolicy.settings(
+                availableCodecs: codecs, hevcCodec: "hvc1", availableSettingsKeys: keys,
+                formatDescription: "3840x2160, subtype x420",
+                codecKey: "codec", compressionKey: "compression", averageBitRateKey: "bitrate",
+                maxKeyFrameIntervalKey: "keyframe", profileLevelKey: "profile",
+                averageBitRate: 100, maxKeyFrameInterval: 48, main10Profile: "main10")
+        }
+        #expect(throws: CameraMovieCapabilityError.self) { try settings(codecs: [], keys: baseKeys) }
+        #expect(throws: CameraMovieCapabilityError.self) { try settings(codecs: ["avc1"], keys: baseKeys) }
+        #expect(throws: CameraMovieCapabilityError.self) { try settings(codecs: ["apcn"], keys: baseKeys) }
+        #expect(throws: CameraMovieCapabilityError.self) { try settings(codecs: ["hvc1"], keys: ["compression"]) }
+        let sparse = try settings(codecs: ["hvc1"], keys: ["codec"])
+        #expect(sparse.count == 1)
+        #expect(sparse["codec"] as? String == "hvc1")
+        let complete = try settings(codecs: ["hvc1"], keys: baseKeys)
+        #expect(complete["codec"] as? String == "hvc1")
+        let compression = try #require(complete["compression"] as? [String: Any])
+        #expect(compression["bitrate"] as? Int == 100)
+        #expect(compression["keyframe"] as? Int == 48)
+        #expect(compression["profile"] as? String == "main10")
+    }
+
     @Test func lifecycleActivationIsIdempotentAndBackgroundInvalidatesPendingConfigure() throws {
         var gate = CameraLifecycleGate()
         let firstActivation = gate.activate()

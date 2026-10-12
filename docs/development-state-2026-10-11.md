@@ -40,6 +40,11 @@ No branches or worktrees were deleted and no remote operation was performed.
 The local `origin/main` reference was 23 commits behind immediately after the
 fast-forward; it is a cached reference, not a live remote-status check.
 
+The later working-checkout audit found `/tmp/nitrate-camera-render-integration`
+clean at `e58c2d13c7a65bcdb2db2afcbe3d4f449aa5bcd4`, with no commits or patches
+missing from `main`. That checkout remains historical; build the project in the
+canonical checkout to include subsequent color and capture fixes.
+
 The existing deleted `docs/development.md` and untracked `docs/prioritization.md`
 are user work. They were preserved through consolidation and excluded from
 implementation commits.
@@ -89,6 +94,27 @@ remain in `project.yml`; no per-build account reconfiguration is needed.
 BMAD rendering now succeeds outside the sandbox with PyPI access; the prior DNS
 failure was a sandbox network restriction. Logs remain under ignored
 `build/verification`.
+
+## Capture codec exception repair
+
+The reported `setOutputSettings` exception exposed an unconditional HEVC request.
+Camera settings now use advertised codecs and supported output keys after the
+configuration transaction commits and immediately before recording. Unsupported
+configurations produce camera errors rather than submitting an unsupported codec.
+Format selection prefers declared 10-bit bi-planar 4:2:0 Log 2 formats when
+available; this preference does not itself establish encoder or source bit depth.
+
+Failed lens changes restore the previous device's format, color space and frame
+durations, and revalidate its movie settings. Failed restoration invalidates the
+configured state so later setup can retry. Existing white balance, exposure
+sequence and custom movie metadata are retained.
+
+Implementation: Luna `camera_hevc_fix`, with coordinator SDK checks and a focused
+independent review. The review's configuration-recovery finding was fixed.
+Verification passed: 67 tests, zero failures/skips, lint, generic iOS build,
+diff check and final signed device build. Actual phone capture on this new main
+build still requires device confirmation; the user's working run was on the
+historical integration checkout.
 
 ## Digital ColorChecker sampler check
 
