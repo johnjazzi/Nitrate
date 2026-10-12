@@ -365,12 +365,14 @@ private struct StockSheetView: View {
     @State private var stocks: [FilmStockConfig] = []
     @State private var localSelection: FilmStockConfig?
     @State private var iso: Float = 400
+    @State private var gauge: PrintGauge = .thirtyFiveMillimetre
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
                 stockPicker
                 if localSelection != nil { isoSlider }
+                if localSelection != nil { gaugePicker }
 
                 if let url = sourceURL {
                     renderButton(sourceURL: url)
@@ -393,6 +395,7 @@ private struct StockSheetView: View {
                 if localSelection == nil {
                     localSelection = selectedStock ?? stocks.first
                     iso = localSelection.flatMap { library.lastISO(for: $0.stockId) } ?? 400
+                    gauge = localSelection.flatMap { library.lastGauge(for: $0.stockId) } ?? .thirtyFiveMillimetre
                 }
                 persistPreferences()
             }
@@ -402,6 +405,7 @@ private struct StockSheetView: View {
                     currentISO = iso
                     library.setSelectedStock(stock.stockId)
                     library.setISO(iso, for: stock.stockId)
+                    library.setGauge(gauge, for: stock.stockId)
                 }
             }
             .onChange(of: localSelection) { _, _ in persistPreferences() }
@@ -421,6 +425,7 @@ private struct StockSheetView: View {
                             action: {
                                 localSelection = stock
                                 iso = library.lastISO(for: stock.stockId)
+                                gauge = library.lastGauge(for: stock.stockId) ?? .thirtyFiveMillimetre
                             }
                         )
                     }
@@ -445,6 +450,22 @@ private struct StockSheetView: View {
         guard let stock = localSelection else { return }
         library.setSelectedStock(stock.stockId)
         library.setISO(iso, for: stock.stockId)
+        library.setGauge(gauge, for: stock.stockId)
+    }
+
+    private var gaugePicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Print Gauge").font(.headline)
+            Picker("Print Gauge", selection: $gauge) {
+                ForEach(PrintGauge.allCases, id: \.self) { gauge in
+                    Text(gauge.displayName).tag(gauge)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text("Gauge sets grain size and loudness (8mm coarse → 75mm near grain-free). ISO sets loudness only.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private func renderButton(sourceURL: URL) -> some View {
@@ -456,7 +477,8 @@ private struct StockSheetView: View {
             renderQueueViewModel.enqueue(
                 sourceURL: sourceURL,
                 stockId: stock.stockId,
-                iso: iso
+                iso: iso,
+                gauge: gauge
             )
             isPresented = false
         } label: {

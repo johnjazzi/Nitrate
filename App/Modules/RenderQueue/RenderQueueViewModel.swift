@@ -81,13 +81,14 @@ final class RenderQueueViewModel {
         processNext()
     }
 
-    func enqueue(sourceURL: URL, stockId: String, iso: Float) {
+    func enqueue(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge? = nil) {
         guard Self.isUsableFile(sourceURL) else {
             rendererErrorMessage = "Source video not ready. Try again."
             return
         }
         rendererErrorMessage = nil
-        jobs.append(RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso, sessionId: sessionId))
+        jobs.append(RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso,
+                              printGauge: gauge, sessionId: sessionId))
         persistJobs()
         processNext()
     }
@@ -214,7 +215,7 @@ final class RenderQueueViewModel {
         guard let renderer else {
             throw QueueError.rendererUnavailable(rendererInitError ?? "Metal pipeline could not start. Reboot the app.")
         }
-        guard let config = library?.config(for: job.stockId, iso: job.iso) else {
+        guard let config = library?.config(for: job.stockId, iso: job.iso, gauge: job.printGauge) else {
             throw QueueError.stockUnavailable(job.stockId)
         }
         return try await renderer.render(sourceURL: job.sourceURL, config: config,

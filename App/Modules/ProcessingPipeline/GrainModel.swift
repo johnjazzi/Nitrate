@@ -35,6 +35,16 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
         }
     }
 
+    /// Short label for the gauge selector (8mm / 16mm / 35mm / 75mm).
+    var displayName: String {
+        switch self {
+        case .eightMillimetre: return "8mm"
+        case .sixteenMillimetre: return "16mm"
+        case .thirtyFiveMillimetre: return "35mm"
+        case .seventyFiveMillimetre: return "75mm"
+        }
+    }
+
     /// The neutral gauge: identity size and amplitude.
     static let neutral: PrintGauge = .thirtyFiveMillimetre
 }

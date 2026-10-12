@@ -6,6 +6,7 @@ import Foundation
 final class FilmStockLibrary {
     private(set) var stocks: [FilmStockConfig] = []
     private let isoDefaultsKey = "film_stock_iso_defaults"
+    private let gaugeDefaultsKey = "film_stock_gauge_defaults"
     private let selectedStockKey = "film_stock_selected_id"
     private let userDefaults: UserDefaults
 
@@ -37,11 +38,11 @@ final class FilmStockLibrary {
     }
 
     /// AD-10: Return a config with all fields preserved (including tints).
-    func config(for stockId: String, iso: Float) -> FilmStockConfig? {
+    func config(for stockId: String, iso: Float, gauge: PrintGauge? = nil) -> FilmStockConfig? {
         guard let template = stocks.first(where: { $0.stockId == stockId }) else {
             return nil
         }
-        return template.overridingISO(iso)
+        return template.overridingISO(iso).overridingGauge(gauge)
     }
 
     /// Returns stocks available for video rendering.
@@ -65,6 +66,24 @@ final class FilmStockLibrary {
     func lastISO(for stockId: String) -> Float {
         let defaults = isoValues()
         return defaults[stockId] ?? stocks.first(where: { $0.stockId == stockId })?.defaultISO ?? 400
+    }
+
+    /// Save the last-used print gauge for a stock (nil = neutral 35mm).
+    func setGauge(_ gauge: PrintGauge?, for stockId: String) {
+        var defaults = gaugeValues()
+        if let gauge { defaults[stockId] = gauge.rawValue } else { defaults.removeValue(forKey: stockId) }
+        userDefaults.set(defaults, forKey: gaugeDefaultsKey)
+    }
+
+    /// Restore the last-used print gauge for a stock; nil means neutral 35mm.
+    func lastGauge(for stockId: String) -> PrintGauge? {
+        gaugeValues()[stockId].flatMap(PrintGauge.init(rawValue:))
+    }
+
+    private func gaugeValues() -> [String: String] {
+        (userDefaults.dictionary(forKey: gaugeDefaultsKey) ?? [:]).reduce(into: [:]) { values, item in
+            if let text = item.value as? String { values[item.key] = text }
+        }
     }
 
     private func isoValues() -> [String: Float] {

@@ -7,6 +7,9 @@ struct RenderJob: Codable, Identifiable, Equatable {
     let sourceURL: URL
     let stockId: String
     let iso: Float
+    /// Print gauge for this render. Optional so older queue JSON stays readable;
+    /// nil means the stock's own gauge (or the neutral 35mm reference).
+    let printGauge: PrintGauge?
     let trimStartSeconds: Double?
     let trimEndSeconds: Double?
     let createdAt: Date
@@ -19,13 +22,14 @@ struct RenderJob: Codable, Identifiable, Equatable {
     var sourceSavedToPhotos: Bool? = nil
     var outputSavedToPhotos: Bool? = nil
 
-    init(sourceURL: URL, stockId: String, iso: Float,
+    init(sourceURL: URL, stockId: String, iso: Float, printGauge: PrintGauge? = nil,
          trimStart: CMTime? = nil, trimEnd: CMTime? = nil,
          sessionId: String? = nil, createdAt: Date = Date()) {
         self.id = UUID()
         self.sourceURL = sourceURL
         self.stockId = stockId
         self.iso = iso
+        self.printGauge = printGauge
         self.trimStartSeconds = trimStart.map { $0.seconds }
         self.trimEndSeconds = trimEnd.map { $0.seconds }
         self.createdAt = createdAt
