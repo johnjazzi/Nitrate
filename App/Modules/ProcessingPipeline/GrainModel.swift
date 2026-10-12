@@ -13,15 +13,18 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     case thirtyFiveMillimetre = "35mm"
     case seventyFiveMillimetre = "75mm"
 
-    /// Multiplies the stock's grain size to reach a gauge's footprint. 35mm is
-    /// the neutral 1.0 reference. Tuned against the debug single-frame mode: 8mm
-    /// now sits where 16mm used to, and 16mm moved one step finer.
+    /// Multiplies the stock's grain size to reach a gauge's footprint. The 16mm
+    /// rung carries the stock's authored size (multiplier 1.0) and is the
+    /// reference. Tuned twice against the debug single-frame mode: the whole
+    /// ladder slid one rung finer, so 8mm now looks like 16mm used to, 16mm like
+    /// 35mm used to, and 35mm took the old 75mm. 75mm is a new, extremely subtle
+    /// rung. Presence was trimmed across the board in the same pass.
     var sizeMultiplier: Float {
         switch self {
-        case .eightMillimetre: return 3.0
-        case .sixteenMillimetre: return 1.8
-        case .thirtyFiveMillimetre: return 1.0
-        case .seventyFiveMillimetre: return 0.55
+        case .eightMillimetre: return 1.8
+        case .sixteenMillimetre: return 1.0
+        case .thirtyFiveMillimetre: return 0.55
+        case .seventyFiveMillimetre: return 0.45
         }
     }
 
@@ -30,10 +33,10 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     /// pushing size into the aliased regime.
     var amplitudeMultiplier: Float {
         switch self {
-        case .eightMillimetre: return 1.10
-        case .sixteenMillimetre: return 1.05
-        case .thirtyFiveMillimetre: return 1.00
-        case .seventyFiveMillimetre: return 0.15
+        case .eightMillimetre: return 1.00
+        case .sixteenMillimetre: return 0.95
+        case .thirtyFiveMillimetre: return 0.14
+        case .seventyFiveMillimetre: return 0.04
         }
     }
 
@@ -64,8 +67,10 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
         }
     }
 
-    /// The neutral gauge: identity size and amplitude.
-    static let neutral: PrintGauge = .thirtyFiveMillimetre
+    /// The reference gauge: the 16mm rung carries the stock's authored grain
+    /// size (size multiplier 1.0), so it is what a render falls back to when no
+    /// gauge is selected. Its presence is 0.95 by design, not 1.0.
+    static let neutral: PrintGauge = .sixteenMillimetre
 }
 
 /// Pure grain math shared by the Metal kernel and the CPU-side uniforms so the

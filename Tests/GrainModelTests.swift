@@ -7,41 +7,49 @@ import Testing
 struct GrainModelTests {
     private let tolerance: Float = 0.0001
 
-    @Test func gaugeSizeAxisIsMonotonicAnd35mmIsNeutral() {
+    @Test func gaugeSizeAxisIsMonotonicAnd16mmIsTheReference() {
+        // Nominal multipliers are strictly monotonic across the ladder.
+        let multipliers = PrintGauge.allCases.sorted { $0.sizeMultiplier < $1.sizeMultiplier }
+            .map(\.sizeMultiplier)
+        #expect(multipliers == [0.45, 0.55, 1.0, 1.8], "unexpected ladder: \(multipliers)")
+        // The 16mm rung carries the stock's authored size and is the reference.
+        #expect(abs(PrintGauge.sixteenMillimetre.sizeMultiplier - 1.0) < tolerance)
+        #expect(PrintGauge.neutral == .sixteenMillimetre)
+        // Effective footprints stay ordered from the reference upward. The two
+        // finest rungs are both pinned by the sampling floor, which is intended:
+        // they differ by presence, not by footprint.
         let stock: Float = 1.3
-        let fine = GrainModel.effectiveSize(stockGrainSize: stock, gauge: .seventyFiveMillimetre)
-        let neutral = GrainModel.effectiveSize(stockGrainSize: stock, gauge: .thirtyFiveMillimetre)
         let medium = GrainModel.effectiveSize(stockGrainSize: stock, gauge: .sixteenMillimetre)
         let coarse = GrainModel.effectiveSize(stockGrainSize: stock, gauge: .eightMillimetre)
-        #expect(fine < neutral && neutral < medium && medium < coarse,
-                "footprint must grow 75mm < 35mm < 16mm < 8mm: \(fine), \(neutral), \(medium), \(coarse)")
-        #expect(abs(PrintGauge.thirtyFiveMillimetre.sizeMultiplier - 1.0) < tolerance)
-        #expect(abs(PrintGauge.thirtyFiveMillimetre.amplitudeMultiplier - 1.0) < tolerance)
-        // The coarse gauge must be genuinely coarser, not a token step: 8mm is
-        // 3x the neutral footprint after the debug-mode retune.
-        #expect(coarse >= neutral * 2.5,
-                "8mm footprint should be a real step up from 35mm: \(neutral) -> \(coarse)")
+        #expect(medium < coarse, "8mm must be coarser than the reference: \(medium) -> \(coarse)")
+        #expect(coarse >= medium * 1.5, "8mm should be a real step up: \(medium) -> \(coarse)")
+        #expect(GrainModel.effectiveSize(stockGrainSize: stock, gauge: .seventyFiveMillimetre)
+                == GrainModel.effectiveSize(stockGrainSize: stock, gauge: .thirtyFiveMillimetre),
+                "the two finest rungs are floored, so they share a footprint")
     }
 
-    @Test func gaugeOwnsPresenceAnd75mmIsNearlySilent() {
-        #expect(PrintGauge.seventyFiveMillimetre.amplitudeMultiplier
-                < PrintGauge.thirtyFiveMillimetre.amplitudeMultiplier)
+    @Test func gaugeOwnsPresenceAnd75mmIsExtremelySubtle() {
         let quiet = GrainModel.amount(gauge: .seventyFiveMillimetre)
-        let neutral = GrainModel.amount(gauge: .thirtyFiveMillimetre)
+        let reference = GrainModel.amount(gauge: .sixteenMillimetre)
         let coarse = GrainModel.amount(gauge: .eightMillimetre)
-        #expect(quiet < neutral, "75mm must be quieter than 35mm")
-        #expect(coarse > neutral, "8mm must be more present than 35mm")
-        // "Effectively grain-free" is delivered by amplitude, not by size.
-        #expect(abs(quiet / neutral - 0.15) < tolerance,
-                "75mm/35mm realized amplitude should be the 0.15 multiplier")
+        #expect(quiet < reference, "75mm must be quieter than the 16mm reference")
+        #expect(coarse > reference, "8mm must be more present than the 16mm reference")
+        // Realized amplitude is the ratio of the two multipliers.
+        let expected = PrintGauge.seventyFiveMillimetre.amplitudeMultiplier
+            / PrintGauge.sixteenMillimetre.amplitudeMultiplier
+        #expect(abs(quiet / reference - expected) < tolerance)
+        // "Extremely subtle" is delivered by amplitude, not by size.
+        #expect(quiet / reference < 0.1, "75mm should be extremely subtle: \(quiet / reference)")
     }
 
     @Test func isoDoesNotScaleGrain() {
         // Presence depends only on the gauge and baseAmount; there is no ISO term.
-        let neutral = GrainModel.amount(gauge: .thirtyFiveMillimetre)
+        let reference = GrainModel.amount(gauge: .sixteenMillimetre)
         let coarse = GrainModel.amount(gauge: .eightMillimetre)
-        #expect(abs(neutral - GrainModel.baseAmount) < tolerance)
-        #expect(abs(coarse - GrainModel.baseAmount * PrintGauge.eightMillimetre.amplitudeMultiplier) < tolerance)
+        #expect(abs(reference - GrainModel.baseAmount
+                    * PrintGauge.sixteenMillimetre.amplitudeMultiplier) < tolerance)
+        #expect(abs(coarse - GrainModel.baseAmount
+                    * PrintGauge.eightMillimetre.amplitudeMultiplier) < tolerance)
     }
 
     @Test func footprintFloorKeepsTheVolumeOutOfTheUndersampledRegime() {
@@ -53,6 +61,6 @@ struct GrainModelTests {
         // The shipped 75mm case: 1.3 x 0.55 = 0.715 -> floored to 0.95.
         #expect(abs(GrainModel.effectiveSize(stockGrainSize: 1.3, gauge: .seventyFiveMillimetre) - 0.95) < tolerance)
         // Ceiling holds for the coarsest gauge on a large stock.
-        #expect(GrainModel.effectiveSize(stockGrainSize: 8, gauge: .eightMillimetre) == GrainModel.footprintCeiling)
+        #expect(GrainModel.effectiveSize(stockGrainSize: 12, gauge: .eightMillimetre) == GrainModel.footprintCeiling)
     }
 }

@@ -178,11 +178,11 @@ struct DebugFrameRenderTests {
         let frame = try Self.makeSyntheticFrame()
 
         var coarse = PipelineRenderer.DebugFrameParameters(config: config)
-        coarse.gauge = .eightMillimetre     // size x 3.0, presence x 1.10
+        coarse.gauge = .eightMillimetre     // size x 1.8, presence x 1.00
         coarse.halationStrength = 0
         coarse.glowStrength = 0
         var fine = coarse
-        fine.gauge = .seventyFiveMillimetre // size x 0.55, presence x 0.15
+        fine.gauge = .seventyFiveMillimetre // size x 0.45, presence x 0.04
 
         // The gauge must actually move the grain axes it owns.
         #expect(coarse.realizedFootprint > fine.realizedFootprint)
