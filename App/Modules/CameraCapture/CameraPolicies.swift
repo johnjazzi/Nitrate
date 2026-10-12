@@ -499,3 +499,108 @@ enum RecordingCompletionPolicy {
         !errorExists || finishedPlayable == true
     }
 }
+
+/// Stabilises the 180° shutter-priority re-meter so the preview stops flickering.
+///
+/// AVFoundation has no native shutter-priority mode, so `CameraSession` briefly
+/// re-enters auto exposure to meter, then pins custom exposure at the freshly
+/// metered ISO. The old code did that unconditionally on every 1.5 s timer tick
+/// and sampled the meter only 100 ms into an unconverged re-meter, so the pin
+/// chased its own metering and the preview oscillated. This policy is the pure
+/// decision that gates both steps: it holds while the scene is stable and only
+/// lets the pin move once the metered value drifts past a deadband.
+enum ExposureStabilizer {
+    /// The exposure currently pinned on the device.
+    struct Pin: Equatable, Sendable {
+        /// ISO written to the device.
+        let iso: Float
+        /// EV compensation baked into `iso`.
+        let ev: Float
+        /// Raw metered ISO the pin was derived from, before `ev`.
+        let meteredISO: Float
+    }
+
+    enum Action: Equatable, Sendable {
+        /// Write `iso` as the new custom-exposure pin.
+        case apply(iso: Float)
+        /// Leave the current pin untouched.
+        case hold
+    }
+
+    /// One third of a stop: a single step on the standard 1/3-stop ISO ladder,
+    /// and below the ~0.5 stop change that is visible in the preview.
+    static let deadbandStops: Float = 0.34
+
+    /// A meter reading this close to the ISO we already applied is an echo of
+    /// our own pin rather than an independent measurement.
+    static let echoToleranceStops: Float = 0.02
+
+    /// Whether a fresh meter is worth taking at all.
+    ///
+    /// The held exposure's offset from the device target is a cheap,
+    /// non-disturbing meter: re-entering auto exposure to re-meter is what
+    /// visibly stepped the preview, so it must not happen while the pin is
+    /// still inside the deadband. Fails open (re-measures) when there is no pin
+    /// yet or the offset is unavailable.
+    static func shouldRemeasure(meteredOffsetEV: Float, targetEV: Float, hasPin: Bool,
+                                deadbandStops: Float = ExposureStabilizer.deadbandStops) -> Bool {
+        guard hasPin else { return true }
+        guard meteredOffsetEV.isFinite, targetEV.isFinite,
+              deadbandStops.isFinite, deadbandStops >= 0 else { return true }
+        return abs(meteredOffsetEV - targetEV) > deadbandStops
+    }
+
+    /// Decide the ISO to write from a fresh meter reading.
+    ///
+    /// Holds when the compensated target is within `deadbandStops` of the pin,
+    /// and rejects re-deriving a target from a reading that already carries the
+    /// EV compensation (which would apply the EV a second time and compound).
+    static func decide(meteredISO: Float, ev: Float, current: Pin?,
+                       minimum: Float, maximum: Float,
+                       deadbandStops: Float = ExposureStabilizer.deadbandStops) -> Action {
+        guard let target = CameraAperturePolicy.evCompensatedISO(
+            meteredISO: meteredISO, ev: ev, minimum: minimum, maximum: maximum
+        ) else { return .hold }
+        guard let current, current.iso > 0, current.meteredISO > 0,
+              ev.isFinite, deadbandStops.isFinite, deadbandStops >= 0 else {
+            return .apply(iso: target)
+        }
+        // Compounding guard: the meter returned the ISO we already applied, so
+        // it did not actually re-meter. Multiplying by 2^ev again would stack
+        // the compensation cycle after cycle.
+        if current.ev == ev,
+           abs(log2(meteredISO / current.iso)) <= echoToleranceStops {
+            return .hold
+        }
+        // Deadband: the current pin already sits within a third of a stop.
+        if abs(log2(target / current.iso)) <= deadbandStops {
+            return .hold
+        }
+        return .apply(iso: target)
+    }
+}
+
+/// Maps the device's metered exposure-target offset (EV) onto the horizontal
+/// under/over indicator and decides when the meter agrees with the target.
+enum ExposureIndicatorPolicy {
+    /// The indicator spans this many stops either side of centre.
+    static let fullScaleEV: Float = 2
+
+    /// |metered − target| within this many stops counts as a match.
+    static let matchToleranceEV: Float = 0.1
+
+    /// Normalised position on the bar: 0 = fully under (left), 1 = fully over
+    /// (right), 0.5 = the centre EV. Clamped to the bar.
+    static func position(ev: Float, fullScaleEV: Float = ExposureIndicatorPolicy.fullScaleEV) -> Float {
+        guard ev.isFinite, fullScaleEV.isFinite, fullScaleEV > 0 else { return 0.5 }
+        return min(max(0.5 + (ev / fullScaleEV) * 0.5, 0), 1)
+    }
+
+    /// Whether the metered offset agrees with the target inside `tolerance`.
+    static func matches(meteredEV: Float, targetEV: Float,
+                        tolerance: Float = ExposureIndicatorPolicy.matchToleranceEV) -> Bool {
+        guard meteredEV.isFinite, targetEV.isFinite,
+              tolerance.isFinite, tolerance >= 0 else { return false }
+        return abs(meteredEV - targetEV) <= tolerance
+    }
+}
