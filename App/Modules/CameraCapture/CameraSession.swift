@@ -1487,14 +1487,26 @@ final class CameraSession: NSObject {
     /// `sessionQueue`.
     func captureDebugFrame(completion: @escaping @Sendable (CVPixelBuffer?) -> Void) {
         sessionQueue.async { [weak self] in
-            guard let self, self.isConfigured, self.session.isRunning,
-                  !self.isRecordingOrPending,
-                  let pixelFormat = self.acceptedPixelFormats.first,
-                  self.attachDebugFrameOutput(pixelFormat: pixelFormat),
-                  let connection = self.debugFrameOutput.connection(with: .video) else {
+            guard let self else {
                 completion(nil)
                 return
             }
+            print("Debug frame: requested configured=\(self.isConfigured) running=\(self.session.isRunning) " +
+                  "recording=\(self.isRecordingOrPending) acceptedFormats=\(self.acceptedPixelFormats.count)")
+            guard self.isConfigured, self.session.isRunning,
+                  !self.isRecordingOrPending,
+                  let pixelFormat = self.acceptedPixelFormats.first else {
+                print("Debug frame: session unavailable")
+                completion(nil)
+                return
+            }
+            guard self.attachDebugFrameOutput(pixelFormat: pixelFormat),
+                  let connection = self.debugFrameOutput.connection(with: .video) else {
+                print("Debug frame: output could not be attached")
+                completion(nil)
+                return
+            }
+            print("Debug frame: output attached, awaiting frame")
             let request = CameraDebugFrameRequest()
             connection.isEnabled = true
             self.debugFrameTap.request { [weak self] buffer in
@@ -1502,12 +1514,15 @@ final class CameraSession: NSObject {
                 self.sessionQueue.async {
                     guard request.finish() else { return }
                     connection.isEnabled = false
-                    completion(DebugFrameConverter.rgbaHalfBuffer(from: buffer))
+                    let converted = DebugFrameConverter.rgbaHalfBuffer(from: buffer)
+                    print("Debug frame: received, converted=\(converted != nil)")
+                    completion(converted)
                 }
             }
             self.sessionQueue.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 guard request.finish() else { return }
                 self?.debugFrameOutput.connection(with: .video)?.isEnabled = false
+                print("Debug frame: timed out waiting for a frame")
                 completion(nil)
             }
         }
@@ -1533,6 +1548,8 @@ final class CameraSession: NSObject {
         let available = debugFrameOutput.availableVideoPixelFormatTypes.map {
             UInt32(truncating: $0 as NSNumber)
         }
+        print("Debug frame: attach negotiated=\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)) " +
+              "available=\(CameraSampleValidationPolicy.fourCCListDescription(available))")
         if available.contains(pixelFormat) {
             debugFrameOutput.videoSettings = [
                 kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat)
