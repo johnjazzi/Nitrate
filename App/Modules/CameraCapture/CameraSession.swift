@@ -667,6 +667,14 @@ final class CameraSession: NSObject {
                     device.exposurePointOfInterest = point
                 }
             } catch { self.reportCameraError(error) }
+            // A new metering point means the held exposure is no longer the one
+            // the user asked for: drop the pin and re-meter for the new area.
+            // Without this, tapping a different part of the scene left the
+            // locked exposure untouched.
+            self.invalidateMetering()
+            if self.isShutterPriority, !self.isRecordingOrPending {
+                self.pinShutterToFilm(force: true)
+            }
         }
     }
 
