@@ -1265,11 +1265,15 @@ final class CameraSession: NSObject {
                 let iso = min(max(device.iso, device.activeFormat.minISO), device.activeFormat.maxISO)
                 let shutter = min(max(Self.filmShutterDuration, device.activeFormat.minExposureDuration),
                                   device.activeFormat.maxExposureDuration)
-                let completionHandler: (CMTime) -> Void = { [weak self] _ in
+                // The completion's sync time is when the requested exposure
+                // actually takes effect; frames before it still carry the old
+                // exposure, so the recorder drops them.
+                let completionHandler: (CMTime) -> Void = { [weak self] syncTime in
                     self?.sessionQueue.async {
                         guard let self, self.recordingGeneration == generation,
                               self.recordingStartPending else { return }
-                        self.beginSampleBufferRecording(to: url, generation: generation)
+                        self.beginSampleBufferRecording(to: url, generation: generation,
+                                                        startAfter: syncTime)
                     }
                 }
                 if #available(iOS 27.0, *), let heldAperture = self.heldAperture(on: device) {
@@ -1316,7 +1320,8 @@ final class CameraSession: NSObject {
         }
     }
 
-    private func beginSampleBufferRecording(to url: URL, generation: UInt64) {
+    private func beginSampleBufferRecording(to url: URL, generation: UInt64,
+                                            startAfter: CMTime = .invalid) {
         guard let device = activeDevice,
               #available(iOS 26.0, *),
               device.activeColorSpace == .appleLog2,
@@ -1361,6 +1366,7 @@ final class CameraSession: NSObject {
             metadata: captureMetadataItems(),
             preservationProbeEnabled: preservationProbeEnabled,
             requiresAudioEvidence: microphoneAdded,
+            startAfter: startAfter,
             onStarted: { [callbackContext] error in
                 callbackContext.enqueueStarted(CameraRecorderErrorBox(error), generation: generation)
             },
