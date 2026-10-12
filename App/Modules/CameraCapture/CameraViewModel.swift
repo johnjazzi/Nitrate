@@ -47,6 +47,9 @@ final class CameraViewModel {
     private var lifecycleGate = CameraLifecycleGate()
     private var configurationInFlight = false
     private var cameraConfigured = false
+#if DEBUG
+    private var didStartDebugSmokeCapture = false
+#endif
 
     // MARK: - Actions
 
@@ -168,6 +171,15 @@ final class CameraViewModel {
             }
         }
         session.start()
+#if DEBUG
+        if !didStartDebugSmokeCapture,
+           CommandLine.arguments.contains("--smoke-hevc-log2-capture") {
+            didStartDebugSmokeCapture = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.session.startDebugSmokeCapture()
+            }
+        }
+#endif
 
         // Mic is added by configure() when already authorized; request it
         // here (after start) only for the first-launch grant case.

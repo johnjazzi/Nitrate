@@ -55,14 +55,21 @@ enum CameraLens: String, CaseIterable, Identifiable {
 
 /// AD-3: Manages the AVCaptureSession — Apple Log, HEVC H.265, 4K, 24fps, clean preview.
 /// Runs on a dedicated serial queue. Never posts to main thread directly.
-final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
+final class CameraSession: NSObject {
     let session = AVCaptureSession()
-    private let sessionQueue = DispatchQueue(label: "camera.session")
-    private let movieOutput = AVCaptureMovieFileOutput()
+    fileprivate let sessionQueue = DispatchQueue(label: "camera.session")
+    private let sampleBufferQueue = DispatchQueue(label: "camera.sample-buffer-writer")
+    private let videoOutput = AVCaptureVideoDataOutput()
+    private let audioOutput = AVCaptureAudioDataOutput()
+    private lazy var sampleBufferRecorder = CameraSampleBufferRecorder(queue: sampleBufferQueue)
+    private var acceptedPixelFormats: Set<UInt32> = []
+    private var acceptedVideoSettings: [String: Any] = [:]
     private var videoDeviceInput: AVCaptureDeviceInput?
     private var microphoneInput: AVCaptureDeviceInput?
     private var microphoneAdded = false
     private var isConfigured = false
+    private var recordingActive = false
+    private var recordingFinishing = false
     /// Fixed white-balance temperature (Kelvin) requested by the selected stock.
     /// Applied on the next configureDevice or immediately via setWhiteBalance.
     private var whiteBalanceTemperature: Float?
@@ -81,6 +88,14 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     private var meterGeneration = CameraMeteringGeneration()
     private var recordingStartPending = false
     private var recordingGeneration: UInt64 = 0
+    private var recorderCompletionBridge = CameraRecorderCompletionBridge()
+    private var pendingStartCompletion: (@MainActor @Sendable (Error?) -> Void)?
+    private let recordingStateLock = NSLock()
+    private var publicRecordingState = false
+#if DEBUG
+    private var debugSmokeURL: URL?
+    private var debugSmokeTimedOut = false
+#endif
 
     // MARK: - Setup
 
@@ -118,16 +133,16 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         }
 
         do {
+            videoOutput.alwaysDiscardsLateVideoFrames = true
+            videoOutput.setSampleBufferDelegate(sampleBufferRecorder, queue: sampleBufferQueue)
+            audioOutput.setSampleBufferDelegate(sampleBufferRecorder, queue: sampleBufferQueue)
             addMicrophoneInputLocked()
             try addDevice(device)
-            try configureDevice(device)
-        } catch {
-            configError = error
-        }
+        } catch { configError = error }
         session.commitConfiguration()
         guard configError == nil else { return configError }
         do {
-            try configureMovieOutput()
+            try configureDevice(device)
             isConfigured = true
         } catch { return error }
 
@@ -142,23 +157,23 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     func addMicrophoneInput() {
         sessionQueue.async { [weak self] in
             guard let self, !self.microphoneAdded else { return }
-            guard !self.movieOutput.isRecording, !self.recordingStartPending else {
+            guard !self.isRecordingOrPending else {
                 self.reportCameraError(CameraError.exposureChangeDuringRecording)
                 return
             }
             self.session.beginConfiguration()
             self.addMicrophoneInputLocked()
-            // Refresh the movie output only if the video connection already
-            // exists (session already running). On first launch addDevice adds
-            // the movie output later, creating both video + audio connections.
-            if self.microphoneAdded, self.movieOutput.connection(with: .video) != nil {
-                self.session.removeOutput(self.movieOutput)
-                if self.session.canAddOutput(self.movieOutput) {
-                    self.session.addOutput(self.movieOutput)
-                }
+            if self.microphoneAdded, self.videoOutput.connection(with: .video) != nil {
                 self.session.commitConfiguration()
-                do { try self.configureMovieOutput() }
-                catch { self.reportCameraError(error) }
+                do {
+                    if let device = self.activeDevice {
+                        try self.configureDevice(device, applyDefaultExposure: false)
+                    }
+                }
+                catch {
+                    self.isConfigured = false
+                    self.reportCameraError(error)
+                }
             } else {
                 self.session.commitConfiguration()
             }
@@ -175,6 +190,8 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         session.addInput(input)
         microphoneInput = input
         microphoneAdded = true
+        audioOutput.setSampleBufferDelegate(sampleBufferRecorder, queue: sampleBufferQueue)
+        if session.canAddOutput(audioOutput) { session.addOutput(audioOutput) }
     }
 
     private func addDevice(_ device: AVCaptureDevice) throws {
@@ -194,48 +211,81 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         session.addInput(input)
         videoDeviceInput = input
 
-        // Remove and re-add movie output (needed after input swap for connection refresh)
-        session.removeOutput(movieOutput)
-        guard session.canAddOutput(movieOutput) else {
+        // Re-add the video data output after input swaps to refresh the connection.
+        session.removeOutput(videoOutput)
+        guard session.canAddOutput(videoOutput) else {
             throw CameraError.cannotAddOutput
         }
-        session.addOutput(movieOutput)
+        session.addOutput(videoOutput)
+        configureRawLandscapeRecordingConnection()
     }
 
-    private func configureDevice(_ device: AVCaptureDevice) throws {
+    /// Samples remain sensor-coded at 3840x2160; the MOV track matrix rotates
+    /// display to portrait. Front-camera movies are intentionally unmirrored.
+    private func configureRawLandscapeRecordingConnection() {
+        guard let connection = videoOutput.connection(with: .video) else { return }
+        connection.automaticallyAdjustsVideoMirroring = false
+        if connection.isVideoMirroringSupported { connection.isVideoMirrored = false }
+        if #available(iOS 17.0, *), connection.isVideoRotationAngleSupported(0) {
+            connection.videoRotationAngle = 0
+        }
+    }
+
+    private func configureDevice(_ device: AVCaptureDevice, applyDefaultExposure: Bool = true) throws {
+        acceptedPixelFormats = []
+        acceptedVideoSettings = [:]
+        guard #available(iOS 26.0, *) else { throw CameraError.appleLog2NotSupported }
+        let orderedFormats = Self.appleLog2CaptureFormats(in: device.formats)
+        guard !orderedFormats.isEmpty else { throw CameraError.appleLog2NotSupported }
+
+        var failures: [String] = []
+        for format in orderedFormats {
+            do {
+                try applyCaptureFormat(format, to: device)
+            } catch {
+                failures.append("\(Self.captureFormatSubtypeDescription(format)): \(error.localizedDescription)")
+                continue
+            }
+
+            if configureDataOutputForActiveFormat() { break }
+            failures.append("\(Self.captureFormatSubtypeDescription(format)): no ten-bit YUV and HEVC Main10 writer settings")
+        }
+        guard !acceptedPixelFormats.isEmpty, !acceptedVideoSettings.isEmpty else {
+            let detail = failures.isEmpty ? "no eligible formats" : failures.joined(separator: "; ")
+            throw CameraError.writerUnavailable(detail)
+        }
+
         try device.lockForConfiguration()
         defer { device.unlockForConfiguration() }
-
-        guard #available(iOS 26.0, *) else { throw CameraError.appleLog2NotSupported }
-        guard let format = Self.appleLog2CaptureFormat(in: device.formats) else {
-            throw CameraError.appleLog2NotSupported
-        }
-        device.activeFormat = format
-        guard format.supportedColorSpaces.contains(.appleLog2) else {
-            throw CameraError.appleLog2NotSupported
-        }
-        device.activeColorSpace = .appleLog2
-
-        // 24fps lock
-        device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 24)
-        device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 24)
-
-        // Apply the selected film stock's fixed white balance (daylight 5600K /
-        // tungsten 3200K). If no stock temperature has been set yet, leave the
-        // device's default white balance untouched.
         applyWhiteBalanceLock(device)
-
-        // Default to continuous auto exposure
-        if device.isExposureModeSupported(.continuousAutoExposure) {
+        if applyDefaultExposure, device.isExposureModeSupported(.continuousAutoExposure) {
             device.exposureMode = .continuousAutoExposure
         }
-
         activeDevice = device
     }
 
-    private static func appleLog2CaptureFormat(in formats: [AVCaptureDevice.Format]) -> AVCaptureDevice.Format? {
-        guard #available(iOS 26.0, *) else { return nil }
+    private func applyCaptureFormat(_ format: AVCaptureDevice.Format, to device: AVCaptureDevice) throws {
+        guard #available(iOS 26.0, *) else { throw CameraError.appleLog2NotSupported }
+        guard format.supportedColorSpaces.contains(.appleLog2) else {
+            throw CameraError.appleLog2NotSupported
+        }
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        device.activeFormat = format
+        device.activeColorSpace = .appleLog2
+        device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 24)
+        device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 24)
+    }
+
+    private static func appleLog2CaptureFormats(in formats: [AVCaptureDevice.Format]) -> [AVCaptureDevice.Format] {
+        guard #available(iOS 26.0, *) else { return [] }
         let candidates = formats.map { format in
+            guard CMFormatDescriptionGetMediaType(format.formatDescription) == kCMMediaType_Video else {
+                return CameraCaptureFormatPolicy.Candidate(width: 0, height: 0,
+                    supportsAppleLog2: false, supports24FPS: false)
+            }
             let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
             let supports24FPS = format.videoSupportedFrameRateRanges.contains {
                 $0.minFrameRate <= 24 && $0.maxFrameRate >= 24
@@ -248,11 +298,19 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
                     let subtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
                     return subtype == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
                         || subtype == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+                }(),
+                isTenBitBiPlanar422: {
+                    let subtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
+                    return subtype == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange
+                        || subtype == kCVPixelFormatType_422YpCbCr10BiPlanarFullRange
                 }()
             )
         }
-        guard let index = CameraCaptureFormatPolicy.appleLog2Index(in: candidates) else { return nil }
-        return formats[index]
+        return CameraCaptureFormatPolicy.appleLog2CandidateIndexes(in: candidates).map { formats[$0] }
+    }
+
+    private static func appleLog2CaptureFormat(in formats: [AVCaptureDevice.Format]) -> AVCaptureDevice.Format? {
+        appleLog2CaptureFormats(in: formats).first
     }
 
     private static func captureFormatSubtypeDescription(_ format: AVCaptureDevice.Format?) -> String {
@@ -299,33 +357,44 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
     }
 
-    private func configureMovieOutput() throws {
-        guard let connection = movieOutput.connection(with: .video) else {
-            throw CameraError.movieVideoConnectionUnavailable
+    private func configureDataOutputForActiveFormat() -> Bool {
+        let supportedPixelFormats = videoOutput.availableVideoPixelFormatTypes.map {
+            UInt32(truncating: $0 as NSNumber)
         }
-
-        if connection.isVideoStabilizationSupported {
-            connection.preferredVideoStabilizationMode = .standard
+        let candidates = CameraSampleValidationPolicy.preferredTenBitPixelFormats(from: supportedPixelFormats)
+        guard let pixelFormat = candidates.first else { return false }
+        videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat)]
+        let codecs = videoOutput.availableVideoCodecTypesForAssetWriter(writingTo: .mov)
+        guard CameraSampleValidationPolicy.hasHEVCEncoder(codecs.map(\.rawValue)),
+              var settings = videoOutput.recommendedVideoSettings(forVideoCodecType: .hevc,
+                                                                   assetWriterOutputFileType: .mov),
+              settings[AVVideoCodecKey] as? String == AVVideoCodecType.hevc.rawValue else { return false }
+        settings[AVVideoWidthKey] = 3840
+        settings[AVVideoHeightKey] = 2160
+        var compression = settings[AVVideoCompressionPropertiesKey] as? [String: Any] ?? [:]
+        compression[AVVideoProfileLevelKey] = kVTProfileLevel_HEVC_Main10_AutoLevel as String
+        compression[AVVideoAverageBitRateKey] = DeliverySettings.averageBitRate
+        compression[AVVideoMaxKeyFrameIntervalKey] = 48
+        settings[AVVideoCompressionPropertiesKey] = compression
+        guard CameraSampleValidationPolicy.acceptsHEVCMain10Settings(
+            codec: settings[AVVideoCodecKey] as? String,
+            width: (settings[AVVideoWidthKey] as? NSNumber)?.intValue,
+            height: (settings[AVVideoHeightKey] as? NSNumber)?.intValue,
+            profile: compression[AVVideoProfileLevelKey] as? String,
+            expectedProfile: kVTProfileLevel_HEVC_Main10_AutoLevel as String
+        ) else { return false }
+        if #available(iOS 27.0, *) {
+            settings[AVVideoColorPropertiesKey] = [
+                AVVideoLogTransferFunctionKey: AVVideoLogTransferFunction_AppleLog2,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
+            ]
+        } else {
+            return false
         }
-
-        let supportedKeys = Set(movieOutput.supportedOutputSettingsKeys(for: connection))
-        let settings = try CameraMovieCapabilityPolicy.settings(
-            availableCodecs: movieOutput.availableVideoCodecTypes.map(\.rawValue),
-            hevcCodec: AVVideoCodecType.hevc.rawValue,
-            availableSettingsKeys: supportedKeys,
-            formatDescription: Self.captureFormatSubtypeDescription(activeDevice?.activeFormat),
-            codecKey: AVVideoCodecKey,
-            compressionKey: AVVideoCompressionPropertiesKey,
-            averageBitRateKey: AVVideoAverageBitRateKey,
-            maxKeyFrameIntervalKey: AVVideoMaxKeyFrameIntervalKey,
-            profileLevelKey: AVVideoProfileLevelKey,
-            averageBitRate: DeliverySettings.averageBitRate,
-            maxKeyFrameInterval: 48,
-            main10Profile: kVTProfileLevel_HEVC_Main10_AutoLevel as String
-        )
-
-        movieOutput.movieFragmentInterval = .invalid
-        movieOutput.setOutputSettings(settings, for: connection)
+        acceptedPixelFormats = [pixelFormat]
+        acceptedVideoSettings = settings
+        print("Capture writer codec: hvc1 Main10, pixel format: \(String(pixelFormat, radix: 16))")
+        return true
     }
 
     // MARK: - Camera Switching
@@ -359,7 +428,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(nil) } }
                 return
             }
-            guard !self.movieOutput.isRecording, !self.recordingStartPending else {
+            guard !self.isRecordingOrPending else {
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.exposureChangeDuringRecording) } }
                 return
             }
@@ -393,10 +462,9 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
 
             do {
                 try self.addDevice(device)
-                try self.configureDevice(device)
                 self.session.commitConfiguration()
                 configurationOpen = false
-                try self.configureMovieOutput()
+                try self.configureDevice(device)
                 self.activeLens = lens
                 self.isConfigured = true
             } catch {
@@ -431,7 +499,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
                     }
                     self.session.commitConfiguration()
                     self.activeDevice = previousDeviceRestored ? previousDevice : nil
-                    do { try self.configureMovieOutput() }
+                    do { try self.configureDevice(previousDevice, applyDefaultExposure: false) }
                     catch { if rollbackError == nil { rollbackError = error } }
                     if let rollbackError {
                         self.isConfigured = false
@@ -585,7 +653,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
             guard let self else { return }
             self.invalidateMetering()
             var operationError: Error?
-            if self.movieOutput.isRecording || self.recordingStartPending {
+            if self.isRecordingOrPending {
                 operationError = CameraError.exposureChangeDuringRecording
             } else if let device = self.activeDevice {
                 do {
@@ -608,7 +676,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
             guard let self else { return }
             self.invalidateMetering()
             var operationError: Error?
-            if self.movieOutput.isRecording || self.recordingStartPending {
+            if self.isRecordingOrPending {
                 operationError = CameraError.exposureChangeDuringRecording
             } else if let device = self.activeDevice, device.isExposureModeSupported(.continuousAutoExposure) {
                 do {
@@ -630,7 +698,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             var operationError: Error?
-            if self.movieOutput.isRecording || self.recordingStartPending {
+            if self.isRecordingOrPending {
                 operationError = CameraError.exposureChangeDuringRecording
             } else if let device = self.activeDevice, device.isExposureModeSupported(.autoExpose) {
                 do {
@@ -673,8 +741,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.exposureBiasEV = clamped
-            guard self.isShutterPriority, !self.movieOutput.isRecording,
-                  !self.recordingStartPending else { return }
+            guard self.isShutterPriority, !self.isRecordingOrPending else { return }
             self.pinShutterToFilm()
         }
     }
@@ -688,7 +755,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     func enableShutterPriority() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            guard !self.movieOutput.isRecording, !self.recordingStartPending else { return }
+            guard !self.isRecordingOrPending else { return }
             self.isShutterPriority = true
             self.invalidateMetering()
             self.pinShutterToFilm()
@@ -707,8 +774,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
     /// or while recording — exposure is frozen during a take).
     func refreshShutterPriority() {
         sessionQueue.async { [weak self] in
-            guard let self, self.isShutterPriority, !self.movieOutput.isRecording,
-                  !self.recordingStartPending else { return }
+            guard let self, self.isShutterPriority, !self.isRecordingOrPending else { return }
             self.pinShutterToFilm()
         }
     }
@@ -736,7 +802,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         let generation = meterGeneration.issue()
         sessionQueue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             guard let self, self.meterGeneration.accepts(generation), self.isShutterPriority,
-                  !self.movieOutput.isRecording, !self.recordingStartPending,
+                  !self.isRecordingOrPending,
                   let device = self.activeDevice else { return }
             let compensated = device.iso * powf(2.0, self.exposureBiasEV)
             do { try self.setExposureLocked(iso: compensated, shutter: Self.filmShutterDuration, on: device) }
@@ -759,7 +825,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.invalidateMetering()
-            guard !self.recordingStartPending, !self.movieOutput.isRecording else {
+            guard !self.isRecordingOrPending else {
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.recordingInProgress) } }
                 return
             }
@@ -777,7 +843,14 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.appleLog2NotSupported) } }
                 return
             }
+            guard !self.acceptedVideoSettings.isEmpty, !self.acceptedPixelFormats.isEmpty else {
+                DispatchQueue.main.async { MainActor.assumeIsolated {
+                    completion(CameraError.writerUnavailable("the active format has not been negotiated"))
+                } }
+                return
+            }
             self.recordingStartPending = true
+            self.pendingStartCompletion = completion
             self.recordingGeneration &+= 1
             let generation = self.recordingGeneration
             do {
@@ -790,36 +863,123 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
                     self?.sessionQueue.async {
                         guard let self, self.recordingGeneration == generation,
                               self.recordingStartPending else { return }
-                        self.startMovieOutput(to: url, completion: completion)
+                        self.beginSampleBufferRecording(to: url, generation: generation)
                     }
                 }
             } catch {
                 self.recordingStartPending = false
+                self.pendingStartCompletion = nil
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
             }
         }
     }
 
-    private func startMovieOutput(to url: URL,
-                                  completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+    private func beginSampleBufferRecording(to url: URL, generation: UInt64) {
         guard let device = activeDevice,
               #available(iOS 26.0, *),
               device.activeColorSpace == .appleLog2,
               Self.appleLog2CaptureFormat(in: [device.activeFormat]) != nil else {
             recordingStartPending = false
-            DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.appleLog2NotSupported) } }
+            failPendingStart(CameraError.appleLog2NotSupported)
             return
         }
-        do { try configureMovieOutput() }
-        catch {
-            recordingStartPending = false
+        guard !acceptedVideoSettings.isEmpty, !acceptedPixelFormats.isEmpty else {
+            failPendingStart(CameraError.writerUnavailable("the active format has not been negotiated"))
+            return
+        }
+        let audioSettings = microphoneAdded
+            ? audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov)
+            : nil
+        if microphoneAdded, audioSettings == nil {
+            failPendingStart(CameraError.writerUnavailable("AAC audio settings are unavailable"))
+            return
+        }
+        guard recorderCompletionBridge.begin(epoch: generation) else {
+            failPendingStart(CameraError.recordingInProgress)
+            return
+        }
+        let callbackContext = CameraSessionRecorderCallbackContext(session: self, queue: sessionQueue)
+#if DEBUG
+        let preservationProbeEnabled = debugSmokeURL == url
+#else
+        let preservationProbeEnabled = false
+#endif
+        sampleBufferRecorder.begin(
+            to: url,
+            videoSettings: acceptedVideoSettings,
+            audioSettings: audioSettings,
+            acceptedPixelFormats: acceptedPixelFormats,
+            metadata: captureMetadataItems(),
+            transform: CameraSampleValidationPolicy.portraitTrackTransform(codedWidth: 3840, codedHeight: 2160),
+            preservationProbeEnabled: preservationProbeEnabled,
+            requiresAudioEvidence: microphoneAdded,
+            onStarted: { [callbackContext] error in
+                callbackContext.enqueueStarted(CameraRecorderErrorBox(error), generation: generation)
+            },
+            onFinished: { [callbackContext] result in
+                callbackContext.enqueueFinished(CameraRecorderResultBox(result), generation: generation)
+            }
+        )
+    }
+
+    fileprivate func recorderStartedOnSessionQueue(_ error: Error?, generation: UInt64) {
+        guard recordingGeneration == generation, recordingStartPending,
+              recorderCompletionBridge.acceptsStarted(epoch: generation) else { return }
+        recordingStartPending = false
+        let completion = pendingStartCompletion
+        pendingStartCompletion = nil
+        recordingActive = error == nil
+        refreshPublicRecordingState()
+        if let completion {
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
+        }
+    }
+
+    fileprivate func recorderFinishedOnSessionQueue(_ result: Result<URL, Error>, generation: UInt64) {
+        guard let shouldNotifyForEpoch = recorderCompletionBridge.consumeTerminal(epoch: generation) else { return }
+        let hadStarted = recordingActive
+        let shouldNotifyFinish = shouldNotifyForEpoch && hadStarted && recordingGeneration == generation
+        recordingActive = false
+        recordingFinishing = false
+        recordingStartPending = false
+        refreshPublicRecordingState()
+        let completion: Result<RecordingCompletion, Error>
+        switch result {
+        case .success(let outputURL):
+            completion = .success(RecordingCompletion(url: outputURL, warning: nil))
+        case .failure(let error):
+            completion = .failure(error)
+        }
+        let handler = onRecordingFinished
+#if DEBUG
+        if let smokeURL = debugSmokeURL {
+            debugSmokeURL = nil
+            let timedOut = debugSmokeTimedOut
+            debugSmokeTimedOut = false
+            DispatchQueue.main.async {
+                if timedOut {
+                    print("HEVC Log2 smoke failed: capture exceeded its timeout")
+                } else if case .success(let completion) = completion {
+                    print("HEVC Log2 smoke passed: \(completion.url.lastPathComponent)")
+                } else if case .failure(let error) = completion {
+                    print("HEVC Log2 smoke failed: \(error.localizedDescription)")
+                }
+                try? FileManager.default.removeItem(at: smokeURL)
+            }
             return
         }
-        // Exposure has completed before metadata is sampled and output starts.
-        movieOutput.metadata = captureMetadataItems()
-        movieOutput.startRecording(to: url, recordingDelegate: self)
-        DispatchQueue.main.async { MainActor.assumeIsolated { completion(nil) } }
+#endif
+        guard shouldNotifyFinish else { return }
+        DispatchQueue.main.async { MainActor.assumeIsolated { handler?(completion) } }
+    }
+
+    private func failPendingStart(_ error: Error) {
+        recordingStartPending = false
+        let completion = pendingStartCompletion
+        pendingStartCompletion = nil
+        if let completion {
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
+        }
     }
 
     /// Shutter speed/angle + ISO at the moment recording starts. The shutter is
@@ -835,7 +995,8 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
             Self.captureItem("shutter-angle", "\(angle)"),
             Self.captureItem("capture-iso", "\(Int(device.iso))"),
             Self.captureItem("capture-color-space", Self.captureColorSpaceLabel(device)),
-            Self.captureItem("capture-format", Self.captureFormatLabel(device))
+            Self.captureItem("capture-format", Self.captureFormatLabel(device)),
+            Self.captureItem("capture-codec", acceptedVideoSettings[AVVideoCodecKey] as? String ?? "unknown")
         ]
     }
 
@@ -872,54 +1033,99 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
             if self.recordingStartPending {
                 self.recordingStartPending = false
                 self.recordingGeneration &+= 1
+                self.failPendingStart(CameraSampleBufferRecorderError.noVideoFrames)
+                if let epoch = self.recorderCompletionBridge.activeEpoch {
+                    self.recorderCompletionBridge.cancelUserStart(epoch: epoch)
+                    self.recordingFinishing = true
+                    self.refreshPublicRecordingState()
+                    self.sampleBufferRecorder.cancel()
+                }
+            } else if self.recordingActive {
+                self.recordingFinishing = true
+                self.refreshPublicRecordingState()
+                self.sampleBufferRecorder.stop()
             }
-            if self.movieOutput.isRecording { self.movieOutput.stopRecording() }
         }
     }
 
+#if DEBUG
+    func startDebugSmokeCapture() {
+        sessionQueue.async { [weak self] in
+            guard let self, self.isConfigured, self.session.isRunning, !self.isRecordingOrPending else {
+                print("HEVC Log2 smoke failed: camera session is unavailable or busy")
+                return
+            }
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("hevc-log2-smoke-\(UUID().uuidString).mov")
+            self.debugSmokeURL = url
+            self.debugSmokeTimedOut = false
+            let smokeContext = CameraSessionSmokeCallbackContext(session: self, queue: self.sessionQueue, url: url)
+            self.startRecording(to: url) { [smokeContext] error in
+                smokeContext.recordingStarted(errorDescription: error?.localizedDescription)
+            }
+            smokeContext.scheduleTimeout()
+        }
+    }
+
+    fileprivate func debugSmokeStartFailed(_ message: String, url: URL) {
+        guard debugSmokeURL == url else { return }
+        debugSmokeURL = nil
+        debugSmokeTimedOut = false
+        print("HEVC Log2 smoke failed to start: \(message)")
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    fileprivate func debugSmokeStop(url: URL, timedOut: Bool) {
+        guard debugSmokeURL == url else { return }
+        debugSmokeTimedOut = timedOut
+        guard timedOut else {
+            stopRecording()
+            return
+        }
+        recordingGeneration &+= 1
+        if recordingStartPending {
+            recordingStartPending = false
+            failPendingStart(CameraSampleBufferRecorderError.cancelled)
+        }
+        if let epoch = recorderCompletionBridge.activeEpoch {
+            recorderCompletionBridge.cancelUserStart(epoch: epoch)
+            recordingFinishing = true
+            refreshPublicRecordingState()
+            sampleBufferRecorder.cancel()
+        } else {
+            finishDebugSmokeTimeoutWithoutRecorder(url: url)
+        }
+    }
+
+    private func finishDebugSmokeTimeoutWithoutRecorder(url: URL) {
+        guard debugSmokeURL == url else { return }
+        debugSmokeURL = nil
+        debugSmokeTimedOut = false
+        recordingActive = false
+        recordingFinishing = false
+        recordingStartPending = false
+        refreshPublicRecordingState()
+        print("HEVC Log2 smoke failed: capture exceeded its timeout before the recorder started")
+        try? FileManager.default.removeItem(at: url)
+    }
+#endif
+
     var isRecording: Bool {
-        movieOutput.isRecording
+        recordingStateLock.lock()
+        defer { recordingStateLock.unlock() }
+        return publicRecordingState
+    }
+
+    private var isRecordingOrPending: Bool { recordingActive || recordingFinishing || recordingStartPending }
+
+    private func refreshPublicRecordingState() {
+        recordingStateLock.lock()
+        publicRecordingState = recordingActive || recordingFinishing
+        recordingStateLock.unlock()
     }
 
     func onFinish(_ handler: @escaping @MainActor @Sendable (Result<RecordingCompletion, Error>) -> Void) {
         sessionQueue.async { [weak self] in self?.onRecordingFinished = handler }
-    }
-
-    // MARK: - AVCaptureFileOutputRecordingDelegate
-
-    /// Bridges a value that is safe to use but not statically `Sendable` — an
-    /// `Error` existential and a `URL` — across the session queue to MainActor.
-    /// Matches the existing `AudioCopyResultBox`/`FrameCounterBox` pattern in
-    /// this codebase; `Error` cannot be marked `Sendable` by the caller.
-    struct RecordingCompletionResult: @unchecked Sendable {
-        let result: Result<RecordingCompletion, Error>
-    }
-
-    func fileOutput(_ output: AVCaptureFileOutput,
-                    didFinishRecordingTo outputFileURL: URL,
-                    from connections: [AVCaptureConnection],
-                    error: Error?) {
-        let playableFlag = (error as NSError?)?.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? NSNumber
-        let result: Result<RecordingCompletion, Error>
-        if RecordingCompletionPolicy.shouldPublish(errorExists: error != nil,
-                                                   finishedPlayable: playableFlag?.boolValue) {
-            result = .success(RecordingCompletion(url: outputFileURL, warning: error))
-        } else {
-            result = .failure(error ?? CameraError.recordingFailed)
-        }
-        // `result` straddles isolation boundaries: it carries a URL and an Error
-        // (which cannot be statically Sendable). Wrap it so the send to the main
-        // actor is explicit rather than inferred.
-        let payload = RecordingCompletionResult(result: result)
-        sessionQueue.async { [weak self] in
-            guard let self else { return }
-            self.recordingStartPending = false
-            let handler = self.onRecordingFinished
-            let completion = payload.result
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated { handler?(completion) }
-            }
-        }
     }
 
     // MARK: - Session lifecycle
@@ -937,23 +1143,96 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.invalidateMetering()
+            if self.recordingStartPending {
+                self.recordingStartPending = false
+                self.recordingGeneration &+= 1
+                self.failPendingStart(CameraSampleBufferRecorderError.cancelled)
+                if let epoch = self.recorderCompletionBridge.activeEpoch {
+                    self.recorderCompletionBridge.cancelUserStart(epoch: epoch)
+                    self.recordingFinishing = true
+                    self.refreshPublicRecordingState()
+                    self.sampleBufferRecorder.cancel()
+                }
+            } else if self.recordingActive {
+                self.recordingFinishing = true
+                self.refreshPublicRecordingState()
+                self.sampleBufferRecorder.stop()
+            }
             guard self.session.isRunning else { return }
             self.session.stopRunning()
         }
     }
 }
 
+/// Sendable bridge for the writer queue. It only retains a weak session and
+/// hops recorder results to sessionQueue before touching camera state.
+private final class CameraSessionRecorderCallbackContext: @unchecked Sendable {
+    private weak var session: CameraSession?
+    private let queue: DispatchQueue
+
+    init(session: CameraSession, queue: DispatchQueue) {
+        self.session = session
+        self.queue = queue
+    }
+
+    func enqueueStarted(_ error: CameraRecorderErrorBox, generation: UInt64) {
+        queue.async { [self] in session?.recorderStartedOnSessionQueue(error.value, generation: generation) }
+    }
+
+    func enqueueFinished(_ result: CameraRecorderResultBox, generation: UInt64) {
+        queue.async { [self] in session?.recorderFinishedOnSessionQueue(result.result, generation: generation) }
+    }
+}
+
+#if DEBUG
+/// The launch smoke's delayed callbacks carry only immutable URL/configuration
+/// and enqueue all mutable session access onto sessionQueue.
+private final class CameraSessionSmokeCallbackContext: @unchecked Sendable {
+    private weak var session: CameraSession?
+    private let queue: DispatchQueue
+    private let url: URL
+
+    init(session: CameraSession, queue: DispatchQueue, url: URL) {
+        self.session = session
+        self.queue = queue
+        self.url = url
+    }
+
+    func recordingStarted(errorDescription: String?) {
+        if let errorDescription {
+            queue.async { [self] in session?.debugSmokeStartFailed(errorDescription, url: url) }
+        } else {
+            queue.asyncAfter(deadline: .now() + 3) { [self] in session?.debugSmokeStop(url: url, timedOut: false) }
+        }
+    }
+
+    func scheduleTimeout() {
+        queue.asyncAfter(deadline: .now() + 15) { [self] in session?.debugSmokeStop(url: url, timedOut: true) }
+    }
+}
+#endif
+
+private struct CameraRecorderErrorBox: @unchecked Sendable {
+    let value: Error?
+    init(_ value: Error?) { self.value = value }
+}
+
+private struct CameraRecorderResultBox: @unchecked Sendable {
+    let result: Result<URL, Error>
+    init(_ result: Result<URL, Error>) { self.result = result }
+}
+
 enum CameraError: LocalizedError {
     case noCameraAvailable
     case cannotAddInput
     case cannotAddOutput
+    case writerUnavailable(String)
     case appleLogNotSupported
     case appleLog2NotSupported
     case recordingInProgress
     case destinationAlreadyExists
     case recordingFailed
     case exposureChangeDuringRecording
-    case movieVideoConnectionUnavailable
     case lensRollbackFailed(original: Error, rollback: Error)
 
     var errorDescription: String? {
@@ -963,7 +1242,9 @@ enum CameraError: LocalizedError {
         case .cannotAddInput:
             return "Failed to add camera input to capture session."
         case .cannotAddOutput:
-            return "Failed to add movie output to capture session."
+            return "Failed to add a sample-buffer output to the capture session."
+        case .writerUnavailable(let detail):
+            return "Apple Log 2 HEVC Main10 recording is unavailable. \(detail)"
         case .appleLogNotSupported:
             return "Apple Log color space is not supported on this device."
         case .appleLog2NotSupported:
@@ -976,8 +1257,6 @@ enum CameraError: LocalizedError {
             return "The recording could not be finalized."
         case .exposureChangeDuringRecording:
             return "Exposure cannot be changed during a recording."
-        case .movieVideoConnectionUnavailable:
-            return "The camera has no movie video connection."
         case .lensRollbackFailed(let original, let rollback):
             return "Camera switch failed (\(original.localizedDescription)); restoring the previous camera also failed (\(rollback.localizedDescription))."
         }

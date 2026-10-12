@@ -1,4 +1,5 @@
 import Foundation
+import CoreVideo
 
 /// Select a declared Log 2 4K/24fps format from device capability evidence.
 /// Keeping the policy independent of hardware lets tests cover mixed-format
@@ -10,71 +11,135 @@ enum CameraCaptureFormatPolicy {
         let supportsAppleLog2: Bool
         let supports24FPS: Bool
         let isTenBitBiPlanar420: Bool
+        let isTenBitBiPlanar422: Bool
 
         init(width: Int32, height: Int32, supportsAppleLog2: Bool,
-             supports24FPS: Bool, isTenBitBiPlanar420: Bool = false) {
+             supports24FPS: Bool, isTenBitBiPlanar420: Bool = false,
+             isTenBitBiPlanar422: Bool = false) {
             self.width = width
             self.height = height
             self.supportsAppleLog2 = supportsAppleLog2
             self.supports24FPS = supports24FPS
             self.isTenBitBiPlanar420 = isTenBitBiPlanar420
+            self.isTenBitBiPlanar422 = isTenBitBiPlanar422
         }
     }
 
     static func appleLog2Index(in candidates: [Candidate]) -> Int? {
+        appleLog2CandidateIndexes(in: candidates).first
+    }
+
+    static func appleLog2CandidateIndexes(in candidates: [Candidate]) -> [Int] {
         let matches = candidates.indices.filter {
             let candidate = candidates[$0]
             return candidate.width == 3840 && candidate.height == 2160
                 && candidate.supportsAppleLog2 && candidate.supports24FPS
+                && (candidate.isTenBitBiPlanar420 || candidate.isTenBitBiPlanar422)
         }
-        return matches.first(where: { candidates[$0].isTenBitBiPlanar420 }) ?? matches.first
+        return matches.filter { candidates[$0].isTenBitBiPlanar420 }
+            + matches.filter { candidates[$0].isTenBitBiPlanar422 }
     }
 }
 
-enum CameraMovieCapabilityPolicy {
-    static func settings(
-        availableCodecs: [String],
-        hevcCodec: String,
-        availableSettingsKeys: Set<String>,
-        formatDescription: String,
-        codecKey: String,
-        compressionKey: String,
-        averageBitRateKey: String,
-        maxKeyFrameIntervalKey: String,
-        profileLevelKey: String,
-        averageBitRate: Int,
-        maxKeyFrameInterval: Int,
-        main10Profile: String
-    ) throws -> [String: Any] {
-        guard availableSettingsKeys.contains(codecKey) else {
-            throw CameraMovieCapabilityError.codecSettingsUnavailable(format: formatDescription)
+enum CameraSampleValidationPolicy {
+    static var appleLog2Identifier: String {
+        if #available(iOS 26.0, macOS 26.0, tvOS 26.0, *) {
+            return kCVImageBufferLogTransferFunction_AppleLog2 as String
         }
-        guard availableCodecs.contains(hevcCodec) else {
-            throw CameraMovieCapabilityError.hevcUnavailable(available: availableCodecs, format: formatDescription)
+        return "com.apple.apple-wide-gamut.apple-log"
+    }
+
+    static func preferredTenBitPixelFormats(from available: [UInt32]) -> [UInt32] {
+        let tenBit420: Set<UInt32> = [0x78343230, 0x78663230] // x420, xf20
+        let tenBit422: Set<UInt32> = [0x78343232, 0x78663232] // x422, xf22
+        return available.filter { tenBit420.contains($0) } + available.filter { tenBit422.contains($0) }
+    }
+
+    static func accepts(width: Int, height: Int, pixelFormat: UInt32,
+                        acceptedPixelFormats: Set<UInt32>, logTransfer: String?, matrix: String?,
+                        primaries: String?, transfer: String?) -> Bool {
+        width == 3840 && height == 2160 && acceptedPixelFormats.contains(pixelFormat)
+            && isAppleLog2(logTransfer)
+            && matrix == "ITU_R_2020"
+            && (primaries == nil || primaries == "Unspecified")
+            && (transfer == nil || transfer == "Unspecified")
+    }
+
+    static func isAppleLog2(_ identifier: String?) -> Bool {
+        identifier == appleLog2Identifier
+    }
+
+    static func audioIsAfterSessionStart(sampleTime: Double, sessionStart: Double) -> Bool {
+        sampleTime.isFinite && sessionStart.isFinite && sampleTime >= sessionStart
+    }
+
+    static func timestampIsIncreasing(current: Double, previous: Double?) -> Bool {
+        current.isFinite && (previous.map { current > $0 } ?? true)
+    }
+
+    static func shouldFailForFrameDrops(recentDropCount: Int, threshold: Int = 3) -> Bool {
+        recentDropCount >= threshold
+    }
+
+    static func dropTimesWithinWindow(_ times: [Double], now: Double, window: Double = 2) -> [Double] {
+        guard now.isFinite, window.isFinite, window >= 0 else { return [] }
+        return times.filter { $0.isFinite && now >= $0 && now - $0 <= window } + [now]
+    }
+
+    static func portraitTrackTransform(codedWidth: Int, codedHeight: Int) -> CGAffineTransform {
+        CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: CGFloat(codedHeight), ty: 0)
+    }
+
+    static func displayDimensions(codedWidth: Int, codedHeight: Int, transform: CGAffineTransform) -> (Int, Int) {
+        if abs(transform.b) > 0.5 || abs(transform.c) > 0.5 {
+            return (codedHeight, codedWidth)
         }
-        var result: [String: Any] = [codecKey: hevcCodec]
-        if availableSettingsKeys.contains(compressionKey) {
-            result[compressionKey] = [
-                averageBitRateKey: averageBitRate,
-                maxKeyFrameIntervalKey: maxKeyFrameInterval,
-                profileLevelKey: main10Profile
-            ]
-        }
-        return result
+        return (codedWidth, codedHeight)
+    }
+
+    static func hasHEVCEncoder(_ codecTypes: [String]) -> Bool {
+        codecTypes.contains("hvc1")
+    }
+
+    static func acceptsHEVCMain10Settings(codec: String?, width: Int?, height: Int?,
+                                           profile: String?, expectedProfile: String) -> Bool {
+        codec == "hvc1" && width == 3840 && height == 2160 && profile == expectedProfile
     }
 }
 
-enum CameraMovieCapabilityError: LocalizedError {
-    case codecSettingsUnavailable(format: String)
-    case hevcUnavailable(available: [String], format: String)
+enum CameraSampleBufferRecorderState: Equatable {
+    case idle
+    case awaitingVideo
+    case recording
+    case finishing
+    case finished
+    case failed
+}
 
-    var errorDescription: String? {
-        switch self {
-        case .codecSettingsUnavailable(let format):
-            return "HEVC recording settings are unavailable for this camera connection (\(format))."
-        case .hevcUnavailable(let available, let format):
-            let names = available.isEmpty ? "none" : available.joined(separator: ", ")
-            return "HEVC recording is unavailable for \(format). Available codecs: \(names)."
+enum CameraSampleBufferRecorderEvent {
+    case begin
+    case firstVideoAppend
+    case stop
+    case finishSuccess
+    case failure
+    case reset
+}
+
+enum CameraSampleBufferRecorderLifecyclePolicy {
+    static func acceptsCompletion(callbackGeneration: UInt64, activeGeneration: UInt64?) -> Bool {
+        activeGeneration == callbackGeneration
+    }
+
+    static func transition(_ state: CameraSampleBufferRecorderState,
+                           on event: CameraSampleBufferRecorderEvent) -> CameraSampleBufferRecorderState? {
+        switch (state, event) {
+        case (.idle, .begin): return .awaitingVideo
+        case (.awaitingVideo, .firstVideoAppend): return .recording
+        case (.awaitingVideo, .failure), (.recording, .failure), (.finishing, .failure): return .failed
+        case (.recording, .stop): return .finishing
+        case (.finishing, .finishSuccess): return .finished
+        case (.finished, .reset), (.failed, .reset): return .idle
+        default: return nil
         }
     }
 }
@@ -99,6 +164,36 @@ struct CameraLifecycleGate {
 
     func accepts(_ callbackGeneration: UInt64) -> Bool {
         isActive && generation == callbackGeneration
+    }
+}
+
+/// Shared session/recorder completion ownership. User-start cancellation does
+/// not release the epoch; only that writer's terminal callback can do so.
+struct CameraRecorderCompletionBridge {
+    private(set) var activeEpoch: UInt64?
+    private(set) var userStartCancelled = false
+
+    mutating func begin(epoch: UInt64) -> Bool {
+        guard activeEpoch == nil else { return false }
+        activeEpoch = epoch
+        userStartCancelled = false
+        return true
+    }
+
+    func acceptsStarted(epoch: UInt64) -> Bool {
+        activeEpoch == epoch && !userStartCancelled
+    }
+
+    mutating func cancelUserStart(epoch: UInt64) {
+        if activeEpoch == epoch { userStartCancelled = true }
+    }
+
+    mutating func consumeTerminal(epoch: UInt64) -> Bool? {
+        guard activeEpoch == epoch else { return nil }
+        let shouldNotifyUser = !userStartCancelled
+        activeEpoch = nil
+        userStartCancelled = false
+        return shouldNotifyUser
     }
 }
 

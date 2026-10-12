@@ -100,11 +100,35 @@ struct MovieWritingReliabilityTests {
 
     @available(macOS 27.0, *)
     @Test func taggedAppleLog2SourceRendersWithStreamProvenance() async throws {
+        try await assertTaggedAppleLog2SourceRenders(codec: .hevc)
+        try await assertTaggedAppleLog2SourceRenders(codec: .proRes422LT)
+    }
+
+    @available(macOS 27.0, *)
+    private func assertTaggedAppleLog2SourceRenders(codec: AVVideoCodecType) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let source = directory.appendingPathComponent("apple-log2.mov")
-        try await makeAppleLog2Fixture(at: source)
+        try await makeAppleLog2Fixture(at: source, codec: codec)
+        let sourceAsset = AVURLAsset(url: source)
+        let sourceTracks = try await sourceAsset.load(.tracks)
+        let sourceVideoTrack = try #require(sourceTracks.first(where: { $0.mediaType == .video }))
+        let sourceDescriptions = try await sourceVideoTrack.load(.formatDescriptions)
+        let sourceFormat = try #require(sourceDescriptions.first)
+        let sourceExtensions = CMFormatDescriptionGetExtensions(sourceFormat) as NSDictionary?
+        func sourceExtensionValue(_ key: CFString) -> String? {
+            sourceExtensions?[key].map { String(describing: $0) }
+        }
+        let sourceBitDepth = try #require(sourceExtensionValue(kCMFormatDescriptionExtension_BitsPerComponent))
+        let sourceFullRange = sourceExtensionValue(kCMFormatDescriptionExtension_FullRangeVideo)
+        let sourcePrimaries = sourceExtensionValue(kCMFormatDescriptionExtension_ColorPrimaries)
+        let sourceTransfer = sourceExtensionValue(kCMFormatDescriptionExtension_TransferFunction)
+        if codec == .hevc {
+            #expect(sourceBitDepth == "10")
+            #expect(sourceFullRange == "0")
+        }
+
         let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory)
         let renderResult = try await renderer.render(sourceURL: source, config: loadConfig(), bitrate: 2_000_000,
                                                      diagnosticsBundleDirectory: directory)
@@ -137,6 +161,10 @@ struct MovieWritingReliabilityTests {
         #expect(abs(coloredBlue - (encodedY + 1.8814 * encodedCb)) < 0.005)
 
         let outputAsset = AVURLAsset(url: output)
+        let outputTracks = try await outputAsset.load(.tracks)
+        let outputVideoTrack = try #require(outputTracks.first(where: { $0.mediaType == .video }))
+        let outputDescriptions = try await outputVideoTrack.load(.formatDescriptions)
+        #expect(CMFormatDescriptionGetMediaSubType(try #require(outputDescriptions.first)).fourCharCodeString == "hvc1")
         var values: [String: String] = [:]
         for item in try await outputAsset.load(.metadata) {
             if let key = item.key as? String, let value = try await item.load(.stringValue) { values[key] = value }
@@ -148,11 +176,12 @@ struct MovieWritingReliabilityTests {
         let provenance = try JSONDecoder().decode(RenderInputColorProvenance.self, from: Data(sourceJSON.utf8))
         #expect(provenance.formatDescriptions.count == 1)
         #expect(provenance.formatDescriptions[0].logTransferFunction == "com.apple.apple-wide-gamut.apple-log")
-        #expect(provenance.formatDescriptions[0].bitDepth == "10")
-        #expect(provenance.formatDescriptions[0].codec == "hvc1")
-        #expect(provenance.formatDescriptions[0].fullRangeVideo == "0")
-        #expect(provenance.formatDescriptions[0].colorPrimaries == nil)
-        #expect(provenance.formatDescriptions[0].transferFunction == nil)
+        #expect(provenance.formatDescriptions[0].bitDepth == sourceBitDepth)
+        #expect(provenance.formatDescriptions[0].codec == codec.rawValue)
+        #expect(provenance.formatDescriptions[0].yCbCrMatrix == (AVVideoYCbCrMatrix_ITU_R_2020 as String))
+        #expect(provenance.formatDescriptions[0].fullRangeVideo == sourceFullRange)
+        #expect(provenance.formatDescriptions[0].colorPrimaries == sourcePrimaries)
+        #expect(provenance.formatDescriptions[0].transferFunction == sourceTransfer)
     }
 
     @Test func renderFailureAfterEncodedFramesRemovesPartialAndPreservesSource() async throws {
@@ -437,7 +466,7 @@ struct MovieWritingReliabilityTests {
     }
 
     @available(macOS 27.0, *)
-    private func makeAppleLog2Fixture(at url: URL) async throws {
+    private func makeAppleLog2Fixture(at url: URL, codec: AVVideoCodecType) async throws {
         let writer = try AVAssetWriter(url: url, fileType: .mov)
         let captureColor = AVMutableMetadataItem()
         captureColor.keySpace = .quickTimeMetadata
@@ -487,19 +516,23 @@ struct MovieWritingReliabilityTests {
             allocator: kCFAllocatorDefault, imageBuffer: buffer, formatDescriptionOut: &formatHint
         )
         guard hintStatus == noErr, let formatHint else { throw FixtureError.sampleBuffer(hintStatus) }
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
-            AVVideoCodecKey: AVVideoCodecType.hevc,
+        var outputSettings: [String: Any] = [
+            AVVideoCodecKey: codec,
             AVVideoWidthKey: 256,
             AVVideoHeightKey: 64,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel as String,
-                AVVideoAverageBitRateKey: 2_000_000
-            ],
             AVVideoColorPropertiesKey: [
                 AVVideoLogTransferFunctionKey: kCVImageBufferLogTransferFunction_AppleLog2,
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
             ]
-        ], sourceFormatHint: formatHint)
+        ]
+        if codec == .hevc {
+            outputSettings[AVVideoCompressionPropertiesKey] = [
+                AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel as String,
+                AVVideoAverageBitRateKey: 2_000_000
+            ]
+        }
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings,
+                                       sourceFormatHint: formatHint)
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
         writer.add(input)
         guard writer.startWriting() else { throw FixtureError.writerStart(writer.error) }

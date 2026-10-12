@@ -5,7 +5,7 @@ import CoreVideo
 /// AD-6: Metal GPU pipeline — hybrid 2-pass post-record render.
 /// Pass 1: LUT + halation + glow (single fused Metal compute shader).
 /// Pass 2: 3D noise volume grain with temporal coherence (AD-9).
-/// Input: .mov URL (Apple Log, HEVC H.265, 4K, 24fps).
+/// Input: .mov URL carrying the Apple Log 2 stream tags (native camera codec).
 /// Output: .mov URL (HEVC H.265, 4K, ~60 Mbps).
 final class PipelineRenderer: @unchecked Sendable {
     private let device: MTLDevice

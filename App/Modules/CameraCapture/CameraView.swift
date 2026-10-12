@@ -42,6 +42,11 @@ private struct CameraPreviewRepresentable: UIViewRepresentable {
         DispatchQueue.main.async { [weak view] in
             previewLayer = layer
             layer.frame = view?.bounds ?? .zero
+            if #available(iOS 17.0, *),
+               let connection = layer.connection,
+               connection.isVideoRotationAngleSupported(90) {
+                connection.videoRotationAngle = 90
+            }
         }
         return view
     }
