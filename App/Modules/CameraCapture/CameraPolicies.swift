@@ -55,6 +55,27 @@ enum CameraSampleValidationPolicy {
         return available.filter { tenBit420.contains($0) } + available.filter { tenBit422.contains($0) }
     }
 
+    static func firstUsableTenBitPixelFormat(from available: [UInt32],
+                                             isUsable: (UInt32) -> Bool) -> UInt32? {
+        preferredTenBitPixelFormats(from: available).first(where: isUsable)
+    }
+
+    static func fourCCDescription(_ value: UInt32) -> String {
+        let bytes: [UInt8] = [
+            UInt8((value >> 24) & 0xff), UInt8((value >> 16) & 0xff),
+            UInt8((value >> 8) & 0xff), UInt8(value & 0xff)
+        ]
+        guard bytes.allSatisfy({ (32...126).contains($0) }),
+              let fourCC = String(bytes: bytes, encoding: .ascii) else {
+            return String(format: "0x%08X", value)
+        }
+        return fourCC
+    }
+
+    static func fourCCListDescription(_ values: [UInt32]) -> String {
+        values.isEmpty ? "none" : values.map(fourCCDescription).joined(separator: ", ")
+    }
+
     static func accepts(width: Int, height: Int, pixelFormat: UInt32,
                         acceptedPixelFormats: Set<UInt32>, logTransfer: String?, matrix: String?,
                         primaries: String?, transfer: String?) -> Bool {

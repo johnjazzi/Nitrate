@@ -34,7 +34,7 @@ struct CameraPolicyTests {
         #expect(CameraCaptureFormatPolicy.appleLog2Index(in: [formats[0]]) == 0)
     }
 
-    @Test func outputPixelNegotiationPrefersOnlyAdvertisedTenBitYUV() {
+    @Test func outputPixelNegotiationKeepsAdvertisedTenBitFallbacksAndReportsFourCCs() {
         let x420: UInt32 = 0x78343230
         let xf20: UInt32 = 0x78663230
         let x422: UInt32 = 0x78343232
@@ -43,6 +43,17 @@ struct CameraPolicyTests {
         )
         #expect(result == [xf20, x420, x422])
         #expect(CameraSampleValidationPolicy.preferredTenBitPixelFormats(from: [0x42475241]).isEmpty)
+        #expect(CameraSampleValidationPolicy.fourCCListDescription([xf20, x420, x422]) == "xf20, x420, x422")
+        #expect(CameraSampleValidationPolicy.fourCCListDescription([]) == "none")
+        var attempted: [UInt32] = []
+        let selected = CameraSampleValidationPolicy.firstUsableTenBitPixelFormat(
+            from: [x422, xf20, x420]
+        ) { pixelFormat in
+            attempted.append(pixelFormat)
+            return pixelFormat == x422
+        }
+        #expect(attempted == [xf20, x420, x422])
+        #expect(selected == x422)
         #expect(CameraSampleValidationPolicy.hasHEVCEncoder(["apcs", "apcn"]) == false)
         #expect(CameraSampleValidationPolicy.hasHEVCEncoder(["hvc1"]))
         let profile = "Main10_AutoLevel"

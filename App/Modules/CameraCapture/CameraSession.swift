@@ -109,6 +109,9 @@ final class CameraSession: NSObject {
     func configure(completion: @escaping @MainActor @Sendable (Error?) -> Void) {
         sessionQueue.async { [weak self] in
             let error = self?.performConfigure()
+            if let error {
+                print("Camera session configuration failed: \(error.localizedDescription)")
+            }
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
         }
     }
@@ -247,8 +250,12 @@ final class CameraSession: NSObject {
                 continue
             }
 
-            if configureDataOutputForActiveFormat() { break }
-            failures.append("\(Self.captureFormatSubtypeDescription(format)): no ten-bit YUV and HEVC Main10 writer settings")
+            if let rejection = configureDataOutputForActiveFormat(activeFormat: format) {
+                failures.append("\(Self.captureFormatSubtypeDescription(format)): \(rejection)")
+                print("Camera capture candidate rejected: \(Self.captureFormatSubtypeDescription(format)): \(rejection)")
+            } else {
+                break
+            }
         }
         guard !acceptedPixelFormats.isEmpty, !acceptedVideoSettings.isEmpty else {
             let detail = failures.isEmpty ? "no eligible formats" : failures.joined(separator: "; ")
@@ -357,18 +364,57 @@ final class CameraSession: NSObject {
         device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
     }
 
-    private func configureDataOutputForActiveFormat() -> Bool {
+    private func configureDataOutputForActiveFormat(activeFormat: AVCaptureDevice.Format) -> String? {
         let supportedPixelFormats = videoOutput.availableVideoPixelFormatTypes.map {
             UInt32(truncating: $0 as NSNumber)
         }
         let candidates = CameraSampleValidationPolicy.preferredTenBitPixelFormats(from: supportedPixelFormats)
-        guard let pixelFormat = candidates.first else { return false }
-        videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat)]
+        let pixelFormatList = CameraSampleValidationPolicy.fourCCListDescription(supportedPixelFormats)
+        print("Camera output negotiation: active format \(Self.captureFormatSubtypeDescription(activeFormat)); " +
+              "advertised pixel formats: \(pixelFormatList); ten-bit candidates: " +
+              "\(CameraSampleValidationPolicy.fourCCListDescription(candidates))")
+        guard !candidates.isEmpty else {
+            return "no advertised ten-bit bi-planar YUV pixel format (output advertises: \(pixelFormatList))"
+        }
+        var candidateFailures: [String] = []
+        let selectedPixelFormat = CameraSampleValidationPolicy.firstUsableTenBitPixelFormat(
+            from: supportedPixelFormats
+        ) { pixelFormat in
+            videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat)]
+            if let rejection = configureWriterForDataOutput(pixelFormat: pixelFormat,
+                                                            candidates: candidates,
+                                                            advertisedPixelFormats: supportedPixelFormats) {
+                candidateFailures.append("\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)): \(rejection)")
+                return false
+            } else {
+                return true
+            }
+        }
+        guard selectedPixelFormat == nil else { return nil }
+        return "no advertised ten-bit format could negotiate HEVC Main10 (output advertises: \(pixelFormatList); " +
+            "attempts: \(candidateFailures.joined(separator: "; ")))"
+    }
+
+    private func configureWriterForDataOutput(pixelFormat: UInt32,
+                                              candidates: [UInt32],
+                                              advertisedPixelFormats: [UInt32]) -> String? {
         let codecs = videoOutput.availableVideoCodecTypesForAssetWriter(writingTo: .mov)
-        guard CameraSampleValidationPolicy.hasHEVCEncoder(codecs.map(\.rawValue)),
-              var settings = videoOutput.recommendedVideoSettings(forVideoCodecType: .hevc,
-                                                                   assetWriterOutputFileType: .mov),
-              settings[AVVideoCodecKey] as? String == AVVideoCodecType.hevc.rawValue else { return false }
+        let codecNames = codecs.map(\.rawValue)
+        let codecList = codecNames.isEmpty ? "none" : codecNames.joined(separator: ", ")
+        guard CameraSampleValidationPolicy.hasHEVCEncoder(codecNames) else {
+            return "HEVC is not advertised for MOV writing (codecs: \(codecList); " +
+                "advertised pixel formats: \(CameraSampleValidationPolicy.fourCCListDescription(advertisedPixelFormats)))"
+        }
+        guard var settings = videoOutput.recommendedVideoSettings(forVideoCodecType: .hevc,
+                                                                  assetWriterOutputFileType: .mov) else {
+            return "AVCaptureVideoDataOutput returned no HEVC settings (codecs: \(codecList); " +
+                "advertised pixel formats: \(CameraSampleValidationPolicy.fourCCListDescription(advertisedPixelFormats)))"
+        }
+        guard settings[AVVideoCodecKey] as? String == AVVideoCodecType.hevc.rawValue else {
+            let recommendedCodec = settings[AVVideoCodecKey] as? String ?? "missing"
+            return "recommended settings identify codec \(recommendedCodec), expected hvc1 " +
+                "(advertised codecs: \(codecList))"
+        }
         settings[AVVideoWidthKey] = 3840
         settings[AVVideoHeightKey] = 2160
         var compression = settings[AVVideoCompressionPropertiesKey] as? [String: Any] ?? [:]
@@ -382,19 +428,43 @@ final class CameraSession: NSObject {
             height: (settings[AVVideoHeightKey] as? NSNumber)?.intValue,
             profile: compression[AVVideoProfileLevelKey] as? String,
             expectedProfile: kVTProfileLevel_HEVC_Main10_AutoLevel as String
-        ) else { return false }
+        ) else {
+            let profile = compression[AVVideoProfileLevelKey] as? String ?? "missing"
+            let width = (settings[AVVideoWidthKey] as? NSNumber)?.intValue ?? 0
+            let height = (settings[AVVideoHeightKey] as? NSNumber)?.intValue ?? 0
+            return "constructed settings are not HEVC Main10 3840x2160 " +
+                "(codec: \(settings[AVVideoCodecKey] as? String ?? "missing"), " +
+                "size: \(width)x\(height), profile: \(profile))"
+        }
         if #available(iOS 27.0, *) {
             settings[AVVideoColorPropertiesKey] = [
                 AVVideoLogTransferFunctionKey: AVVideoLogTransferFunction_AppleLog2,
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
             ]
         } else {
-            return false
+            return "Apple Log 2 writer color tags require iOS 27 (running version is older)"
+        }
+        let probeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hevc-main10-capability-\(UUID().uuidString).mov")
+        let writer: AVAssetWriter
+        do {
+            writer = try AVAssetWriter(outputURL: probeURL, fileType: .mov)
+        } catch {
+            return "could not create a temporary AVAssetWriter capability probe: \(error.localizedDescription)"
+        }
+        guard writer.canApply(outputSettings: settings, forMediaType: .video) else {
+            let profile = compression[AVVideoProfileLevelKey] as? String ?? "missing"
+            return "AVAssetWriter.canApply rejected HEVC Main10 3840x2160 " +
+                "(profile: \(profile), pixel formats: " +
+                "\(CameraSampleValidationPolicy.fourCCListDescription(candidates)); codecs: \(codecList))"
         }
         acceptedPixelFormats = [pixelFormat]
         acceptedVideoSettings = settings
-        print("Capture writer codec: hvc1 Main10, pixel format: \(String(pixelFormat, radix: 16))")
-        return true
+        print("Capture writer capability: hvc1 Main10 3840x2160; selected pixel format " +
+              "\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)); " +
+              "advertised ten-bit formats: \(CameraSampleValidationPolicy.fourCCListDescription(candidates)); " +
+              "advertised codecs: \(codecList)")
+        return nil
     }
 
     // MARK: - Camera Switching
