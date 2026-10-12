@@ -303,6 +303,8 @@ enum RenderMovieMetadata {
             "film-stock": config.stockId, "stock-name": config.displayName, "lut": config.lutName,
             "iso": String(Int(config.defaultISO)), "iso-role": "selected-render-exposure-index",
             "halation-level": String(config.halationStrength), "glow-level": String(config.glowStrength),
+            "halation-radius-fraction": String(config.halationRadiusFraction),
+            "halation-tint": "\(config.halationTint.x),\(config.halationTint.y),\(config.halationTint.z)",
             "grain-size": String(config.grainSize), "recipe-version": config.effectiveRecipe.version,
             "grain-algorithm": config.effectiveRecipe.grainAlgorithm,
             "grain-edge-boost-multiplier": String(config.effectiveRecipe.edgeBoostMultiplier),
@@ -345,7 +347,9 @@ enum RenderMovieMetadata {
     }
 
     private static func humanReadableSummary(_ config: FilmStockConfig, bitrate: Int) -> String {
-        "ISO \(Int(config.defaultISO)) · 180° shutter · halation \(config.halationStrength) · glow \(config.glowStrength) · "
+        "ISO \(Int(config.defaultISO)) · 180° shutter · halation \(config.halationStrength) "
+            + "(r \(config.halationRadiusFraction), tint \(config.halationTint.x)/\(config.halationTint.y)/\(config.halationTint.z)) · "
+            + "glow \(config.glowStrength) · "
             + "grain \(config.grainSize) · \(RenderEncodingContract.codec) @ \(bitrate / 1_000_000) Mbps"
     }
 }

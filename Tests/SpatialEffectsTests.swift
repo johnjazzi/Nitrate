@@ -144,6 +144,8 @@ struct SpatialEffectsTests {
             commandQueue: queue,
             halationStrength: 0.5,
             glowStrength: 0,
+            halationRadiusFraction: 0.012,
+            halationTint: SIMD3(1.0, 0.32, 0.10),
             width: Self.width,
             height: Self.height
         ))
@@ -183,6 +185,8 @@ struct SpatialEffectsTests {
                 commandQueue: queue,
                 halationStrength: glow ? 0 : strength,
                 glowStrength: glow ? strength : 0,
+                halationRadiusFraction: 0.012,
+                halationTint: SIMD3(1.0, 0.32, 0.10),
                 width: Self.width,
                 height: Self.height
             ))
@@ -213,6 +217,8 @@ struct SpatialEffectsTests {
             commandQueue: queue,
             halationStrength: 0,
             glowStrength: 0,
+            halationRadiusFraction: 0.012,
+            halationTint: SIMD3(1.0, 0.32, 0.10),
             width: Self.width,
             height: Self.height
         ))
@@ -223,5 +229,96 @@ struct SpatialEffectsTests {
         for index in stride(from: 0, to: source.count, by: 4) {
             #expect(abs(Double(result[index]) - Double(source[index])) < 0.002)
         }
+    }
+
+    /// Per-stock halo geometry: two stocks with different radius and tint must
+    /// produce measurably different halo spread AND colour, not merely a
+    /// different intensity. 50D (tight, saturated red) vs 500T (wide, less
+    /// saturated) per the published starting values.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func perStockGeometryChangesSpreadAndColour() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        let sourceLevel = 0.05
+
+        func measure(radiusFraction: Float, tint: SIMD3<Float>) throws -> (far: ChannelMeans, near: ChannelMeans) {
+            let (graded, _) = try Self.makeTextures(device: device)
+            let output = try #require(stage.apply(
+                graded: graded,
+                commandQueue: queue,
+                halationStrength: 0.5,
+                glowStrength: 0,
+                halationRadiusFraction: radiusFraction,
+                halationTint: tint,
+                width: Self.width,
+                height: Self.height
+            ))
+            let result = try Self.readBack(output, device: device, queue: queue)
+            // Far band, ~40-60px beyond the block's right edge (x=156): a tight
+            // halo has decayed here, a wide one still reaches. Source is dark.
+            let far = Self.mean(result, columns: 196..<216, rows: 100..<156)
+            // Band hugging the boundary, where both radii carry signal — used
+            // for the colour comparison.
+            let near = Self.mean(result, columns: 162..<182, rows: 100..<156)
+            return (far, near)
+        }
+
+        let tight = try measure(radiusFraction: 0.008, tint: SIMD3(1.0, 0.20, 0.10))
+        let wide = try measure(radiusFraction: 0.040, tint: SIMD3(1.0, 0.32, 0.10))
+
+        // Spread: the wider per-stock radius adds more light further out.
+        let tightFar = tight.far.red - sourceLevel
+        let wideFar = wide.far.red - sourceLevel
+        #expect(wideFar > tightFar + 0.002,
+                "wider per-stock radius must spread further (tight=\(tightFar), wide=\(wideFar))")
+
+        // Colour: the green/red ratio is the halo cast, independent of strength
+        // and radius, so a tint change must move it.
+        let tightRatio = (tight.near.green - sourceLevel) / (tight.near.red - sourceLevel)
+        let wideRatio = (wide.near.green - sourceLevel) / (wide.near.red - sourceLevel)
+        #expect(wideRatio > tightRatio + 0.05,
+                "per-stock tint must change halo colour (tight=\(tightRatio), wide=\(wideRatio))")
+    }
+
+    /// Ring, not disc: at the centre of a bright highlight the added light must
+    /// be LOWER than in the tail just outside its boundary. The old disc
+    /// compositing (added = blurred mask everywhere) fails this, because the
+    /// centre of the highlight gets the most added light.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func halationIsARingNotADisc() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        let (graded, _) = try Self.makeTextures(device: device)
+
+        let output = try #require(stage.apply(
+            graded: graded,
+            commandQueue: queue,
+            halationStrength: 0.5,
+            glowStrength: 0,
+            halationRadiusFraction: 0.012,
+            halationTint: SIMD3(1.0, 0.32, 0.10),
+            width: Self.width,
+            height: Self.height
+        ))
+        let result = try Self.readBack(output, device: device, queue: queue)
+
+        let bright: Double = 0.8
+        let dark: Double = 0.05
+        // Centre of the bright block (block spans 100..<156): the source's own
+        // highlight lives here, so a ring must add little or nothing on top.
+        let centre = Self.mean(result, columns: 118..<138, rows: 118..<138)
+        // Tail hugging the outside of the block's left edge (x=100), dark in the
+        // source — where the reflected light actually lands.
+        let tail = Self.mean(result, columns: 70..<99, rows: 110..<146)
+
+        let centreAdded = centre.red - bright
+        let tailAdded = tail.red - dark
+
+        #expect(tailAdded > 0.01, "the tail outside the highlight must be lit (was \(tailAdded))")
+        #expect(centreAdded < tailAdded,
+                "added light at the highlight centre (\(centreAdded)) must be less than in the tail "
+                    + "(\(tailAdded)) — halation must be a ring, not a filled disc")
     }
 }

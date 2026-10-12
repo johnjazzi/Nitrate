@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import simd
 #if canImport(SwiftUI)
 import SwiftUI
 #endif
@@ -14,6 +15,16 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
     let halationStrength: Float
     let glowStrength: Float
     let grainSize: Float
+    /// Per-stock halo geometry. Halation radius tracks emulsion thickness and
+    /// stock speed, so a slow 50D and a fast 500T must not share halo size;
+    /// `halationRadiusFraction` is the blur radius as a fraction of the
+    /// half-resolution frame width (resolution-independent, like the glow
+    /// radius). `halationTint` is the red-dominant colour cast of the halo,
+    /// kept at full scale in red: how *much* light is added belongs to
+    /// `halationStrength`, not to a dim tint. Defaults preserve the previous
+    /// global values so a stock JSON that omits the keys still loads.
+    var halationRadiusFraction: Float = 0.012
+    var halationTint: SIMD3<Float> = SIMD3(1.0, 0.32, 0.10)
     var outputContrast: Float = 1.0
     /// Fixed white-balance color temperature (Kelvin) for this stock.
     /// Daylight stocks use 5600K; tungsten stocks use 3200K. The camera locks
@@ -38,6 +49,13 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
         try require(halationStrength.isFinite && (0...1).contains(halationStrength), "halationStrength")
         try require(glowStrength.isFinite && (0...1).contains(glowStrength), "glowStrength")
         try require(grainSize.isFinite && grainSize > 0, "grainSize")
+        try require(halationRadiusFraction.isFinite && halationRadiusFraction > 0
+            && halationRadiusFraction <= 0.5, "halationRadiusFraction")
+        // Full-scale red is the documented contract (see the field comment): a
+        // dim red would make the halo weaker than the stock's strength dial
+        // intends. Green and blue may sit anywhere in the published range.
+        try require(halationTint.x == 1.0 && halationTint.y.isFinite && halationTint.z.isFinite
+            && (0...1).contains(halationTint.y) && (0...1).contains(halationTint.z), "halationTint")
         try require(outputContrast.isFinite && (0.1...2).contains(outputContrast), "outputContrast")
         try require(colorTemperature.isFinite && (2000...10000).contains(colorTemperature), "colorTemperature")
         try require(defaultISO.isFinite && defaultISO > 0 && Double(defaultISO) < Double(Int.max), "ISO")

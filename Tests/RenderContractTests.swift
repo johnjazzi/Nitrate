@@ -296,10 +296,55 @@ struct RenderContractTests {
             badMultiplier.recipe?.edgeBoostMultiplier = multiplier
             #expect(throws: RenderContractError.self) { try badMultiplier.validate() }
         }
-        for field in ["halationStrength", "glowStrength", "grainSize"] {
+        for field in ["halationStrength", "glowStrength", "grainSize", "halationRadiusFraction"] {
             var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as? [String: Any])
             object[field] = -1
             let bad = try JSONDecoder().decode(FilmStockConfig.self, from: JSONSerialization.data(withJSONObject: object))
+            #expect(throws: RenderContractError.self) { try bad.validate() }
+        }
+    }
+
+    @Test func halationGeometryDecodesPerStock() throws {
+        // Halation geometry is per stock: radius tracks stock speed (faster
+        // emulsion, wider halo) and the tint is a per-stock red-dominant cast.
+        let app = try stocks("App/Resources/stocks.json")
+        func radius(_ id: String) throws -> Float {
+            try #require(app.first { $0.stockId == id }).halationRadiusFraction
+        }
+        func tint(_ id: String) throws -> SIMD3<Float> {
+            try #require(app.first { $0.stockId == id }).halationTint
+        }
+        #expect(try radius("cinestill50d_k2383") == 0.008)
+        #expect(try radius("kodak200t_k2383") == 0.010)
+        #expect(try radius("kodak250d_k2383") == 0.011)
+        #expect(try radius("kodak500t_k2383") == 0.014)
+        // Faster stock, wider halo — the values must not all be identical.
+        let slowest = try radius("cinestill50d_k2383")
+        let fastest = try radius("kodak500t_k2383")
+        #expect(fastest > slowest)
+        #expect(Set(app.map(\.halationRadiusFraction)).count == 4)
+
+        // Published red-dominant range, full-scale red.
+        #expect(try tint("kodak500t_k2383") == SIMD3(1.0, 0.32, 0.10))
+        #expect(try tint("cinestill50d_k2383") == SIMD3(1.0, 0.20, 0.10))
+        #expect(app.allSatisfy { $0.halationTint.x == 1.0 })
+        #expect(try tint("cinestill50d_k2383") != tint("kodak500t_k2383"))
+    }
+
+    @Test func halationGeometryValidationBounds() throws {
+        let config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
+
+        var dimRed = config
+        dimRed.halationTint = SIMD3(0.9, 0.30, 0.10)
+        #expect(throws: RenderContractError.self) { try dimRed.validate() }
+
+        var outOfRange = config
+        outOfRange.halationTint = SIMD3(1.0, 1.5, 0.10)
+        #expect(throws: RenderContractError.self) { try outOfRange.validate() }
+
+        for radius: Float in [0, -1, 0.6] {
+            var bad = config
+            bad.halationRadiusFraction = radius
             #expect(throws: RenderContractError.self) { try bad.validate() }
         }
     }

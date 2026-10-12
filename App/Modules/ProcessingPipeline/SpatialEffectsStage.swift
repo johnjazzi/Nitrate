@@ -22,19 +22,28 @@ final class SpatialEffectsStage {
     private static let thresholdLow: Float = 0.7
     private static let thresholdHigh: Float = 0.95
 
-    /// Blur radii as a fraction of the half-resolution width: a tight halo plus
-    /// a wide bloom. Proportional rather than fixed texel counts so the look is
-    /// resolution-independent instead of shrinking on larger frames.
-    private static let halationRadiusFraction: Float = 0.012
+    /// Blur radius as a fraction of the half-resolution width for the wide
+    /// glow bloom. Proportional rather than a fixed texel count so the look is
+    /// resolution-independent instead of shrinking on larger frames. Halation
+    /// radius is NOT here: it is per-stock geometry (emulsion thickness / stock
+    /// speed), supplied by `FilmStockConfig.halationRadiusFraction`.
     private static let glowRadiusFraction: Float = 0.05
 
-    /// Colour casts. Red light scatters furthest inside the emulsion, which is
-    /// why halation skews red; glow is a subtler amber. Both are full-scale
-    /// colours: how *much* light is added belongs to the stock's strength dial,
-    /// not to a dim tint. (The old per-pixel glow carried its dimming in a
-    /// 0.1-magnitude tint, which made glow ten times weaker than halation once
-    /// the two went through the same compositing path.)
-    private static let halationTint = SIMD3<Float>(1.0, 0.4, 0.2)
+    /// Ring/tail balance for halation, in `0...1`: 1 subtracts the source
+    /// highlight fully so the added light is a pure ring in the tail, 0 leaves
+    /// the raw blurred mask so the effect reads as a soft filled glow. Kept
+    /// global (like the thresholds and `shadowFloor`) because the user asked for
+    /// halation geometry — radius and tint — to be per-stock, not the shape
+    /// knob. Lower it toward 0 if the ring reads too hollow on device.
+    private static let ringTailBalance: Float = 1.0
+
+    /// Colour cast for the wide glow bloom. Red light scatters furthest inside
+    /// the emulsion; glow is a subtler amber. Full-scale colours: how *much*
+    /// light is added belongs to the stock's strength dial, not to a dim tint.
+    /// (The old per-pixel glow carried its dimming in a 0.1-magnitude tint,
+    /// which made glow ten times weaker than halation once the two went through
+    /// the same compositing path.) Halation's tint is per-stock and lives in
+    /// `FilmStockConfig.halationTint`.
     private static let glowTint = SIMD3<Float>(1.0, 0.55, 0.25)
 
     /// Luma below which added light is faded out, so the effect never lifts the
@@ -68,6 +77,8 @@ final class SpatialEffectsStage {
         commandQueue: MTLCommandQueue,
         halationStrength: Float,
         glowStrength: Float,
+        halationRadiusFraction: Float,
+        halationTint: SIMD3<Float>,
         width: Int,
         height: Int
     ) -> MTLTexture? {
@@ -101,7 +112,9 @@ final class SpatialEffectsStage {
         }
 
         // Radii scale with the frame so the effect looks the same at any size.
-        let halationRadius = max(2, Float(halfWidth) * Self.halationRadiusFraction)
+        // Halation radius is per-stock (emulsion thickness / speed); glow stays
+        // a fixed fraction of width.
+        let halationRadius = max(2, Float(halfWidth) * halationRadiusFraction)
         let glowRadius = max(4, Float(halfWidth) * Self.glowRadiusFraction)
 
         // 2. Narrow blur → halation diffusion.
@@ -125,12 +138,15 @@ final class SpatialEffectsStage {
         )
 
         // 4. Composite halation, then glow, each with its own cast and strength.
+        //    Halation is a ring (ring/tail balance 1); glow passes 0 so it stays
+        //    a plain bloom rather than acquiring a hole.
         composite(
             source: graded,
             diffusion: halationDiffusion,
             into: composited,
             strength: halationStrength,
-            tint: Self.halationTint,
+            tint: halationTint,
+            ringTailBalance: Self.ringTailBalance,
             commandBuffer: commandBuffer,
             groups: fullGroups
         )
@@ -140,6 +156,7 @@ final class SpatialEffectsStage {
             into: composited,
             strength: glowStrength,
             tint: Self.glowTint,
+            ringTailBalance: 0,
             commandBuffer: commandBuffer,
             groups: fullGroups
         )
@@ -191,12 +208,14 @@ final class SpatialEffectsStage {
     }
 
     /// Add one blurred diffusion layer onto `source`, writing to `into`.
+    /// `ringTailBalance` is 1 for the halation ring, 0 for the glow bloom.
     private func composite(
         source: MTLTexture,
         diffusion: MTLTexture,
         into: MTLTexture,
         strength: Float,
         tint: SIMD3<Float>,
+        ringTailBalance: Float,
         commandBuffer: MTLCommandBuffer,
         groups: MTLSize
     ) {
@@ -204,6 +223,9 @@ final class SpatialEffectsStage {
         var strength = strength
         var shadowFloor = Self.shadowFloor
         var tint = tint
+        var ringTailBalance = ringTailBalance
+        var thresholdLow = Self.thresholdLow
+        var thresholdHigh = Self.thresholdHigh
 
         encoder.setComputePipelineState(compositePipeline)
         encoder.setTexture(source, index: 0)
@@ -212,6 +234,9 @@ final class SpatialEffectsStage {
         encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&shadowFloor, length: MemoryLayout<Float>.size, index: 1)
         encoder.setBytes(&tint, length: MemoryLayout<SIMD3<Float>>.size, index: 2)
+        encoder.setBytes(&ringTailBalance, length: MemoryLayout<Float>.size, index: 3)
+        encoder.setBytes(&thresholdLow, length: MemoryLayout<Float>.size, index: 4)
+        encoder.setBytes(&thresholdHigh, length: MemoryLayout<Float>.size, index: 5)
         encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: Self.groupSize)
         encoder.endEncoding()
     }
