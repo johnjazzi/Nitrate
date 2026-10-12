@@ -1108,16 +1108,33 @@ final class CameraSession: NSObject {
         let duration = min(max(Self.filmShutterDuration, device.activeFormat.minExposureDuration),
                            device.activeFormat.maxExposureDuration)
         let ev = exposureBiasEV
-        // Acquire a pin once, then leave the device alone.
+        // A held pin is corrected from the device's own meter rather than by
+        // re-metering: re-metering re-enters auto exposure (the shutter-priority
+        // branch writes `AVCaptureDevice.autoISO`), which snapped the preview to
+        // the default exposure and back on every 1.5 s tick.
         //
-        // Re-metering re-enters auto exposure — the shutter-priority branch
-        // writes `AVCaptureDevice.autoISO` — so the preview snapped to the
-        // auto/default exposure and back on every 1.5 s tick. A held pin is
-        // already on target by construction, so there is nothing to re-measure
-        // without leaving custom exposure. The pin is cleared by a lens change,
-        // an EV change, or re-enabling shutter priority, and the next tick
-        // re-acquires it.
-        guard force || pinnedExposure == nil else { return }
+        // `exposureTargetOffset` is the metered level's offset from the target in
+        // EV. Measured on device (iPhone 18 Pro, iOS 27): darkening the image two
+        // stops drove the offset to about -2.0, so a POSITIVE offset means the
+        // image is brighter than the target and the held ISO is scaled by
+        // 2^-offset. The deadband keeps a settled pin from being nudged every
+        // tick.
+        if let pin = pinnedExposure, !force {
+            let offset = device.exposureTargetOffset
+            guard let corrected = ExposureStabilizer.correctedISO(
+                heldISO: pin.iso, meteredOffsetEV: offset,
+                minimum: device.activeFormat.minISO, maximum: device.activeFormat.maxISO
+            ) else { return }
+            guard abs(log2(corrected / pin.iso)) > ExposureStabilizer.deadbandStops else { return }
+            do {
+                try setExposureLocked(iso: corrected, shutter: duration, on: device, mode: .manual)
+                pinnedExposure = ExposureStabilizer.Pin(iso: corrected, ev: ev,
+                                                        meteredISO: pin.meteredISO)
+            } catch {
+                reportCameraError(error)
+            }
+            return
+        }
         if #available(iOS 27.0, *), Self.apertureCapability(for: device).isVariable {
             do {
                 try applyCustomExposureHoldingAperture(on: device, mode: .shutterPriority,
@@ -1681,6 +1698,7 @@ final class CameraSession: NSObject {
             }
         }
     }
+
 
     func stop() {
         sessionQueue.async { [weak self] in

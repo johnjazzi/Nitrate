@@ -535,6 +535,20 @@ enum ExposureStabilizer {
     /// our own pin rather than an independent measurement.
     static let echoToleranceStops: Float = 0.02
 
+    /// The held ISO corrected by the device's metered offset, in EV.
+    ///
+    /// Measured on device (iPhone 18 Pro, iOS 27): with custom exposure held,
+    /// darkening the image two stops moved `exposureTargetOffset` to about -2.0,
+    /// so a POSITIVE offset means the image is brighter than the target and the
+    /// held ISO must come down. Hence `heldISO * 2^-offset`. Returns nil when any
+    /// input is unusable, so the caller holds instead of writing nonsense.
+    static func correctedISO(heldISO: Float, meteredOffsetEV: Float,
+                             minimum: Float, maximum: Float) -> Float? {
+        guard heldISO.isFinite, heldISO > 0, meteredOffsetEV.isFinite,
+              minimum.isFinite, maximum.isFinite, minimum <= maximum else { return nil }
+        return min(max(heldISO * powf(2, -meteredOffsetEV), minimum), maximum)
+    }
+
     /// Decide the ISO to write from a fresh meter reading.
     ///
     /// Holds when the compensated target is within `deadbandStops` of the pin,

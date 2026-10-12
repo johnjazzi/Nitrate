@@ -87,4 +87,30 @@ struct ExposureStabilizerTests {
         #expect(ExposureIndicatorPolicy.position(ev: 1, fullScaleEV: 0) == 0.5)
         #expect(ExposureIndicatorPolicy.position(ev: .nan) == 0.5)
     }
+
+    // MARK: - Offset-driven correction
+
+    @Test func correctedIsoScalesTheHeldIsoByTwoToTheMinusOffset() {
+        // Convention measured on device: a positive offset means the image is
+        // brighter than the target, so the held ISO comes down.
+        #expect(ExposureStabilizer.correctedISO(heldISO: 800, meteredOffsetEV: 1,
+                                                minimum: 25, maximum: 6400) == 400)
+        #expect(ExposureStabilizer.correctedISO(heldISO: 800, meteredOffsetEV: -1,
+                                                minimum: 25, maximum: 6400) == 1600)
+        // The measured probe: two stops darker reported about -2 EV, and
+        // correcting it returns to the ISO whose offset was ~0.
+        let corrected = try? #require(ExposureStabilizer.correctedISO(
+            heldISO: 177, meteredOffsetEV: -2.014, minimum: 25, maximum: 6400))
+        #expect(abs((corrected ?? 0) - 713) < 5)
+        // A settled pin is untouched.
+        #expect(ExposureStabilizer.correctedISO(heldISO: 800, meteredOffsetEV: 0,
+                                                minimum: 25, maximum: 6400) == 800)
+        // Clamped to the format's range, and unusable input holds.
+        #expect(ExposureStabilizer.correctedISO(heldISO: 800, meteredOffsetEV: -8,
+                                                minimum: 25, maximum: 6400) == 6400)
+        #expect(ExposureStabilizer.correctedISO(heldISO: 800, meteredOffsetEV: .nan,
+                                                minimum: 25, maximum: 6400) == nil)
+        #expect(ExposureStabilizer.correctedISO(heldISO: 0, meteredOffsetEV: 0,
+                                                minimum: 25, maximum: 6400) == nil)
+    }
 }
