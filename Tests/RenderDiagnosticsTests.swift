@@ -8,7 +8,7 @@ struct RenderDiagnosticsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let manifest = RenderDiagnosticsManifest(
+        var manifest = RenderDiagnosticsManifest(
             runID: UUID(),
             startedAt: Date(timeIntervalSince1970: 1),
             finishedAt: Date(timeIntervalSince1970: 2),
@@ -25,6 +25,11 @@ struct RenderDiagnosticsTests {
             output: nil,
             resources: []
         )
+        manifest.firstDecodedBuffer = .init(
+            pixelFormat: "Rf16", width: 2, height: 2,
+            colorAttachments: ["logTransferFunction": "appleLog2"],
+            samplePoints: [.init(x: 0, y: 0, red: "0.1", green: "0.2", blue: "0.3")]
+        )
 
         try RenderDiagnostics.writeManifest(manifest, to: directory)
         let data = try Data(contentsOf: directory.appendingPathComponent("manifest.json"))
@@ -32,6 +37,7 @@ struct RenderDiagnosticsTests {
         decoder.dateDecodingStrategy = .iso8601
         let decoded = try decoder.decode(RenderDiagnosticsManifest.self, from: data)
         #expect(decoded.runID == manifest.runID)
+        #expect(decoded.firstDecodedBuffer == manifest.firstDecodedBuffer)
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("manifest.json.tmp").path))
     }
 

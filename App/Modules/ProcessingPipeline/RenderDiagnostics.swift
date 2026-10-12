@@ -41,11 +41,27 @@ struct RenderDiagnosticsManifest: Codable {
         let error: String?
     }
 
-    struct Counters: Codable {
+    struct Counters: Codable, Sendable {
         var decoded = 0
         var processed = 0
         var appended = 0
         var failed = 0
+    }
+
+    struct DecodedBufferEvidence: Codable, Equatable, Sendable {
+        struct RGBPoint: Codable, Equatable, Sendable {
+            let x: Int
+            let y: Int
+            let red: String
+            let green: String
+            let blue: String
+        }
+
+        let pixelFormat: String
+        let width: Int
+        let height: Int
+        let colorAttachments: [String: String]
+        let samplePoints: [RGBPoint]
     }
 
     struct RecipeSnapshot: Codable {
@@ -54,13 +70,16 @@ struct RenderDiagnosticsManifest: Codable {
         let codec: String
         let effectiveRecipe: RenderRecipe
         let colorContractVerified: Bool
+        let sourceColorProvenance: RenderInputColorProvenance?
 
-        init(config: FilmStockConfig, averageBitRate: Int, codec: String) {
+        init(config: FilmStockConfig, averageBitRate: Int, codec: String,
+             sourceColorProvenance: RenderInputColorProvenance? = nil) {
             self.config = config
             self.averageBitRate = averageBitRate
             self.codec = codec
             self.effectiveRecipe = config.effectiveRecipe
             self.colorContractVerified = config.effectiveRecipe.colorContractVerified
+            self.sourceColorProvenance = sourceColorProvenance
         }
     }
 
@@ -75,6 +94,7 @@ struct RenderDiagnosticsManifest: Codable {
     var output: Media?
     var resources: [Resource]
     var counters = Counters()
+    var firstDecodedBuffer: DecodedBufferEvidence?
     var timings: [String: Double] = [:]
     var sourceFrames: [Frame] = []
     var outputFrames: [Frame] = []
@@ -178,16 +198,28 @@ enum RenderDiagnostics {
         let codec = try? await videoTrack.load(.formatDescriptions).first.map { description in
             CMFormatDescriptionGetMediaSubType(description).fourCharCodeString
         }
-        let descriptions = try? await videoTrack.load(.formatDescriptions)
+        let descriptions = (try? await videoTrack.load(.formatDescriptions)) ?? []
         var colorProperties: [String: String] = [:]
-        if let description = descriptions?.first,
-           let rawExtensions = CMFormatDescriptionGetExtensions(description) {
+        for (index, description) in descriptions.enumerated() {
+            guard let rawExtensions = CMFormatDescriptionGetExtensions(description) else { continue }
             let extensions = rawExtensions as NSDictionary
-            for key in [kCMFormatDescriptionExtension_ColorPrimaries,
-                        kCMFormatDescriptionExtension_TransferFunction,
-                        kCMFormatDescriptionExtension_YCbCrMatrix,
-                        kCMFormatDescriptionExtension_FullRangeVideo] {
-                if let value = extensions[key] { colorProperties[key as String] = String(describing: value) }
+            var keys: [CFString] = [kCMFormatDescriptionExtension_ColorPrimaries,
+                                    kCMFormatDescriptionExtension_TransferFunction,
+                                    kCMFormatDescriptionExtension_YCbCrMatrix,
+                                    kCMFormatDescriptionExtension_FullRangeVideo,
+                                    kCMFormatDescriptionExtension_BitsPerComponent]
+            if #available(iOS 17.2, macOS 14.2, tvOS 17.2, *) {
+                keys.append(kCMFormatDescriptionExtension_LogTransferFunction)
+            }
+            for key in keys {
+                if let value = extensions[key] {
+                    colorProperties["format-\(index).\(key as String)"] = String(describing: value)
+                }
+            }
+        }
+        if let metadata = try? await asset.load(.metadata) {
+            for item in metadata where (item.key as? String) == "com.filmemulation.capture-color-space" {
+                if let value = try? await item.load(.stringValue) { colorProperties["capture-color-space"] = value }
             }
         }
         return .init(
@@ -258,10 +290,12 @@ enum RenderDiagnostics {
 
 /// Portable export evidence; selected render ISO is not a measurement of capture ISO.
 enum RenderMovieMetadata {
-    static func make(config: FilmStockConfig, bitrate: Int = RenderEncodingContract.averageBitRate) throws -> [AVMetadataItem] {
+    static func make(config: FilmStockConfig, bitrate: Int = RenderEncodingContract.averageBitRate,
+                     sourceColorProvenance: RenderInputColorProvenance? = nil) throws -> [AVMetadataItem] {
         try config.validate()
         let snapshot = RenderDiagnosticsManifest.RecipeSnapshot(config: config,
-            averageBitRate: bitrate, codec: RenderEncodingContract.codec)
+            averageBitRate: bitrate, codec: RenderEncodingContract.codec,
+            sourceColorProvenance: sourceColorProvenance)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let json = String(decoding: try encoder.encode(snapshot), as: UTF8.self)
@@ -276,7 +310,15 @@ enum RenderMovieMetadata {
             "color-contract-verified": String(config.effectiveRecipe.colorContractVerified),
             "render-settings-schema": "1", "render-settings": json
         ]
-        var items: [AVMutableMetadataItem] = values.sorted { $0.key < $1.key }.map { key, value in
+        var metadataValues = values
+        if let sourceColorProvenance {
+            let sourceData = try JSONEncoder().encode(sourceColorProvenance)
+            metadataValues["source-color-validation"] = sourceColorProvenance.validationStatus
+            metadataValues["source-color-provenance"] = String(decoding: sourceData, as: UTF8.self)
+            metadataValues["capture-color-space"] = sourceColorProvenance.captureColorSpace ?? "unknown-or-not-recorded"
+            metadataValues["source-color-test-bypass"] = String(sourceColorProvenance.syntheticTestBypass)
+        }
+        var items: [AVMutableMetadataItem] = metadataValues.sorted { $0.key < $1.key }.map { key, value in
             let item = AVMutableMetadataItem()
             item.keySpace = .quickTimeMetadata
             item.key = "com.filmemulation.\(key)" as NSString
@@ -306,7 +348,7 @@ enum RenderMovieMetadata {
     }
 }
 
-private extension FourCharCode {
+extension FourCharCode {
     var fourCharCodeString: String {
         let bytes: [UInt8] = [UInt8((self >> 24) & 0xff), UInt8((self >> 16) & 0xff), UInt8((self >> 8) & 0xff), UInt8(self & 0xff)]
         return String(bytes: bytes, encoding: .macOSRoman) ?? "unknown"

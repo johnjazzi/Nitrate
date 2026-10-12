@@ -1,5 +1,24 @@
 import Foundation
 
+/// Select a declared Log 2 4K/24fps format from device capability evidence.
+/// Keeping the policy independent of hardware lets tests cover mixed-format
+/// devices and unsupported lenses without constructing AVCaptureDevice objects.
+enum CameraCaptureFormatPolicy {
+    struct Candidate: Sendable {
+        let width: Int32
+        let height: Int32
+        let supportsAppleLog2: Bool
+        let supports24FPS: Bool
+    }
+
+    static func appleLog2Index(in candidates: [Candidate]) -> Int? {
+        candidates.firstIndex {
+            $0.width == 3840 && $0.height == 2160
+                && $0.supportsAppleLog2 && $0.supports24FPS
+        }
+    }
+}
+
 /// Small deterministic gate shared by the camera lifecycle and its tests.
 struct CameraLifecycleGate {
     private(set) var isActive = false

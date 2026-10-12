@@ -56,3 +56,10 @@ item.
   The coordinating agent owns both passes; implementation subagents use lint.
 - Read the concise diagnostics and the indicated log before retrying a failure.
   Do not rerun an unchanged failing command or repeatedly dump full build logs.
+- BMAD skill rendering uses `uv --no-cache` and can require PyPI access. If the
+  sandbox blocks network or the uv cache, run the workflow command outside the
+  sandbox; diagnose dependency failures before retrying. Do not treat a sandbox
+  DNS restriction as an application-code failure.
+- Implementation subagents dispatched with an approved plan follow that plan
+  directly. The coordinator owns BMAD rendering; do not start another BMAD
+  workflow during implementation or a review-fix follow-up.

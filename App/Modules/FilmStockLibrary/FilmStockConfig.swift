@@ -170,11 +170,10 @@ struct RenderRecipe: Codable, Equatable, Sendable {
 enum RenderEncodingContract {
     static let averageBitRate = 60_000_000
     static let codec = "hvc1"
-    /// Color-managed chain: the reader passes the source through WITHOUT an
-    /// AVFoundation colorspace conversion, so the shader sees the source's
-    /// Apple Log 2 code values (input gamut still "unverified"); the per-stock
-    /// LUT maps Apple Log 2 → Rec.709 SDR; these constants tag that Rec.709
-    /// output on the writer. Matches the LUT pack's declared input/output.
+    /// The renderer requires stream tags declaring Apple Log 2 and requests
+    /// wide-color RGBAHalf decoding. These constants tag the declared Rec.709
+    /// delivery; they do not verify decoded values or the LUT's input/output
+    /// calibration. The effective recipe preserves its provenance separately.
     static let colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
     static let transferFunction = AVVideoTransferFunction_ITU_R_709_2
     static let yCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2

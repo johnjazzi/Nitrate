@@ -1,4 +1,5 @@
 import AVFoundation
+import VideoToolbox
 
 /// Selectable capture lenses. Maps a UI-facing name to an AVCaptureDevice type
 /// + position. "Normal" is the rear wide (1x) camera.
@@ -105,7 +106,8 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         session.beginConfiguration()
         defer { session.commitConfiguration() }
 
-        session.sessionPreset = .hd4K3840x2160
+        session.automaticallyConfiguresCaptureDeviceForWideColor = false
+        session.sessionPreset = .inputPriority
 
         guard let device = AVCaptureDevice.default(
             activeLens.deviceType,
@@ -193,15 +195,15 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         try device.lockForConfiguration()
         defer { device.unlockForConfiguration() }
 
-        // The bundled transform LUTs are authored for Apple Log 2. Prefer that
-        // contract when this device/format supports it; use Apple Log as a
-        // compatibility fallback on older hardware.
-        if #available(iOS 26.0, *),
-           device.activeFormat.supportedColorSpaces.contains(.appleLog2) {
-            device.activeColorSpace = .appleLog2
-        } else if device.activeFormat.supportedColorSpaces.contains(.appleLog) {
-            device.activeColorSpace = .appleLog
+        guard #available(iOS 26.0, *) else { throw CameraError.appleLog2NotSupported }
+        guard let format = Self.appleLog2CaptureFormat(in: device.formats) else {
+            throw CameraError.appleLog2NotSupported
         }
+        device.activeFormat = format
+        guard format.supportedColorSpaces.contains(.appleLog2) else {
+            throw CameraError.appleLog2NotSupported
+        }
+        device.activeColorSpace = .appleLog2
 
         // 24fps lock
         device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 24)
@@ -218,6 +220,23 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         }
 
         activeDevice = device
+    }
+
+    private static func appleLog2CaptureFormat(in formats: [AVCaptureDevice.Format]) -> AVCaptureDevice.Format? {
+        guard #available(iOS 26.0, *) else { return nil }
+        let candidates = formats.map { format in
+            let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            let supports24FPS = format.videoSupportedFrameRateRanges.contains {
+                $0.minFrameRate <= 24 && $0.maxFrameRate >= 24
+            }
+            return CameraCaptureFormatPolicy.Candidate(
+                width: dimensions.width, height: dimensions.height,
+                supportsAppleLog2: format.supportedColorSpaces.contains(.appleLog2),
+                supports24FPS: supports24FPS
+            )
+        }
+        guard let index = CameraCaptureFormatPolicy.appleLog2Index(in: candidates) else { return nil }
+        return formats[index]
     }
 
     /// Set the fixed white-balance temperature (Kelvin) for the selected film
@@ -263,7 +282,7 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         let compressionSettings: [String: Any] = [
             AVVideoAverageBitRateKey: DeliverySettings.averageBitRate,
             AVVideoMaxKeyFrameIntervalKey: 48,
-            AVVideoProfileLevelKey: "HEVC_Main_AutoLevel"
+            AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel as String
         ]
 
         movieOutput.movieFragmentInterval = .invalid
@@ -317,6 +336,12 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
                 position: lens.position
             ) else {
                 let error = CameraError.noCameraAvailable
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
+                return
+            }
+
+            guard #available(iOS 26.0, *), Self.appleLog2CaptureFormat(in: device.formats) != nil else {
+                let error = CameraError.appleLog2NotSupported
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
                 return
             }
@@ -657,6 +682,12 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.noCameraAvailable) } }
                 return
             }
+            guard #available(iOS 26.0, *),
+                  device.activeColorSpace == .appleLog2,
+                  Self.appleLog2CaptureFormat(in: [device.activeFormat]) != nil else {
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.appleLog2NotSupported) } }
+                return
+            }
             self.recordingStartPending = true
             self.recordingGeneration &+= 1
             let generation = self.recordingGeneration
@@ -682,6 +713,14 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
 
     private func startMovieOutput(to url: URL,
                                   completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+        guard let device = activeDevice,
+              #available(iOS 26.0, *),
+              device.activeColorSpace == .appleLog2,
+              Self.appleLog2CaptureFormat(in: [device.activeFormat]) != nil else {
+            recordingStartPending = false
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.appleLog2NotSupported) } }
+            return
+        }
         // Exposure has completed before metadata is sampled and output starts.
         movieOutput.metadata = captureMetadataItems()
         movieOutput.startRecording(to: url, recordingDelegate: self)
@@ -699,8 +738,22 @@ final class CameraSession: NSObject, AVCaptureFileOutputRecordingDelegate {
         return [
             Self.captureItem("shutter-speed", speed),
             Self.captureItem("shutter-angle", "\(angle)"),
-            Self.captureItem("capture-iso", "\(Int(device.iso))")
+            Self.captureItem("capture-iso", "\(Int(device.iso))"),
+            Self.captureItem("capture-color-space", Self.captureColorSpaceLabel(device)),
+            Self.captureItem("capture-format", Self.captureFormatLabel(device))
         ]
+    }
+
+    private static func captureColorSpaceLabel(_ device: AVCaptureDevice) -> String {
+        if #available(iOS 26.0, *), device.activeColorSpace == .appleLog2 { return "Apple Log 2" }
+        return String(describing: device.activeColorSpace)
+    }
+
+    private static func captureFormatLabel(_ device: AVCaptureDevice) -> String {
+        let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        let frameRate = device.activeVideoMinFrameDuration.seconds > 0
+            ? Int((1 / device.activeVideoMinFrameDuration.seconds).rounded()) : 0
+        return "\(dimensions.width)x\(dimensions.height)@\(frameRate)fps"
     }
 
     private static func captureItem(_ key: String, _ value: String) -> AVMetadataItem {
@@ -800,6 +853,7 @@ enum CameraError: LocalizedError {
     case cannotAddInput
     case cannotAddOutput
     case appleLogNotSupported
+    case appleLog2NotSupported
     case recordingInProgress
     case destinationAlreadyExists
     case recordingFailed
@@ -815,6 +869,8 @@ enum CameraError: LocalizedError {
             return "Failed to add movie output to capture session."
         case .appleLogNotSupported:
             return "Apple Log color space is not supported on this device."
+        case .appleLog2NotSupported:
+            return "Apple Log 2 recording requires a supported 4K, 24 fps camera format on this device."
         case .recordingInProgress:
             return "A recording is already in progress."
         case .destinationAlreadyExists:

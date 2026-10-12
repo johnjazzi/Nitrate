@@ -15,6 +15,7 @@ final class PipelineRenderer: @unchecked Sendable {
     private let renderFailureAfterFrames: UInt32?
     private let audioAppendRejectionAfterSamples: Int?
     private let outputDirectory: URL?
+    private let allowsSyntheticInputForTests: Bool
 
     // Cached pipeline states
     private var pass1Pipeline: MTLComputePipelineState?
@@ -30,12 +31,14 @@ final class PipelineRenderer: @unchecked Sendable {
         resourceBundle: Bundle = .main,
         renderFailureAfterFrames: UInt32? = nil,
         audioAppendRejectionAfterSamples: Int? = nil,
-        outputDirectory: URL? = nil
+        outputDirectory: URL? = nil,
+        allowsSyntheticInputForTests: Bool = false
     ) throws {
         self.resourceBundle = resourceBundle
         self.renderFailureAfterFrames = renderFailureAfterFrames
         self.audioAppendRejectionAfterSamples = audioAppendRejectionAfterSamples
         self.outputDirectory = outputDirectory
+        self.allowsSyntheticInputForTests = allowsSyntheticInputForTests
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw RenderError.noMetalDevice
         }
@@ -69,16 +72,26 @@ final class PipelineRenderer: @unchecked Sendable {
         (try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange, bitrate: bitrate)).outputURL
     }
 
+    private static func captureColorSpace(from asset: AVAsset) async throws -> String? {
+        for item in try await asset.load(.metadata) {
+            guard let key = item.key as? String,
+                  key == "com.filmemulation.capture-color-space" else { continue }
+            return try await item.load(.stringValue)
+        }
+        return nil
+    }
+
     private func renderInternally(
         sourceURL: URL,
         config: FilmStockConfig,
         trimRange: CMTimeRange? = nil,
-        bitrate: Int = RenderEncodingContract.averageBitRate
-    ) async throws -> (outputURL: URL, counters: RenderDiagnosticsManifest.Counters) {
+        bitrate: Int = RenderEncodingContract.averageBitRate,
+        collectDecodedBufferEvidence: Bool = false
+    ) async throws -> (outputURL: URL, counters: RenderDiagnosticsManifest.Counters,
+                       sourceColorProvenance: RenderInputColorProvenance,
+                       firstDecodedBuffer: RenderDiagnosticsManifest.DecodedBufferEvidence?) {
         try Task.checkCancellation()
         try config.validate()
-        // Load the LUT for this stock
-        try loadLUT(named: config.lutName)
 
         let asset = AVAsset(url: sourceURL)
         let reader = try AVAssetReader(asset: asset)
@@ -86,6 +99,26 @@ final class PipelineRenderer: @unchecked Sendable {
         guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else {
             throw RenderError.noVideoTrack
         }
+
+        let formatDescriptions = try await videoTrack.load(.formatDescriptions)
+        let captureColorSpace = try await Self.captureColorSpace(from: asset)
+        let sourceColorProvenance: RenderInputColorProvenance
+        if allowsSyntheticInputForTests {
+            sourceColorProvenance = .syntheticTestBypass(formatDescriptions, captureColorSpace: captureColorSpace)
+        } else {
+            do {
+                sourceColorProvenance = try RenderInputColorProvenance.inspect(
+                    formatDescriptions, captureColorSpace: captureColorSpace
+                )
+            } catch let error as RenderInputColorContractError {
+                throw RenderError.stageFailed(
+                    "input-color-contract", "Expected \(error.expected); observed \(error.observed)."
+                )
+            }
+        }
+
+        // Validate stream tags before opening LUT resources or creating output.
+        try loadLUT(named: config.lutName)
 
         // Audio passthrough: copy audio track unchanged
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
@@ -103,14 +136,11 @@ final class PipelineRenderer: @unchecked Sendable {
         // Use naturalSize everywhere — encoded dimensions, never swapped.
         // Rotation is preserved via writerInput.transform below.
         //
-        // Input contract: read the source as RGBA half-float WITHOUT requesting an
-        // AVFoundation colorspace conversion. The reader preserves the source's
-        // Apple Log 2 code values (transfer) and native wide gamut as decoded; the
-        // per-stock LUT then performs the Apple Log 2 → Rec.709 transform. Do NOT
-        // add AVVideoColorPropertiesKey here — that would make AVFoundation convert
-        // the colorspace and double-transform against the LUT.
+        // The track tags establish Apple Log 2 input. The decoded RGBA values and
+        // any AVFoundation conversion behavior remain unverified by this contract.
         let readerOutputSettings: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_64RGBAHalf,
+            AVVideoAllowWideColorKey: true,
             kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferWidthKey as String: renderWidth,
             kCVPixelBufferHeightKey as String: renderHeight
@@ -199,7 +229,9 @@ final class PipelineRenderer: @unchecked Sendable {
             throw RenderError.stageFailed("video-writer-setup", "The movie writer cannot accept the video input.")
         }
         writer.add(writerInput)
-        writer.metadata = try RenderMovieMetadata.make(config: config, bitrate: bitrate)
+        writer.metadata = try RenderMovieMetadata.make(
+            config: config, bitrate: bitrate, sourceColorProvenance: sourceColorProvenance
+        )
 
         // Audio passthrough writer input
         // nil outputSettings + sourceFormatHint = pass compressed audio straight through
@@ -231,7 +263,7 @@ final class PipelineRenderer: @unchecked Sendable {
                 throw RenderError.readerFailed(audioReader.error)
             }
 
-            let counters = try await processFrames(
+            let frameResult = try await processFrames(
                 videoReader: reader,
                 readerOutput: readerOutput,
                 adaptor: adaptor,
@@ -240,10 +272,11 @@ final class PipelineRenderer: @unchecked Sendable {
                 config: config,
                 audioReader: audioReader,
                 audioWriterInput: audioWriterInput,
-                cancellationHandle: cancellationHandle
+                cancellationHandle: cancellationHandle,
+                captureFirstBufferEvidence: collectDecodedBufferEvidence
             )
             try Task.checkCancellation()
-            guard counters.processed > 0 else {
+            guard frameResult.counters.processed > 0 else {
                 throw RenderError.stageFailed("video-reader", "The selected source range contained no video frames.")
             }
 
@@ -263,7 +296,7 @@ final class PipelineRenderer: @unchecked Sendable {
                 throw RenderError.readerFailed(cancellationHandle.audioReaderError)
             }
             renderSucceeded = true
-            return (outputURL, counters)
+            return (outputURL, frameResult.counters, sourceColorProvenance, frameResult.firstBufferEvidence)
         } catch {
             throw error
         }
@@ -313,10 +346,15 @@ final class PipelineRenderer: @unchecked Sendable {
         var resultOutput: URL?
 
         do {
-            let renderResult = try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange, bitrate: bitrate)
+            let renderResult = try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange,
+                                                          bitrate: bitrate, collectDecodedBufferEvidence: true)
             let outputURL = renderResult.outputURL
             resultOutput = outputURL
             manifest.counters = renderResult.counters
+            manifest.firstDecodedBuffer = renderResult.firstDecodedBuffer
+            manifest.recipe = .init(config: config, averageBitRate: bitrate,
+                                     codec: RenderEncodingContract.codec,
+                                     sourceColorProvenance: renderResult.sourceColorProvenance)
             manifest.timings["render"] = Date().timeIntervalSince(renderStart)
 
             let bundledOutput = bundleURL.appendingPathComponent("rendered.mov")
@@ -461,8 +499,10 @@ final class PipelineRenderer: @unchecked Sendable {
         config: FilmStockConfig,
         audioReader: AVAssetReader?,
         audioWriterInput: AVAssetWriterInput?,
-        cancellationHandle: RenderCancellationHandle
-    ) async throws -> RenderDiagnosticsManifest.Counters {
+        cancellationHandle: RenderCancellationHandle,
+        captureFirstBufferEvidence: Bool
+    ) async throws -> (counters: RenderDiagnosticsManifest.Counters,
+                       firstBufferEvidence: RenderDiagnosticsManifest.DecodedBufferEvidence?) {
         guard let lut = lutTexture else {
             throw RenderError.missingResource("LUT texture not loaded")
         }
@@ -471,7 +511,7 @@ final class PipelineRenderer: @unchecked Sendable {
         let audioResult = AudioCopyResultBox()
 
         return try await withTaskCancellationHandler {
-          try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<RenderDiagnosticsManifest.Counters, Error>) in
+          try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(RenderDiagnosticsManifest.Counters, RenderDiagnosticsManifest.DecodedBufferEvidence?), Error>) in
             renderQueue.async { [weak self] in
                 guard let self else {
                     continuation.resume(throwing: RenderError.stageFailed("renderer", "Renderer was released before frame processing."))
@@ -482,6 +522,7 @@ final class PipelineRenderer: @unchecked Sendable {
                 var firstFrame = true
                 var actualWidth = 0
                 var actualHeight = 0
+                var firstBufferEvidence: RenderDiagnosticsManifest.DecodedBufferEvidence?
 
                 // Start audio passthrough on a parallel queue. The audio
                 // reader is dedicated to audio, so it is only touched from
@@ -572,6 +613,9 @@ final class PipelineRenderer: @unchecked Sendable {
                     if firstFrame {
                         actualWidth = CVPixelBufferGetWidth(sourcePixelBuffer)
                         actualHeight = CVPixelBufferGetHeight(sourcePixelBuffer)
+                        if captureFirstBufferEvidence {
+                            firstBufferEvidence = Self.snapshotDecodedBuffer(sourcePixelBuffer)
+                        }
                         firstFrame = false
                     }
 
@@ -618,13 +662,61 @@ final class PipelineRenderer: @unchecked Sendable {
                 } else if cancellationHandle.audioReaderStatus == .failed {
                     continuation.resume(throwing: RenderError.readerFailed(cancellationHandle.audioReaderError))
                 } else {
-                    continuation.resume(returning: counterBox.counters)
+                    continuation.resume(returning: (counterBox.counters, firstBufferEvidence))
                 }
             }
           }
         } onCancel: {
             cancellationHandle.cancel()
         }
+    }
+
+    private static func snapshotDecodedBuffer(
+        _ pixelBuffer: CVPixelBuffer
+    ) -> RenderDiagnosticsManifest.DecodedBufferEvidence? {
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        guard width > 0, height > 0,
+              CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess else { return nil }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
+
+        var attachmentKeys: [(String, CFString)] = [
+            ("colorPrimaries", kCVImageBufferColorPrimariesKey),
+            ("transferFunction", kCVImageBufferTransferFunctionKey),
+            ("yCbCrMatrix", kCVImageBufferYCbCrMatrixKey)
+        ]
+        if #available(iOS 17.2, macOS 14.2, tvOS 17.2, *) {
+            attachmentKeys.append(("logTransferFunction", kCVImageBufferLogTransferFunctionKey))
+        }
+        let rawAttachments = CVBufferCopyAttachments(pixelBuffer, .shouldPropagate) as NSDictionary?
+        var attachments: [String: String] = [:]
+        for (name, key) in attachmentKeys {
+            if let value = rawAttachments?[key] { attachments[name] = String(describing: value) }
+        }
+
+        let pixelFormat = OSType(CVPixelBufferGetPixelFormatType(pixelBuffer)).fourCharCodeString
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_64RGBAHalf else {
+            return .init(pixelFormat: pixelFormat, width: width, height: height,
+                         colorAttachments: attachments, samplePoints: [])
+        }
+        let candidatePoints = [(0, 0), (width / 2, height / 2), (width - 1, height - 1)]
+        var seenPoints = Set<String>()
+        let points = candidatePoints.filter { seenPoints.insert("\($0.0),\($0.1)").inserted }
+        let halfWordsPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer) / MemoryLayout<UInt16>.size
+        let components = baseAddress.assumingMemoryBound(to: UInt16.self)
+        let samples = points.map { x, y in
+            let index = y * halfWordsPerRow + x * 4
+            func value(_ offset: Int) -> String {
+                let component = Float(Float16(bitPattern: components[index + offset]))
+                return String(format: "%.6g", Double(component))
+            }
+            return RenderDiagnosticsManifest.DecodedBufferEvidence.RGBPoint(
+                x: x, y: y, red: value(0), green: value(1), blue: value(2)
+            )
+        }
+        return .init(pixelFormat: pixelFormat,
+                     width: width, height: height, colorAttachments: attachments, samplePoints: samples)
     }
 
     /// Grade and encode a single frame: LUT pass, spatial halation/glow,

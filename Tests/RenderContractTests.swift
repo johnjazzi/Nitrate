@@ -3,6 +3,48 @@ import Testing
 import AVFoundation
 
 struct RenderContractTests {
+    @Test func sourceColorContractRequiresAppleLog2Identifier() throws {
+        func evidence(primaries: String? = nil, transfer: String? = nil,
+                      matrix: String? = AVVideoYCbCrMatrix_ITU_R_2020 as String) -> RenderInputColorProvenance.FormatEvidence {
+            .init(logTransferFunction: "com.apple.apple-wide-gamut.apple-log", colorPrimaries: primaries,
+                  transferFunction: transfer, yCbCrMatrix: matrix, bitDepth: "10")
+        }
+
+        // The SDK defines Apple Log 2 primaries and ordinary transfer tags as
+        // undefined or absent; it exports no separate undefined-value constant.
+        let undefinedStandardTags = evidence()
+        try RenderInputColorProvenance.validate([undefinedStandardTags])
+
+        let appleLog = RenderInputColorProvenance.FormatEvidence(
+            logTransferFunction: "com.apple.rec2020.apple-log", colorPrimaries: nil,
+            transferFunction: nil, yCbCrMatrix: AVVideoYCbCrMatrix_ITU_R_2020 as String, bitDepth: "10"
+        )
+        #expect(throws: RenderInputColorContractError.self) { try RenderInputColorProvenance.validate([appleLog]) }
+        #expect(throws: RenderInputColorContractError.self) { try RenderInputColorProvenance.validate([]) }
+
+        let incompatibleTags = [
+            evidence(transfer: AVVideoTransferFunction_ITU_R_709_2 as String),
+            evidence(transfer: AVVideoTransferFunction_Linear as String),
+            evidence(transfer: AVVideoTransferFunction_SMPTE_ST_2084_PQ as String),
+            evidence(transfer: AVVideoTransferFunction_ITU_R_2100_HLG as String),
+            evidence(primaries: AVVideoColorPrimaries_ITU_R_2020 as String),
+            evidence(primaries: AVVideoColorPrimaries_P3_D65 as String),
+            evidence(primaries: "unknown-primaries"),
+            evidence(transfer: "unknown-transfer"),
+            evidence(matrix: AVVideoYCbCrMatrix_ITU_R_709_2 as String),
+            evidence(matrix: nil),
+            evidence(matrix: "unknown-matrix")
+        ]
+        for incompatible in incompatibleTags {
+            #expect(throws: RenderInputColorContractError.self) {
+                try RenderInputColorProvenance.validate([incompatible])
+            }
+        }
+        #expect(throws: RenderInputColorContractError.self) {
+            try RenderInputColorProvenance.validate([undefinedStandardTags, appleLog])
+        }
+    }
+
     @Test func exportedMovieRetainsExactRenderSettings() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -12,7 +54,8 @@ struct RenderContractTests {
                 .overridingISO(index == 0 ? 600 : 4900.5)
             let url = directory.appendingPathComponent("\(index).mov")
             let writer = try AVAssetWriter(url: url, fileType: .mov)
-            writer.metadata = try RenderMovieMetadata.make(config: config)
+            let syntheticProvenance = RenderInputColorProvenance.syntheticTestBypass([])
+            writer.metadata = try RenderMovieMetadata.make(config: config, sourceColorProvenance: syntheticProvenance)
             // Tiny synthetic movie verifies metadata persistence, not Apple Log color accuracy.
             let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
                 AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64
@@ -53,6 +96,8 @@ struct RenderContractTests {
             #expect(snapshot.effectiveRecipe == config.effectiveRecipe)
             #expect(snapshot.averageBitRate == 60_000_000)
             #expect(!snapshot.colorContractVerified)
+            #expect(snapshot.sourceColorProvenance == syntheticProvenance)
+            #expect(values["com.filmemulation.source-color-test-bypass"] == "true")
         }
     }
 
@@ -109,14 +154,21 @@ struct RenderContractTests {
         #expect(!template.effectiveRecipe.colorContractVerified)
     }
 
-    @Test func outputContrastDecodesFromStockJSON() throws {
-        // Regression: a `let`-declared property with a default value is silently
-        // skipped by synthesized Codable (always returns the default). Contrast
-        // must stay `var` so the stock's JSON value actually reaches the shader.
+    @Test func shippedContrastIsNeutralAndHistoricalExplicitContrastStillDecodes() throws {
         let app = try stocks("App/Resources/stocks.json")
-        let t500 = try #require(app.first { $0.stockId == "kodak500t_k2383" })
-        #expect(t500.outputContrast == 0.6)
-        #expect(t500.outputContrast != 1.0)
+        #expect(app.allSatisfy { $0.outputContrast == 1.0 })
+        #expect(try stocks("Resources/stocks.json").allSatisfy { $0.outputContrast == 1.0 })
+
+        let historical = try #require(app.first { $0.stockId == "kodak500t_k2383" })
+        var historicalJSON = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(historical)) as? [String: Any])
+        historicalJSON["outputContrast"] = 0.6
+        let decodedHistorical = try JSONDecoder().decode(FilmStockConfig.self,
+            from: JSONSerialization.data(withJSONObject: historicalJSON))
+        #expect(decodedHistorical.outputContrast == 0.6)
+
+        let constructorDefault = FilmStockConfig(stockId: "test", displayName: "Test", category: .video,
+            lutName: "test.cube", halationStrength: 0, glowStrength: 0, grainSize: 1, defaultISO: 100)
+        #expect(constructorDefault.outputContrast == 1.0)
     }
 
     @Test func colorTemperatureDecodesPerStock() throws {

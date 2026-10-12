@@ -3,6 +3,7 @@ import AudioToolbox
 import CoreVideo
 import Foundation
 import Testing
+import VideoToolbox
 
 @Suite(.serialized)
 struct MovieWritingReliabilityTests {
@@ -25,7 +26,7 @@ struct MovieWritingReliabilityTests {
         let originalSourceData = try Data(contentsOf: source)
         let config = try loadConfig()
 
-        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory)
+        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory, allowsSyntheticInputForTests: true)
         let trim = CMTimeRange(start: CMTime(value: 2, timescale: 10), duration: CMTime(value: 4, timescale: 10))
         let output = try await renderer.render(sourceURL: source, config: config, trimRange: trim, bitrate: 2_000_000)
         defer { try? FileManager.default.removeItem(at: output) }
@@ -46,6 +47,20 @@ struct MovieWritingReliabilityTests {
         let firstSample = try #require(trackOutput.copyNextSampleBuffer())
         #expect(abs(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(firstSample))) < 0.001)
         #expect(reader.status == .reading || reader.status == .completed)
+        var outputMetadata: [String: String] = [:]
+        for item in try await outputAsset.load(.metadata) {
+            if let key = item.key as? String, let value = try await item.load(.stringValue) { outputMetadata[key] = value }
+        }
+        #expect(outputMetadata["com.filmemulation.source-color-test-bypass"] == "true")
+        #expect(outputMetadata["com.filmemulation.capture-color-space"] == "unknown-or-not-recorded")
+        let sourceColorJSON = try #require(outputMetadata["com.filmemulation.source-color-provenance"])
+        let sourceColor = try JSONDecoder().decode(RenderInputColorProvenance.self, from: Data(sourceColorJSON.utf8))
+        #expect(sourceColor.validationStatus == "explicit-synthetic-test-bypass")
+        #expect(sourceColor.formatDescriptions.count == 1)
+        #expect(sourceColor.formatDescriptions[0].logTransferFunction == nil)
+        let settingsJSON = try #require(outputMetadata["com.filmemulation.render-settings"])
+        let settings = try JSONDecoder().decode(RenderDiagnosticsManifest.RecipeSnapshot.self, from: Data(settingsJSON.utf8))
+        #expect(settings.sourceColorProvenance == sourceColor)
 
         let audioTrack = try #require(tracks.first(where: { $0.mediaType == .audio }))
         let audioReader = try AVAssetReader(asset: outputAsset)
@@ -59,6 +74,87 @@ struct MovieWritingReliabilityTests {
         #expect(audioDuration < 0.45)
     }
 
+    @Test func defaultRendererRejectsUntaggedSyntheticInputBeforeOutputCreation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("source.mov")
+        try await makeFixture(at: source, hasAudio: false, claimedCaptureColorSpace: "Apple Log 2")
+        let metadata = try await AVURLAsset(url: source).load(.metadata)
+        let captureItem = try #require(metadata.first { ($0.key as? String) == "com.filmemulation.capture-color-space" })
+        let captureClaim = try await captureItem.load(.stringValue)
+        #expect(captureClaim == "Apple Log 2")
+        let sourceData = try Data(contentsOf: source)
+        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory)
+
+        do {
+            _ = try await renderer.render(sourceURL: source, config: loadConfig(), bitrate: 2_000_000)
+            Issue.record("An untagged source unexpectedly passed the Apple Log 2 input contract")
+        } catch {
+            #expect(error.localizedDescription.contains("input-color-contract"))
+            #expect(error.localizedDescription.contains("Apple Log 2"))
+        }
+        #expect(try Data(contentsOf: source) == sourceData)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["source.mov"])
+    }
+
+    @available(macOS 27.0, *)
+    @Test func taggedAppleLog2SourceRendersWithStreamProvenance() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("apple-log2.mov")
+        try await makeAppleLog2Fixture(at: source)
+        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory)
+        let renderResult = try await renderer.render(sourceURL: source, config: loadConfig(), bitrate: 2_000_000,
+                                                     diagnosticsBundleDirectory: directory)
+        let output = try #require(renderResult.outputURL)
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        let decodedEvidence = try #require(renderResult.manifest.firstDecodedBuffer)
+        #expect(decodedEvidence.pixelFormat == "RGhA")
+        #expect(decodedEvidence.colorAttachments["logTransferFunction"] == "com.apple.apple-wide-gamut.apple-log")
+        #expect(decodedEvidence.colorAttachments["yCbCrMatrix"] == (kCVImageBufferYCbCrMatrix_ITU_R_2020 as String))
+        let neutral = try #require(decodedEvidence.samplePoints.first)
+        #expect(neutral.x == 0 && neutral.y == 0)
+        let red = try #require(Float(neutral.red))
+        let green = try #require(Float(neutral.green))
+        let blue = try #require(Float(neutral.blue))
+        #expect(abs(red - 0.45) < 0.005)
+        #expect(abs(green - 0.45) < 0.005)
+        #expect(abs(blue - 0.45) < 0.005)
+        let colored = try #require(decodedEvidence.samplePoints.dropFirst().first)
+        let coloredRed = try #require(Float(colored.red))
+        let coloredGreen = try #require(Float(colored.green))
+        let coloredBlue = try #require(Float(colored.blue))
+        // Independent BT.2020 nonconstant-luminance decode of the fixture's
+        // quantized 10-bit video-range Y=458, Cb=467, Cr=557 at x=128.
+        let encodedY = Float(458 - 64) / 876
+        let encodedCb = Float(467 - 512) / 896
+        let encodedCr = Float(557 - 512) / 896
+        #expect(abs(coloredRed - (encodedY + 1.4746 * encodedCr)) < 0.005)
+        #expect(abs(coloredGreen - (encodedY - 0.164553 * encodedCb - 0.571353 * encodedCr)) < 0.005)
+        #expect(abs(coloredBlue - (encodedY + 1.8814 * encodedCb)) < 0.005)
+
+        let outputAsset = AVURLAsset(url: output)
+        var values: [String: String] = [:]
+        for item in try await outputAsset.load(.metadata) {
+            if let key = item.key as? String, let value = try await item.load(.stringValue) { values[key] = value }
+        }
+        #expect(values["com.filmemulation.source-color-validation"] == "accepted-stream-tags")
+        #expect(values["com.filmemulation.source-color-test-bypass"] == "false")
+        #expect(values["com.filmemulation.capture-color-space"] == "Apple Log 2")
+        let sourceJSON = try #require(values["com.filmemulation.source-color-provenance"])
+        let provenance = try JSONDecoder().decode(RenderInputColorProvenance.self, from: Data(sourceJSON.utf8))
+        #expect(provenance.formatDescriptions.count == 1)
+        #expect(provenance.formatDescriptions[0].logTransferFunction == "com.apple.apple-wide-gamut.apple-log")
+        #expect(provenance.formatDescriptions[0].bitDepth == "10")
+        #expect(provenance.formatDescriptions[0].codec == "hvc1")
+        #expect(provenance.formatDescriptions[0].fullRangeVideo == "0")
+        #expect(provenance.formatDescriptions[0].colorPrimaries == nil)
+        #expect(provenance.formatDescriptions[0].transferFunction == nil)
+    }
+
     @Test func renderFailureAfterEncodedFramesRemovesPartialAndPreservesSource() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -70,7 +166,8 @@ struct MovieWritingReliabilityTests {
         let renderer = try PipelineRenderer(
             resourceBundle: testBundle,
             renderFailureAfterFrames: 2,
-            outputDirectory: directory
+            outputDirectory: directory,
+            allowsSyntheticInputForTests: true
         )
 
         do {
@@ -90,7 +187,7 @@ struct MovieWritingReliabilityTests {
         let source = directory.appendingPathComponent("source.mov")
         try await makeFixture(at: source, videoFrameCount: 3, audioSampleCount: 64)
         let sourceData = try Data(contentsOf: source)
-        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory)
+        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory, allowsSyntheticInputForTests: true)
         let output = try await renderer.render(sourceURL: source, config: loadConfig(), bitrate: 2_000_000)
         defer { try? FileManager.default.removeItem(at: output) }
 
@@ -109,7 +206,7 @@ struct MovieWritingReliabilityTests {
         let source = directory.appendingPathComponent("source.mov")
         try await makeFixture(at: source, videoFrameCount: 4, hasAudio: false)
         let sourceData = try Data(contentsOf: source)
-        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory)
+        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory, allowsSyntheticInputForTests: true)
         let output = try await renderer.render(sourceURL: source, config: loadConfig(), bitrate: 2_000_000)
         defer { try? FileManager.default.removeItem(at: output) }
 
@@ -129,7 +226,8 @@ struct MovieWritingReliabilityTests {
         let renderer = try PipelineRenderer(
             resourceBundle: testBundle,
             audioAppendRejectionAfterSamples: 1,
-            outputDirectory: directory
+            outputDirectory: directory,
+            allowsSyntheticInputForTests: true
         )
 
         do {
@@ -149,7 +247,7 @@ struct MovieWritingReliabilityTests {
         let source = directory.appendingPathComponent("source.mov")
         try await makeFixture(at: source)
         let sourceData = try Data(contentsOf: source)
-        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory)
+        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory, allowsSyntheticInputForTests: true)
         let config = try loadConfig()
         let task = Task { try await renderer.render(sourceURL: source, config: config, bitrate: 2_000_000) }
         task.cancel()
@@ -173,7 +271,7 @@ struct MovieWritingReliabilityTests {
         let source = directory.appendingPathComponent("source.mov")
         try await makeFixture(at: source, videoFrameCount: 60, audioSampleCount: 64)
         let sourceData = try Data(contentsOf: source)
-        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory)
+        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory, allowsSyntheticInputForTests: true)
         let config = try loadConfig()
         let task = Task { try await renderer.render(sourceURL: source, config: config, bitrate: 2_000_000) }
         var observedPartialOutput = false
@@ -207,7 +305,7 @@ struct MovieWritingReliabilityTests {
         let source = directory.appendingPathComponent("source.mov")
         try await makeFixture(at: source)
         let sourceData = try Data(contentsOf: source)
-        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory)
+        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory, allowsSyntheticInputForTests: true)
         let emptyTrim = CMTimeRange(start: CMTime(value: 5, timescale: 1), duration: CMTime(value: 1, timescale: 10))
 
         do {
@@ -224,9 +322,18 @@ struct MovieWritingReliabilityTests {
         at url: URL,
         videoFrameCount: Int = 10,
         audioSampleCount: Int = 48,
-        hasAudio: Bool = true
+        hasAudio: Bool = true,
+        claimedCaptureColorSpace: String? = nil
     ) async throws {
         let writer = try AVAssetWriter(url: url, fileType: .mov)
+        if let claimedCaptureColorSpace {
+            let item = AVMutableMetadataItem()
+            item.keySpace = .quickTimeMetadata
+            item.key = "com.filmemulation.capture-color-space" as NSString
+            item.value = claimedCaptureColorSpace as NSString
+            item.dataType = kCMMetadataBaseDataType_UTF8 as String
+            writer.metadata = [item]
+        }
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: 64,
@@ -325,6 +432,85 @@ struct MovieWritingReliabilityTests {
             throw FixtureError.writerStart(writer.error)
         }
         if let error = failure.error { throw error }
+        await writer.finishWriting()
+        guard writer.status == .completed else { throw FixtureError.writerStart(writer.error) }
+    }
+
+    @available(macOS 27.0, *)
+    private func makeAppleLog2Fixture(at url: URL) async throws {
+        let writer = try AVAssetWriter(url: url, fileType: .mov)
+        let captureColor = AVMutableMetadataItem()
+        captureColor.keySpace = .quickTimeMetadata
+        captureColor.key = "com.filmemulation.capture-color-space" as NSString
+        captureColor.value = "Apple Log 2" as NSString
+        captureColor.dataType = kCMMetadataBaseDataType_UTF8 as String
+        writer.metadata = [captureColor]
+        var optionalBuffer: CVPixelBuffer?
+        let attributes = [kCVPixelBufferIOSurfacePropertiesKey as String: [:]] as CFDictionary
+        let status = CVPixelBufferCreate(kCFAllocatorDefault, 256, 64,
+            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange, attributes, &optionalBuffer)
+        guard status == kCVReturnSuccess, let buffer = optionalBuffer else { throw FixtureError.sampleBuffer(status) }
+        CVBufferSetAttachment(buffer, kCVImageBufferLogTransferFunctionKey,
+                              kCVImageBufferLogTransferFunction_AppleLog2, .shouldPropagate)
+        CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey,
+                              kCVImageBufferYCbCrMatrix_ITU_R_2020, .shouldPropagate)
+        guard CVPixelBufferLockBaseAddress(buffer, []) == kCVReturnSuccess else {
+            throw FixtureError.sampleBuffer(kCVReturnError)
+        }
+        do {
+            defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+            guard let yBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 0),
+                  let chromaBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 1) else {
+                throw FixtureError.sampleBuffer(kCVReturnError)
+            }
+            let yStride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+            let chromaStride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 1)
+            for y in 0..<64 {
+                let row = yBase.advanced(by: y * yStride).assumingMemoryBound(to: UInt16.self)
+                for x in 0..<256 { row[x] = UInt16((64 + 0.45 * 876).rounded()) << 6 }
+            }
+            let chromaPatches: [(Double, Double)] = [(0.5, 0.5), (0.55, 0.45), (0.45, 0.55), (0.58, 0.53)]
+            for y in 0..<32 {
+                let row = chromaBase.advanced(by: y * chromaStride).assumingMemoryBound(to: UInt16.self)
+                for x in 0..<128 {
+                    // Keep the diagnostic's center point (pixel x=128,
+                    // chroma x=64) inside a patch, away from chroma edges.
+                    let patchIndex = x < 48 ? 0 : x < 80 ? 2 : x < 112 ? 1 : 3
+                    let patch = chromaPatches[patchIndex]
+                    row[x * 2] = UInt16((64 + patch.0 * 896).rounded()) << 6
+                    row[x * 2 + 1] = UInt16((64 + patch.1 * 896).rounded()) << 6
+                }
+            }
+        }
+        var formatHint: CMVideoFormatDescription?
+        let hintStatus = CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault, imageBuffer: buffer, formatDescriptionOut: &formatHint
+        )
+        guard hintStatus == noErr, let formatHint else { throw FixtureError.sampleBuffer(hintStatus) }
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.hevc,
+            AVVideoWidthKey: 256,
+            AVVideoHeightKey: 64,
+            AVVideoCompressionPropertiesKey: [
+                AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel as String,
+                AVVideoAverageBitRateKey: 2_000_000
+            ],
+            AVVideoColorPropertiesKey: [
+                AVVideoLogTransferFunctionKey: kCVImageBufferLogTransferFunction_AppleLog2,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
+            ]
+        ], sourceFormatHint: formatHint)
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
+        writer.add(input)
+        guard writer.startWriting() else { throw FixtureError.writerStart(writer.error) }
+        writer.startSession(atSourceTime: .zero)
+        for frame in 0..<3 {
+            while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(10)) }
+            guard adaptor.append(buffer, withPresentationTime: CMTime(value: Int64(frame), timescale: 24)) else {
+                throw FixtureError.writerStart(writer.error)
+            }
+        }
+        input.markAsFinished()
         await writer.finishWriting()
         guard writer.status == .completed else { throw FixtureError.writerStart(writer.error) }
     }

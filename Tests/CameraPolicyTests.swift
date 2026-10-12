@@ -4,6 +4,19 @@ import Testing
 
 @Suite("Camera lifecycle and recording policies")
 struct CameraPolicyTests {
+    @Test func captureFormatSearchFindsLog2AlternativeAndRejectsUnsupportedLens() {
+        let unsupported: [CameraCaptureFormatPolicy.Candidate] = [
+            .init(width: 3840, height: 2160, supportsAppleLog2: false, supports24FPS: true),
+            .init(width: 1920, height: 1080, supportsAppleLog2: true, supports24FPS: true),
+            .init(width: 3840, height: 2160, supportsAppleLog2: true, supports24FPS: false)
+        ]
+        #expect(CameraCaptureFormatPolicy.appleLog2Index(in: unsupported) == nil)
+        let candidates = unsupported + [
+            .init(width: 3840, height: 2160, supportsAppleLog2: true, supports24FPS: true)
+        ]
+        #expect(CameraCaptureFormatPolicy.appleLog2Index(in: candidates) == 3)
+    }
+
     @Test func lifecycleActivationIsIdempotentAndBackgroundInvalidatesPendingConfigure() throws {
         var gate = CameraLifecycleGate()
         let firstActivation = gate.activate()
