@@ -57,8 +57,6 @@ struct ContentView: View {
                 topBar
                     .padding(.bottom, showFramedPreview ? 8 : 0)
 
-                Spacer()
-
                 if showManualControls {
                     ManualControlsPanel(
                         cameraViewModel: cameraViewModel,
@@ -67,8 +65,13 @@ struct ContentView: View {
                         isManualFocus: $isManualFocus,
                         onDismiss: { withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false } }
                     )
+                    .containerRelativeFrame(.horizontal) { width, _ in width * 0.5 }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 8)
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
+
+                Spacer()
 
                 controlBar
                     .padding(.top, showFramedPreview ? 8 : 0)
@@ -167,9 +170,8 @@ struct ContentView: View {
                         .font(.title2)
                         .foregroundStyle(.white)
                         .padding(12)
-                        .background(.black.opacity(0.4))
-                        .clipShape(Circle())
                 }
+                .buttonStyle(CameraRaisedButtonStyle())
 
                 // Import from Photos
                 PhotosPicker(selection: $selectedPhotoItem, matching: .videos) {
@@ -177,9 +179,8 @@ struct ContentView: View {
                         .font(.title2)
                         .foregroundStyle(.white)
                         .padding(12)
-                        .background(.black.opacity(0.4))
-                        .clipShape(Circle())
                 }
+                .buttonStyle(CameraRaisedButtonStyle())
                 .onChange(of: selectedPhotoItem) { _, item in
                     guard let item else { return }
                     Task {
@@ -201,13 +202,12 @@ struct ContentView: View {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { showManualControls.toggle() }
                 } label: {
-                    Image(systemName: showManualControls ? "slider.vertical.3" : "camera.filters")
+                    Image(systemName: "slider.vertical.3")
                         .font(.title2)
                         .foregroundStyle(showManualControls ? .black : .white)
                         .padding(12)
-                        .background(showManualControls ? Color.yellow : Color.black.opacity(0.4))
-                        .clipShape(Circle())
                 }
+                .buttonStyle(CameraRaisedButtonStyle(faceColor: showManualControls ? .yellow : Color(red: 0.16, green: 0.17, blue: 0.19)))
 
                 Spacer()
             }

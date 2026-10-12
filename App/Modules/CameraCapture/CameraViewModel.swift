@@ -14,7 +14,8 @@ final class CameraViewModel {
     var isRecording = false
     var recordingDuration: TimeInterval = 0
     var freeSpaceBytes: Int64 = 0
-    var freeSpacePercent: Double = 1.0
+    var totalSpaceBytes: Int64 = 0
+    var hasStorageSnapshot = false
     var isSpaceLow = false
     var isSpaceCritical = false
     var errorMessage: String?
@@ -427,13 +428,22 @@ final class CameraViewModel {
 
     func updateFreeSpace() {
         let url = URL(fileURLWithPath: NSHomeDirectory())
-        if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey]) {
-            freeSpaceBytes = Int64(values.volumeAvailableCapacity ?? 0)
-            let totalBytes: Int64 = 64_000_000_000 // approximate for display
-            freeSpacePercent = totalBytes > 0 ? Double(freeSpaceBytes) / Double(totalBytes) : 0
-            isSpaceLow = freeSpaceBytes < Self.lowSpaceThreshold
-            isSpaceCritical = freeSpaceBytes < Self.criticalSpaceThreshold
-        }
+        guard let values = try? url.resourceValues(forKeys: [
+            .volumeAvailableCapacityKey,
+            .volumeTotalCapacityKey
+        ]),
+              let available = values.volumeAvailableCapacity,
+              let total = values.volumeTotalCapacity,
+              available >= 0,
+              total > 0 else { return }
+
+        // Keep the previous coherent snapshot if either capacity value cannot
+        // be read, rather than presenting an unavailable value as zero.
+        freeSpaceBytes = Int64(available)
+        totalSpaceBytes = Int64(total)
+        hasStorageSnapshot = true
+        isSpaceLow = freeSpaceBytes < Self.lowSpaceThreshold
+        isSpaceCritical = freeSpaceBytes < Self.criticalSpaceThreshold
     }
 
     // MARK: - Private

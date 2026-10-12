@@ -64,7 +64,7 @@ struct RenderStatusButton: View {
             .frame(minWidth: 52, minHeight: 52)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(CameraRaisedButtonStyle())
         .accessibilityLabel("Render activity")
         .accessibilityValue(statusDescription)
         .accessibilityHint("Opens video details, errors, and retry controls")

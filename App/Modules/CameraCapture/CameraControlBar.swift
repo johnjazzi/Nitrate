@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Bottom camera control stack: a selector row (lens pills + exposure) over an
-/// action row (queue / record / storage).
+/// Bottom camera controls: stock/lenses and queue/record on the left, with the
+/// exposure ruler and storage indicator in a persistent right column.
 ///
 /// Split out of `ContentView` so the screen stays inside the file-length limit.
 /// Division of labour: the top toolbar owns app/stock settings (active stock,
@@ -18,38 +18,53 @@ struct CameraControlBar: View {
     let onShowStockSheet: () -> Void
     let formatDuration: (TimeInterval) -> String
 
-    /// Inline lens-selector expansion. Not a sheet: the expanded selector takes
-    /// over the whole row and hides the exposure control. A tap expands it, and
-    /// a further tap (on the selector or on a lens) selects and collapses.
+    /// Inline lens-selector expansion. It replaces the left selector row while
+    /// the right exposure column stays visible. A further tap selects/collapses.
     @State private var isLensSelectorExpanded = false
+    @State private var isStorageInfoPresented = false
 
     var body: some View {
-        VStack(spacing: 16) {
-            selectorRow
-            actionRow
+        HStack(alignment: .top, spacing: 10) {
+            VStack(spacing: 8) {
+                selectorRow
+                actionRow
+            }
+            .frame(maxWidth: .infinity)
+
+            VStack(spacing: 6) {
+                exposureControl
+                storageIndicator
+            }
+            .frame(width: 92)
         }
         .padding(.horizontal, 16)
+        .sheet(isPresented: $isStorageInfoPresented) {
+            CameraStorageInfoSheet(
+                freeSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.freeSpaceBytes : nil,
+                totalSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.totalSpaceBytes : nil,
+                estimatedSeconds: estimatedRemainingSeconds
+            )
+            .presentationDetents([.medium, .large])
+            .preferredColorScheme(.dark)
+        }
     }
 
-    // MARK: - Row 1: lens selector + exposure
+    // MARK: - Left selector row
 
     private var selectorRow: some View {
         Group {
             if isLensSelectorExpanded {
-                // Expanded: the lens selector takes over the whole row and the
-                // other selectors (stock, exposure) are hidden.
+                // Expanded: the lens bank takes over the left column while the
+                // exposure ruler and storage status remain visible at right.
                 expandedLensSelector
             } else {
                 HStack(alignment: .center, spacing: 12) {
                     stockControl
-                    Spacer(minLength: 0)
                     lensPills
-                    Spacer(minLength: 0)
-                    exposureControl
                 }
             }
         }
-        .frame(height: 128)
+        .frame(height: 96)
     }
 
     // MARK: - Stock selector
@@ -70,7 +85,9 @@ struct CameraControlBar: View {
                     }
                     .foregroundStyle(.white)
                     .frame(width: 48)
+                    .padding(.vertical, 8)
                 }
+                .buttonStyle(CameraRaisedButtonStyle())
             }
         }
     }
@@ -101,6 +118,7 @@ struct CameraControlBar: View {
                     .clipShape(RoundedRectangle(cornerRadius: 3))
             }
         }
+        .buttonStyle(CameraRaisedButtonStyle())
     }
 
     /// Focal-length label above the pills, one pill per available lens.
@@ -110,7 +128,7 @@ struct CameraControlBar: View {
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.white.opacity(0.85))
 
-            HStack(spacing: 6) {
+            HStack(spacing: 0) {
                 ForEach(availableLenses) { lens in
                     Button {
                         expandLensSelector()
@@ -118,11 +136,14 @@ struct CameraControlBar: View {
                         Text(lens.zoomLabel)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(lens == selectedLens ? .black : .white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(lens == selectedLens ? Color.white : Color.white.opacity(0.15))
-                            .clipShape(Capsule())
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
                     }
+                    .buttonStyle(CameraRaisedButtonStyle(
+                        faceColor: lens == selectedLens ? .white : Color(red: 0.16, green: 0.17, blue: 0.19),
+                        cornerRadius: 5
+                    ))
+                    .accessibilityLabel("\(lens.zoomLabel) lens")
                 }
             }
         }
@@ -136,7 +157,7 @@ struct CameraControlBar: View {
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.white.opacity(0.85))
 
-            HStack(spacing: 8) {
+            HStack(spacing: 0) {
                 ForEach(availableLenses) { lens in
                     Button {
                         selectLensAndCollapse(lens)
@@ -153,14 +174,25 @@ struct CameraControlBar: View {
                         .foregroundStyle(lens == selectedLens ? .black : .white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
-                        .background(lens == selectedLens ? Color.white : Color.white.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(CameraRaisedButtonStyle(
+                        faceColor: lens == selectedLens ? .white : Color(red: 0.16, green: 0.17, blue: 0.19),
+                        cornerRadius: 6
+                    ))
+                    .accessibilityLabel("\(lens.zoomLabel), \(lens.rawValue) lens")
+                    .overlay(alignment: .trailing) {
+                        if lens.id != availableLenses.last?.id {
+                            Rectangle()
+                                .fill(.black.opacity(0.55))
+                                .frame(width: 1)
+                                .padding(.vertical, 8)
+                                .allowsHitTesting(false)
+                        }
                     }
                 }
             }
-            .padding(8)
-            .background(.black.opacity(0.5))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .padding(4)
+            .modifier(CameraRaisedSurface(cornerRadius: 12))
         }
     }
 
@@ -208,7 +240,7 @@ struct CameraControlBar: View {
                     ladder: isoLadder,
                     ladderSubdivisions: 3,
                     tint: .yellow,
-                    length: 84
+                    length: 120
                 )
             } else {
                 // Ruler rather than a 1:1 slider: EV compensation needs
@@ -222,7 +254,7 @@ struct CameraControlBar: View {
                     step: 0.1,
                     pointsPerStep: 24,
                     tint: .orange,
-                    length: 84
+                    length: 120
                 )
                 .disabled(!cameraViewModel.isExposureBiasAvailable)
                 .opacity(cameraViewModel.isExposureBiasAvailable ? 1 : 0.4)
@@ -232,10 +264,9 @@ struct CameraControlBar: View {
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(.white.opacity(0.7))
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(.black.opacity(0.45))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
+        .modifier(CameraRaisedSurface(cornerRadius: 14))
         .contentShape(Rectangle())
         // Simultaneous so the whole control stays hittable: an exclusive
         // long-press would never fire over the slider track, which is the
@@ -317,15 +348,15 @@ struct CameraControlBar: View {
         )
     }
 
-    // MARK: - Row 2: queue + record + storage
+    // MARK: - Left action row: queue + record
 
     private var actionRow: some View {
-        HStack(alignment: .bottom, spacing: 0) {
-            queueButton.frame(width: 90)
-            recordButton.frame(maxWidth: .infinity)
-            storageIndicator.frame(width: 90)
+        HStack(alignment: .center, spacing: 8) {
+            queueButton.frame(width: 56)
+            Spacer(minLength: 0)
+            recordButton
         }
-        .frame(height: 96)
+        .frame(height: 88)
     }
 
     private var recordButton: some View {
@@ -350,7 +381,9 @@ struct CameraControlBar: View {
                         .frame(width: 82, height: 82)
                 }
             }
+            .padding(8)
         }
+        .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 14))
         .accessibilityLabel(cameraViewModel.isRecording ? "Stop recording" : "Start recording")
         .disabled(cameraViewModel.isSpaceCritical && !cameraViewModel.isRecording)
         .overlay(alignment: .top) {
@@ -368,45 +401,54 @@ struct CameraControlBar: View {
     }
 
     private var queueButton: some View {
-        VStack(spacing: 2) {
-            RenderStatusButton(viewModel: renderQueueViewModel, action: onShowQueueSheet)
-            freeSpaceBar.frame(width: 48, height: 3)
-        }
-        .frame(maxWidth: .infinity)
+        RenderStatusButton(viewModel: renderQueueViewModel, action: onShowQueueSheet)
     }
 
-    /// Remaining free space as a readable amount plus the fill bar.
     private var storageIndicator: some View {
-        VStack(spacing: 5) {
-            Image(systemName: "internaldrive")
-                .font(.caption)
-            Text(freeSpaceText)
-                .font(.caption2.monospacedDigit())
-            freeSpaceBar.frame(width: 56, height: 4)
-            Text("Storage").font(.caption2)
+        Button {
+            cameraViewModel.updateFreeSpace()
+            isStorageInfoPresented = true
+        } label: {
+            VStack(spacing: 2) {
+                Text(freeSpaceText)
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Text(cameraViewModel.hasStorageSnapshot ? "FREE" : "FREE SPACE")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 5)
         }
-        .foregroundStyle(.white)
-        .frame(maxWidth: .infinity)
+        .buttonStyle(CameraRaisedButtonStyle(
+            faceColor: cameraViewModel.hasStorageSnapshot && cameraViewModel.isSpaceLow
+                ? .red : Color(red: 0.16, green: 0.17, blue: 0.19),
+            cornerRadius: 6
+        ))
+        .accessibilityLabel("Storage, \(freeSpaceText) free")
+        .accessibilityHint("Opens storage details and estimated recording time")
     }
 
     private var freeSpaceText: String {
-        guard cameraViewModel.freeSpaceBytes > 0 else { return "—" }
+        guard cameraViewModel.hasStorageSnapshot else { return "Unavailable" }
         let formatter = ByteCountFormatter()
         formatter.allowedUnits = [.useGB, .useMB]
         formatter.countStyle = .file
         return formatter.string(fromByteCount: cameraViewModel.freeSpaceBytes)
     }
 
-    private var freeSpaceBar: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(Color.white.opacity(0.15))
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(cameraViewModel.isSpaceCritical ? Color.red : Color.white.opacity(0.5))
-                    .frame(width: max(0, geo.size.width * CGFloat(cameraViewModel.freeSpacePercent)))
-            }
-        }
+    private var estimatedRemainingSeconds: TimeInterval? {
+        guard cameraViewModel.hasStorageSnapshot else { return nil }
+        return CameraStorageEstimatePolicy.remainingSeconds(
+            freeBytes: cameraViewModel.freeSpaceBytes,
+            criticalReserveBytes: CameraViewModel.criticalSpaceThreshold,
+            videoBitRate: DeliverySettings.averageBitRate,
+            audioBitRate: DeliverySettings.aacAverageBitRate
+        )
     }
 }
 

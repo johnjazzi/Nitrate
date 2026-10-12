@@ -3,7 +3,7 @@ import SwiftUI
 /// Pop-over panel of manual camera controls, presented over the preview from
 /// the top toolbar's "Manual" button.
 ///
-/// Exactly two columns: ZOOM and FOCUS. ISO deliberately lives in the control
+/// Three compact columns: ZOOM, FOCUS, and APERTURE. ISO deliberately lives in the control
 /// bar's exposure control instead, so the two cannot fight over the same
 /// device setting.
 struct ManualControlsPanel: View {
@@ -14,20 +14,19 @@ struct ManualControlsPanel: View {
     let onDismiss: () -> Void
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 8) {
             header
 
-            HStack(alignment: .top, spacing: 24) {
+            HStack(alignment: .top, spacing: 6) {
                 zoomColumn
                 focusColumn
                 apertureColumn
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 16)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
         .background(.black.opacity(0.55))
         .clipShape(RoundedRectangle(cornerRadius: 18))
-        .padding(.horizontal, 16)
     }
 
     private var header: some View {
@@ -40,7 +39,9 @@ struct ManualControlsPanel: View {
                 Image(systemName: "xmark.circle.fill")
                     .font(.title3)
                     .foregroundStyle(.white.opacity(0.7))
+                    .padding(6)
             }
+            .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 7))
         }
     }
 
@@ -53,7 +54,7 @@ struct ManualControlsPanel: View {
                 range: 1.0...Double(max(cameraViewModel.session.maxZoomFactor, 1.0)),
                 step: 0.1,
                 tint: .white,
-                length: 110
+                length: 80
             )
             .onChange(of: zoomFactor) { _, newValue in
                 cameraViewModel.session.setZoom(CGFloat(newValue))
@@ -68,7 +69,7 @@ struct ManualControlsPanel: View {
                 range: 0...1,
                 step: 0.01,
                 tint: isManualFocus ? .yellow : .white.opacity(0.45),
-                length: 110
+                length: 80
             )
             .disabled(!isManualFocus)
             .opacity(isManualFocus ? 1 : 0.4)
@@ -88,11 +89,13 @@ struct ManualControlsPanel: View {
                 Text(isManualFocus ? "AF" : "MF")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(isManualFocus ? .black : .white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(isManualFocus ? Color.yellow : Color.white.opacity(0.2))
-                    .clipShape(Capsule())
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
             }
+            .buttonStyle(CameraRaisedButtonStyle(
+                faceColor: isManualFocus ? .yellow : Color(red: 0.16, green: 0.17, blue: 0.19),
+                cornerRadius: 6
+            ))
         }
     }
 
@@ -115,10 +118,9 @@ struct ManualControlsPanel: View {
                         .foregroundStyle(.white)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 6)
-                        .background(Color.white.opacity(0.16))
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
                 }
-                .frame(height: 110)
+                .frame(height: 80)
+                .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 6))
             } else {
                 VStack(spacing: 6) {
                     Image(systemName: measured == nil ? "minus.circle" : "lock.fill")
@@ -126,7 +128,7 @@ struct ManualControlsPanel: View {
                         .font(.caption2.weight(.bold))
                 }
                 .foregroundStyle(.white.opacity(0.45))
-                .frame(height: 110)
+                .frame(height: 80)
             }
         }
     }
@@ -137,14 +139,18 @@ struct ManualControlsPanel: View {
         readout: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             Text(title)
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.white.opacity(0.7))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
             content()
             Text(readout)
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.white.opacity(0.9))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
         }
         .frame(maxWidth: .infinity)
     }

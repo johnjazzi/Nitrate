@@ -42,6 +42,33 @@ enum CameraCaptureFormatPolicy {
     }
 }
 
+/// Approximate capture time while reserving space for the retained source and
+/// rendered movie at the configured delivery video and audio bitrates.
+enum CameraStorageEstimatePolicy {
+    static func remainingSeconds(
+        freeBytes: Int64,
+        criticalReserveBytes: Int64,
+        videoBitRate: Int,
+        audioBitRate: Int,
+        retainedCopies: Int = 2
+    ) -> TimeInterval? {
+        guard freeBytes >= 0,
+              criticalReserveBytes >= 0,
+              videoBitRate > 0,
+              audioBitRate > 0,
+              retainedCopies > 0 else { return nil }
+
+        let budgetBytes = max(0, freeBytes - criticalReserveBytes)
+        let bitsPerSecond = Double(retainedCopies)
+            * (Double(videoBitRate) + Double(audioBitRate))
+        let bytesPerSecond = bitsPerSecond / 8
+        guard bytesPerSecond.isFinite, bytesPerSecond > 0 else { return nil }
+
+        let seconds = Double(budgetBytes) / bytesPerSecond
+        return seconds.isFinite ? seconds : nil
+    }
+}
+
 /// Pure aperture policy for the iOS 27 lens-aperture controls. Values displayed
 /// in the UI come only from the active format's recommended stops.
 enum CameraAperturePolicy {

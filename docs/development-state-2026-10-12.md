@@ -19,3 +19,9 @@ The full camera root-cause analysis and device result are in `.pi/tmp/camera-hev
 ## Temporary artifact consolidation
 
 Four historical review/research snapshots were consolidated under `.pi/tmp/archive/2026-10-12-review-snapshots/`. Byte counts and SHA-256 hashes matched before their `/tmp` originals were removed; the empty `/tmp/pi-github-repos/` directory was removed with `rmdir`. Active grain/halation plans and camera evidence were retained. The manifest is `.pi/tmp/tmp-consolidation-results.md`.
+
+## Camera controls UI update
+
+The Manual controls opener always uses the sliders icon. Its panel is compact (about half the screen width and three-quarters its former height), with less padding, anchored below the top toolbar at the left. Camera buttons use raised rectangular faces and beveled highlights; lens choices share a grouped bezel. Bottom controls place stock/lenses above queue/record on the left, with a taller EV/ISO ruler and free-space indicator on the right. The indicator turns red below 1 GB and opens a dark, scrollable storage sheet showing actual available/used/total capacity and estimated recording time. The estimate reserves the existing 500 MB buffer and budgets original plus rendered copies at configured video/AAC bitrates; Photos copies and variable encoding can reduce actual time.
+
+Verification: 112 tests passed with zero failures/skips, lint, generic and signed iOS builds, strict codesign, and focused Luna review. The signed UI build installed with app data preserved; normal launch was blocked by the locked phone. Visual layout and button feel await manual review after unlocking. Evidence: .pi/tmp/camera-controls-layout-report.md, .pi/tmp/camera-controls-test-summary.json, and .pi/tmp/camera-controls-phone-install-report.md.
