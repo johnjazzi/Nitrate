@@ -105,14 +105,14 @@ struct ManualControlsPanel: View {
         return controlColumn(title: "APERTURE", readout: readout) {
             if cameraViewModel.canSelectAperture {
                 Menu {
-                    Button("Auto") { cameraViewModel.setLensAperture(nil) }
+                    Button("Hold") { cameraViewModel.setLensAperture(nil) }
                     ForEach(cameraViewModel.apertureStops, id: \.self) { stop in
                         Button(String(format: "f/%.1f", stop)) {
                             cameraViewModel.setLensAperture(stop)
                         }
                     }
                 } label: {
-                    Label(cameraViewModel.selectedLensAperture.map { String(format: "f/%.1f", $0) } ?? "Auto",
+                    Label(cameraViewModel.selectedLensAperture.map { String(format: "f/%.1f", $0) } ?? "Hold",
                           systemImage: "chevron.up.chevron.down")
                         .font(.caption2.weight(.bold).monospacedDigit())
                         .foregroundStyle(.white)

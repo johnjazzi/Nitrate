@@ -29,25 +29,25 @@ struct CameraPolicyTests {
     @Test func apertureExposureCompositionPreservesManualISOAndAutomaticISO() {
         let duration = CMTime(value: 1, timescale: 48)
         let shutterPriority = CameraAperturePolicy.exposureParameters(
-            selectedAperture: 2.8, autoAperture: -1, mode: .shutterPriority,
+            selectedAperture: 2.8, heldAperture: -1, mode: .shutterPriority,
             manualISO: 640, autoISO: -2, minISO: 25, maxISO: 6400, duration: duration)
         #expect(shutterPriority?.aperture == 2.8)
         #expect(shutterPriority?.duration == duration)
         #expect(shutterPriority?.iso == -2)
 
         let manual = CameraAperturePolicy.exposureParameters(
-            selectedAperture: nil, autoAperture: -1, mode: .manual,
+            selectedAperture: nil, heldAperture: -1, mode: .manual,
             manualISO: 7000, autoISO: -2, minISO: 25, maxISO: 6400, duration: duration)
         #expect(manual?.aperture == -1)
         #expect(manual?.iso == 6400)
         #expect(CameraAperturePolicy.exposureParameters(
-            selectedAperture: .infinity, autoAperture: -1, mode: .manual,
+            selectedAperture: .infinity, heldAperture: -1, mode: .manual,
             manualISO: 100, autoISO: -2, minISO: 25, maxISO: 6400, duration: duration) == nil)
     }
 
     @Test func unsupportedExactApertureCombinationDoesNotRunTheDeviceMutation() throws {
         let parameters = try #require(CameraAperturePolicy.exposureParameters(
-            selectedAperture: 2.8, autoAperture: -1, mode: .manual,
+            selectedAperture: 2.8, heldAperture: -1, mode: .manual,
             manualISO: 400, autoISO: -2, minISO: 25, maxISO: 6400,
             duration: CMTime(value: 1, timescale: 48)))
         var mutationCount = 0
@@ -73,7 +73,7 @@ struct CameraPolicyTests {
         #expect(negativeEV == 50)
 
         let manual = try #require(CameraAperturePolicy.exposureParameters(
-            selectedAperture: 2.8, autoAperture: -1, mode: .manual,
+            selectedAperture: 2.8, heldAperture: -1, mode: .manual,
             manualISO: 640, autoISO: -2, minISO: 25, maxISO: 6400,
             duration: CMTime(value: 1, timescale: 48)))
         #expect(manual.iso == 640)

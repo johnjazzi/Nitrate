@@ -77,8 +77,10 @@ final class CameraSession: NSObject {
     /// True while 180° shutter priority is active (shutter locked to 1/48s,
     /// ISO auto-meters). Cleared by manual exposure, which pins both.
     private(set) var isShutterPriority = false
-    /// Nil means Auto. Access is serialized on sessionQueue; UI reads are
-    /// refreshed by CameraViewModel after each aperture operation.
+    /// Nil means "hold the current iris value". An explicit stop is the only
+    /// thing that moves the aperture; the metering paths never auto-drive it.
+    /// Access is serialized on sessionQueue; UI reads are refreshed by
+    /// CameraViewModel after each aperture operation.
     private var selectedLensAperture: Float?
     private var manualExposureISO: Float = 400
     private var recordingAperturePin: CameraAperturePolicy.RecordingPin?
@@ -780,8 +782,25 @@ final class CameraSession: NSObject {
         let clampedShutter = min(max(shutter, device.activeFormat.minExposureDuration),
                                  device.activeFormat.maxExposureDuration)
         if #available(iOS 27.0, *), Self.apertureCapability(for: device).isVariable {
-            let parameters = try apertureParameters(for: device, mode: exposureMode,
-                                                    duration: clampedShutter, manualISO: iso)
+            try applyCustomExposureHoldingAperture(on: device, mode: exposureMode,
+                                                   duration: clampedShutter, iso: clampedISO)
+            return
+        }
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        device.setExposureModeCustom(duration: clampedShutter, iso: clampedISO) { _ in }
+    }
+
+    /// Apply a custom exposure without ever changing the lens aperture. A
+    /// variable-iris format is asked for the held/selected aperture; if the
+    /// format rejects it, fall back to the aperture-agnostic overload so the
+    /// metering path can never raise `apertureExposureUnsupported`.
+    @available(iOS 27.0, *)
+    private func applyCustomExposureHoldingAperture(on device: AVCaptureDevice,
+                                                    mode: CameraAperturePolicy.ExposureMode,
+                                                    duration: CMTime, iso: Float) throws {
+        if let parameters = try? apertureParameters(for: device, mode: mode,
+                                                    duration: duration, manualISO: iso) {
             let applied = try CameraAperturePolicy.performIfSupported(parameters, supports: {
                 device.activeFormat.supportsExposureModeCustom(
                     lensAperture: $0.aperture, duration: $0.duration, iso: $0.iso)
@@ -791,12 +810,11 @@ final class CameraSession: NSObject {
                 device.setExposureModeCustom(lensAperture: parameters.aperture,
                                              duration: parameters.duration, iso: parameters.iso) { _ in }
             }
-            guard applied else { throw CameraError.apertureExposureUnsupported }
-            return
+            if applied { return }
         }
         try device.lockForConfiguration()
         defer { device.unlockForConfiguration() }
-        device.setExposureModeCustom(duration: clampedShutter, iso: clampedISO) { _ in }
+        device.setExposureModeCustom(duration: duration, iso: iso) { _ in }
     }
 
     @available(iOS 27.0, *)
@@ -804,12 +822,17 @@ final class CameraSession: NSObject {
                                     mode: CameraAperturePolicy.ExposureMode,
                                     duration: CMTime,
                                     manualISO: Float) throws -> CameraAperturePolicy.ExposureParameters {
-        guard !Self.apertureCapability(for: device).stops.isEmpty else { throw CameraError.apertureUnavailable }
-        let autoAperture = AVCaptureDevice.autoLensAperture
+        let capability = Self.apertureCapability(for: device)
+        guard !capability.stops.isEmpty else { throw CameraError.apertureUnavailable }
+        // Aperture is never auto-driven: without an explicit user choice the
+        // current iris value is held. The auto sentinel is never requested
+        // because custom exposure rejects it on this hardware.
+        let heldAperture = CameraAperturePolicy.reconcile(device.lensAperture, with: capability)
+            ?? capability.stops[0]
         let autoISO = AVCaptureDevice.autoISO
         let parameters = CameraAperturePolicy.exposureParameters(
             selectedAperture: selectedLensAperture,
-            autoAperture: autoAperture,
+            heldAperture: heldAperture,
             mode: mode,
             manualISO: manualISO,
             autoISO: autoISO,
@@ -1033,18 +1056,8 @@ final class CameraSession: NSObject {
                            device.activeFormat.maxExposureDuration)
         if #available(iOS 27.0, *), Self.apertureCapability(for: device).isVariable {
             do {
-                let parameters = try apertureParameters(for: device, mode: .shutterPriority,
-                                                        duration: duration, manualISO: manualExposureISO)
-                let applied = try CameraAperturePolicy.performIfSupported(parameters, supports: {
-                    device.activeFormat.supportsExposureModeCustom(
-                        lensAperture: $0.aperture, duration: $0.duration, iso: $0.iso)
-                }) {
-                    try device.lockForConfiguration()
-                    defer { device.unlockForConfiguration() }
-                    device.setExposureModeCustom(lensAperture: parameters.aperture,
-                                                 duration: parameters.duration, iso: parameters.iso) { _ in }
-                }
-                guard applied else { throw CameraError.apertureExposureUnsupported }
+                try applyCustomExposureHoldingAperture(on: device, mode: .shutterPriority,
+                                                       duration: duration, iso: manualExposureISO)
             } catch {
                 reportCameraError(error)
                 return
@@ -1077,9 +1090,12 @@ final class CameraSession: NSObject {
                 self.reportCameraError(CameraError.exposureMeterUnavailable)
                 return
             }
-            do { try self.setExposureLocked(iso: compensated, shutter: duration,
-                                            on: device, mode: .manual) }
-            catch { self.reportCameraError(error) }
+            do {
+                try self.setExposureLocked(iso: compensated, shutter: duration,
+                                           on: device, mode: .manual)
+            } catch {
+                self.reportCameraError(error)
+            }
         }
     }
 
@@ -1094,6 +1110,26 @@ final class CameraSession: NSObject {
         // invalidates its generation, so the receiver must reject old-lens
         // results as well as callbacks that have not fired yet.
         let sourceLens = activeLens
+#if DEBUG
+        if error.localizedDescription == CameraError.apertureExposureUnsupported.localizedDescription {
+            let device = activeDevice
+            let format = device?.activeFormat
+            let apertureCapability: String
+            if #available(iOS 27.0, *), let device {
+                let capability = Self.apertureCapability(for: device)
+                apertureCapability = capability.isVariable ? "variable" : "fixed/unavailable"
+            } else {
+                apertureCapability = "unavailable"
+            }
+            let callStack = Thread.callStackSymbols.prefix(10).joined(separator: " <- ")
+            print("Aperture error provenance: path=reportCameraError, lens=\(sourceLens.rawValue), " +
+                  "device=\(device?.deviceType.rawValue ?? "nil"), position=\(device.map { String(describing: $0.position) } ?? "nil"), " +
+                  "format=\(format.map { String(describing: ObjectIdentifier($0)) } ?? "nil"), " +
+                  "capability=\(apertureCapability), selected=\(selectedLensAperture.map { String(describing: $0) } ?? "Auto"), " +
+                  "iso=\(device?.iso.description ?? "nil"), shutter=\(device?.exposureDuration.seconds.description ?? "nil"), " +
+                  "stack=\(callStack)")
+        }
+#endif
         DispatchQueue.main.async { MainActor.assumeIsolated { handler(error, sourceLens) } }
     }
 

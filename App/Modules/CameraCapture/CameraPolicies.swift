@@ -157,11 +157,11 @@ enum CameraAperturePolicy {
         return stops.min { abs($0 - selected) < abs($1 - selected) }
     }
 
-    static func exposureParameters(selectedAperture: Float?, autoAperture: Float,
+    static func exposureParameters(selectedAperture: Float?, heldAperture: Float,
                                    mode: ExposureMode, manualISO: Float,
                                    autoISO: Float, minISO: Float, maxISO: Float,
                                    duration: CMTime) -> ExposureParameters? {
-        guard autoAperture.isFinite, minISO.isFinite, maxISO.isFinite,
+        guard heldAperture.isFinite, minISO.isFinite, maxISO.isFinite,
               minISO <= maxISO, duration.isNumeric,
               selectedAperture.map({ $0.isFinite && $0 > 0 }) ?? true else { return nil }
         let iso: Float
@@ -171,7 +171,7 @@ enum CameraAperturePolicy {
             guard manualISO.isFinite else { return nil }
             iso = min(max(manualISO, minISO), maxISO)
         }
-        return ExposureParameters(aperture: selectedAperture ?? autoAperture,
+        return ExposureParameters(aperture: selectedAperture ?? heldAperture,
                                   duration: duration, iso: iso)
     }
 }

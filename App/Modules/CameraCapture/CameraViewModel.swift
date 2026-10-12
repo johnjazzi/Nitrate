@@ -22,7 +22,18 @@ final class CameraViewModel {
     var hasStorageSnapshot = false
     var isSpaceLow = false
     var isSpaceCritical = false
-    var errorMessage: String?
+    var errorMessage: String? {
+        didSet {
+#if DEBUG
+            let apertureError = CameraError.apertureExposureUnsupported.localizedDescription
+            if let errorMessage, errorMessage.contains(apertureError) {
+                let stack = Thread.callStackSymbols.prefix(12).joined(separator: " <- ")
+                print("Aperture error state: lens=\(activeLens.rawValue), switching=\(isSwitchingCameraLens), " +
+                      "variable=\(apertureIsVariable), message=\(errorMessage), stack=\(stack)")
+            }
+#endif
+        }
+    }
     var recordingWarning: String?
     private(set) var lastRecordedURL: URL?
 
