@@ -294,6 +294,19 @@ final class CameraViewModel {
         session.setFocusAndExposurePoint(devicePoint)
     }
 
+#if DEBUG
+    /// Debug-only: capture one frame from the live camera for the debug
+    /// single-frame sheet. `completion` runs on the main thread (mirrors the
+    /// plain completion `selectLens` uses).
+    func captureDebugFrame(completion: @escaping (CVPixelBuffer?) -> Void) {
+        let completionBox = UncheckedSendableBox(completion)
+        session.captureDebugFrame { buffer in
+            let payload = SendablePixelBuffer(buffer: buffer)
+            DispatchQueue.main.async { completionBox.value(payload.buffer) }
+        }
+    }
+#endif
+
     /// Switch the active lens and refresh tap-to-focus for the new device.
     /// Completion runs on the main queue; `nil` error means the swap succeeded.
     func selectLens(_ lens: CameraLens, completion: @escaping (Error?) -> Void) {

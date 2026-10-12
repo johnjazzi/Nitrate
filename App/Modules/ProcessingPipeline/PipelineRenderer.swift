@@ -27,6 +27,10 @@ final class PipelineRenderer: @unchecked Sendable {
     // Current LUT texture (loaded per-render based on stock config)
     private var lutTexture: MTLTexture?
 
+    /// Name of the LUT currently in `lutTexture`, used only by the debug
+    /// single-frame render to avoid re-parsing a .cube file on every slider drag.
+    private var debugLUTName: String?
+
     init(
         resourceBundle: Bundle = .main,
         renderFailureAfterFrames: UInt32? = nil,
@@ -389,6 +393,147 @@ final class PipelineRenderer: @unchecked Sendable {
             }
             throw error
         }
+    }
+
+    // MARK: - Debug Single-Frame Render
+
+    /// Tunable grain/halation/glow values for one debug single-frame render.
+    ///
+    /// The LUT and output contrast still come from the stock config; only the
+    /// effect dials the debug sheet varies live here, so a drag can never
+    /// disturb the shipping look or the video render path. Grain is owned by the
+    /// print gauge alone — the gauge sets both footprint and presence — so there
+    /// is no ISO-driven loudness term: the stock's exposure index is passed
+    /// through unchanged and does not scale grain.
+    struct DebugFrameParameters: Sendable, Equatable {
+        var gauge: PrintGauge
+        var stockGrainSize: Float
+        var edgeBoostMultiplier: Float
+        var halationStrength: Float
+        var halationRadiusFraction: Float
+        var halationTint: SIMD3<Float>
+        var glowStrength: Float
+
+        /// Seed every dial from a stock so the debug sheet opens on the shipping
+        /// look for that stock.
+        init(config: FilmStockConfig) {
+            self.gauge = config.effectivePrintGauge
+            self.stockGrainSize = config.grainSize
+            self.edgeBoostMultiplier = config.effectiveRecipe.edgeBoostMultiplier
+            self.halationStrength = config.halationStrength
+            self.halationRadiusFraction = config.halationRadiusFraction
+            self.halationTint = config.halationTint
+            self.glowStrength = config.glowStrength
+        }
+
+        /// The gauge owns grain presence as well as size, so amplitude is derived
+        /// from it rather than dialled independently.
+        var gaugeAmplitude: Float { gauge.amplitudeMultiplier }
+
+        /// Realized grain footprint the kernel will use (stock size × gauge size,
+        /// clamped off the 128³ volume's undersampled floor).
+        var realizedFootprint: Float {
+            GrainModel.effectiveSize(stockGrainSize: stockGrainSize, gauge: gauge)
+        }
+
+        /// Realized grain amount at an edge factor of 1: base amount scaled by the
+        /// gauge's presence multiplier. No ISO term — the gauge owns loudness.
+        var realizedAmount: Float {
+            GrainModel.baseAmount * gaugeAmplitude
+        }
+    }
+
+    /// One rendered debug frame: the graded, grained image as a drawable BGRA8
+    /// texture plus the backing pixel buffer the debug sheet (and tests) read back.
+    struct DebugFrameRender {
+        let texture: MTLTexture
+        let pixelBuffer: CVPixelBuffer
+        var width: Int { CVPixelBufferGetWidth(pixelBuffer) }
+        var height: Int { CVPixelBufferGetHeight(pixelBuffer) }
+    }
+
+    /// Render ONE frozen frame through the same pass1 → spatial → pass2 chain the
+    /// video path uses, with grain/halation/glow supplied per call. Nothing here
+    /// touches `render(...)` or the recorder: the debug sheet calls this once per
+    /// (debounced) slider change and draws the result.
+    ///
+    /// `pixelBuffer` must be the RGBA-half layout the offline decoder produces;
+    /// the debug capture converts the live camera frame into that layout. Returns
+    /// nil if the LUT or any GPU stage fails.
+    func renderDebugFrame(
+        pixelBuffer: CVPixelBuffer,
+        config: FilmStockConfig,
+        parameters: DebugFrameParameters,
+        frameIndex: UInt32 = 0
+    ) -> DebugFrameRender? {
+        renderQueue.sync {
+            // Load the stock's LUT once per stock so a drag does not re-parse a
+            // 33³ .cube file on every frame. The video path is untouched.
+            if debugLUTName != config.lutName {
+                guard (try? loadLUT(named: config.lutName)) != nil, lutTexture != nil else { return nil }
+                debugLUTName = config.lutName
+            }
+            guard let lut = lutTexture else { return nil }
+
+            let width = CVPixelBufferGetWidth(pixelBuffer)
+            let height = CVPixelBufferGetHeight(pixelBuffer)
+            guard width > 0, height > 0 else { return nil }
+
+            guard let graded = runPass1(
+                sourcePixelBuffer: pixelBuffer,
+                lut: lut,
+                halationStrength: parameters.halationStrength,
+                glowStrength: parameters.glowStrength,
+                outputContrast: config.outputContrast,
+                width: width,
+                height: height
+            ) else { return nil }
+
+            guard let spatialStage,
+                  let diffused = spatialStage.apply(
+                    graded: graded,
+                    commandQueue: commandQueue,
+                    halationStrength: parameters.halationStrength,
+                    glowStrength: parameters.glowStrength,
+                    halationRadiusFraction: parameters.halationRadiusFraction,
+                    halationTint: parameters.halationTint,
+                    width: width,
+                    height: height
+                  ) else { return nil }
+
+            guard let outputBuffer = makeDebugOutputBuffer(width: width, height: height),
+                  let outputTexture = makeTexture(from: outputBuffer, format: .bgra8Unorm)?.texture else {
+                return nil
+            }
+
+            guard runPass2(
+                inputTexture: diffused,
+                outputPixelBuffer: outputBuffer,
+                frameIndex: frameIndex,
+                iso: config.defaultISO,
+                grainSize: parameters.realizedFootprint,
+                edgeBoostMultiplier: parameters.edgeBoostMultiplier,
+                gaugeAmplitude: parameters.gaugeAmplitude,
+                width: width,
+                height: height
+            ) else { return nil }
+
+            return DebugFrameRender(texture: outputTexture, pixelBuffer: outputBuffer)
+        }
+    }
+
+    /// BGRA8, Metal-compatible output buffer for a debug frame — the same layout
+    /// pass2 writes into the video path's writer adaptor pool.
+    private func makeDebugOutputBuffer(width: Int, height: Int) -> CVPixelBuffer? {
+        let attributes: [String: Any] = [
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+        ]
+        var buffer: CVPixelBuffer?
+        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+                                  kCVPixelFormatType_32BGRA, attributes as CFDictionary, &buffer) == kCVReturnSuccess
+        else { return nil }
+        return buffer
     }
 
     // MARK: - LUT Loading
