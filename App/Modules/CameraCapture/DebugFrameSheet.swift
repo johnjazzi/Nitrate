@@ -218,11 +218,25 @@ struct DebugFrameSheet: View {
     private var grainSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Grain").font(.headline)
-            labelled("Print gauge — owns grain size and presence") {
+            labelled("Print gauge — re-seeds size and presence") {
                 Picker("Gauge", selection: gaugeBinding) {
                     ForEach(PrintGauge.allCases, id: \.self) { Text($0.displayName).tag($0) }
                 }
                 .pickerStyle(.segmented)
+            }
+            labelled(String(format: "Size %.2f  (footprint %.2f)",
+                            viewModel.parameters.sizeMultiplier,
+                            viewModel.parameters.realizedFootprint)) {
+                Slider(value: float({ viewModel.parameters.sizeMultiplier },
+                                    { viewModel.parameters.sizeMultiplier = $0 }),
+                       in: 0.3...6, step: 0.05)
+            }
+            labelled(String(format: "Presence %.2f  (amount %.3f)",
+                            viewModel.parameters.presenceMultiplier,
+                            viewModel.parameters.realizedAmount)) {
+                Slider(value: float({ viewModel.parameters.presenceMultiplier },
+                                    { viewModel.parameters.presenceMultiplier = $0 }),
+                       in: 0...1.5, step: 0.01)
             }
             labelled(String(format: "Edge boost %.2f", viewModel.parameters.edgeBoostMultiplier)) {
                 Slider(value: float({ viewModel.parameters.edgeBoostMultiplier },
@@ -285,13 +299,13 @@ struct DebugFrameSheet: View {
         )
     }
 
-    /// The gauge is the single grain control: changing it moves both footprint
-    /// and presence, so nothing else needs re-seeding.
+    /// Picking a gauge re-seeds the size and presence dials from its authored
+    /// multipliers; the sliders then take over.
     private var gaugeBinding: Binding<PrintGauge> {
         Binding(
             get: { viewModel.parameters.gauge },
             set: { gauge in
-                viewModel.parameters.gauge = gauge
+                viewModel.parameters.applyGauge(gauge)
                 viewModel.scheduleRender()
             }
         )

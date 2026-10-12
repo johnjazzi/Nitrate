@@ -13,18 +13,18 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     case thirtyFiveMillimetre = "35mm"
     case seventyFiveMillimetre = "75mm"
 
-    /// Multiplies the stock's grain size to reach a gauge's footprint. The 16mm
-    /// rung carries the stock's authored size (multiplier 1.0) and is the
-    /// reference. Tuned twice against the debug single-frame mode: the whole
-    /// ladder slid one rung finer, so 8mm now looks like 16mm used to, 16mm like
-    /// 35mm used to, and 35mm took the old 75mm. 75mm is a new, extremely subtle
-    /// rung. Presence was trimmed across the board in the same pass.
+    /// Multiplies the stock's grain size to reach a gauge's footprint. 35mm is
+    /// the identity 1.0 reference.
+    ///
+    /// The one-rung-finer slide was reverted: 35mm came out far too subtle and
+    /// 8mm not coarse enough, and the fix belongs on this axis rather than on
+    /// presence. Only size was reverted — presence keeps its trimmed values.
     var sizeMultiplier: Float {
         switch self {
-        case .eightMillimetre: return 1.8
-        case .sixteenMillimetre: return 1.0
-        case .thirtyFiveMillimetre: return 0.55
-        case .seventyFiveMillimetre: return 0.45
+        case .eightMillimetre: return 3.0
+        case .sixteenMillimetre: return 1.8
+        case .thirtyFiveMillimetre: return 1.0
+        case .seventyFiveMillimetre: return 0.55
         }
     }
 
@@ -67,10 +67,10 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
         }
     }
 
-    /// The reference gauge: the 16mm rung carries the stock's authored grain
-    /// size (size multiplier 1.0), so it is what a render falls back to when no
-    /// gauge is selected. Its presence is 0.95 by design, not 1.0.
-    static let neutral: PrintGauge = .sixteenMillimetre
+    /// The reference gauge: 35mm carries the stock's authored grain size (size
+    /// multiplier 1.0), so it is what a render falls back to when no gauge is
+    /// selected.
+    static let neutral: PrintGauge = .thirtyFiveMillimetre
 }
 
 /// Pure grain math shared by the Metal kernel and the CPU-side uniforms so the
@@ -92,8 +92,15 @@ enum GrainModel {
     /// 0.95. The remaining graininess at 75mm is removed by the 0.15 amplitude
     /// multiplier, not by pushing size further into the aliased zone.
     static func effectiveSize(stockGrainSize: Float, gauge: PrintGauge) -> Float {
+        effectiveSize(stockGrainSize: stockGrainSize, sizeMultiplier: gauge.sizeMultiplier)
+    }
+
+    /// Effective footprint from an explicit size multiplier. The debug sheet
+    /// uses this so size can be dialled without also moving presence.
+    static func effectiveSize(stockGrainSize: Float, sizeMultiplier: Float) -> Float {
         let safeStock = stockGrainSize.isFinite && stockGrainSize > 0 ? stockGrainSize : 1.0
-        return min(max(safeStock * gauge.sizeMultiplier, footprintFloor), footprintCeiling)
+        let safeMultiplier = sizeMultiplier.isFinite && sizeMultiplier > 0 ? sizeMultiplier : 1.0
+        return min(max(safeStock * safeMultiplier, footprintFloor), footprintCeiling)
     }
 
     /// Composition rule: amount = baseAmount x gaugeAmplitude x edgeFactor.

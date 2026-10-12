@@ -408,6 +408,10 @@ final class PipelineRenderer: @unchecked Sendable {
     struct DebugFrameParameters: Sendable, Equatable {
         var gauge: PrintGauge
         var stockGrainSize: Float
+        /// Grain size and presence are dialled independently here, so the two
+        /// axes can be compared on one frame. Picking a gauge re-seeds both.
+        var sizeMultiplier: Float
+        var presenceMultiplier: Float
         var edgeBoostMultiplier: Float
         var halationStrength: Float
         var halationRadiusFraction: Float
@@ -417,8 +421,11 @@ final class PipelineRenderer: @unchecked Sendable {
         /// Seed every dial from a stock so the debug sheet opens on the shipping
         /// look for that stock.
         init(config: FilmStockConfig) {
-            self.gauge = config.effectivePrintGauge
+            let gauge = config.effectivePrintGauge
+            self.gauge = gauge
             self.stockGrainSize = config.grainSize
+            self.sizeMultiplier = gauge.sizeMultiplier
+            self.presenceMultiplier = gauge.amplitudeMultiplier
             self.edgeBoostMultiplier = config.effectiveRecipe.edgeBoostMultiplier
             self.halationStrength = config.halationStrength
             self.halationRadiusFraction = config.halationRadiusFraction
@@ -426,14 +433,20 @@ final class PipelineRenderer: @unchecked Sendable {
             self.glowStrength = config.glowStrength
         }
 
-        /// The gauge owns grain presence as well as size, so amplitude is derived
-        /// from it rather than dialled independently.
-        var gaugeAmplitude: Float { gauge.amplitudeMultiplier }
+        /// Re-seed size and presence from a gauge's authored multipliers.
+        mutating func applyGauge(_ gauge: PrintGauge) {
+            self.gauge = gauge
+            sizeMultiplier = gauge.sizeMultiplier
+            presenceMultiplier = gauge.amplitudeMultiplier
+        }
 
-        /// Realized grain footprint the kernel will use (stock size × gauge size,
-        /// clamped off the 128³ volume's undersampled floor).
+        var gaugeAmplitude: Float { presenceMultiplier }
+
+        /// Realized grain footprint the kernel will use (stock size × the size
+        /// dial, clamped off the 128³ volume's undersampled floor).
         var realizedFootprint: Float {
-            GrainModel.effectiveSize(stockGrainSize: stockGrainSize, gauge: gauge)
+            GrainModel.effectiveSize(stockGrainSize: stockGrainSize,
+                                     sizeMultiplier: sizeMultiplier)
         }
 
         /// Realized grain amount at an edge factor of 1: base amount scaled by the

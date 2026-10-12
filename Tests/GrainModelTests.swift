@@ -7,25 +7,23 @@ import Testing
 struct GrainModelTests {
     private let tolerance: Float = 0.0001
 
-    @Test func gaugeSizeAxisIsMonotonicAnd16mmIsTheReference() {
+    @Test func gaugeSizeAxisIsMonotonicAnd35mmIsTheReference() {
         // Nominal multipliers are strictly monotonic across the ladder.
         let multipliers = PrintGauge.allCases.sorted { $0.sizeMultiplier < $1.sizeMultiplier }
             .map(\.sizeMultiplier)
-        #expect(multipliers == [0.45, 0.55, 1.0, 1.8], "unexpected ladder: \(multipliers)")
-        // The 16mm rung carries the stock's authored size and is the reference.
-        #expect(abs(PrintGauge.sixteenMillimetre.sizeMultiplier - 1.0) < tolerance)
-        #expect(PrintGauge.neutral == .sixteenMillimetre)
-        // Effective footprints stay ordered from the reference upward. The two
-        // finest rungs are both pinned by the sampling floor, which is intended:
-        // they differ by presence, not by footprint.
+        #expect(multipliers == [0.55, 1.0, 1.8, 3.0], "unexpected ladder: \(multipliers)")
+        // 35mm carries the stock's authored size and is the reference.
+        #expect(abs(PrintGauge.thirtyFiveMillimetre.sizeMultiplier - 1.0) < tolerance)
+        #expect(PrintGauge.neutral == .thirtyFiveMillimetre)
+        // Effective footprints are ordered across the whole ladder.
         let stock: Float = 1.3
+        let fine = GrainModel.effectiveSize(stockGrainSize: stock, gauge: .seventyFiveMillimetre)
+        let neutral = GrainModel.effectiveSize(stockGrainSize: stock, gauge: .thirtyFiveMillimetre)
         let medium = GrainModel.effectiveSize(stockGrainSize: stock, gauge: .sixteenMillimetre)
         let coarse = GrainModel.effectiveSize(stockGrainSize: stock, gauge: .eightMillimetre)
-        #expect(medium < coarse, "8mm must be coarser than the reference: \(medium) -> \(coarse)")
-        #expect(coarse >= medium * 1.5, "8mm should be a real step up: \(medium) -> \(coarse)")
-        #expect(GrainModel.effectiveSize(stockGrainSize: stock, gauge: .seventyFiveMillimetre)
-                == GrainModel.effectiveSize(stockGrainSize: stock, gauge: .thirtyFiveMillimetre),
-                "the two finest rungs are floored, so they share a footprint")
+        #expect(fine < neutral && neutral < medium && medium < coarse,
+                "footprint must grow 75mm < 35mm < 16mm < 8mm: \(fine), \(neutral), \(medium), \(coarse)")
+        #expect(coarse >= neutral * 2.5, "8mm should be a real step up: \(neutral) -> \(coarse)")
     }
 
     @Test func gaugeOwnsPresenceAnd75mmIsExtremelySubtle() {
