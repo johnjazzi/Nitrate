@@ -382,6 +382,12 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                 writer.cancelWriting()
             }
         }
+#if DEBUG
+        print("Capture failed: appendedVideoFrames=\(appendedVideoFrames), " +
+              "recentDrops=\(recentDropTimes.count), writerStatus=\(writer?.status.rawValue ?? -1), " +
+              "writerError=\(writer?.error?.localizedDescription ?? "none"), " +
+              "reason=\(error.localizedDescription)")
+#endif
         complete(.failure(error))
     }
 
