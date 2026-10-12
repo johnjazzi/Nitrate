@@ -304,6 +304,8 @@ enum RenderMovieMetadata {
             "iso": String(Int(config.defaultISO)), "iso-role": "selected-render-exposure-index",
             "halation-level": String(config.halationStrength), "glow-level": String(config.glowStrength),
             "grain-size": String(config.grainSize), "recipe-version": config.effectiveRecipe.version,
+            "grain-algorithm": config.effectiveRecipe.grainAlgorithm,
+            "grain-edge-boost-multiplier": String(config.effectiveRecipe.edgeBoostMultiplier),
             "shutter-speed": "1/48", "shutter-angle": "180",
             "encoding-codec": RenderEncodingContract.codec,
             "encoding-bitrate-target": String(bitrate),

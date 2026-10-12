@@ -778,6 +778,7 @@ final class PipelineRenderer: @unchecked Sendable {
             frameIndex: frameIndex,
             iso: config.defaultISO,
             grainSize: config.grainSize,
+            edgeBoostMultiplier: config.effectiveRecipe.edgeBoostMultiplier,
             width: width,
             height: height
         )
@@ -910,6 +911,7 @@ final class PipelineRenderer: @unchecked Sendable {
         frameIndex: UInt32,
         iso: Float,
         grainSize: Float,
+        edgeBoostMultiplier: Float,
         width: Int,
         height: Int
     ) -> Bool {
@@ -922,7 +924,10 @@ final class PipelineRenderer: @unchecked Sendable {
             return false
         }
 
-        var uniforms = GrainUniforms(frameIndex: frameIndex, iso: iso, grainSize: grainSize)
+        var uniforms = GrainUniforms(
+            frameIndex: frameIndex, iso: iso, grainSize: grainSize,
+            edgeBoostMultiplier: edgeBoostMultiplier
+        )
 
         encoder.setComputePipelineState(pass2Pipeline!)
         encoder.setTexture(inputTexture, index: 0)
@@ -1137,7 +1142,7 @@ struct GrainUniforms {
     var frameIndex: UInt32
     var iso: Float
     var grainSize: Float
-    var padding: Float = 0
+    var edgeBoostMultiplier: Float = 0
 }
 
 /// Everything one frame needs to be graded and appended, bundled so the frame

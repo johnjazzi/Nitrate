@@ -89,6 +89,8 @@ struct RenderContractTests {
             #expect(values["com.filmemulation.iso-role"] == "selected-render-exposure-index")
             #expect(values["com.filmemulation.shutter-speed"] == "1/48")
             #expect(values["com.filmemulation.shutter-angle"] == "180")
+            #expect(values["com.filmemulation.grain-algorithm"] == config.effectiveRecipe.grainAlgorithm)
+            #expect(values["com.filmemulation.grain-edge-boost-multiplier"] == String(config.effectiveRecipe.edgeBoostMultiplier))
             #expect(values["com.filmemulation.render-settings-schema"] == "1")
             let json = try #require(values["com.filmemulation.render-settings"])
             let snapshot = try JSONDecoder().decode(RenderDiagnosticsManifest.RecipeSnapshot.self, from: Data(json.utf8))
@@ -123,6 +125,8 @@ struct RenderContractTests {
         }
         #expect(values["com.filmemulation.shutter-speed"] == "1/48")
         #expect(values["com.filmemulation.shutter-angle"] == "180")
+        #expect(values["com.filmemulation.grain-algorithm"] == config.effectiveRecipe.grainAlgorithm)
+        #expect(values["com.filmemulation.grain-edge-boost-multiplier"] == String(config.effectiveRecipe.edgeBoostMultiplier))
     }
 
     @Test func deliveryContractTagsSDRRec709() {
@@ -142,10 +146,17 @@ struct RenderContractTests {
         let cli = try stocks("Resources/stocks.json")
         #expect(app == cli)
         for config in app { try config.validate() }
+        let shippedGrainStocks = app.filter {
+            ["cinestill50d_k2383", "kodak250d_k2383", "kodak200t_k2383", "kodak500t_k2383"].contains($0.stockId)
+        }
+        #expect(shippedGrainStocks.count == 4)
+        #expect(shippedGrainStocks.allSatisfy { $0.effectiveRecipe.grainAlgorithm == RenderRecipe.edgeAmplitudeAlgorithm })
+        #expect(shippedGrainStocks.allSatisfy { $0.effectiveRecipe.edgeBoostMultiplier == 3 })
         let template = try #require(app.first { $0.stockId == "kodak500t_k2383" })
         #expect(template.grainSize == 1.3)
-        #expect(template.effectiveRecipe.version == "500t-current-v5")
-        #expect(template.effectiveRecipe.grainAlgorithm == "coherent-multiscale-mean-preserving-softness-v2")
+        #expect(template.effectiveRecipe.version == "500t-current-v6")
+        #expect(template.effectiveRecipe.grainAlgorithm == RenderRecipe.edgeAmplitudeAlgorithm)
+        #expect(template.effectiveRecipe.edgeBoostMultiplier == 3)
         let low = template.overridingISO(250)
         let high = template.overridingISO(1000)
         #expect(low.recipe == high.recipe)
@@ -191,7 +202,7 @@ struct RenderContractTests {
     @Test func recipeRoundTripAndRevisionEvidence() throws {
         var config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
         let first = RenderDiagnosticsManifest.RecipeSnapshot(config: config, averageBitRate: RenderEncodingContract.averageBitRate, codec: RenderEncodingContract.codec)
-        config.recipe?.version = "500t-current-v6"
+        config.recipe?.version = "500t-current-v7"
         let second = RenderDiagnosticsManifest.RecipeSnapshot(config: config, averageBitRate: RenderEncodingContract.averageBitRate, codec: RenderEncodingContract.codec)
         let data = try JSONEncoder().encode(second)
         let decoded = try JSONDecoder().decode(RenderDiagnosticsManifest.RecipeSnapshot.self, from: data)
@@ -238,6 +249,33 @@ struct RenderContractTests {
         #expect(throws: RenderContractError.self) { try historical.validate() }
     }
 
+    @Test func grainRecipeArchivesPreserveVersionedEdgeBoostDefaults() throws {
+        let current = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any])
+        var recipe = try #require(object["recipe"] as? [String: Any])
+
+        recipe.removeValue(forKey: "edgeBoostMultiplier")
+        object["recipe"] = recipe
+        let newRecipeWithoutScalar = try JSONDecoder().decode(FilmStockConfig.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        #expect(newRecipeWithoutScalar.effectiveRecipe.edgeBoostMultiplier == 3)
+        try newRecipeWithoutScalar.validate()
+
+        recipe["grainAlgorithm"] = RenderRecipe.legacyGrainAlgorithm
+        recipe["version"] = "500t-current-v5"
+        object["recipe"] = recipe
+        let legacyRecipe = try JSONDecoder().decode(FilmStockConfig.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        #expect(legacyRecipe.effectiveRecipe.edgeBoostMultiplier == 0)
+        try legacyRecipe.validate()
+
+        recipe["edgeBoostMultiplier"] = 3
+        object["recipe"] = recipe
+        let invalidLegacyRecipe = try JSONDecoder().decode(FilmStockConfig.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        #expect(throws: RenderContractError.self) { try invalidLegacyRecipe.validate() }
+    }
+
     @Test func invalidParametersIdentifyTheStock() throws {
         let config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
         for iso: Float in [.nan, .infinity, 0, -1] {
@@ -253,6 +291,11 @@ struct RenderContractTests {
         invalid = config
         invalid.recipe?.grainAlgorithm = "unknown"
         #expect(throws: RenderContractError.self) { try invalid.validate() }
+        for multiplier: Float in [-1, 4] {
+            var badMultiplier = config
+            badMultiplier.recipe?.edgeBoostMultiplier = multiplier
+            #expect(throws: RenderContractError.self) { try badMultiplier.validate() }
+        }
         for field in ["halationStrength", "glowStrength", "grainSize"] {
             var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as? [String: Any])
             object[field] = -1

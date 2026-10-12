@@ -16,11 +16,11 @@ struct GrainABITests {
         #expect(MemoryLayout<GrainUniforms>.offset(of: \.frameIndex) == 0)
         #expect(MemoryLayout<GrainUniforms>.offset(of: \.iso) == 4)
         #expect(MemoryLayout<GrainUniforms>.offset(of: \.grainSize) == 8)
-        #expect(MemoryLayout<GrainUniforms>.offset(of: \.padding) == 12)
+        #expect(MemoryLayout<GrainUniforms>.offset(of: \.edgeBoostMultiplier) == 12)
     }
 
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func gpuReceivesISOAndGrainSizeIntact() throws {
+    func gpuReceivesEdgeBoostMultiplierIntact() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
 
         // Same struct layout as Resources/Shaders/grain.metal, so this kernel
@@ -33,7 +33,7 @@ struct GrainABITests {
             uint  frameIndex;
             float iso;
             float grainSize;
-            float padding;
+            float edgeBoostMultiplier;
         };
 
         kernel void echo_grain_uniforms(
@@ -43,7 +43,7 @@ struct GrainABITests {
             out[0] = uint4(u.frameIndex,
                            as_type<uint>(u.iso),
                            as_type<uint>(u.grainSize),
-                           as_type<uint>(u.padding));
+                           as_type<uint>(u.edgeBoostMultiplier));
         }
         """
 
@@ -54,11 +54,12 @@ struct GrainABITests {
 
         let expectedISO = Float(123.456)
         let expectedGrainSize = Float(7.89)
+        let expectedEdgeBoost = Float(2.75)
         var uniforms = GrainUniforms(
             frameIndex: 0xDEAD_BEEF,
             iso: expectedISO,
             grainSize: expectedGrainSize,
-            padding: 42.0
+            edgeBoostMultiplier: expectedEdgeBoost
         )
         let outBuffer = try #require(device.makeBuffer(length: MemoryLayout<UInt32>.size * 4, options: .storageModeShared))
 
@@ -79,6 +80,6 @@ struct GrainABITests {
         #expect(out[0] == 0xDEAD_BEEF)
         #expect(Float(bitPattern: out[1]) == expectedISO)
         #expect(Float(bitPattern: out[2]) == expectedGrainSize)
-        #expect(Float(bitPattern: out[3]) == 42.0)
+        #expect(Float(bitPattern: out[3]) == expectedEdgeBoost)
     }
 }

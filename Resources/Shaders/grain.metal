@@ -12,7 +12,7 @@ struct GrainUniforms {
     uint  frameIndex;   // Current frame number for z-slice selection
     float iso;           // ISO value scaling grain intensity
     float grainSize;     // grain particle size (film stock specific)
-    float padding;
+    float edgeBoostMultiplier;
 };
 
 /// Pass 2: 3D noise volume grain with temporal coherence (AD-9).
@@ -47,11 +47,25 @@ kernel void pass2_grain(
     float3 rightColor = input.read(right).rgb;
     float3 upColor = input.read(up).rgb;
     float3 downColor = input.read(down).rgb;
+    float3 safeLeft = select(float3(0.0f), leftColor, isfinite(leftColor));
+    float3 safeRight = select(float3(0.0f), rightColor, isfinite(rightColor));
+    float3 safeUp = select(float3(0.0f), upColor, isfinite(upColor));
+    float3 safeDown = select(float3(0.0f), downColor, isfinite(downColor));
     float3 softened = source * 0.5f
-        + select(float3(0.0f), leftColor, isfinite(leftColor)) * 0.125f
-        + select(float3(0.0f), rightColor, isfinite(rightColor)) * 0.125f
-        + select(float3(0.0f), upColor, isfinite(upColor)) * 0.125f
-        + select(float3(0.0f), downColor, isfinite(downColor)) * 0.125f;
+        + safeLeft * 0.125f
+        + safeRight * 0.125f
+        + safeUp * 0.125f
+        + safeDown * 0.125f;
+
+    float sourceLumaLeft = dot(safeLeft, float3(0.2126f, 0.7152f, 0.0722f));
+    float sourceLumaRight = dot(safeRight, float3(0.2126f, 0.7152f, 0.0722f));
+    float sourceLumaUp = dot(safeUp, float3(0.2126f, 0.7152f, 0.0722f));
+    float sourceLumaDown = dot(safeDown, float3(0.2126f, 0.7152f, 0.0722f));
+    float edgeMagnitude = length(float2(sourceLumaRight - sourceLumaLeft, sourceLumaDown - sourceLumaUp));
+    float edgeBoost = isfinite(uniforms.edgeBoostMultiplier)
+        && uniforms.edgeBoostMultiplier >= 0.0f && uniforms.edgeBoostMultiplier <= 3.0f
+        ? uniforms.edgeBoostMultiplier : 0.0f;
+    float edgeFactor = 1.0f + saturate(edgeMagnitude * 3.0f) * edgeBoost;
 
     float iso = isfinite(uniforms.iso) ? max(uniforms.iso, 0.0f) : 0.0f;
     float grainSize = isfinite(uniforms.grainSize) && uniforms.grainSize > 0.0f
@@ -93,7 +107,7 @@ kernel void pass2_grain(
     float luminance = dot(base, float3(0.2126f, 0.7152f, 0.0722f));
     float latitude = smoothstep(0.015f, 0.13f, luminance)
         * (1.0f - smoothstep(0.78f, 0.98f, luminance));
-    float amount = 0.55f * intensity * (0.8f + 0.2f * min(grainSize, 2.0f));
+    float amount = 0.55f * intensity * (0.8f + 0.2f * min(grainSize, 2.0f)) * edgeFactor;
     float3 excursion = grain * (amount * latitude);
     excursion += fine * (0.004f * latitude);
 

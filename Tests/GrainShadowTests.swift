@@ -11,6 +11,11 @@ struct GrainShadowTests {
     private static let stockGrainSettings: [(iso: Float, grainSize: Float)] = [
         (50, 0.6), (250, 1.0), (200, 0.8), (500, 1.3)
     ]
+    private static var benchmarkEnvironment: [String: String] { ProcessInfo.processInfo.environment }
+    private static var benchmarkRequested: Bool {
+        benchmarkEnvironment["GRAIN_BENCHMARK"] == "1"
+            || benchmarkEnvironment["XCODE_TEST_GRAIN_BENCHMARK"] == "1"
+    }
 
     private struct PixelStats {
         let mean: SIMD3<Double>
@@ -27,7 +32,7 @@ struct GrainShadowTests {
         var frameIndex: UInt32
         var iso: Float
         var grainSize: Float
-        var padding: Float = 0
+        var edgeBoostMultiplier: Float = 0
     }
 
     private final class BundleToken {}
@@ -141,6 +146,29 @@ struct GrainShadowTests {
         return input
     }
 
+    private static func edgeInputTexture(device: MTLDevice, width: Int, height: Int) throws -> MTLTexture {
+        let input = try texture(device: device, format: .rgba16Float, usage: [.shaderRead], width: width, height: height)
+        var values = [Float16](repeating: 1, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let value: Float16 = x < width / 2 ? 0.30 : 0.70
+                let index = (y * width + x) * 4
+                values[index] = value
+                values[index + 1] = value
+                values[index + 2] = value
+            }
+        }
+        values.withUnsafeBytes { bytes in
+            input.replace(
+                region: MTLRegionMake2D(0, 0, width, height),
+                mipmapLevel: 0,
+                withBytes: bytes.baseAddress!,
+                bytesPerRow: width * 4 * MemoryLayout<Float16>.size
+            )
+        }
+        return input
+    }
+
     private static func constantGrainVolume(device: MTLDevice) throws -> MTLTexture {
         let values = [Float](repeating: 0.5, count: side * side * side)
         let descriptor = MTLTextureDescriptor()
@@ -178,13 +206,17 @@ struct GrainShadowTests {
         frame: UInt32,
         input inputOverride: MTLTexture? = nil,
         width requestedWidth: Int? = nil,
-        height requestedHeight: Int? = nil
+        height requestedHeight: Int? = nil,
+        edgeBoostMultiplier: Float = 0
     ) throws -> PixelStats {
         let width = requestedWidth ?? inputOverride?.width ?? side
         let height = requestedHeight ?? inputOverride?.height ?? side
         let input = try inputOverride ?? inputTexture(device: device, color: color, width: width, height: height)
         let output = try texture(device: device, format: .bgra8Unorm, usage: [.shaderWrite], width: width, height: height)
-        var uniforms = GrainUniforms(frameIndex: frame, iso: iso, grainSize: grainSize)
+        var uniforms = GrainUniforms(
+            frameIndex: frame, iso: iso, grainSize: grainSize,
+            edgeBoostMultiplier: edgeBoostMultiplier
+        )
         guard let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else {
             throw TestFailure("Could not encode production grain kernel")
         }
@@ -240,6 +272,47 @@ struct GrainShadowTests {
             whiteClipped: whites, alphaMismatches: alphaMismatches, channels: channels,
             width: width, height: height
         )
+    }
+
+    private static func dispatchTimed(
+        device: MTLDevice,
+        queue: MTLCommandQueue,
+        pipeline: MTLComputePipelineState,
+        volume: MTLTexture,
+        input: MTLTexture,
+        output: MTLTexture,
+        frame: UInt32,
+        iso: Float,
+        grainSize: Float,
+        edgeBoostMultiplier: Float
+    ) throws -> TimeInterval {
+        var uniforms = GrainUniforms(
+            frameIndex: frame, iso: iso, grainSize: grainSize,
+            edgeBoostMultiplier: edgeBoostMultiplier
+        )
+        guard let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else {
+            throw TestFailure("Could not encode isolated 4K grain benchmark")
+        }
+        encoder.setComputePipelineState(pipeline)
+        encoder.setTexture(input, index: 0)
+        encoder.setTexture(output, index: 1)
+        encoder.setTexture(volume, index: 2)
+        encoder.setBytes(&uniforms, length: MemoryLayout<GrainUniforms>.size, index: 0)
+        encoder.dispatchThreadgroups(
+            MTLSize(width: (input.width + 15) / 16, height: (input.height + 15) / 16, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1)
+        )
+        encoder.endEncoding()
+        command.commit()
+        command.waitUntilCompleted()
+        guard command.status == .completed else {
+            throw TestFailure("Isolated 4K grain benchmark failed: \(String(describing: command.error))")
+        }
+        let gpuDuration = command.gpuEndTime - command.gpuStartTime
+        guard gpuDuration.isFinite, gpuDuration > 0 else {
+            throw TestFailure("Metal GPU timestamps were unavailable for the isolated benchmark")
+        }
+        return gpuDuration
     }
 
     private static func context(_ color: SIMD3<Float>, _ stats: PixelStats, frame: UInt32) -> String {
@@ -382,7 +455,7 @@ struct GrainShadowTests {
             let color = SIMD3<Float>(repeating: value)
             let stats = try Self.run(
                 device: device, queue: queue, pipeline: pipeline, volume: volume,
-                color: color, iso: 500, grainSize: 1.3, frame: 17
+                color: color, iso: 500, grainSize: 1.3, frame: 17, edgeBoostMultiplier: 3
             )
             let details = Self.context(color, stats, frame: 17)
             #expect(stats.mean == SIMD3<Double>(repeating: Double(value)), "\(details)")
@@ -394,7 +467,7 @@ struct GrainShadowTests {
         for frame in Self.frames {
             let stats = try Self.run(
                 device: device, queue: queue, pipeline: pipeline, volume: volume,
-                color: color, iso: 500, grainSize: 1.3, frame: frame
+                color: color, iso: 500, grainSize: 1.3, frame: frame, edgeBoostMultiplier: 3
             )
             let details = Self.context(color, stats, frame: frame)
             #expect(stats.alphaMismatches == 0, "\(details)")
@@ -576,6 +649,216 @@ struct GrainShadowTests {
         #expect(flat.channels.allSatisfy { Set($0).count == 1 }, "constant patches must remain byte-identical")
         #expect(abs(flat.mean.x - 0.5) <= 0.002, "constant patch mean should remain stable: \(flat.mean)")
         #expect(flat.alphaMismatches == 0, "alpha must survive prefiltering")
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func edgeBoostChangesOnlyTransitionsAndKeepsRealVolumeFlatPatchesExact() throws {
+        let (device, queue, pipeline, volume) = try Self.setup()
+        var edge = [Float16](repeating: 1, count: Self.side * Self.side * 4)
+        for y in 0..<Self.side {
+            for x in 0..<Self.side {
+                let index = (y * Self.side + x) * 4
+                let rgb: SIMD3<Float16> = x < Self.side / 2
+                    ? SIMD3<Float16>(0.30, 0.40, 0.45)
+                    : SIMD3<Float16>(0.70, 0.60, 0.55)
+                edge[index] = rgb.x
+                edge[index + 1] = rgb.y
+                edge[index + 2] = rgb.z
+            }
+        }
+        let edgeInput = try Self.inputTexture(device: device, values: edge)
+        let settings = (color: SIMD3<Float>(repeating: 0.5), iso: Float(500), grainSize: Float(1.3), frame: UInt32(27))
+        let off = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: settings.color, iso: settings.iso, grainSize: settings.grainSize,
+            frame: settings.frame, input: edgeInput
+        )
+        let on = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: settings.color, iso: settings.iso, grainSize: settings.grainSize,
+            frame: settings.frame, input: edgeInput, edgeBoostMultiplier: 3
+        )
+        let flatBase = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: Self.constantGrainVolume(device: device),
+            color: settings.color, iso: settings.iso, grainSize: settings.grainSize,
+            frame: settings.frame, input: edgeInput
+        )
+        func transitionResidualVariance(_ stats: PixelStats) -> Double {
+            var residuals = [Double]()
+            for y in 0..<Self.side {
+                for x in [Self.side / 2 - 1, Self.side / 2] {
+                    let index = y * Self.side + x
+                    for channel in 0..<3 {
+                        residuals.append(Double(Int(stats.channels[channel][index]) - Int(flatBase.channels[channel][index])))
+                    }
+                }
+            }
+            let mean = residuals.reduce(0, +) / Double(residuals.count)
+            return residuals.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(residuals.count)
+        }
+        var distantDelta = 0
+        for y in 0..<Self.side {
+            for x in 0..<Self.side {
+                let index = y * Self.side + x
+                let delta = zip(off.channels, on.channels).reduce(0) { total, pair in
+                    total + abs(Int(pair.0[index]) - Int(pair.1[index]))
+                }
+                if x != Self.side / 2 - 1 && x != Self.side / 2 {
+                    distantDelta += delta
+                }
+            }
+        }
+        let offTransitionVariance = transitionResidualVariance(off)
+        let onTransitionVariance = transitionResidualVariance(on)
+        #expect(onTransitionVariance > offTransitionVariance * 1.15,
+                "edge boost should increase real-volume residual variance at the transition: \(offTransitionVariance) -> \(onTransitionVariance)")
+        #expect(distantDelta == 0, "pixels outside the source gradient must remain byte-identical")
+        #expect(on.alphaMismatches == 0)
+        #expect(on.blackClipped == SIMD3<Int>(repeating: 0))
+        #expect(on.whiteClipped == SIMD3<Int>(repeating: 0))
+
+        let flatOff = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: settings.color, iso: settings.iso, grainSize: settings.grainSize, frame: settings.frame
+        )
+        let flatOn = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: settings.color, iso: settings.iso, grainSize: settings.grainSize,
+            frame: settings.frame, edgeBoostMultiplier: 3
+        )
+        #expect(flatOn.channels == flatOff.channels, "constant RGB must be byte-identical with edge boost")
+        #expect(flatOn.mean == flatOff.mean)
+        #expect(flatOn.variance == flatOff.variance)
+
+        for invalidBoost: Float in [-1, 4, .nan, .infinity] {
+            let invalid = try Self.run(
+                device: device, queue: queue, pipeline: pipeline, volume: volume,
+                color: settings.color, iso: settings.iso, grainSize: settings.grainSize,
+                frame: settings.frame, input: edgeInput, edgeBoostMultiplier: invalidBoost
+            )
+            #expect(invalid.channels == off.channels, "invalid shader multiplier must disable edge boost")
+        }
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func isolatedFourKEdgeBoostBenchmark() throws {
+        guard Self.benchmarkRequested else { return }
+        let (device, queue, pipeline, volume) = try Self.setup()
+        let width = 3840
+        let height = 2160
+        let input = try Self.edgeInputTexture(device: device, width: width, height: height)
+        let output = try Self.texture(device: device, format: .bgra8Unorm, usage: [.shaderWrite], width: width, height: height)
+        let sampleCount = 20
+        let warmupCount = 5
+        let settings = (frame: UInt32(37), iso: Float(500), grainSize: Float(1.3))
+
+        for index in 0..<warmupCount {
+            let boost: Float = index.isMultiple(of: 2) ? 0 : 3
+            _ = try Self.dispatchTimed(
+                device: device, queue: queue, pipeline: pipeline, volume: volume,
+                input: input, output: output, frame: settings.frame, iso: settings.iso,
+                grainSize: settings.grainSize, edgeBoostMultiplier: boost
+            )
+        }
+
+        var offTimes = [TimeInterval]()
+        var onTimes = [TimeInterval]()
+        offTimes.reserveCapacity(sampleCount)
+        onTimes.reserveCapacity(sampleCount)
+        for index in 0..<sampleCount {
+            if index.isMultiple(of: 2) {
+                offTimes.append(try Self.dispatchTimed(
+                    device: device, queue: queue, pipeline: pipeline, volume: volume,
+                    input: input, output: output, frame: settings.frame, iso: settings.iso,
+                    grainSize: settings.grainSize, edgeBoostMultiplier: 0
+                ))
+                onTimes.append(try Self.dispatchTimed(
+                    device: device, queue: queue, pipeline: pipeline, volume: volume,
+                    input: input, output: output, frame: settings.frame, iso: settings.iso,
+                    grainSize: settings.grainSize, edgeBoostMultiplier: 3
+                ))
+            } else {
+                onTimes.append(try Self.dispatchTimed(
+                    device: device, queue: queue, pipeline: pipeline, volume: volume,
+                    input: input, output: output, frame: settings.frame, iso: settings.iso,
+                    grainSize: settings.grainSize, edgeBoostMultiplier: 3
+                ))
+                offTimes.append(try Self.dispatchTimed(
+                    device: device, queue: queue, pipeline: pipeline, volume: volume,
+                    input: input, output: output, frame: settings.frame, iso: settings.iso,
+                    grainSize: settings.grainSize, edgeBoostMultiplier: 0
+                ))
+            }
+        }
+
+        let off = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: SIMD3<Float>(repeating: 0.5), iso: settings.iso,
+            grainSize: settings.grainSize, frame: settings.frame, input: input,
+            width: width, height: height, edgeBoostMultiplier: 0
+        )
+        let on = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: SIMD3<Float>(repeating: 0.5), iso: settings.iso,
+            grainSize: settings.grainSize, frame: settings.frame, input: input,
+            width: width, height: height, edgeBoostMultiplier: 3
+        )
+
+        var transitionByteDelta = 0
+        var changedAwayFromTransition = 0
+        var maximumByteDelta = 0
+        let transitionColumns = [width / 2 - 1, width / 2]
+        for y in 0..<height {
+            for x in 0..<width {
+                let pixel = y * width + x
+                var delta = 0
+                for channel in 0..<3 {
+                    delta += abs(Int(off.channels[channel][pixel]) - Int(on.channels[channel][pixel]))
+                }
+                maximumByteDelta = max(maximumByteDelta, delta)
+                if transitionColumns.contains(x) {
+                    transitionByteDelta += delta
+                } else if delta != 0 {
+                    changedAwayFromTransition += 1
+                }
+            }
+        }
+        #expect(transitionByteDelta > 0, "boosted benchmark must alter the edge response")
+        #expect(changedAwayFromTransition == 0, "benchmark must preserve distant flat pixels")
+
+        func median(_ values: [TimeInterval]) -> TimeInterval {
+            let sorted = values.sorted()
+            return (sorted[sorted.count / 2 - 1] + sorted[sorted.count / 2]) / 2
+        }
+        let offMedian = median(offTimes)
+        let onMedian = median(onTimes)
+        let timingOverhead = onMedian - offMedian
+        let timingOverheadPercent = timingOverhead / offMedian * 100
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let outputPath: URL
+        if let explicitPath = Self.benchmarkEnvironment["GRAIN_BENCHMARK_OUTPUT"]
+            ?? Self.benchmarkEnvironment["XCODE_TEST_GRAIN_BENCHMARK_OUTPUT"] {
+            outputPath = URL(fileURLWithPath: explicitPath)
+        } else {
+            outputPath = root.appendingPathComponent(".pi/tmp/edge-grain-benchmark-2026-10-12.md")
+        }
+        try FileManager.default.createDirectory(at: outputPath.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let report = """
+        # Isolated 4K edge-grain GPU benchmark
+
+        - Device: \(device.name)
+        - Input: 3840×2160 RGBA16Float; output: 3840×2160 BGRA8Unorm; production `pass2_grain` kernel and shipped `grain3d.raw`
+        - Settings: frame \(settings.frame), ISO \(settings.iso), grain size \(settings.grainSize)
+        - Protocol: \(warmupCount) warm-up dispatches alternating boost 0/3; \(sampleCount) paired timed dispatches per setting, run serially with order alternating each pair
+        - GPU load: no competing benchmark work was launched; background system or display GPU load was not measured
+        - Boost 0 median: \(offMedian * 1000) ms (range \(offTimes.min()! * 1000)–\(offTimes.max()! * 1000) ms)
+        - Boost 3 median: \(onMedian * 1000) ms (range \(onTimes.min()! * 1000)–\(onTimes.max()! * 1000) ms)
+        - Timing overhead: \(timingOverhead * 1000) ms median (\(timingOverheadPercent)% versus boost 0)
+        - Transition regression: summed RGB byte delta \(transitionByteDelta); maximum per-pixel RGB byte delta \(maximumByteDelta); changed pixels away from transition \(changedAwayFromTransition)
+        - Limitation: timings describe this device/run and do not establish negligible cost on other devices or under different GPU load.
+        """
+        try report.write(to: outputPath, atomically: true, encoding: .utf8)
+        print("Edge-grain benchmark report: \(outputPath.path)")
     }
 
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))

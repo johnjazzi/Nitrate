@@ -123,7 +123,18 @@ struct RenderRecipe: Codable, Equatable, Sendable {
     var halationAlgorithm: String
     var glowAlgorithm: String
     var grainAlgorithm: String
+    /// Edge-only amplitude multiplier. Legacy v2 archives decode to zero.
+    var edgeBoostMultiplier: Float = 0
     var deliveryAlgorithm: String
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, version, input, output, domainMin, domainMax, domainProvenance
+        case lutAlgorithm, halationAlgorithm, glowAlgorithm, grainAlgorithm
+        case edgeBoostMultiplier, deliveryAlgorithm
+    }
+
+    static let legacyGrainAlgorithm = "coherent-multiscale-mean-preserving-softness-v2"
+    static let edgeAmplitudeAlgorithm = "coherent-multiscale-edge-amplitude-v3"
 
     static let unverified = RenderRecipe(schemaVersion: 1, version: "legacy-unversioned",
         input: .init(gamut: "unverified", transfer: "unverified", provenance: "unverified"),
@@ -132,7 +143,8 @@ struct RenderRecipe: Codable, Equatable, Sendable {
         lutAlgorithm: "resolve-rgb-red-fastest-texel-center-linear-clamp-v2",
         halationAlgorithm: "input-luma-spatial-highlight-addition-v2",
         glowAlgorithm: "blurred-warm-highlight-addition-v2",
-        grainAlgorithm: "coherent-multiscale-mean-preserving-softness-v2",
+        grainAlgorithm: legacyGrainAlgorithm,
+        edgeBoostMultiplier: 0,
         deliveryAlgorithm: "clamp-bgra8-hevc-rec709-tagged-v1")
 
     var colorContractVerified: Bool {
@@ -160,10 +172,35 @@ struct RenderRecipe: Codable, Equatable, Sendable {
             ("lutAlgorithm", lutAlgorithm, Self.unverified.lutAlgorithm),
             ("halationAlgorithm", halationAlgorithm, Self.unverified.halationAlgorithm),
             ("glowAlgorithm", glowAlgorithm, Self.unverified.glowAlgorithm),
-            ("grainAlgorithm", grainAlgorithm, Self.unverified.grainAlgorithm),
             ("deliveryAlgorithm", deliveryAlgorithm, Self.unverified.deliveryAlgorithm)
         ] { try require(actual == expected, name) }
+        try require(
+            grainAlgorithm == Self.legacyGrainAlgorithm || grainAlgorithm == Self.edgeAmplitudeAlgorithm,
+            "grainAlgorithm"
+        )
+        try require(edgeBoostMultiplier.isFinite && (0...3).contains(edgeBoostMultiplier), "edgeBoostMultiplier")
+        try require(grainAlgorithm != Self.legacyGrainAlgorithm || edgeBoostMultiplier == 0, "edgeBoostMultiplier")
         try require(domainMin == [0, 0, 0] && domainMax == [1, 1, 1], "unsupported sampling domain")
+    }
+}
+
+extension RenderRecipe {
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        version = try values.decode(String.self, forKey: .version)
+        input = try values.decode(ColorInterpretation.self, forKey: .input)
+        output = try values.decode(ColorInterpretation.self, forKey: .output)
+        domainMin = try values.decode([Float].self, forKey: .domainMin)
+        domainMax = try values.decode([Float].self, forKey: .domainMax)
+        domainProvenance = try values.decode(String.self, forKey: .domainProvenance)
+        lutAlgorithm = try values.decode(String.self, forKey: .lutAlgorithm)
+        halationAlgorithm = try values.decode(String.self, forKey: .halationAlgorithm)
+        glowAlgorithm = try values.decode(String.self, forKey: .glowAlgorithm)
+        grainAlgorithm = try values.decode(String.self, forKey: .grainAlgorithm)
+        edgeBoostMultiplier = try values.decodeIfPresent(Float.self, forKey: .edgeBoostMultiplier)
+            ?? (grainAlgorithm == Self.edgeAmplitudeAlgorithm ? 3 : 0)
+        deliveryAlgorithm = try values.decode(String.self, forKey: .deliveryAlgorithm)
     }
 }
 

@@ -145,7 +145,7 @@ struct PipelineStageAvailabilityTests {
         let output = try makeOutput(device: device)
         let grainVolume = try makeGrainVolume(device: device)
 
-        var uniforms = GrainUniforms(frameIndex: 0, iso: iso, grainSize: 1.3)
+        var uniforms = GrainUniforms(frameIndex: 0, iso: iso, grainSize: 1.3, edgeBoostMultiplier: 0)
         let buffer = try #require(queue.makeCommandBuffer())
         let encoder = try #require(buffer.makeComputeCommandEncoder())
         encoder.setComputePipelineState(pipeline)
