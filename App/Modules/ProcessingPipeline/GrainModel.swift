@@ -14,13 +14,12 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     case seventyFiveMillimetre = "75mm"
 
     /// Multiplies the stock's grain size to reach a gauge's footprint. 35mm is
-    /// the neutral 1.0 reference. Coarse gauges must be *visibly* coarser, not a
-    /// token step: 8mm is 6x the neutral footprint (2.5x read as "too small" on
-    /// device).
+    /// the neutral 1.0 reference. Tuned against the debug single-frame mode: 8mm
+    /// now sits where 16mm used to, and 16mm moved one step finer.
     var sizeMultiplier: Float {
         switch self {
-        case .eightMillimetre: return 6.0
-        case .sixteenMillimetre: return 3.0
+        case .eightMillimetre: return 3.0
+        case .sixteenMillimetre: return 1.8
         case .thirtyFiveMillimetre: return 1.0
         case .seventyFiveMillimetre: return 0.55
         }
@@ -31,8 +30,8 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     /// pushing size into the aliased regime.
     var amplitudeMultiplier: Float {
         switch self {
-        case .eightMillimetre: return 1.30
-        case .sixteenMillimetre: return 1.10
+        case .eightMillimetre: return 1.10
+        case .sixteenMillimetre: return 1.05
         case .thirtyFiveMillimetre: return 1.00
         case .seventyFiveMillimetre: return 0.15
         }

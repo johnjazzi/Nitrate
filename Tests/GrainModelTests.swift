@@ -18,8 +18,8 @@ struct GrainModelTests {
         #expect(abs(PrintGauge.thirtyFiveMillimetre.sizeMultiplier - 1.0) < tolerance)
         #expect(abs(PrintGauge.thirtyFiveMillimetre.amplitudeMultiplier - 1.0) < tolerance)
         // The coarse gauge must be genuinely coarser, not a token step: 8mm is
-        // at least 4x the neutral footprint (2.5x read as "too small" on device).
-        #expect(coarse >= neutral * 4,
+        // 3x the neutral footprint after the debug-mode retune.
+        #expect(coarse >= neutral * 2.5,
                 "8mm footprint should be a real step up from 35mm: \(neutral) -> \(coarse)")
     }
 

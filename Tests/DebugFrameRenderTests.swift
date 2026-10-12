@@ -178,7 +178,7 @@ struct DebugFrameRenderTests {
         let frame = try Self.makeSyntheticFrame()
 
         var coarse = PipelineRenderer.DebugFrameParameters(config: config)
-        coarse.gauge = .eightMillimetre     // size x 6.0, presence x 1.30
+        coarse.gauge = .eightMillimetre     // size x 3.0, presence x 1.10
         coarse.halationStrength = 0
         coarse.glowStrength = 0
         var fine = coarse
