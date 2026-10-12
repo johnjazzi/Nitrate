@@ -72,8 +72,8 @@ struct CameraControlBar: View {
             HStack(alignment: .center, spacing: 8) {
                 stockControl(faceSize: faceSize)
                 lensPills(faceSize: faceSize)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
-            .frame(maxWidth: .infinity, alignment: .center)
             .frame(height: controlFaceSize)
         }
         .frame(height: controlFaceSize)
@@ -101,7 +101,8 @@ struct CameraControlBar: View {
     }
 
     /// Duotone stripe card with ISO + D/T badge overlaid in black.
-    /// 5 horizontal slices: 1,2,5 = primary color; 3,4 = secondary.
+    /// Five horizontal slices fill the complete button face: 1,2,5 are primary;
+    /// 3,4 are secondary.
     private func stockChip(_ stock: FilmStockConfig, faceSize: CGFloat) -> some View {
         Button {
             onShowStockSheet()
@@ -111,11 +112,12 @@ struct CameraControlBar: View {
                     ForEach(0..<5) { idx in
                         let isPrimary = idx == 0 || idx == 1 || idx == 4
                         (isPrimary ? stock.primaryColor : stock.secondaryColor)
-                            .frame(height: 5)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: faceSize / 5)
                     }
                 }
-                .frame(width: faceSize, height: faceSize * 0.64)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .frame(width: faceSize, height: faceSize)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                 Text("\(Int(currentISO))\(stock.lightType)")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
@@ -127,7 +129,7 @@ struct CameraControlBar: View {
             }
             .frame(width: faceSize, height: faceSize)
         }
-        .buttonStyle(CameraRaisedButtonStyle())
+        .buttonStyle(CameraRaisedButtonStyle(faceColor: stock.primaryColor))
     }
 
     /// One direct selection tile per available camera, including Front.
@@ -366,7 +368,7 @@ struct CameraControlBar: View {
                     .font(.caption.weight(.semibold).monospacedDigit())
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                Text("TIME LEFT")
+                Text("REC LEFT")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(.white.opacity(0.75))
                     .lineLimit(1)

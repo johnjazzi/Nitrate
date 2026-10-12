@@ -3,7 +3,7 @@ import VideoToolbox
 
 /// Selectable capture lenses. Maps a UI-facing name to an AVCaptureDevice type
 /// + position. "Normal" is the rear wide (1x) camera.
-enum CameraLens: String, CaseIterable, Identifiable {
+enum CameraLens: String, CaseIterable, Identifiable, Sendable {
     case ultraWide = "Ultrawide"
     case wide = "Normal"
     case telephoto = "Tele"
@@ -97,7 +97,7 @@ final class CameraSession: NSObject {
     private(set) var activeDevice: AVCaptureDevice?
 
     private var onRecordingFinished: (@MainActor @Sendable (Result<RecordingCompletion, Error>) -> Void)?
-    private var onCameraError: (@MainActor @Sendable (Error) -> Void)?
+    private var onCameraError: (@MainActor @Sendable (Error, CameraLens) -> Void)?
     private var meterGeneration = CameraMeteringGeneration()
     private var recordingStartPending = false
     private var recordingGeneration: UInt64 = 0
@@ -1023,7 +1023,7 @@ final class CameraSession: NSObject {
         }
     }
 
-    func onCameraOperationError(_ handler: @escaping @MainActor @Sendable (Error) -> Void) {
+    func onCameraOperationError(_ handler: @escaping @MainActor @Sendable (Error, CameraLens) -> Void) {
         sessionQueue.async { [weak self] in self?.onCameraError = handler }
     }
 
@@ -1089,7 +1089,12 @@ final class CameraSession: NSObject {
 
     private func reportCameraError(_ error: Error) {
         guard let handler = onCameraError else { return }
-        DispatchQueue.main.async { MainActor.assumeIsolated { handler(error) } }
+        // Attribute queued callbacks to the camera that produced them. A
+        // metering failure can already be enqueued on main when a lens switch
+        // invalidates its generation, so the receiver must reject old-lens
+        // results as well as callbacks that have not fired yet.
+        let sourceLens = activeLens
+        DispatchQueue.main.async { MainActor.assumeIsolated { handler(error, sourceLens) } }
     }
 
     // MARK: - Recording

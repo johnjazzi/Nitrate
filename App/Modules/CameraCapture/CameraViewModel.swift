@@ -184,8 +184,11 @@ final class CameraViewModel {
 
     /// Runs on the main queue once the session has been configured.
     private func startSession() {
-        session.onCameraOperationError { [weak self] error in
-            self?.errorMessage = error.localizedDescription
+        session.onCameraOperationError { [weak self] error, sourceLens in
+            guard let self,
+                  !self.isSwitchingCameraLens,
+                  sourceLens == self.activeLens else { return }
+            self.errorMessage = error.localizedDescription
         }
         session.onFinish { [weak self] result in
             Task { @MainActor in
@@ -288,6 +291,7 @@ final class CameraViewModel {
         pendingLensSwitchCount += 1
         apertureCommandGeneration &+= 1
         isSwitchingCameraLens = true
+        clearStaleApertureError()
         invalidateApertureUIState()
         session.selectCamera(lens) { [weak self] error in
             guard let self else { return }
