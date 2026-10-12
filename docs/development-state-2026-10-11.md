@@ -32,18 +32,13 @@ conflict rejection; Luna fixed it and the coordinator verified the full suite.
 
 ## Branch reconciliation
 
-`codex/integration-camera-render`, `codex/p0-render-reliability`, and
-`branding/film-reel-icon` are all ancestors of the combined `main` baseline.
-Their worktrees remain available as historical references; none has additional
-committed implementation that still needs to be merged into this baseline.
-No branches or worktrees were deleted and no remote operation was performed.
-The local `origin/main` reference was 23 commits behind immediately after the
-fast-forward; it is a cached reference, not a live remote-status check.
-
-The later working-checkout audit found `/tmp/nitrate-camera-render-integration`
-clean at `e58c2d13c7a65bcdb2db2afcbe3d4f449aa5bcd4`, with no commits or patches
-missing from `main`. That checkout remains historical; build the project in the
-canonical checkout to include subsequent color and capture fixes.
+The temporary worktrees for `codex/integration-camera-render`,
+`codex/p0-render-reliability`, and `branding/film-reel-icon` were checked clean
+and removed on 2026-10-11 to avoid opening stale Xcode projects. Their local
+branch references remain. The hardening branch tip is not a direct ancestor of
+`main`; its later project/signing and agent-instruction changes are present in
+the canonical project configuration and instructions. No remote operation was
+performed. `origin/main` is a cached reference, not a live remote-status check.
 
 The existing deleted `docs/development.md` and untracked `docs/prioritization.md`
 are user work. They were preserved through consolidation and excluded from
@@ -145,3 +140,27 @@ the explicit 500T recipe is v4. Older algorithm metadata still decodes but fails
 current execution validation rather than silently reusing a different algorithm.
 This correction and neutral contrast improve adherence to the LUT definition;
 creative matching to Blackmagic remains uncalibrated.
+
+## Natural grain and export encoding
+
+Commit `54c07bc` replaces the discontinuous hashed grain with a coherent
+multiscale field, modest correlated color grain, ISO/stock-size response,
+highlight/shadow latitude, and gentle detail softness as grain grows. The
+grain mask uses output Rec.709 luma: it fades up from near-black through
+shadows/midtones and fades near bright highlights. Render order is LUT,
+spatial halation/glow, grain, then HEVC encode. Halation/glow diffuse graded
+highlights before grain is added over the completed image.
+
+The GPU regression suite exercises bundled production noise and Metal kernels,
+including shadow mean/clipping, ISO response, spatial repeats, edge softness,
+and 128-frame grain RMS stability. The reviewed texel-centered Z-plane sampling
+reduces the measured CPU 4K frame-to-frame RMS pulse from about 35% to 2–3%.
+Offline HEVC frame reordering is enabled to permit B-frame coding; the existing
+60 Mbps target and 48-frame maximum keyframe interval remain unchanged.
+
+Verification on the canonical checkout passed SwiftLint, 78 RenderCLI tests
+(zero failures or skips), generic iOS build, signed iOS build, strict signature
+verification, and `git diff --check`. The export still renders into an 8-bit
+BGRA buffer and the reported bitrate is the requested target. Actual decoded
+grain retention and effective bitrate have not yet been measured on the iPhone
+encoder, so this change makes no phone-quality or film-gauge calibration claim.
