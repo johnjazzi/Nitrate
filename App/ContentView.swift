@@ -1,5 +1,4 @@
 import SwiftUI
-import PhotosUI
 
 /// Single camera screen with stock/queue sheets and a settings gear.
 /// Toggle "Frame Mode" in Settings to show a viewfinder-style preview.
@@ -14,7 +13,6 @@ struct ContentView: View {
     @State private var showQueueSheet = false
     @State private var showSettings = false
     @State private var showFramedPreview = false
-    @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var currentSourceURL: URL?
 
     /// Persisted stock selection — survives across recordings.
@@ -203,7 +201,7 @@ struct ContentView: View {
     // MARK: - Top Bar
 
     /// Active stock lives in the control bar's selector row; the top toolbar
-    /// owns app settings, imports and the live exposure readout.
+    /// owns app settings, the manual controls and the live exposure readout.
     private var topBar: some View {
         VStack(spacing: 2) {
             HStack(spacing: 12) {
@@ -217,31 +215,6 @@ struct ContentView: View {
                         .padding(12)
                 }
                 .buttonStyle(CameraRaisedButtonStyle())
-
-                // Import from Photos
-                PhotosPicker(selection: $selectedPhotoItem, matching: .videos) {
-                    Image(systemName: "square.and.arrow.down")
-                        .font(.title2)
-                        .foregroundStyle(.white)
-                        .padding(12)
-                }
-                .buttonStyle(CameraRaisedButtonStyle())
-                .onChange(of: selectedPhotoItem) { _, item in
-                    guard let item else { return }
-                    Task {
-                        if let data = try? await item.loadTransferable(type: Data.self),
-                           let importURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("imported_\(UUID().uuidString).mov") {
-                            try data.write(to: importURL)
-                            currentSourceURL = importURL
-                            if let stock = selectedStock {
-                                enqueueRender(sourceURL: importURL, stock: stock)
-                            } else {
-                                showStockSheet = true
-                            }
-                        }
-                        selectedPhotoItem = nil
-                    }
-                }
 
                 // Manual zoom/focus pop-over over the preview.
                 Button {
