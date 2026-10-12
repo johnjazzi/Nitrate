@@ -30,6 +30,7 @@ struct FilmEmulationApp: App {
                 renderQueueViewModel: renderQueueViewModel,
                 purchaseViewModel: purchaseViewModel
             )
+            .preferredColorScheme(.dark)
             .onAppear {
                 renderQueueViewModel.library = library
                 renderQueueViewModel.externalErrorMessage = stockLibraryError

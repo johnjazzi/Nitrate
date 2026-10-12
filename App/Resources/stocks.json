@@ -13,8 +13,8 @@
       "outputContrast": 1.0,
       "colorTemperature": 5600,
       "defaultISO": 50,
-      "primaryTint": "#C04035",
-      "secondaryTint": "#5E1510",
+      "primaryTint": "#E9D79B",
+      "secondaryTint": "#C7AE68",
       "recipe": {
         "schemaVersion": 1,
         "version": "50d-current-v1",

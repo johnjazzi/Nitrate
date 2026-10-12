@@ -31,7 +31,7 @@ struct ContentView: View {
             library.videoStocks().first { $0.stockId == id }
         }
         _selectedStock = State(initialValue: stock)
-        _currentISO = State(initialValue: stock.map { library.lastISO(for: $0.stockId) } ?? 400)
+        _currentISO = State(initialValue: stock?.defaultISO ?? 400)
         _selectedLens = State(initialValue: cameraViewModel.activeLens)
     }
 
@@ -364,14 +364,12 @@ private struct StockSheetView: View {
 
     @State private var stocks: [FilmStockConfig] = []
     @State private var localSelection: FilmStockConfig?
-    @State private var iso: Float = 400
     @State private var gauge: PrintGauge = .thirtyFiveMillimetre
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
                 stockPicker
-                if localSelection != nil { isoSlider }
                 if localSelection != nil { gaugePicker }
 
                 if let url = sourceURL {
@@ -394,22 +392,20 @@ private struct StockSheetView: View {
                 stocks = library.videoStocks()
                 if localSelection == nil {
                     localSelection = selectedStock ?? stocks.first
-                    iso = localSelection.flatMap { library.lastISO(for: $0.stockId) } ?? 400
                     gauge = localSelection.flatMap { library.lastGauge(for: $0.stockId) } ?? .thirtyFiveMillimetre
                 }
+                currentISO = localSelection?.defaultISO ?? 400
                 persistPreferences()
             }
             .onDisappear {
                 if let stock = localSelection {
                     selectedStock = stock
-                    currentISO = iso
+                    currentISO = stock.defaultISO
                     library.setSelectedStock(stock.stockId)
-                    library.setISO(iso, for: stock.stockId)
                     library.setGauge(gauge, for: stock.stockId)
                 }
             }
             .onChange(of: localSelection) { _, _ in persistPreferences() }
-            .onChange(of: iso) { _, _ in persistPreferences() }
         }
     }
 
@@ -424,7 +420,7 @@ private struct StockSheetView: View {
                             isSelected: localSelection?.stockId == stock.stockId,
                             action: {
                                 localSelection = stock
-                                iso = library.lastISO(for: stock.stockId)
+                                currentISO = stock.defaultISO
                                 gauge = library.lastGauge(for: stock.stockId) ?? .thirtyFiveMillimetre
                             }
                         )
@@ -434,22 +430,9 @@ private struct StockSheetView: View {
         }
     }
 
-    private var isoSlider: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("ISO: \(Int(iso))").font(.headline)
-            Slider(value: $iso, in: 100...6400, step: 100)
-            HStack {
-                Text("100").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Text("6400").font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
-
     private func persistPreferences() {
         guard let stock = localSelection else { return }
         library.setSelectedStock(stock.stockId)
-        library.setISO(iso, for: stock.stockId)
         library.setGauge(gauge, for: stock.stockId)
     }
 
@@ -462,7 +445,7 @@ private struct StockSheetView: View {
                 }
             }
             .pickerStyle(.segmented)
-            Text("Gauge sets grain size and loudness (8mm coarse → 75mm near grain-free). ISO sets loudness only.")
+            Text("Gauge sets grain size and presence (8mm coarse → 75mm near grain-free).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -477,7 +460,7 @@ private struct StockSheetView: View {
             renderQueueViewModel.enqueue(
                 sourceURL: sourceURL,
                 stockId: stock.stockId,
-                iso: iso,
+                iso: stock.defaultISO,
                 gauge: gauge
             )
             isPresented = false
