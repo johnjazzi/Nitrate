@@ -132,7 +132,7 @@ struct RenderRecipe: Codable, Equatable, Sendable {
         lutAlgorithm: "resolve-rgb-red-fastest-texel-center-linear-clamp-v2",
         halationAlgorithm: "input-luma-spatial-highlight-addition-v2",
         glowAlgorithm: "blurred-warm-highlight-addition-v2",
-        grainAlgorithm: "hashed-128-volume-iso-subtractive-dither-v1",
+        grainAlgorithm: "coherent-multiscale-mean-preserving-softness-v2",
         deliveryAlgorithm: "clamp-bgra8-hevc-rec709-tagged-v1")
 
     var colorContractVerified: Bool {

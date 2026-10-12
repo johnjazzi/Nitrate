@@ -192,7 +192,9 @@ final class PipelineRenderer: @unchecked Sendable {
             AVVideoAverageBitRateKey: bitrate,
             AVVideoMaxKeyFrameIntervalKey: 48,
             AVVideoExpectedSourceFrameRateKey: nominalFrameRate,
-            AVVideoAllowFrameReorderingKey: false
+            // Offline encoding can use B-frames to spend the fixed bitrate more
+            // efficiently on stochastic detail such as film grain.
+            AVVideoAllowFrameReorderingKey: true
         ]
 
         let writerOutputSettings: [String: Any] = [

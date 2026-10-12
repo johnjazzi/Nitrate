@@ -1,0 +1,637 @@
+import Foundation
+import Metal
+import Testing
+
+/// Exercises the shipped grain volume and production grain kernel over flat
+/// probes so grain cannot introduce a shadow-tone shift or clip positive detail.
+@Suite("Grain shadow detail")
+struct GrainShadowTests {
+    private static let side = 128
+    private static let frames: [UInt32] = [0, 17, 63, 127]
+    private static let stockGrainSettings: [(iso: Float, grainSize: Float)] = [
+        (50, 0.6), (250, 1.0), (200, 0.8), (500, 1.3)
+    ]
+
+    private struct PixelStats {
+        let mean: SIMD3<Double>
+        let variance: SIMD3<Double>
+        let blackClipped: SIMD3<Int>
+        let whiteClipped: SIMD3<Int>
+        let alphaMismatches: Int
+        let channels: [[UInt8]]
+        let width: Int
+        let height: Int
+    }
+
+    private struct GrainUniforms {
+        var frameIndex: UInt32
+        var iso: Float
+        var grainSize: Float
+        var padding: Float = 0
+    }
+
+    private final class BundleToken {}
+
+    private static func metallib(device: MTLDevice) throws -> MTLLibrary {
+        var directory = Bundle(for: BundleToken.self).bundleURL
+        for _ in 0..<5 {
+            let candidate = directory.appendingPathComponent("default.metallib")
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return try device.makeLibrary(URL: candidate)
+            }
+            directory = directory.deletingLastPathComponent()
+        }
+        if let library = try? device.makeDefaultLibrary(bundle: .main) {
+            return library
+        }
+        throw TestFailure("Production default.metallib not found near the test bundle")
+    }
+
+    private static func grainVolume(device: MTLDevice) throws -> MTLTexture {
+        let bundleURL = Bundle(for: BundleToken.self).bundleURL
+        let enumerator = FileManager.default.enumerator(at: bundleURL, includingPropertiesForKeys: nil)
+        guard let url = enumerator?.compactMap({ $0 as? URL }).first(where: { $0.lastPathComponent == "grain3d.raw" }) else {
+            throw TestFailure("Required production fixture grain3d.raw is missing from the test bundle")
+        }
+        let data = try Data(contentsOf: url)
+        let expectedByteCount = side * side * side * MemoryLayout<Float>.size
+        guard data.count >= expectedByteCount else {
+            throw TestFailure("grain3d.raw has \(data.count) bytes; expected at least \(expectedByteCount)")
+        }
+
+        let descriptor = MTLTextureDescriptor()
+        descriptor.textureType = .type3D
+        descriptor.pixelFormat = .r32Float
+        descriptor.width = side
+        descriptor.height = side
+        descriptor.depth = side
+        descriptor.mipmapLevelCount = 1
+        descriptor.usage = [.shaderRead]
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            throw TestFailure("Could not create the production grain volume texture")
+        }
+        data.withUnsafeBytes { bytes in
+            texture.replace(
+                region: MTLRegionMake3D(0, 0, 0, side, side, side),
+                mipmapLevel: 0,
+                slice: 0,
+                withBytes: bytes.baseAddress!,
+                bytesPerRow: side * MemoryLayout<Float>.size,
+                bytesPerImage: side * side * MemoryLayout<Float>.size
+            )
+        }
+        return texture
+    }
+
+    private static func texture(
+        device: MTLDevice,
+        format: MTLPixelFormat,
+        usage: MTLTextureUsage,
+        width: Int? = nil,
+        height: Int? = nil
+    ) throws -> MTLTexture {
+        let width = width ?? side
+        let height = height ?? side
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: format, width: width, height: height, mipmapped: false
+        )
+        descriptor.usage = usage
+        guard let result = device.makeTexture(descriptor: descriptor) else {
+            throw TestFailure("Could not create a \(format) probe texture")
+        }
+        return result
+    }
+
+    private static func inputTexture(
+        device: MTLDevice,
+        color: SIMD3<Float>,
+        width: Int? = nil,
+        height: Int? = nil
+    ) throws -> MTLTexture {
+        let width = width ?? side
+        let height = height ?? side
+        let input = try texture(device: device, format: .rgba16Float, usage: [.shaderRead], width: width, height: height)
+        var values = [Float16](repeating: 1, count: width * height * 4)
+        for pixel in 0..<(width * height) {
+            values[pixel * 4] = Float16(color.x)
+            values[pixel * 4 + 1] = Float16(color.y)
+            values[pixel * 4 + 2] = Float16(color.z)
+        }
+        values.withUnsafeBytes { bytes in
+            input.replace(
+                region: MTLRegionMake2D(0, 0, width, height),
+                mipmapLevel: 0,
+                withBytes: bytes.baseAddress!,
+                bytesPerRow: width * 4 * MemoryLayout<Float16>.size
+            )
+        }
+        return input
+    }
+
+    private static func inputTexture(device: MTLDevice, values: [Float16]) throws -> MTLTexture {
+        let input = try texture(device: device, format: .rgba16Float, usage: [.shaderRead])
+        values.withUnsafeBytes { bytes in
+            input.replace(
+                region: MTLRegionMake2D(0, 0, side, side),
+                mipmapLevel: 0,
+                withBytes: bytes.baseAddress!,
+                bytesPerRow: side * 4 * MemoryLayout<Float16>.size
+            )
+        }
+        return input
+    }
+
+    private static func constantGrainVolume(device: MTLDevice) throws -> MTLTexture {
+        let values = [Float](repeating: 0.5, count: side * side * side)
+        let descriptor = MTLTextureDescriptor()
+        descriptor.textureType = .type3D
+        descriptor.pixelFormat = .r32Float
+        descriptor.width = side
+        descriptor.height = side
+        descriptor.depth = side
+        descriptor.mipmapLevelCount = 1
+        descriptor.usage = [.shaderRead]
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            throw TestFailure("Could not create constant grain volume")
+        }
+        values.withUnsafeBytes { bytes in
+            texture.replace(
+                region: MTLRegionMake3D(0, 0, 0, side, side, side),
+                mipmapLevel: 0,
+                slice: 0,
+                withBytes: bytes.baseAddress!,
+                bytesPerRow: side * MemoryLayout<Float>.size,
+                bytesPerImage: side * side * MemoryLayout<Float>.size
+            )
+        }
+        return texture
+    }
+
+    private static func run(
+        device: MTLDevice,
+        queue: MTLCommandQueue,
+        pipeline: MTLComputePipelineState,
+        volume: MTLTexture,
+        color: SIMD3<Float>,
+        iso: Float,
+        grainSize: Float,
+        frame: UInt32,
+        input inputOverride: MTLTexture? = nil,
+        width requestedWidth: Int? = nil,
+        height requestedHeight: Int? = nil
+    ) throws -> PixelStats {
+        let width = requestedWidth ?? inputOverride?.width ?? side
+        let height = requestedHeight ?? inputOverride?.height ?? side
+        let input = try inputOverride ?? inputTexture(device: device, color: color, width: width, height: height)
+        let output = try texture(device: device, format: .bgra8Unorm, usage: [.shaderWrite], width: width, height: height)
+        var uniforms = GrainUniforms(frameIndex: frame, iso: iso, grainSize: grainSize)
+        guard let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else {
+            throw TestFailure("Could not encode production grain kernel")
+        }
+        encoder.setComputePipelineState(pipeline)
+        encoder.setTexture(input, index: 0)
+        encoder.setTexture(output, index: 1)
+        encoder.setTexture(volume, index: 2)
+        encoder.setBytes(&uniforms, length: MemoryLayout<GrainUniforms>.size, index: 0)
+        encoder.dispatchThreadgroups(
+            MTLSize(width: (width + 15) / 16, height: (height + 15) / 16, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1)
+        )
+        encoder.endEncoding()
+        command.commit()
+        command.waitUntilCompleted()
+        guard command.status == .completed else {
+            throw TestFailure("Production grain kernel failed: \(String(describing: command.error))")
+        }
+
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        pixels.withUnsafeMutableBytes { bytes in
+            output.getBytes(
+                bytes.baseAddress!,
+                bytesPerRow: width * 4,
+                from: MTLRegionMake2D(0, 0, width, height),
+                mipmapLevel: 0
+            )
+        }
+        var sums = SIMD3<Double>(repeating: 0)
+        var sumsSquared = SIMD3<Double>(repeating: 0)
+        var blacks = SIMD3<Int>(repeating: 0)
+        var whites = SIMD3<Int>(repeating: 0)
+        var alphaMismatches = 0
+        var channels = Array(repeating: [UInt8](), count: 3)
+        for channel in 0..<3 { channels[channel].reserveCapacity(width * height) }
+        for pixel in 0..<(width * height) {
+            if pixels[pixel * 4 + 3] != 255 { alphaMismatches += 1 }
+            for channel in 0..<3 {
+                let byteChannel = channel == 0 ? 2 : (channel == 2 ? 0 : 1)
+                let value = Double(pixels[pixel * 4 + byteChannel]) / 255
+                channels[channel].append(pixels[pixel * 4 + byteChannel])
+                sums[channel] += value
+                sumsSquared[channel] += value * value
+                if pixels[pixel * 4 + byteChannel] == 0 { blacks[channel] += 1 }
+                if pixels[pixel * 4 + byteChannel] == 255 { whites[channel] += 1 }
+            }
+        }
+        let count = Double(width * height)
+        let mean = sums / count
+        let variance = sumsSquared / count - mean * mean
+        return PixelStats(
+            mean: mean, variance: variance, blackClipped: blacks,
+            whiteClipped: whites, alphaMismatches: alphaMismatches, channels: channels,
+            width: width, height: height
+        )
+    }
+
+    private static func context(_ color: SIMD3<Float>, _ stats: PixelStats, frame: UInt32) -> String {
+        "probe=\(color), frame=\(frame), mean=\(stats.mean), variance=\(stats.variance), " +
+            "blackClipped=\(stats.blackClipped), whiteClipped=\(stats.whiteClipped), " +
+            "alphaMismatches=\(stats.alphaMismatches)"
+    }
+
+    private static func correlation(_ lhs: [UInt8], _ rhs: [UInt8]) -> Double {
+        let meanL = lhs.reduce(0.0) { $0 + Double($1) } / Double(lhs.count)
+        let meanR = rhs.reduce(0.0) { $0 + Double($1) } / Double(rhs.count)
+        var covariance = 0.0
+        var varianceL = 0.0
+        var varianceR = 0.0
+        for index in lhs.indices {
+            let deltaL = Double(lhs[index]) - meanL
+            let deltaR = Double(rhs[index]) - meanR
+            covariance += deltaL * deltaR
+            varianceL += deltaL * deltaL
+            varianceR += deltaR * deltaR
+        }
+        let divisor = sqrt(varianceL * varianceR)
+        return divisor > 0 ? covariance / divisor : 0
+    }
+
+    private static func lagCorrelation(
+        _ values: [UInt8], width: Int, height: Int, dx: Int, dy: Int
+    ) -> Double {
+        var lhs = [UInt8]()
+        var rhs = [UInt8]()
+        let xStart = max(0, -dx)
+        let xEnd = min(width, width - dx)
+        let yStart = max(0, -dy)
+        let yEnd = min(height, height - dy)
+        lhs.reserveCapacity((xEnd - xStart) * (yEnd - yStart))
+        rhs.reserveCapacity((xEnd - xStart) * (yEnd - yStart))
+        for y in yStart..<yEnd {
+            for x in xStart..<xEnd {
+                lhs.append(values[y * width + x])
+                rhs.append(values[(y + dy) * width + x + dx])
+            }
+        }
+        return correlation(lhs, rhs)
+    }
+
+    private static func horizontalNeighborPairs(_ values: [UInt8]) -> (left: [UInt8], right: [UInt8]) {
+        var left = [UInt8]()
+        var right = [UInt8]()
+        left.reserveCapacity(side * (side - 1))
+        right.reserveCapacity(side * (side - 1))
+        for y in 0..<side {
+            let row = y * side
+            for x in 0..<(side - 1) {
+                left.append(values[row + x])
+                right.append(values[row + x + 1])
+            }
+        }
+        return (left, right)
+    }
+
+    private static func chartValues() -> [Float16] {
+        var values = [Float16](repeating: 1, count: side * side * 4)
+        for y in 0..<side {
+            for x in 0..<side {
+                let rgb: SIMD3<Float>
+                switch y {
+                case 0..<32:
+                    let value = Float(x) / Float(side - 1)
+                    rgb = SIMD3<Float>(repeating: value)
+                case 32..<64:
+                    let value: Float = x < side / 2 ? 0.18 : 0.82
+                    rgb = SIMD3<Float>(repeating: value)
+                case 64..<96:
+                    let value: Float = ((x / 3 + y / 3) % 2 == 0) ? 0.25 : 0.75
+                    rgb = SIMD3<Float>(repeating: value)
+                default:
+                    let patch = min(x / (side / 4), 3)
+                    switch patch {
+                    case 0: rgb = SIMD3<Float>(0.72, 0.16, 0.12)
+                    case 1: rgb = SIMD3<Float>(0.12, 0.62, 0.20)
+                    case 2: rgb = SIMD3<Float>(0.10, 0.24, 0.78)
+                    default: rgb = SIMD3<Float>(0.72, 0.66, 0.14)
+                    }
+                }
+                let index = (y * side + x) * 4
+                values[index] = Float16(rgb.x)
+                values[index + 1] = Float16(rgb.y)
+                values[index + 2] = Float16(rgb.z)
+            }
+        }
+        return values
+    }
+
+    private static func pipeline(device: MTLDevice, library: MTLLibrary) throws -> MTLComputePipelineState {
+        guard let function = library.makeFunction(name: "pass2_grain") else {
+            throw TestFailure("Required production kernel pass2_grain is missing")
+        }
+        return try device.makeComputePipelineState(function: function)
+    }
+
+    private static func setup() throws -> (MTLDevice, MTLCommandQueue, MTLComputePipelineState, MTLTexture) {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw TestFailure("Metal GPU is unavailable")
+        }
+        guard let queue = device.makeCommandQueue() else {
+            throw TestFailure("Could not create Metal command queue")
+        }
+        let library = try metallib(device: device)
+        let pipeline = try Self.pipeline(device: device, library: library)
+        return (device, queue, pipeline, try grainVolume(device: device))
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func positiveShadowMeansStayStableWithoutNewBlackClipping() throws {
+        let (device, queue, pipeline, volume) = try Self.setup()
+        for setting in Self.stockGrainSettings {
+            for level: Float in [0.03, 0.05, 0.10, 0.15] {
+                let color = SIMD3<Float>(repeating: level)
+                for frame in Self.frames {
+                    let stats = try Self.run(
+                        device: device, queue: queue, pipeline: pipeline, volume: volume,
+                        color: color, iso: setting.iso, grainSize: setting.grainSize, frame: frame
+                    )
+                    let details = Self.context(color, stats, frame: frame)
+                    let message = "\(details), iso=\(setting.iso), grainSize=\(setting.grainSize)"
+                    #expect(stats.alphaMismatches == 0, "\(message)")
+                    for channel in 0..<3 {
+                        #expect(abs(stats.mean[channel] - Double(level)) <= 0.002, "\(message)")
+                        #expect(stats.blackClipped[channel] == 0, "\(message)")
+                    }
+                }
+            }
+        }
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func extremesRemainExactAndColorShadowsRetainTheirChannels() throws {
+        let (device, queue, pipeline, volume) = try Self.setup()
+        for value: Float in [0, 1] {
+            let color = SIMD3<Float>(repeating: value)
+            let stats = try Self.run(
+                device: device, queue: queue, pipeline: pipeline, volume: volume,
+                color: color, iso: 500, grainSize: 1.3, frame: 17
+            )
+            let details = Self.context(color, stats, frame: 17)
+            #expect(stats.mean == SIMD3<Double>(repeating: Double(value)), "\(details)")
+            #expect(stats.variance == SIMD3<Double>(repeating: 0), "\(details)")
+            #expect(stats.alphaMismatches == 0, "\(details)")
+        }
+
+        let color = SIMD3<Float>(0.03, 0.08, 0.15)
+        for frame in Self.frames {
+            let stats = try Self.run(
+                device: device, queue: queue, pipeline: pipeline, volume: volume,
+                color: color, iso: 500, grainSize: 1.3, frame: frame
+            )
+            let details = Self.context(color, stats, frame: frame)
+            #expect(stats.alphaMismatches == 0, "\(details)")
+            for channel in 0..<3 {
+                #expect(abs(stats.mean[channel] - Double(color[channel])) <= 0.002, "\(details)")
+                #expect(stats.blackClipped[channel] == 0, "\(details)")
+            }
+        }
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func midtoneTextureRemainsVisibleAndScalesWithISO() throws {
+        let (device, queue, pipeline, volume) = try Self.setup()
+        let color = SIMD3<Float>(repeating: 0.5)
+        var lowVariance = 0.0
+        var highVariance = 0.0
+        for frame in Self.frames {
+            let low = try Self.run(
+                device: device, queue: queue, pipeline: pipeline, volume: volume,
+                color: color, iso: 100, grainSize: 1.3, frame: frame
+            )
+            let high = try Self.run(
+                device: device, queue: queue, pipeline: pipeline, volume: volume,
+                color: color, iso: 2000, grainSize: 1.3, frame: frame
+            )
+            lowVariance += low.variance.x + low.variance.y + low.variance.z
+            highVariance += high.variance.x + high.variance.y + high.variance.z
+        }
+        #expect(lowVariance > 0, "Midtone grain should remain visible at ISO 100")
+        #expect(highVariance > lowVariance * 4, "Midtone grain should scale with ISO: \(lowVariance) -> \(highVariance)")
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func saturatedChannelsDoNotSuppressGrainInMidrangeChannels() throws {
+        let (device, queue, pipeline, volume) = try Self.setup()
+        for endpoint: Float in [0, 1] {
+            let color = SIMD3<Float>(endpoint, 0.5, 0.5)
+            let low = try Self.run(
+                device: device, queue: queue, pipeline: pipeline, volume: volume,
+                color: color, iso: 100, grainSize: 1.3, frame: 41
+            )
+            let high = try Self.run(
+                device: device, queue: queue, pipeline: pipeline, volume: volume,
+                color: color, iso: 2000, grainSize: 1.3, frame: 41
+            )
+            let expectedEndpoint = endpoint == 0 ? 0.0 : 1.0
+            #expect(low.mean.x == expectedEndpoint && high.mean.x == expectedEndpoint,
+                    "endpoint channel should stay exact: endpoint=\(endpoint), low=\(low.mean.x), high=\(high.mean.x)")
+            #expect(low.variance.x == 0 && high.variance.x == 0,
+                    "endpoint channel should stay quiet: endpoint=\(endpoint)")
+            for channel in 1..<3 {
+                #expect(low.variance[channel] > 0, "midrange channel needs visible low-ISO grain: \(color), \(low.variance)")
+                #expect(high.variance[channel] > low.variance[channel] * 4,
+                        "midrange channel grain should scale with ISO: \(color), \(low.variance) -> \(high.variance)")
+            }
+        }
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func grainDoesNotRepeatAtTheOriginal128PixelLattice() throws {
+        let (device, queue, pipeline, volume) = try Self.setup()
+        let stats = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: SIMD3<Float>(repeating: 0.5), iso: 500, grainSize: 1.3, frame: 31,
+            width: 512, height: 512
+        )
+        #expect(stats.variance.x > 0, "large flat patch must contain measurable grain")
+        let lags = [(169, 0), (0, 169), (169, 169), (339, 0), (0, 339), (339, 339)]
+        for (dx, dy) in lags {
+            let measured = Self.lagCorrelation(
+                stats.channels[0], width: stats.width, height: stats.height, dx: dx, dy: dy
+            )
+            #expect(abs(measured) < 0.25, "unexpected repeated grain at lag (\(dx), \(dy)): correlation=\(measured)")
+        }
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func grainHasAGrowingSpatialFootprintSharedAcrossColorChannels() throws {
+        let (device, queue, pipeline, volume) = try Self.setup()
+        let color = SIMD3<Float>(repeating: 0.5)
+        let fine = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: color, iso: 500, grainSize: 0.6, frame: 23
+        )
+        let coarse = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: color, iso: 500, grainSize: 1.3, frame: 23
+        )
+        let fineNeighbors = Self.horizontalNeighborPairs(fine.channels[0])
+        let coarseNeighbors = Self.horizontalNeighborPairs(coarse.channels[0])
+        let fineNeighborCorrelation = Self.correlation(fineNeighbors.left, fineNeighbors.right)
+        let coarseNeighborCorrelation = Self.correlation(coarseNeighbors.left, coarseNeighbors.right)
+        let colorCorrelation = Self.correlation(coarse.channels[0], coarse.channels[1])
+        #expect(coarseNeighborCorrelation > 0, "grain should have positive local correlation: \(coarseNeighborCorrelation)")
+        #expect(coarseNeighborCorrelation > fineNeighborCorrelation + 0.05,
+                "grain footprint should grow with size: \(fineNeighborCorrelation) -> \(coarseNeighborCorrelation)")
+        #expect(colorCorrelation > 0.75, "grain should retain mostly shared RGB structure: \(colorCorrelation)")
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func grainChangesOverTimeWithoutFrameCyclingAndIsDeterministicPerFrame() throws {
+        let (device, queue, pipeline, volume) = try Self.setup()
+        let color = SIMD3<Float>(repeating: 0.5)
+        let first = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: color, iso: 500, grainSize: 1.3, frame: 0
+        )
+        let repeated = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: color, iso: 500, grainSize: 1.3, frame: 0
+        )
+        let afterOldZLoop = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: volume,
+            color: color, iso: 500, grainSize: 1.3, frame: 128
+        )
+        #expect(first.channels == repeated.channels, "same frame/settings should render deterministically")
+        #expect(first.channels != afterOldZLoop.channels, "frame 128 must not repeat frame 0")
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func temporalGrainRMSStaysStableAcrossZEvolution() throws {
+        let (device, queue, pipeline, volume) = try Self.setup()
+        let color = SIMD3<Float>(repeating: 0.5)
+        var frameRMS = [Double]()
+        frameRMS.reserveCapacity(128)
+        for frame in UInt32(0)..<UInt32(128) {
+            let stats = try Self.run(
+                device: device, queue: queue, pipeline: pipeline, volume: volume,
+                color: color, iso: 500, grainSize: 1.3, frame: frame
+            )
+            frameRMS.append(sqrt((stats.variance.x + stats.variance.y + stats.variance.z) / 3))
+        }
+        let mean = frameRMS.reduce(0, +) / Double(frameRMS.count)
+        let peakToPeak = (frameRMS.max()! - frameRMS.min()!) / mean
+        #expect(peakToPeak < 0.25, "grain RMS should not pump with the animated z-slice: range/mean=\(peakToPeak)")
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func largerGrainSoftensEdgesWithoutRingingOrChangingFlatPatches() throws {
+        let (device, queue, pipeline, _) = try Self.setup()
+        let constantVolume = try Self.constantGrainVolume(device: device)
+        var edge = [Float16](repeating: 1, count: Self.side * Self.side * 4)
+        for y in 0..<Self.side {
+            for x in 0..<Self.side {
+                let value: Float16 = x < Self.side / 2 ? 0.18 : 0.82
+                let index = (y * Self.side + x) * 4
+                edge[index] = value
+                edge[index + 1] = value
+                edge[index + 2] = value
+            }
+        }
+        let edgeInput = try Self.inputTexture(device: device, values: edge)
+        let color = SIMD3<Float>(repeating: 0.5)
+        let fine = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: constantVolume,
+            color: color, iso: 500, grainSize: 0.6, frame: 9, input: edgeInput
+        )
+        let coarse = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: constantVolume,
+            color: color, iso: 500, grainSize: 1.3, frame: 9, input: edgeInput
+        )
+        func edgeContrast(_ stats: PixelStats) -> Double {
+            let total = (8..<(Self.side - 8)).reduce(0.0) { value, y in
+                let row = y * Self.side
+                return value + abs(Double(stats.channels[0][row + Self.side / 2] - stats.channels[0][row + Self.side / 2 - 1]))
+            }
+            return total / Double(Self.side - 16)
+        }
+        #expect(edgeContrast(coarse) < edgeContrast(fine),
+                "larger grain should softly broaden the edge: \(edgeContrast(fine)) -> \(edgeContrast(coarse))")
+        for value in coarse.channels[0] {
+            #expect((46...209).contains(Int(value)), "positive prefilter weights must not ring or overshoot")
+        }
+
+        let flat = try Self.run(
+            device: device, queue: queue, pipeline: pipeline, volume: constantVolume,
+            color: color, iso: 500, grainSize: 1.3, frame: 9
+        )
+        #expect(flat.channels.allSatisfy { Set($0).count == 1 }, "constant patches must remain byte-identical")
+        #expect(abs(flat.mean.x - 0.5) <= 0.002, "constant patch mean should remain stable: \(flat.mean)")
+        #expect(flat.alphaMismatches == 0, "alpha must survive prefiltering")
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func writesNativeSizeBeforeAndAfterPreviewWhenRequested() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard (environment["GRAIN_PREVIEW"] ?? environment["XCODE_TEST_GRAIN_PREVIEW"]) == "1" else { return }
+        let (device, queue, currentPipeline, volume) = try Self.setup()
+        guard let originalPath = environment["GRAIN_PREVIEW_METALLIB"] ?? environment["XCODE_TEST_GRAIN_PREVIEW_METALLIB"] else {
+            throw TestFailure("XCODE_TEST_GRAIN_PREVIEW_METALLIB must point at the saved original default.metallib")
+        }
+        let originalLibrary = try device.makeLibrary(URL: URL(fileURLWithPath: originalPath))
+        let originalPipeline = try Self.pipeline(device: device, library: originalLibrary)
+        let chart = Self.chartValues()
+        let chartInput = try Self.inputTexture(device: device, values: chart)
+        let neutral = SIMD3<Float>(repeating: 0.5)
+        let original = try Self.run(
+            device: device, queue: queue, pipeline: originalPipeline, volume: volume,
+            color: neutral, iso: 500, grainSize: 1.3, frame: 31, input: chartInput
+        )
+        let settings = Self.stockGrainSettings
+        var panels = [original.channels]
+        for setting in settings {
+            let result = try Self.run(
+                device: device, queue: queue, pipeline: currentPipeline, volume: volume,
+                color: neutral, iso: setting.iso, grainSize: setting.grainSize, frame: 31, input: chartInput
+            )
+            panels.append(result.channels)
+        }
+
+        let panelCount = panels.count + 1
+        var ppm = Data("P6\n\(panelCount * Self.side) \(Self.side)\n255\n".utf8)
+        for y in 0..<Self.side {
+            for panel in 0..<panelCount {
+                for x in 0..<Self.side {
+                    if panel == 0 {
+                        let offset = (y * Self.side + x) * 4
+                        for channel in 0..<3 {
+                            ppm.append(UInt8(clamping: Int((Float(chart[offset + channel]) * 255).rounded())))
+                        }
+                    } else {
+                        let pixel = y * Self.side + x
+                        for channel in 0..<3 { ppm.append(panels[panel - 1][channel][pixel]) }
+                    }
+                }
+            }
+        }
+        let output = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("grain-shadow-preview.ppm")
+        try ppm.write(to: output, options: .atomic)
+        let legend = ["source", "original-500t", "50iso-size0.6", "250iso-size1.0", "200iso-size0.8", "500iso-size1.3"]
+        let legendURL = output.deletingPathExtension().appendingPathExtension("json")
+        try JSONEncoder().encode(legend).write(to: legendURL, options: .atomic)
+        print("Grain preview: \(output.path) (\(panelCount * Self.side)x\(Self.side), \(legend.joined(separator: ", ")))")
+    }
+
+    private struct TestFailure: Error, CustomStringConvertible {
+        let description: String
+        init(_ description: String) { self.description = description }
+    }
+}

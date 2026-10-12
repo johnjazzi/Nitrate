@@ -17,17 +17,8 @@ struct GrainUniforms {
 
 /// Pass 2: 3D noise volume grain with temporal coherence (AD-9).
 ///
-/// Samples a 128³ 3D noise volume. Each frame samples a z-slice at
-/// z = frameIndex % 128, providing temporally coherent grain that
-/// evolves frame-to-frame without flickering or static overlay artifacts.
-///
-/// Improvements over v1:
-/// - Per-pixel hash offset kills visible 128px tiling
-/// - Per-channel grain (R≠G≠B) for photorealistic film texture
-/// - Blue channel gets 1.6× more grain (film chemistry reality)
-/// - Grain fades toward pure black and pure white (film latitude)
-/// - Subtractive grain model: grain darkens, doesn't just add noise
-/// - High-frequency dither to prevent HEVC banding artifacts
+/// Samples coherent fine and clump scales from the shipped volume, with
+/// restrained chroma variation and a mild normalized detail prefilter.
 
 kernel void pass2_grain(
     texture2d<float, access::read>  input      [[texture(0)]],
@@ -41,77 +32,79 @@ kernel void pass2_grain(
     }
 
     float4 color = input.read(gid);
+    float3 source = select(float3(0.0f), color.rgb, isfinite(color.rgb));
+    float alpha = isfinite(color.a) ? color.a : 0.0f;
 
-    // --- Per-pixel hash offset to kill visible 128px tiling ---
-    // Use a simple hash of pixel position + frame to scatter coordinates
-    uint hash = (gid.x * 157u + gid.y * 631u + uniforms.frameIndex * 1103u);
-    float offsetU = float(hash % 256u) / 256.0f;
-    float offsetV = float((hash / 256u) % 256u) / 256.0f;
+    // A normalized cross prefilter reduces detail below the grain scale.
+    // Positive weights preserve constant regions and cannot create halos.
+    uint width = input.get_width();
+    uint height = input.get_height();
+    uint2 left = uint2(gid.x > 0 ? gid.x - 1 : gid.x, gid.y);
+    uint2 right = uint2(min(gid.x + 1, width - 1), gid.y);
+    uint2 up = uint2(gid.x, gid.y > 0 ? gid.y - 1 : gid.y);
+    uint2 down = uint2(gid.x, min(gid.y + 1, height - 1));
+    float3 leftColor = input.read(left).rgb;
+    float3 rightColor = input.read(right).rgb;
+    float3 upColor = input.read(up).rgb;
+    float3 downColor = input.read(down).rgb;
+    float3 softened = source * 0.5f
+        + select(float3(0.0f), leftColor, isfinite(leftColor)) * 0.125f
+        + select(float3(0.0f), rightColor, isfinite(rightColor)) * 0.125f
+        + select(float3(0.0f), upColor, isfinite(upColor)) * 0.125f
+        + select(float3(0.0f), downColor, isfinite(downColor)) * 0.125f;
 
-    float baseU = float(gid.x) / 128.0f;
-    float baseV = float(gid.y) / 128.0f;
-    float zSlice = float(uniforms.frameIndex % 128u) / 128.0f;
+    float iso = isfinite(uniforms.iso) ? max(uniforms.iso, 0.0f) : 0.0f;
+    float grainSize = isfinite(uniforms.grainSize) && uniforms.grainSize > 0.0f
+        ? uniforms.grainSize : 1.0f;
+    float intensity = iso / 400.0f;
+    float sizeSoftness = smoothstep(0.55f, 1.5f, grainSize) * 0.10f;
+    float isoSoftness = smoothstep(0.25f, 2.0f, intensity) * 0.05f;
+    float3 base = mix(source, softened, clamp(sizeSoftness + isoSoftness, 0.0f, 0.18f));
 
-    // --- Per-channel grain sampling with different offsets ---
-    // R channel: offset by (0, 0)
-    float grainR = grainVol.sample(grain_sampler,
-        float3(fract(baseU + offsetU * 0.37),
-               fract(baseV + offsetV * 0.31), zSlice)).r;
-    // G channel: offset by different hash-derived shift
-    float grainG = grainVol.sample(grain_sampler,
-        float3(fract(baseU + offsetU * 0.61 + 0.333),
-               fract(baseV + offsetV * 0.53 + 0.167), zSlice)).r;
-    // B channel: more grain, different offset
-    float grainB = grainVol.sample(grain_sampler,
-        float3(fract(baseU + offsetU * 0.83 + 0.667),
-               fract(baseV + offsetV * 0.71 + 0.5), zSlice)).r;
+    // Frame-level irrational offsets retain spatial continuity while avoiding
+    // per-pixel coordinate jumps and the old 128-frame z-slice loop.
+    float frame = float(uniforms.frameIndex);
+    float phase = frame * 0.754877666f;
+    float2 frameOffset = float2(fract(phase * 0.347f), fract(phase * 0.619f));
+    // Sample the center of one volume plane per frame. Trilinear Z blending
+    // changes the plane's realized RMS as the irrational phase crosses slices,
+    // which creates visible global grain pumping. In-plane offsets continue to
+    // animate the field, including after the 128-plane index wraps.
+    float zSlice = (fmod(frame, 128.0f) + 0.5f) / 128.0f;
+    float footprint = grainSize * (0.85f + 0.15f * sqrt(max(intensity, 0.0f)));
+    float2 pixelCoord = float2(gid) / (128.0f * max(footprint, 0.1f));
+    // A slowly varying vector displacement breaks the 128-texel repeat without
+    // introducing pixelwise UV jumps. Its incommensurate scale keeps the field
+    // spatially coherent while moving the composite repeat beyond video frames.
+    float2 warpCoord = fract(pixelCoord * 0.035f + frameOffset.yx + float2(0.419f, 0.137f));
+    float warpX = (grainVol.sample(grain_sampler, float3(warpCoord, zSlice)).r - 0.5f) * 2.0f;
+    float warpY = (grainVol.sample(grain_sampler,
+        float3(fract(warpCoord * 1.324717957f + float2(0.271f, 0.593f)), zSlice)).r - 0.5f) * 2.0f;
+    float2 warp = float2(warpX, warpY) * 0.22f;
+    float2 fineCoord = fract(pixelCoord + frameOffset + warp);
+    float2 clumpCoord = fract(pixelCoord * 0.381966011f + frameOffset.yx + float2(0.173f, 0.293f));
+    float fine = (grainVol.sample(grain_sampler, float3(fineCoord, zSlice)).r - 0.5f) * 2.0f;
+    float clump = (grainVol.sample(grain_sampler, float3(clumpCoord, zSlice)).r - 0.5f) * 2.0f;
+    float2 chromaCoord = fract(pixelCoord * 1.618033989f + frameOffset.yx + float2(0.317f, 0.113f));
+    float chroma = (grainVol.sample(grain_sampler, float3(chromaCoord, zSlice)).r - 0.5f) * 2.0f;
+    float shared = fine * 0.74f + clump * 0.26f;
+    float3 grain = shared + float3(-0.12f, 0.015f, 0.12f) * chroma;
 
-    // Normalize to [-1, 1]
-    grainR = (grainR - 0.5f) * 2.0f;
-    grainG = (grainG - 0.5f) * 2.0f;
-    grainB = (grainB - 0.5f) * 2.0f;
+    float luminance = dot(base, float3(0.2126f, 0.7152f, 0.0722f));
+    float latitude = smoothstep(0.015f, 0.13f, luminance)
+        * (1.0f - smoothstep(0.78f, 0.98f, luminance));
+    float amount = 0.55f * intensity * (0.8f + 0.2f * min(grainSize, 2.0f));
+    float3 excursion = grain * (amount * latitude);
+    excursion += fine * (0.004f * latitude);
 
-    // --- ISO-based intensity scaling ---
-    // Reference: ISO 400 = baseline
-    float intensity = uniforms.iso / 400.0f;
-    float grainSize = uniforms.grainSize > 0.0f ? uniforms.grainSize : 1.0f;
-
-    // Film-style grain: blue channel is ~1.6× grainier than red.
-    // Base strength 0.55 (was 0.12): the bundled grain3d.raw volume has very
-    // low contrast (values span ~[0.385, 0.615], std ≈ 0.049), so the original
-    // 0.12 scale produced ~1-2 LSB of grain in 8-bit output — imperceptible even
-    // with a correct CPU/Metal uniform ABI. 0.55 lifts ISO-250 grain to roughly
-    // 3-4% and ISO-500 grain to ~7-9% per channel (blue strongest).
-    float3 grainScale = float3(1.0f, 1.3f, 1.6f) * intensity * 0.55f * grainSize;
-
-    // --- Film latitude (grain fades near pure black and pure white) ---
-    float luminance = dot(color.rgb, float3(0.2126f, 0.7152f, 0.0722f));
-    // Peak grain at midtones (0.3–0.6 luminance), fade at extremes
-    float latitude = smoothstep(0.02f, 0.15f, luminance)
-                   * (1.0f - smoothstep(0.75f, 0.95f, luminance));
-
-    // --- Subtractive grain model ---
-    // Real film grain is subtractive: silver halide crystals block light.
-    // Darker areas of grain are more visible than brighter ones.
-    // We darken mid-shadows more than we brighten highlights.
-    float3 grainRgb = float3(grainR * grainScale.x,
-                              grainG * grainScale.y,
-                              grainB * grainScale.z) * latitude;
-
-    // Higher weight on negative grain (dark specks) vs positive (bright specks)
-    float3 result = color.rgb;
-    result += grainRgb * 0.85f;  // additive component (lifted from 0.35 for visibility)
-    // Subtractive: dark specks more prominent at mid-low luminance
-    float3 subtractive = min(float3(0.0f), grainRgb) * 2.8f * (1.0f - luminance);
-    result += subtractive;
-
-    // --- High-frequency dither to prevent HEVC banding ---
-    // 1-bit dither at the pixel level — imperceptible visually but
-    // forces HEVC encoder to preserve detail instead of banding
-    float dither = grainR * 0.004f;  // ~1/255 = 1 LSB in 8-bit
-    result += dither;
-
-    result = clamp(result, 0.0f, 1.0f);
-
-    output.write(float4(result, color.a), gid);
+    // Budget the worst possible excursion before applying the symmetric noise.
+    // The shipped volume spans [0.385, 0.615], so each centered component is
+    // bounded by 0.23; shared, chroma and dither terms are included below.
+    // Reserve two delivery-code steps to keep positive values out of 8-bit black.
+    float3 headroom = max(float3(0.0f), min(base, 1.0f - base) - (2.0f / 255.0f));
+    float maximumExcursion = latitude * 0.23f * (amount * 1.12f + 0.004f);
+    float3 budgetScale = maximumExcursion > 0.0f
+        ? min(float3(1.0f), headroom / maximumExcursion) : float3(1.0f);
+    float3 result = clamp(base + excursion * budgetScale, 0.0f, 1.0f);
+    output.write(float4(result, alpha), gid);
 }

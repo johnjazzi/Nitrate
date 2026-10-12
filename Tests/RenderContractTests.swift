@@ -144,6 +144,8 @@ struct RenderContractTests {
         for config in app { try config.validate() }
         let template = try #require(app.first { $0.stockId == "kodak500t_k2383" })
         #expect(template.grainSize == 1.3)
+        #expect(template.effectiveRecipe.version == "500t-current-v5")
+        #expect(template.effectiveRecipe.grainAlgorithm == "coherent-multiscale-mean-preserving-softness-v2")
         let low = template.overridingISO(250)
         let high = template.overridingISO(1000)
         #expect(low.recipe == high.recipe)
@@ -189,7 +191,7 @@ struct RenderContractTests {
     @Test func recipeRoundTripAndRevisionEvidence() throws {
         var config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
         let first = RenderDiagnosticsManifest.RecipeSnapshot(config: config, averageBitRate: RenderEncodingContract.averageBitRate, codec: RenderEncodingContract.codec)
-        config.recipe?.version = "500t-current-v5"
+        config.recipe?.version = "500t-current-v6"
         let second = RenderDiagnosticsManifest.RecipeSnapshot(config: config, averageBitRate: RenderEncodingContract.averageBitRate, codec: RenderEncodingContract.codec)
         let data = try JSONEncoder().encode(second)
         let decoded = try JSONDecoder().decode(RenderDiagnosticsManifest.RecipeSnapshot.self, from: data)
@@ -220,6 +222,19 @@ struct RenderContractTests {
         let historical = try JSONDecoder().decode(FilmStockConfig.self,
             from: JSONSerialization.data(withJSONObject: object))
         #expect(historical.effectiveRecipe.lutAlgorithm == "resolve-rgb-red-fastest-linear-clamp-v1")
+        #expect(throws: RenderContractError.self) { try historical.validate() }
+    }
+
+    @Test func historicalGrainAlgorithmMetadataDecodesButCannotExecute() throws {
+        let current = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any])
+        var recipe = try #require(object["recipe"] as? [String: Any])
+        recipe["grainAlgorithm"] = "hashed-128-volume-iso-subtractive-dither-v1"
+        object["recipe"] = recipe
+
+        let historical = try JSONDecoder().decode(FilmStockConfig.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        #expect(historical.effectiveRecipe.grainAlgorithm == "hashed-128-volume-iso-subtractive-dither-v1")
         #expect(throws: RenderContractError.self) { try historical.validate() }
     }
 
