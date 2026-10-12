@@ -772,13 +772,15 @@ final class PipelineRenderer: @unchecked Sendable {
             return .failure(RenderError.stageFailed("gpu-spatial", "The spatial halation/glow stage did not complete."))
         }
 
+        let gauge = config.effectivePrintGauge
         let grained = runPass2(
             inputTexture: diffused,
             outputPixelBuffer: outBuf,
             frameIndex: frameIndex,
             iso: config.defaultISO,
-            grainSize: config.grainSize,
+            grainSize: GrainModel.effectiveSize(stockGrainSize: config.grainSize, gauge: gauge),
             edgeBoostMultiplier: config.effectiveRecipe.edgeBoostMultiplier,
+            gaugeAmplitude: gauge.amplitudeMultiplier,
             width: width,
             height: height
         )
@@ -912,6 +914,7 @@ final class PipelineRenderer: @unchecked Sendable {
         iso: Float,
         grainSize: Float,
         edgeBoostMultiplier: Float,
+        gaugeAmplitude: Float,
         width: Int,
         height: Int
     ) -> Bool {
@@ -926,7 +929,7 @@ final class PipelineRenderer: @unchecked Sendable {
 
         var uniforms = GrainUniforms(
             frameIndex: frameIndex, iso: iso, grainSize: grainSize,
-            edgeBoostMultiplier: edgeBoostMultiplier
+            edgeBoostMultiplier: edgeBoostMultiplier, gaugeAmplitude: gaugeAmplitude
         )
 
         encoder.setComputePipelineState(pass2Pipeline!)
@@ -1143,6 +1146,7 @@ struct GrainUniforms {
     var iso: Float
     var grainSize: Float
     var edgeBoostMultiplier: Float = 0
+    var gaugeAmplitude: Float = 1.0
 }
 
 /// Everything one frame needs to be graded and appended, bundled so the frame

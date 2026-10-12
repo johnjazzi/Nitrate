@@ -304,6 +304,11 @@ enum RenderMovieMetadata {
             "iso": String(Int(config.defaultISO)), "iso-role": "selected-render-exposure-index",
             "halation-level": String(config.halationStrength), "glow-level": String(config.glowStrength),
             "grain-size": String(config.grainSize), "recipe-version": config.effectiveRecipe.version,
+            "print-gauge": config.effectivePrintGauge.rawValue,
+            "grain-size-effective": String(GrainModel.effectiveSize(stockGrainSize: config.grainSize,
+                                                                   gauge: config.effectivePrintGauge)),
+            "grain-iso-loudness": String(GrainModel.isoLoudness(iso: config.defaultISO)),
+            "grain-gauge-amplitude": String(config.effectivePrintGauge.amplitudeMultiplier),
             "grain-algorithm": config.effectiveRecipe.grainAlgorithm,
             "grain-edge-boost-multiplier": String(config.effectiveRecipe.edgeBoostMultiplier),
             "shutter-speed": "1/48", "shutter-angle": "180",
@@ -346,7 +351,8 @@ enum RenderMovieMetadata {
 
     private static func humanReadableSummary(_ config: FilmStockConfig, bitrate: Int) -> String {
         "ISO \(Int(config.defaultISO)) · 180° shutter · halation \(config.halationStrength) · glow \(config.glowStrength) · "
-            + "grain \(config.grainSize) · \(RenderEncodingContract.codec) @ \(bitrate / 1_000_000) Mbps"
+            + "grain \(config.grainSize) @ \(config.effectivePrintGauge.rawValue) · "
+            + "\(RenderEncodingContract.codec) @ \(bitrate / 1_000_000) Mbps"
     }
 }
 
