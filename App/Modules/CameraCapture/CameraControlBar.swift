@@ -1,16 +1,16 @@
 import SwiftUI
 
-/// Bottom camera controls: stock/lenses and queue/record on the left, with the
-/// exposure ruler and storage indicator in a persistent right column.
+/// Bottom camera controls: stock/lenses, queue/storage and record on the left,
+/// with the exposure ruler in a persistent right column.
 ///
 /// Split out of `ContentView` so the screen stays inside the file-length limit.
-/// Division of labour: the top toolbar owns app/stock settings (active stock,
-/// gear, imports, exposure readout); this bar owns the shooting controls.
+/// The top toolbar owns settings and the manual-controls popover; this bar
+/// owns the shooting controls and remaining-recording-time readout.
 struct CameraControlBar: View {
     private let controlFaceSize: CGFloat = 44
     private let selectorRowHeight: CGFloat = 54
     private let recordFaceSize: CGFloat = 84
-    private let actionRowHeight: CGFloat = 88
+    private let actionRowHeight: CGFloat = 100
     let cameraViewModel: CameraViewModel
     let renderQueueViewModel: RenderQueueViewModel
     let availableLenses: [CameraLens]
@@ -32,11 +32,8 @@ struct CameraControlBar: View {
             }
             .frame(maxWidth: .infinity)
 
-            VStack(spacing: 6) {
-                exposureControl
-                storageIndicator
-            }
-            .frame(width: 92)
+            exposureControl
+                .frame(width: 92)
         }
         .overlay(alignment: .top) {
             ZStack {
@@ -309,11 +306,17 @@ struct CameraControlBar: View {
         )
     }
 
-    // MARK: - Left action row: queue + record
+    // MARK: - Left action row: queue and remaining time beneath it
 
     private var actionRow: some View {
         HStack(alignment: .center, spacing: 8) {
-            queueButton.frame(width: controlFaceSize, height: controlFaceSize)
+            // Share a leading edge with the stock key above. Queue and the
+            // remaining-time readout form one column; REC stays centered.
+            VStack(alignment: .leading, spacing: 6) {
+                queueButton.frame(width: controlFaceSize, height: controlFaceSize)
+                storageIndicator.frame(width: 96)
+            }
+            .frame(width: 96, alignment: .leading)
             Spacer(minLength: 0)
         }
         .frame(height: actionRowHeight)

@@ -3,9 +3,8 @@ import SwiftUI
 /// Pop-over panel of manual camera controls, presented over the preview from
 /// the top toolbar's "Manual" button.
 ///
-/// Three compact columns: ZOOM, FOCUS, and APERTURE. ISO deliberately lives in the control
-/// bar's exposure control instead, so the two cannot fight over the same
-/// device setting.
+/// Three compact columns: ZOOM, FOCUS, and APERTURE. ISO remains editable only in
+/// the control bar; the exposure values here are read-only.
 struct ManualControlsPanel: View {
     let cameraViewModel: CameraViewModel
     @Binding var zoomFactor: Double
@@ -16,6 +15,7 @@ struct ManualControlsPanel: View {
     var body: some View {
         VStack(spacing: 8) {
             header
+            exposureReadout
 
             HStack(alignment: .top, spacing: 6) {
                 zoomColumn
@@ -43,6 +43,21 @@ struct ManualControlsPanel: View {
             }
             .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 7))
         }
+    }
+
+    private var exposureReadout: some View {
+        Text("ISO \(Int(cameraViewModel.liveISO)) · \(shutterText)")
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.white.opacity(0.9))
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var shutterText: String {
+        let seconds = cameraViewModel.liveShutterSeconds
+        guard seconds > 0 else { return "1/48" }
+        return "1/\(Int((1.0 / seconds).rounded()))"
     }
 
     // MARK: - Columns
