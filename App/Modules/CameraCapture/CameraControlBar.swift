@@ -341,7 +341,7 @@ struct CameraControlBar: View {
     }
 
     private var storageIndicator: some View {
-        Button(action: onShowQueueSheet) {
+        Button(action: showStorageInfo) {
             RecordingTimeLCD(
                 estimatedSeconds: estimatedRemainingSeconds,
                 isStorageLow: isStorageLow,
@@ -352,14 +352,15 @@ struct CameraControlBar: View {
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .highPriorityGesture(LongPressGesture(minimumDuration: 0.5, maximumDistance: 10).onEnded { _ in
-            showStorageInfo()
+            onShowQueueSheet()
         })
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Queue and estimated recording time remaining")
         .accessibilityValue("\(estimatedTimeText). \(freeSpaceText) free. "
                             + "\(isStorageLow ? "Low storage. " : "")\(queueStatus.accessibilityDescription)")
-        .accessibilityHint("Tap for video details and retry controls. Long-press for storage details.")
+        .accessibilityHint("Tap for storage details. Long-press for video details and retry controls.")
         .accessibilityAction(named: Text("Storage details")) { showStorageInfo() }
+        .accessibilityAction(named: Text("Render queue")) { onShowQueueSheet() }
         .cameraRotatingControl()
     }
 
