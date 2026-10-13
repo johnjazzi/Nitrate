@@ -409,6 +409,7 @@ struct ContentView: View {
     private var queueSheet: some View {
         QueueSheetView(
             viewModel: renderQueueViewModel,
+            cameraViewModel: cameraViewModel,
             isPresented: $showQueueSheet
         )
     }

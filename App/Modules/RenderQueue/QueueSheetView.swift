@@ -2,10 +2,11 @@ import SwiftUI
 import UIKit
 import AVKit
 
-/// Queue sheet, job row and share sheet for the render queue.
+/// Combined storage and render queue sheet, job row and share sheet.
 
 struct QueueSheetView: View {
     @State var viewModel: RenderQueueViewModel
+    let cameraViewModel: CameraViewModel
     @Binding var isPresented: Bool
     @State private var showAll = false
     @State private var shareTarget: RenderJob?
@@ -21,54 +22,65 @@ struct QueueSheetView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if isEmpty {
-                    ContentUnavailableView(
-                        "No Render Jobs",
-                        systemImage: "tray",
-                        description: Text("Record a video and select a film stock to start rendering.")
+            List {
+                Section("Storage") {
+                    CameraStorageSummary(
+                        freeSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.freeSpaceBytes : nil,
+                        totalSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.totalSpaceBytes : nil,
+                        estimatedSeconds: estimatedRemainingSeconds
                     )
+                }
+                if isEmpty {
+                    Section("Render queue") {
+                        ContentUnavailableView(
+                            "No Render Jobs",
+                            systemImage: "tray",
+                            description: Text("Record a video and select a film stock to start rendering.")
+                        )
+                    }
                 } else {
-                    List {
-                        if let current = visibleQueuedJobs.first(where: { $0.status == .processing }) {
-                            Section("Processing") { JobRow(job: current, isCurrent: true) }
-                        }
-                        let pending = visibleQueuedJobs.filter { $0.status == .pending }
-                        if !pending.isEmpty {
-                            Section("Pending (\(pending.count))") {
-                                ForEach(pending) { job in
-                                    JobRow(job: job)
-                                        .swipeActions {
-                                            Button("Remove", role: .destructive) {
-                                                viewModel.remove(jobId: job.id)
-                                            }
+                    if let current = visibleQueuedJobs.first(where: { $0.status == .processing }) {
+                        Section("Processing") { JobRow(job: current, isCurrent: true) }
+                    }
+                    let pending = visibleQueuedJobs.filter { $0.status == .pending }
+                    if !pending.isEmpty {
+                        Section("Pending (\(pending.count))") {
+                            ForEach(pending) { job in
+                                JobRow(job: job)
+                                    .swipeActions {
+                                        Button("Remove", role: .destructive) {
+                                            viewModel.remove(jobId: job.id)
                                         }
-                                }
+                                    }
                             }
                         }
-                        if !visibleHistory.isEmpty {
-                            Section("History (\(visibleHistory.count))") {
-                                ForEach(visibleHistory) { job in
-                                    if job.status == .completed {
-                                        Button { playbackJob = job } label: { JobRow(job: job) }
-                                            .buttonStyle(.plain)
-                                            .swipeActions(edge: .leading) {
-                                                Button { shareVideo(job) } label: {
-                                                    Label("Share", systemImage: "square.and.arrow.up")
-                                                }.tint(.blue)
-                                            }
-                                    } else {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            JobRow(job: job)
-                                            if let error = job.errorMessage {
-                                                Text(error).font(.caption).foregroundStyle(.red)
-                                            }
-                                            if job.outputURL != nil {
-                                                Button("View video") { playbackJob = job }
-                                            }
-                                            Button("Retry") { viewModel.retry(jobId: job.id) }
-                                                .buttonStyle(.bordered)
+                    }
+                    if !visibleHistory.isEmpty {
+                        Section("History (\(visibleHistory.count))") {
+                            ForEach(visibleHistory) { job in
+                                if job.status == .completed {
+                                    Button { playbackJob = job } label: { JobRow(job: job) }
+                                        .buttonStyle(.plain)
+                                        .swipeActions(edge: .leading) {
+                                            Button { shareVideo(job) } label: {
+                                                Label("Share", systemImage: "square.and.arrow.up")
+                                            }.tint(.blue)
                                         }
+                                } else {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        JobRow(job: job)
+                                        if let error = job.errorMessage {
+                                            Text(error).font(.caption).foregroundStyle(.red)
+                                        }
+                                        if job.outputURL != nil {
+                                            Button { playbackJob = job } label: {
+                                                Text("View video").frame(minHeight: 44)
+                                            }
+                                        }
+                                        Button { viewModel.retry(jobId: job.id) } label: {
+                                            Text("Retry").frame(minHeight: 44)
+                                        }
+                                        .buttonStyle(.bordered)
                                     }
                                 }
                             }
@@ -77,7 +89,7 @@ struct QueueSheetView: View {
                 }
             }
             .animation(.default, value: viewModel.jobs)
-            .navigationTitle("")
+            .navigationTitle("Storage & Queue")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -98,6 +110,17 @@ struct QueueSheetView: View {
                 }
             }
         }
+        .onAppear { cameraViewModel.updateFreeSpace() }
+    }
+
+    private var estimatedRemainingSeconds: TimeInterval? {
+        guard cameraViewModel.hasStorageSnapshot else { return nil }
+        return CameraStorageEstimatePolicy.remainingSeconds(
+            freeBytes: cameraViewModel.freeSpaceBytes,
+            criticalReserveBytes: CameraViewModel.criticalSpaceThreshold,
+            videoBitRate: DeliverySettings.averageBitRate,
+            audioBitRate: DeliverySettings.aacAverageBitRate
+        )
     }
 
     private func shareVideo(_ job: RenderJob) {
@@ -105,7 +128,7 @@ struct QueueSheetView: View {
               FileManager.default.fileExists(atPath: url.path) else { return }
         shareTarget = job
     }
-    }
+}
 
 // MARK: - Video Preview
 

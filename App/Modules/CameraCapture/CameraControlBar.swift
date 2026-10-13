@@ -18,8 +18,6 @@ struct CameraControlBar: View {
     let onShowStockSheet: () -> Void
     let formatDuration: (TimeInterval) -> String
 
-    @State private var isStorageInfoPresented = false
-
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 6) {
@@ -39,15 +37,6 @@ struct CameraControlBar: View {
             recordButton.frame(width: recordFaceSize, height: recordFaceSize)
         }
         .padding(.horizontal, 16)
-        .sheet(isPresented: $isStorageInfoPresented) {
-            CameraStorageInfoSheet(
-                freeSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.freeSpaceBytes : nil,
-                totalSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.totalSpaceBytes : nil,
-                estimatedSeconds: estimatedRemainingSeconds
-            )
-            .presentationDetents([.medium, .large])
-            .preferredColorScheme(.dark)
-        }
     }
 
     // MARK: - Left selector row
@@ -331,17 +320,12 @@ struct CameraControlBar: View {
         )
     }
 
-    private func showStorageInfo() {
-        cameraViewModel.updateFreeSpace()
-        isStorageInfoPresented = true
-    }
-
     private var isStorageLow: Bool {
         cameraViewModel.hasStorageSnapshot && cameraViewModel.freeSpaceBytes < 1_000_000_000
     }
 
     private var storageIndicator: some View {
-        Button(action: showStorageInfo) {
+        Button(action: onShowQueueSheet) {
             RecordingTimeLCD(
                 estimatedSeconds: estimatedRemainingSeconds,
                 isStorageLow: isStorageLow,
@@ -351,16 +335,11 @@ struct CameraControlBar: View {
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
-        .highPriorityGesture(LongPressGesture(minimumDuration: 0.5, maximumDistance: 10).onEnded { _ in
-            onShowQueueSheet()
-        })
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Queue and estimated recording time remaining")
+        .accessibilityLabel("Storage, render queue, and estimated recording time remaining")
         .accessibilityValue("\(estimatedTimeText). \(freeSpaceText) free. "
                             + "\(isStorageLow ? "Low storage. " : "")\(queueStatus.accessibilityDescription)")
-        .accessibilityHint("Tap for storage details. Long-press for video details and retry controls.")
-        .accessibilityAction(named: Text("Storage details")) { showStorageInfo() }
-        .accessibilityAction(named: Text("Render queue")) { onShowQueueSheet() }
+        .accessibilityHint("Tap for storage and render queue details, video playback, sharing, and retry controls.")
         .cameraRotatingControl()
     }
 
