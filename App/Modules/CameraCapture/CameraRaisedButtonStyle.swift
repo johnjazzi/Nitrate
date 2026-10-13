@@ -80,13 +80,12 @@ struct CameraControlWell: ViewModifier {
                     .overlay { shape.fill(Color.black.opacity(0.18)) }
             }
             .overlay {
-                // A defined outer lip around the well; the individual key
-                // bevels inside stay unchanged. Two concentric strokes give
-                // the edge depth without making the plate opaque.
+                // The outer rim is inset: dark above, light below. The keys
+                // inside retain their raised bevels.
                 shape.strokeBorder(
                     LinearGradient(
-                        colors: [.white.opacity(0.68), .white.opacity(0.24),
-                                 .black.opacity(0.62)],
+                        colors: [.black.opacity(0.76), .black.opacity(0.20),
+                                 .white.opacity(0.68)],
                         startPoint: .top,
                         endPoint: .bottom
                     ),
@@ -102,7 +101,6 @@ struct CameraControlWell: ViewModifier {
                 )
                 .allowsHitTesting(false)
             }
-            .shadow(color: .black.opacity(0.48), radius: 9, x: 0, y: 4)
             .contentShape(shape)
     }
 }
