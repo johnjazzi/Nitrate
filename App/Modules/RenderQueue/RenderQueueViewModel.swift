@@ -81,14 +81,16 @@ final class RenderQueueViewModel {
         processNext()
     }
 
-    func enqueue(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge? = nil) {
+    func enqueue(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge? = nil,
+                 deliveryPreferences: RenderDeliveryPreferences? = nil) {
         guard Self.isUsableFile(sourceURL) else {
             rendererErrorMessage = "Source video not ready. Try again."
             return
         }
         rendererErrorMessage = nil
         jobs.append(RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso,
-                              printGauge: gauge, sessionId: sessionId))
+                              printGauge: gauge, sessionId: sessionId,
+                              deliveryPreferences: deliveryPreferences ?? DeliverySettings.renderPreferences()))
         persistJobs()
         processNext()
     }
@@ -159,55 +161,78 @@ final class RenderQueueViewModel {
 
     private func executeJob(_ jobId: UUID) async {
         guard let initial = job(jobId) else { return }
-        do {
-            var outputURL = initial.outputURL
-            if let persistedOutput = outputURL, !Self.isUsableFile(persistedOutput) {
-                outputURL = nil
-                update(jobId) { $0.outputURL = nil; $0.outputSavedToPhotos = nil }
-                persistJobs()
-            }
-            if outputURL == nil {
-                outputURL = try await render(initial)
-                guard let url = outputURL, Self.isUsableFile(url) else {
-                    throw QueueError.invalidOutput
+        // A confirmed Photos asset does not depend on the retained output file.
+        // This also recovers a crash between the two requested deliveries.
+        if initial.outputSavedToPhotos != true {
+            do {
+                var outputURL = initial.outputURL
+                if let persistedOutput = outputURL, !Self.isUsableFile(persistedOutput) {
+                    outputURL = nil
+                    update(jobId) { $0.outputURL = nil; $0.outputSavedToPhotos = nil }
+                    persistJobs()
                 }
-                update(jobId) { $0.outputURL = url }
+                if outputURL == nil {
+                    outputURL = try await render(initial)
+                    guard let url = outputURL, Self.isUsableFile(url) else {
+                        throw QueueError.invalidOutput
+                    }
+                    update(jobId) { $0.outputURL = url }
+                    persistJobs()
+                }
+                guard let outputURL, Self.isUsableFile(outputURL) else { throw QueueError.invalidOutput }
+                try await saveOperation(outputURL)
+                update(jobId) { $0.outputSavedToPhotos = true }
+                // Persist the first success before attempting the original.
                 persistJobs()
+            } catch {
+                if let outputURL = job(jobId)?.outputURL {
+                    let message = Self.isUsableFile(outputURL)
+                        ? "Rendered movie is retained for retry, but Photos save failed: \(error.localizedDescription)"
+                        : "Rendered movie is unavailable and Photos save failed: \(error.localizedDescription)"
+                    update(jobId) {
+                        $0.status = .failed
+                        $0.outputSavedToPhotos = false
+                        $0.errorMessage = message
+                    }
+                } else {
+                    await failRender(jobId, error: error)
+                }
+                persistJobs()
+                return
             }
-            guard let outputURL else { throw QueueError.invalidOutput }
-            guard Self.isUsableFile(outputURL) else { throw QueueError.invalidOutput }
-            try await saveOperation(outputURL)
-            update(jobId) {
-                $0.status = .completed
-                $0.outputSavedToPhotos = true
-                $0.errorMessage = nil
+        }
+        if initial.deliveryPreferences?.saveOriginalLog == true, job(jobId)?.sourceSavedToPhotos != true {
+            do {
+                // Deliver the capture file unchanged, including its Log encoding,
+                // audio, orientation and custom metadata; never trim or delete it.
+                try await saveOperation(initial.sourceURL)
+                update(jobId) { $0.sourceSavedToPhotos = true }
+                persistJobs()
+            } catch {
+                let sourceDetail = Self.isUsableFile(initial.sourceURL)
+                    ? "Original remains in the app."
+                    : "Original source is no longer available in the app."
+                let outputDetail = job(jobId)?.outputURL.map(Self.isUsableFile) == true
+                    ? "Rendered movie is retained in the app."
+                    : "Rendered movie is no longer available in the app."
+                update(jobId) {
+                    $0.status = .failed
+                    $0.sourceSavedToPhotos = false
+                    $0.errorMessage = "Rendered movie saved to Photos, but original Apple Log could not be saved: \(error.localizedDescription). \(sourceDetail) \(outputDetail) Retry saves only the original."
+                }
+                persistJobs()
+                return
             }
-            // Make successful delivery durable before optional diagnostics can
-            // suspend or fail. Recovery must never save this movie again.
-            persistJobs()
+        }
+        update(jobId) { $0.status = .completed; $0.errorMessage = nil }
+        persistJobs()
+        if let outputURL = job(jobId)?.outputURL, Self.isUsableFile(outputURL) {
             if let postDeliveryOperation {
                 await postDeliveryOperation(outputURL, jobId)
             } else {
                 await dumpFrames(from: outputURL, jobId: jobId)
             }
-        } catch {
-            let outputExists = job(jobId)?.outputURL != nil
-            if outputExists {
-                let outputIsUsable = job(jobId)?.outputURL.map(Self.isUsableFile) ?? false
-                let message = outputIsUsable
-                    ? "Rendered movie is retained for retry, but Photos save failed: \(error.localizedDescription)"
-                    : "Rendered movie is unavailable and Photos save failed: \(error.localizedDescription)"
-                update(jobId) {
-                    $0.status = .failed
-                    $0.outputSavedToPhotos = false
-                    $0.errorMessage = message
-                }
-            } else {
-                await failRender(jobId, error: error)
-            }
         }
-        publishQueueMessage()
-        persistJobs()
     }
 
     private func render(_ job: RenderJob) async throws -> URL {
@@ -220,7 +245,7 @@ final class RenderQueueViewModel {
         }
         return try await renderer.render(sourceURL: job.sourceURL, config: config,
                                          trimRange: job.trimRange,
-                                         bitrate: DeliverySettings.averageBitRate)
+                                         bitrate: job.deliveryPreferences?.quality.averageBitRate ?? DeliverySettings.averageBitRate)
     }
 
     private func failRender(_ jobId: UUID, error: Error) async {

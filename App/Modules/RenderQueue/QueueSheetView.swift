@@ -197,6 +197,13 @@ private struct JobRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(job.stockId).font(.caption.weight(.semibold))
                 Text("ISO \(Int(job.iso))").font(.caption2).foregroundStyle(.secondary)
+                if job.outputSavedToPhotos == true {
+                    Text(job.sourceSavedToPhotos == true ? "Rendered + original saved to Photos" : "Rendered saved to Photos")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if job.sourceSavedToPhotos == true {
+                    Text("Original saved to Photos").font(.caption2).foregroundStyle(.secondary)
+                }
                 HStack(spacing: 3) {
                     Text("Queued")
                     Text(job.createdAt.formatted(queuedDateFormat))
@@ -230,7 +237,8 @@ private struct JobRow: View {
             case .processing:
                 HStack {
                     ProgressView().scaleEffect(0.8)
-                    Text("Rendering").font(.caption2).foregroundStyle(.orange)
+                    Text(job.outputSavedToPhotos == true ? "Saving original" : "Rendering / saving")
+                        .font(.caption2).foregroundStyle(.orange)
                 }
             case .completed: Label("Done", systemImage: "checkmark.circle.fill").font(.caption2).foregroundStyle(.green)
             case .failed: Label("Failed", systemImage: "xmark.circle.fill").font(.caption2).foregroundStyle(.red)

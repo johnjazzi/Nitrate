@@ -19,8 +19,8 @@ settings:
     INFOPLIST_KEY_CFBundleDisplayName: Nitrate
     INFOPLIST_KEY_NSCameraUsageDescription: "Nitrate needs camera access to capture Apple Log video for film stock processing."
     INFOPLIST_KEY_NSMicrophoneUsageDescription: "Nitrate records audio to accompany your film clips."
-    INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "Nitrate saves rendered videos to your photo library."
-    INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "Nitrate saves rendered videos to your photo library."
+    INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "Nitrate saves rendered videos and optional original Log recordings to your photo library."
+    INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "Nitrate saves rendered videos and optional original Log recordings to your photo library."
     INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
     INFOPLIST_KEY_UIRequiredDeviceCapabilities: "metal video-capture"
     INFOPLIST_KEY_UIStatusBarHidden: "YES"
