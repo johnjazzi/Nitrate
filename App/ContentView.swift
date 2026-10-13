@@ -249,36 +249,11 @@ struct ContentView: View {
     }
 
     private var lensMenu: some View {
-        Menu {
-            ForEach(availableLenses) { lens in
-                Button {
-                    selectLens(lens)
-                } label: {
-                    if lens == selectedLens {
-                        Label(lensTitle(lens), systemImage: "checkmark")
-                    } else {
-                        Text(lensTitle(lens))
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Text(lensTitle(selectedLens))
-                    .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-            }
-            .foregroundStyle(.white)
-            .frame(width: 84, height: 44)
-        }
-        .buttonStyle(CameraRaisedButtonStyle())
-        .accessibilityLabel("Camera lens")
-        .accessibilityValue(lensTitle(selectedLens))
-        .accessibilityHint("Opens available camera lenses")
-    }
-
-    private func lensTitle(_ lens: CameraLens) -> String {
-        lens == .front ? "Front" : "\(lens.focalLengthMM) mm"
+        CameraLensSelector(
+            availableLenses: availableLenses,
+            selectedLens: selectedLens,
+            onSelectLens: selectLens
+        )
     }
 
     private func selectLens(_ lens: CameraLens) {
