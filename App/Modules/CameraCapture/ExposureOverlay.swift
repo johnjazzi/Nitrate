@@ -27,75 +27,66 @@ struct MeteringBoxView: View {
     }
 }
 
-/// Horizontal under/over indicator: the live metered exposure offset against the
-/// user's target EV. Sits just above the bottom control rows, about two thirds
-/// of the screen width, and turns green when the meter agrees with the target.
-///
-/// This is the readout that matters in manual ISO: the user dials ISO and wants
-/// to know when the centre of the frame (or the selected box) lands on the
-/// target exposure.
+/// Compact live meter beside the exposure ruler. Higher EV is above centre,
+/// matching the ruler's direction; the target band and live dot retain the
+/// same absolute EV scale and match tolerance as the original horizontal meter.
 struct ExposureIndicatorView: View {
-    /// Live metered offset from the device target, in EV.
     let meteredEV: Float
-    /// The user's chosen EV (0 when no bias is set).
     let targetEV: Float
     let isManual: Bool
     let isAvailable: Bool
 
+    private var hasReading: Bool {
+        isAvailable && meteredEV.isFinite && targetEV.isFinite
+    }
+
     private var matched: Bool {
-        isAvailable && ExposureIndicatorPolicy.matches(meteredEV: meteredEV, targetEV: targetEV)
+        hasReading && ExposureIndicatorPolicy.matches(meteredEV: meteredEV, targetEV: targetEV)
     }
 
     private var statusText: String {
-        guard isAvailable else { return "NO METER" }
+        guard hasReading else { return "NO METER" }
         if matched { return "MATCH" }
         return meteredEV < targetEV ? "UNDER" : "OVER"
     }
 
     private var accent: Color {
-        guard isAvailable else { return .white.opacity(0.4) }
+        guard hasReading else { return .white.opacity(0.4) }
         return matched ? .green : (isManual ? .yellow : .orange)
     }
 
     var body: some View {
-        VStack(spacing: 3) {
-            header
-            track
+        VStack(spacing: 6) {
+            Text(hasReading ? String(format: "%+.1f", meteredEV) : "—")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(accent)
+                .frame(height: 14)
+            VStack(spacing: 2) {
+                directionLabel("OVER")
+                track
+                directionLabel("UNDER")
+            }
+            .frame(height: 120)
+            Text(statusText)
+                .font(.system(size: 7, weight: .heavy))
+                .foregroundStyle(accent)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(.black.opacity(0.38))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .opacity(isAvailable ? 1 : 0.55)
+        .frame(width: 28)
+        .allowsHitTesting(false)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Exposure \(statusText.lowercased())")
-        .accessibilityValue(String(format: "metered %+.2f EV, target %+.2f EV", meteredEV, targetEV))
+        .accessibilityValue(hasReading
+            ? String(format: "metered %+.2f EV, target %+.2f EV", meteredEV, targetEV)
+            : "Live exposure meter unavailable")
     }
 
-    private var header: some View {
-        HStack(spacing: 6) {
-            Text("UNDER")
-                .font(.system(size: 8, weight: .bold))
-                .foregroundStyle(.white.opacity(0.6))
-            Spacer(minLength: 0)
-            Text(String(format: "%+.1f", meteredEV))
-                .font(.caption2.monospacedDigit().weight(.semibold))
-                .foregroundStyle(.white)
-            Text("→ \(String(format: "%+.1f", targetEV))")
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .foregroundStyle(accent)
-            Text(statusText)
-                .font(.system(size: 9, weight: .heavy))
-                .foregroundStyle(.black)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1)
-                .background(matched ? Color.green : Color.white.opacity(0.85))
-                .clipShape(Capsule())
-            Spacer(minLength: 0)
-            Text("OVER")
-                .font(.system(size: 8, weight: .bold))
-                .foregroundStyle(.white.opacity(0.6))
-        }
+    private func directionLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 6, weight: .bold))
+            .foregroundStyle(.white.opacity(0.6))
+            .frame(height: 8)
     }
 
     private var track: some View {
@@ -106,48 +97,32 @@ struct ExposureIndicatorView: View {
                 Capsule()
                     .fill(.white.opacity(0.12))
                     .overlay(Capsule().stroke(.white.opacity(0.25), lineWidth: 1))
-                centreTick(width: width, height: height)
-                targetBand(width: width, height: height)
-                meteredMarker(width: width, height: height)
+                Rectangle()
+                    .fill(.white.opacity(0.35))
+                    .frame(width: width * 0.6, height: 1)
+                    .position(x: width / 2, y: height / 2)
+                // No live dot or target band when there is no valid reading:
+                // an unknown meter must not look like a centred match.
+                if hasReading {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(accent.opacity(0.4))
+                        .frame(width: width, height: 10)
+                        .position(x: width / 2, y: markerY(targetEV, inset: 5, height: height))
+                    Circle()
+                        .fill(matched ? Color.green : Color.white)
+                        .overlay(Circle().stroke(.black.opacity(0.4), lineWidth: 1))
+                        .frame(width: width - 2, height: width - 2)
+                        .position(x: width / 2,
+                                  y: markerY(meteredEV, inset: (width - 2) / 2, height: height))
+                }
             }
         }
-        .frame(height: 16)
+        .frame(width: 12)
+        .frame(maxHeight: .infinity)
     }
 
-    /// Horizontal position of an EV value on the centred bar.
-    private func markerX(_ ev: Float, width: CGFloat) -> CGFloat {
-        CGFloat(ExposureIndicatorPolicy.position(ev: ev)) * width
-    }
-
-    private func clampedX(_ x: CGFloat, inset: CGFloat, width: CGFloat) -> CGFloat {
-        min(max(x, inset), max(inset, width - inset))
-    }
-
-    private func centreTick(width: CGFloat, height: CGFloat) -> some View {
-        Rectangle()
-            .fill(.white.opacity(0.35))
-            .frame(width: 1, height: height * 0.6)
-            .position(x: width / 2, y: height / 2)
-    }
-
-    /// Band marking the user's target EV.
-    private func targetBand(width: CGFloat, height: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 2)
-            .fill(accent.opacity(0.4))
-            .frame(width: 10, height: height)
-            .position(x: clampedX(markerX(targetEV, width: width), inset: 5, width: width),
-                      y: height / 2)
-    }
-
-    /// Marker for the live metered offset; green when it agrees with the target.
-    private func meteredMarker(width: CGFloat, height: CGFloat) -> some View {
-        let diameter = height - 2
-        return Circle()
-            .fill(matched ? Color.green : Color.white)
-            .overlay(Circle().stroke(.black.opacity(0.4), lineWidth: 1))
-            .frame(width: diameter, height: diameter)
-            .position(x: clampedX(markerX(meteredEV, width: width),
-                                  inset: diameter / 2, width: width),
-                      y: height / 2)
+    private func markerY(_ ev: Float, inset: CGFloat, height: CGFloat) -> CGFloat {
+        let position = (1 - CGFloat(ExposureIndicatorPolicy.position(ev: ev))) * height
+        return min(max(position, inset), max(inset, height - inset))
     }
 }

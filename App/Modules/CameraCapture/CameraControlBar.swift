@@ -171,12 +171,34 @@ struct CameraControlBar: View {
 
     // MARK: - Exposure control (dual mode)
 
-    /// One control, two modes. Auto drives the scene's auto-exposure target bias
-    /// (EV); manual drives the ISO chooser. Long-press toggles between them.
+    /// The live meter and setting share the existing 92pt column: 28pt meter,
+    /// 56pt ruler, and two 4pt rims. The footprint stays clear of centred REC
+    /// and the left queue/remaining-time column even on a 320pt-wide phone.
     private var exposureControl: some View {
+        HStack(alignment: .top, spacing: 0) {
+            ExposureIndicatorView(
+                meteredEV: cameraViewModel.liveExposureTargetOffset,
+                targetEV: cameraViewModel.isManualExposure ? 0 : cameraViewModel.liveExposureBias,
+                isManual: cameraViewModel.isManualExposure,
+                isAvailable: cameraViewModel.hasExposureMeter
+            )
+            exposureSetting
+                .frame(width: 56)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
+        .modifier(CameraRaisedSurface(cornerRadius: 14))
+    }
+
+    /// One setting, two modes. Auto drives the scene's auto-exposure target bias
+    /// (EV); manual drives the ISO chooser. Long-press toggles between them.
+    private var exposureSetting: some View {
         VStack(spacing: 6) {
             Text(exposureReadout)
                 .font(.caption2.monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(height: 14)
                 .foregroundStyle(.white.opacity(0.9))
 
             if cameraViewModel.isManualExposure {
@@ -222,9 +244,6 @@ struct CameraControlBar: View {
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(.white.opacity(0.7))
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 6)
-        .modifier(CameraRaisedSurface(cornerRadius: 14))
         .contentShape(Rectangle())
         // Simultaneous so the whole control stays hittable: an exclusive
         // long-press would never fire over the slider track, which is the
