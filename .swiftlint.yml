@@ -7,4 +7,4 @@ only_rules:
 
 excluded:
   - build
-  - FilmEmulation.xcodeproj
+  - Nitrate.xcodeproj

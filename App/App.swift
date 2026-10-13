@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct FilmEmulationApp: App {
+struct NitrateApp: App {
     @State private var cameraViewModel: CameraViewModel
     @State private var renderQueueViewModel: RenderQueueViewModel
     @State private var purchaseViewModel: PurchaseViewModel
