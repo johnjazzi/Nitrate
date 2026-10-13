@@ -78,6 +78,7 @@ struct CameraControlBar: View {
                 } label: {
                     Image(systemName: "film").font(.title3)
                     .foregroundStyle(.white)
+                    .cameraUpright()
                     .frame(width: faceSize, height: faceSize)
                 }
                 .buttonStyle(CameraRaisedButtonStyle())
@@ -107,6 +108,7 @@ struct CameraControlBar: View {
                 Text("\(Int(currentISO))\(stock.lightType)")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(.black)
+                    .cameraUpright()
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
                     .background(.ultraThinMaterial)
@@ -148,6 +150,7 @@ struct CameraControlBar: View {
                 .minimumScaleFactor(0.7)
                 .frame(height: 14)
                 .foregroundStyle(.white.opacity(0.9))
+                .cameraUpright()
 
             if cameraViewModel.isManualExposure {
                 // Match EV's 12pt detents and tick geometry. Logarithmic ISO
@@ -182,6 +185,7 @@ struct CameraControlBar: View {
             Text(cameraViewModel.isManualExposure ? "ISO" : "EV")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(.white.opacity(0.7))
+                .cameraUpright()
         }
         .contentShape(Rectangle())
         // Simultaneous so the whole control stays hittable: an exclusive
@@ -327,6 +331,7 @@ struct CameraControlBar: View {
                 Text(formatDuration(cameraViewModel.recordingDuration))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.white)
+                    .cameraUpright()
                     .padding(.horizontal, 8)
                     .padding(.vertical, 2)
                     .background(.red.opacity(0.8))

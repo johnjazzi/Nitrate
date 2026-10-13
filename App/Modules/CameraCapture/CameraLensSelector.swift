@@ -9,6 +9,10 @@ struct CameraLensSelector: View {
 
     @State private var isPresented = false
 
+    /// Physical orientation, re-injected into the popout so its keys rotate the
+    /// same way even if the popover does not inherit the presenter's values.
+    @Environment(\.cameraDeviceOrientation) private var deviceOrientation
+
     var body: some View {
         Group {
             if availableLenses.isEmpty {
@@ -45,9 +49,11 @@ struct CameraLensSelector: View {
         HStack(spacing: 4) {
             Image(systemName: "camera.aperture")
                 .font(.system(size: 16, weight: .medium))
+                .cameraUpright()
                 .accessibilityHidden(true)
             Text(title(selectedLens))
                 .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
+                .cameraUpright()
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
@@ -70,6 +76,7 @@ struct CameraLensSelector: View {
         .padding(10)
         .frame(width: 264)
         .fixedSize(horizontal: false, vertical: true)
+        .environment(\.cameraDeviceOrientation, deviceOrientation)
         .accessibilityLabel("Available camera lenses")
     }
 
@@ -81,11 +88,13 @@ struct CameraLensSelector: View {
         } label: {
             HStack(spacing: 6) {
                 Text(title(lens))
+                    .cameraUpright()
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                 if isSelected {
                     Image(systemName: "checkmark")
                         .font(.system(size: 11, weight: .bold))
+                        .cameraUpright()
                         .accessibilityHidden(true)
                 }
             }

@@ -12,11 +12,13 @@ struct RecordingTimeLCD: View {
                 Text("REC LEFT")
                     .font(.system(size: 8, weight: .semibold))
                     .tracking(0.5)
+                    .cameraUpright()
                 Spacer(minLength: 0)
                 if isStorageLow {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 8, weight: .semibold))
                         .foregroundStyle(.orange)
+                        .cameraUpright()
                 }
             }
             .foregroundStyle(.white.opacity(0.75))
@@ -31,6 +33,7 @@ struct RecordingTimeLCD: View {
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
+                .cameraUpright()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 8)

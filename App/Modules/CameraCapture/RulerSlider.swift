@@ -51,6 +51,7 @@ struct RulerSlider: View {
 
     @State private var drag = RulerDragState()
     @State private var feedbackTrigger = 0
+    @Environment(\.cameraDeviceOrientation) private var deviceOrientation
 
     /// The scale actually used for layout: the caller's, or linear travel at the
     /// configured detent size.
@@ -159,7 +160,7 @@ struct RulerSlider: View {
                 let label = Text(tickLabel(tick.value))
                     .font(.system(size: 8, weight: .medium, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.7))
-                context.draw(label, at: CGPoint(x: 0, y: tickY), anchor: .leading)
+                drawLabel(label, in: context, tickY: tickY)
             }
         }
 
@@ -168,6 +169,22 @@ struct RulerSlider: View {
         pointer.move(to: CGPoint(x: 0, y: centerY))
         pointer.addLine(to: CGPoint(x: size.width, y: centerY))
         context.stroke(pointer, with: .color(tint), lineWidth: 2)
+    }
+
+    /// Turn only the label about its original centre. Tracks, pointer, detents
+    /// and gesture coordinates remain in the portrait control's coordinates.
+    private func drawLabel(_ label: Text, in context: GraphicsContext, tickY: CGFloat) {
+        let resolved = context.resolve(label)
+        let size = resolved.measure(in: CGSize(width: CGFloat.infinity, height: CGFloat.infinity))
+        let degrees = CameraGlyphRotation.degrees(for: deviceOrientation)
+        let fit = abs(degrees) == 90 && size.width > 0 && size.height > 0
+            ? min(1, min(size.width / size.height, size.height / size.width)) : 1
+        var glyphContext = context
+        // Original .leading anchor places the label centre at half its width.
+        glyphContext.translateBy(x: size.width / 2, y: tickY)
+        glyphContext.rotate(by: .degrees(degrees))
+        glyphContext.scaleBy(x: fit, y: fit)
+        glyphContext.draw(resolved, at: .zero, anchor: .center)
     }
 
     /// A tick to draw: its value, where it sits on the ruler, and whether it is

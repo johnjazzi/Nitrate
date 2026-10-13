@@ -41,6 +41,11 @@ struct ContentView: View {
     /// Pinch-zoom baseline (ISO/EV controls live in `CameraControlBar`).
     @State private var pinchBaseZoom: Double = 1.0
 
+    /// Physical orientation source for the `.cameraUpright()` chrome modifier.
+    /// Every icon/text glyph in the camera UI rotates to stay readable in
+    /// landscape while its layout position is unchanged.
+    @State private var orientation = CameraOrientationObserver.shared
+
     /// Manual zoom/focus pop-over with a live exposure readout.
     @State private var showManualControls = false
     @State private var manualFocusPosition: Double = 0.5
@@ -54,8 +59,10 @@ struct ContentView: View {
     var body: some View {
         #if DEBUG
         debugEnabledBody
+            .environment(\.cameraDeviceOrientation, orientation.deviceOrientation)
         #else
         shippingBody
+            .environment(\.cameraDeviceOrientation, orientation.deviceOrientation)
         #endif
     }
 
@@ -209,6 +216,7 @@ struct ContentView: View {
                 Image(systemName: "gearshape.fill")
                     .font(.title3)
                     .foregroundStyle(.white)
+                    .cameraUpright()
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(CameraRaisedButtonStyle())
@@ -220,6 +228,7 @@ struct ContentView: View {
                 Image(systemName: "slider.vertical.3")
                     .font(.title3)
                     .foregroundStyle(showManualControls ? .black : .white)
+                    .cameraUpright()
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(CameraRaisedButtonStyle(faceColor: showManualControls ? .yellow : Color(red: 0.16, green: 0.17, blue: 0.19)))
@@ -233,6 +242,7 @@ struct ContentView: View {
                 Text("DEBUG")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundStyle(.black)
+                    .cameraUpright()
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
                     .background(.yellow)
@@ -309,10 +319,13 @@ struct ContentView: View {
     private func cameraErrorBanner(_ message: String) -> some View {
         HStack {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+                .cameraUpright()
             Text(message).foregroundStyle(.white).font(.caption)
+                .cameraUpright()
             Spacer()
             Button(action: cameraViewModel.dismissError) {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.7))
+                    .cameraUpright()
             }
         }
         .padding(12)
@@ -325,12 +338,15 @@ struct ContentView: View {
     private func renderErrorBanner(_ message: String) -> some View {
         HStack {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                .cameraUpright()
             Text(message).foregroundStyle(.white).font(.caption)
+                .cameraUpright()
             Spacer()
             Button {
                 renderQueueViewModel.rendererErrorMessage = nil
             } label: {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.7))
+                    .cameraUpright()
             }
         }
         .padding(12)

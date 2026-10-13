@@ -34,11 +34,13 @@ struct ManualControlsPanel: View {
             Text("MANUAL")
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.white.opacity(0.7))
+                .cameraUpright()
             Spacer()
             Button(action: onDismiss) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.title3)
                     .foregroundStyle(.white.opacity(0.7))
+                    .cameraUpright()
                     .padding(6)
             }
             .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 7))
@@ -49,6 +51,7 @@ struct ManualControlsPanel: View {
         Text("ISO \(Int(cameraViewModel.liveISO)) · \(shutterText)")
             .font(.caption.monospacedDigit())
             .foregroundStyle(.white.opacity(0.9))
+            .cameraUpright()
             .lineLimit(1)
             .minimumScaleFactor(0.75)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -104,6 +107,7 @@ struct ManualControlsPanel: View {
                 Text(isManualFocus ? "AF" : "MF")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(isManualFocus ? .black : .white)
+                    .cameraUpright()
                     .padding(.horizontal, 9)
                     .padding(.vertical, 6)
             }
@@ -131,6 +135,7 @@ struct ManualControlsPanel: View {
                           systemImage: "chevron.up.chevron.down")
                         .font(.caption2.weight(.bold).monospacedDigit())
                         .foregroundStyle(.white)
+                        .cameraUpright()
                         .padding(.horizontal, 8)
                         .padding(.vertical, 6)
                 }
@@ -143,8 +148,10 @@ struct ManualControlsPanel: View {
                 }()
                 VStack(spacing: 6) {
                     Image(systemName: measured == nil ? "minus.circle" : "lock.fill")
+                        .cameraUpright()
                     Text(stateLabel)
                         .font(.caption2.weight(.bold))
+                        .cameraUpright()
                 }
                 .foregroundStyle(.white.opacity(0.45))
                 .frame(height: 80)
@@ -162,12 +169,14 @@ struct ManualControlsPanel: View {
             Text(title)
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.white.opacity(0.7))
+                .cameraUpright()
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
             content()
             Text(readout)
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.white.opacity(0.9))
+                .cameraUpright()
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
         }
