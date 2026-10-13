@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -20,8 +20,8 @@ DEFAULT_OUTPUT = ROOT / "App/Resources/Branding.xcassets"
 def generate(output):
     """Write one grainy halation mark, its black icon, and centered launch image.
 
-    Alpha carries the soft exposure bloom, including its dark central aperture.
-    All presentations reuse this mark; no reel holes, lettering, or hard outlines.
+    The source mask preserves the original reel silhouette and five cutouts.
+    All presentations reuse its luminous body, grain, and soft red edge spill.
     A local fixed-seed generator avoids changes from unrelated random state.
     """
     size = 1024
@@ -30,23 +30,23 @@ def generate(output):
     y = (y - (size - 1) / 2) / size
     radius = np.hypot(x, y)
     angle = np.arctan2(y, x)
-    # Slightly uneven exposure/radius keeps this photographic, not a vector ring.
-    ring_radius = 0.28 + 0.004 * np.sin(3 * angle + 0.6)
-    distance = radius - ring_radius
-    core = np.exp(-0.5 * (distance / 0.028) ** 2)
-    bloom = np.exp(-0.5 * (distance / 0.060) ** 2)
-    exposure = 0.80 + 0.20 * np.cos(angle + 0.7)
-    glow = (0.79 * core + 0.21 * bloom) * exposure
-    # Smooth inner/outer gates make the aperture and outer canvas truly empty.
-    inner = np.clip((radius - 0.13) / 0.06, 0, 1)
-    outer = np.clip((0.49 - radius) / 0.06, 0, 1)
-    gate = (inner * inner * (3 - 2 * inner)) * (outer * outer * (3 - 2 * outer))
-    grain = np.random.default_rng(1964).normal(0, 0.09, (size, size))
-    alpha = np.clip(glow * gate * (1 + grain), 0, 1)
+    mask_image = Image.open(ROOT / "scripts/branding/film-reel-mask.png").convert("L")
+    mask = np.asarray(mask_image, dtype=np.float64) / 255
+    soft = np.asarray(mask_image.filter(ImageFilter.GaussianBlur(5)), dtype=np.float64) / 255
+    bloom = np.asarray(mask_image.filter(ImageFilter.GaussianBlur(18)), dtype=np.float64) / 255
+    wide = np.asarray(mask_image.filter(ImageFilter.GaussianBlur(34)), dtype=np.float64) / 255
+    # The reel stays filled; donut-like exposure shading changes its material,
+    # not its geometry. Cutout centers stay dark while their edges spill red.
+    rim = np.exp(-0.5 * ((radius - 0.335) / 0.075) ** 2)
+    exposure = 0.87 + 0.13 * np.cos(angle + 0.7)
+    body = (0.48 + 0.45 * rim) * exposure
+    glow = soft * body + (1 - mask) * (0.34 * bloom + 0.06 * wide)
+    grain = np.random.default_rng(1964).normal(0, 0.07, (size, size))
+    alpha = np.clip(glow * (1 + grain), 0, 1)
     rgba = np.zeros((size, size, 4), dtype=np.uint8)
     rgba[:, :, 0] = 255
-    rgba[:, :, 1] = np.rint(30 + 65 * core * (0.75 + 0.25 * np.cos(angle + 0.7))).astype(np.uint8)
-    rgba[:, :, 2] = np.rint(3 + 7 * core).astype(np.uint8)
+    rgba[:, :, 1] = np.rint(28 + 56 * rim * soft).astype(np.uint8)
+    rgba[:, :, 2] = np.rint(4 + 6 * rim * soft).astype(np.uint8)
     rgba[:, :, 3] = np.rint(alpha * 255).astype(np.uint8)
     rgba[rgba[:, :, 3] == 0, :3] = 0
     logo = Image.fromarray(rgba)

@@ -18,19 +18,25 @@ GENERATOR = ROOT / "scripts/generate_branding.py"
 
 
 class BrandingTests(unittest.TestCase):
-    def test_bright_annulus_surrounds_dark_center(self):
+    def test_original_five_cutouts_remain_dark_inside_luminous_reel(self):
         with tempfile.TemporaryDirectory(dir=SCRATCH) as directory:
             subprocess.run([sys.executable, str(GENERATOR), "--output", directory], check=True)
             with Image.open(Path(directory) / "AppIcon.appiconset/app-icon.png") as image:
                 pixels = np.asarray(image).astype(float)
-            y, x = np.mgrid[:1024, :1024]
-            radius = np.hypot(x - 511.5, y - 511.5) / 1024
-            ring = pixels[(radius > 0.24) & (radius < 0.32)]
-            center = pixels[radius < 0.12]
-            self.assertGreater(ring[:, 0].mean(), 120, "Annulus must glow, not be a black placeholder")
-            self.assertLess(center.max(), 20, "Donut center must stay dark")
-            self.assertGreater(ring[:, 0].mean(), ring[:, 1].mean() * 1.5)
-            self.assertLess(ring[:, 2].mean(), 30)
+            for x, y in ((512, 343), (351, 460), (673, 460), (413, 649), (611, 649)):
+                with self.subTest(cutout=(x, y)):
+                    self.assertLess(pixels[y-20:y+20, x-20:x+20].max(), 35,
+                                    "Five original large holes must remain clear")
+            for x, y in ((512, 512), (512, 220), (250, 512), (775, 512), (512, 760)):
+                with self.subTest(body=(x, y)):
+                    self.assertGreater(pixels[y-10:y+10, x-10:x+10, 0].mean(), 80,
+                                       "Reel must have a luminous solid body, not an annulus")
+            self.assertGreater(pixels[502:522, 118:128, 0].mean(), 5,
+                               "Soft bloom must spill beyond the original silhouette")
+            self.assertLess(pixels[512, 512, 0], pixels[512, 150, 0],
+                            "Center exposure must be lower than the bright outer edge")
+            self.assertGreater(pixels[:, :, 0].mean(), pixels[:, :, 1].mean() * 1.5)
+            self.assertLess(pixels[:, :, 2].max(), 30)
             self.assertEqual(pixels[:40, :40].max(), 0, "Corners must be black")
 
     def test_shared_logo_is_deterministic_grainy_and_asymmetric(self):
@@ -43,7 +49,7 @@ class BrandingTests(unittest.TestCase):
                 logo = image.copy()
             pixels = np.asarray(logo)
             self.assertEqual(int(pixels[0, 0, 3]), 0)
-            self.assertEqual(int(pixels[512, 512, 3]), 0)
+            self.assertGreater(int(pixels[512, 512, 3]), 80, "Original reel center stays filled")
             self.assertGreater(int(pixels[:, :, 3].max()), 200)
             black = Image.new("RGB", logo.size)
             black.paste(logo, mask=logo.getchannel("A"))
