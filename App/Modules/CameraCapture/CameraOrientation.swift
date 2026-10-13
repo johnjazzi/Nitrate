@@ -70,26 +70,33 @@ enum CameraGlyphRotation {
 
 private struct CameraUprightModifier: ViewModifier {
     @Environment(\.cameraDeviceOrientation) private var orientation
+    let availableSize: CGSize?
 
     func body(content: Content) -> some View {
         let degrees = CameraGlyphRotation.degrees(for: orientation)
-        // A long readout cannot simply turn inside a shallow cell: fit its
-        // rendered glyphs back into that same cell, without changing layout.
         content.visualEffect { effect, geometry in
             let size = geometry.size
+            let box = availableSize ?? size
             let isQuarterTurn = abs(degrees) == 90
-            let fit = isQuarterTurn && size.width > 0 && size.height > 0
-                ? min(1, min(size.width / size.height, size.height / size.width)) : 1
+            let rotatedSize = isQuarterTurn
+                ? CGSize(width: size.height, height: size.width) : size
+            let fit = rotatedSize.width > 0 && rotatedSize.height > 0
+                ? min(1, min(box.width / rotatedSize.width, box.height / rotatedSize.height)) : 1
+            // Explicit button interiors give grouped labels room beyond their
+            // intrinsic glyph bounds. Leave a large label unturned rather than
+            // shrinking its typography below 75%; legacy glyphs keep their fit.
+            let canRotate = availableSize == nil || fit >= 0.75
             return effect
-                .rotationEffect(.degrees(degrees))
-                .scaleEffect(fit)
+                .rotationEffect(.degrees(canRotate ? degrees : 0))
+                .scaleEffect(canRotate ? fit : 1)
         }
     }
 }
 
 extension View {
     /// Apply only to glyphs, before their panel/background, never to a control.
-    func cameraUpright() -> some View {
-        modifier(CameraUprightModifier())
+    /// For grouped labels, pass the stationary button's usable interior size.
+    func cameraUpright(in availableSize: CGSize? = nil) -> some View {
+        modifier(CameraUprightModifier(availableSize: availableSize))
     }
 }

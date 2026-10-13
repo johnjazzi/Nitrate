@@ -49,15 +49,14 @@ struct CameraLensSelector: View {
         HStack(spacing: 4) {
             Image(systemName: "camera.aperture")
                 .font(.system(size: 16, weight: .medium))
-                .cameraUpright()
                 .accessibilityHidden(true)
             Text(title(selectedLens))
                 .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
-                .cameraUpright()
                 .lineLimit(1)
-                .minimumScaleFactor(0.8)
         }
         .foregroundStyle(.white)
+        .fixedSize()
+        .cameraUpright(in: CGSize(width: 74, height: 36))
         .frame(width: 84, height: 44)
     }
 
@@ -86,21 +85,26 @@ struct CameraLensSelector: View {
             isPresented = false
             onSelectLens(lens)
         } label: {
-            HStack(spacing: 6) {
-                Text(title(lens))
-                    .cameraUpright()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .cameraUpright()
-                        .accessibilityHidden(true)
+            GeometryReader { geometry in
+                HStack(spacing: 6) {
+                    Text(title(lens))
+                        .lineLimit(1)
+                    if isSelected {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .accessibilityHidden(true)
+                    }
                 }
+                .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
+                .foregroundStyle(isSelected ? .black : .white)
+                .fixedSize()
+                .cameraUpright(in: CGSize(
+                    width: max(0, geometry.size.width - 10),
+                    height: max(0, geometry.size.height - 8)
+                ))
+                .frame(width: geometry.size.width, height: geometry.size.height)
             }
-            .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
-            .foregroundStyle(isSelected ? .black : .white)
-            .frame(maxWidth: .infinity, minHeight: 44)
+            .frame(height: 44)
         }
         .buttonStyle(CameraRaisedButtonStyle(faceColor: isSelected ? .white : nil))
         .accessibilityLabel(title(lens))
