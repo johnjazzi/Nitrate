@@ -667,13 +667,23 @@ enum ExposureStabilizer {
     /// Measured on device (iPhone 18 Pro, iOS 27): with custom exposure held,
     /// darkening the image two stops moved `exposureTargetOffset` to about -2.0,
     /// so a POSITIVE offset means the image is brighter than the target and the
-    /// held ISO must come down. Hence `heldISO * 2^-offset`. Returns nil when any
-    /// input is unusable, so the caller holds instead of writing nonsense.
-    static func correctedISO(heldISO: Float, meteredOffsetEV: Float,
+    /// held ISO must come down. To preserve the selected compensation, use
+    /// `heldISO * 2^(targetEV - offset)`; zero EV retains the neutral correction.
+    /// Returns nil when an input is unusable, so the caller holds instead.
+    static func correctedISO(heldISO: Float, meteredOffsetEV: Float, targetEV: Float = 0,
                              minimum: Float, maximum: Float) -> Float? {
-        guard heldISO.isFinite, heldISO > 0, meteredOffsetEV.isFinite,
+        guard heldISO.isFinite, heldISO > 0, meteredOffsetEV.isFinite, targetEV.isFinite,
               minimum.isFinite, maximum.isFinite, minimum <= maximum else { return nil }
-        return min(max(heldISO * powf(2, -meteredOffsetEV), minimum), maximum)
+        return min(max(heldISO * powf(2, targetEV - meteredOffsetEV), minimum), maximum)
+    }
+
+    /// Apply only the user's EV delta to the currently held scene exposure.
+    /// This is not a fresh meter reading: using the original metered ISO would
+    /// discard scene corrections, and applying the full EV would compound it.
+    static func retargetedISO(pin: Pin, targetEV: Float,
+                              minimum: Float, maximum: Float) -> Float? {
+        correctedISO(heldISO: pin.iso, meteredOffsetEV: pin.ev, targetEV: targetEV,
+                     minimum: minimum, maximum: maximum)
     }
 
     /// Decide the ISO to write from a fresh meter reading.

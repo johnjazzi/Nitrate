@@ -124,6 +124,7 @@ final class CameraSession: NSObject {
     /// decide whether a re-meter is worth taking at all. Cleared whenever the
     /// pin is released (manual ISO, auto exposure, lens switch, session stop).
     private var pinnedExposure: ExposureStabilizer.Pin?
+    private var isShutterMeteringPending = false
     private var recordingStartPending = false
     /// Set once so device-orientation notifications (needed for a live
     /// `UIDevice.current.orientation`) are started exactly once per session.
@@ -757,7 +758,7 @@ final class CameraSession: NSObject {
             // locked exposure untouched.
             self.invalidateMetering()
             if self.isShutterPriority, !self.isRecordingOrPending {
-                self.pinShutterToFilm(force: true)
+                self.pinShutterToFilm()
             }
         }
     }
@@ -1137,15 +1138,17 @@ final class CameraSession: NSObject {
     /// is visible immediately. No-op in manual ISO mode, where the ISO chooser
     /// drives exposure directly.
     func setExposureBiasEV(_ ev: Float) {
+        guard ev.isFinite else { return }
         let range = exposureBiasRange
         let clamped = min(max(ev, range.lowerBound), range.upperBound)
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            guard self.exposureBiasEV != clamped else { return }
             self.exposureBiasEV = clamped
             guard self.isShutterPriority, !self.isRecordingOrPending else { return }
-            // An explicit EV change is a user action: re-pin immediately rather
-            // than waiting for the deadband gate to open.
-            self.pinShutterToFilm(force: true)
+            // Retarget a held pin without reopening auto exposure. If initial
+            // metering is pending, its callback will use this latest EV.
+            self.pinShutterToFilm()
         }
     }
 
@@ -1187,7 +1190,7 @@ final class CameraSession: NSObject {
         sessionQueue.async { [weak self] in self?.onCameraError = handler }
     }
 
-    private func pinShutterToFilm(force: Bool = false) {
+    private func pinShutterToFilm() {
         guard let device = activeDevice else { return }
         let duration = min(max(Self.filmShutterDuration, device.activeFormat.minExposureDuration),
                            device.activeFormat.maxExposureDuration)
@@ -1201,15 +1204,24 @@ final class CameraSession: NSObject {
         // EV. Measured on device (iPhone 18 Pro, iOS 27): darkening the image two
         // stops drove the offset to about -2.0, so a POSITIVE offset means the
         // image is brighter than the target and the held ISO is scaled by
-        // 2^-offset. The deadband keeps a settled pin from being nudged every
+        // 2^(ev-offset). The deadband keeps a settled pin from being nudged every
         // tick.
-        if let pin = pinnedExposure, !force {
-            let offset = device.exposureTargetOffset
-            guard let corrected = ExposureStabilizer.correctedISO(
-                heldISO: pin.iso, meteredOffsetEV: offset,
-                minimum: device.activeFormat.minISO, maximum: device.activeFormat.maxISO
-            ) else { return }
-            guard abs(log2(corrected / pin.iso)) > ExposureStabilizer.deadbandStops else { return }
+        if let pin = pinnedExposure {
+            let isEVChange = pin.ev != ev
+            let corrected: Float?
+            if isEVChange {
+                corrected = ExposureStabilizer.retargetedISO(
+                    pin: pin, targetEV: ev,
+                    minimum: device.activeFormat.minISO, maximum: device.activeFormat.maxISO)
+            } else {
+                corrected = ExposureStabilizer.correctedISO(
+                    heldISO: pin.iso, meteredOffsetEV: device.exposureTargetOffset, targetEV: ev,
+                    minimum: device.activeFormat.minISO, maximum: device.activeFormat.maxISO)
+            }
+            guard let corrected else { return }
+            // Explicit changes bypass the deadband, not the held-exposure path.
+            // Even a clamped ISO must record the new EV to avoid compounding.
+            guard isEVChange || abs(log2(corrected / pin.iso)) > ExposureStabilizer.deadbandStops else { return }
             do {
                 try setExposureLocked(iso: corrected, shutter: duration, on: device, mode: .manual)
                 pinnedExposure = ExposureStabilizer.Pin(iso: corrected, ev: ev,
@@ -1219,6 +1231,7 @@ final class CameraSession: NSObject {
             }
             return
         }
+        guard !isShutterMeteringPending else { return }
         if #available(iOS 27.0, *), Self.apertureCapability(for: device).isVariable {
             do {
                 try applyCustomExposureHoldingAperture(on: device, mode: .shutterPriority,
@@ -1244,13 +1257,18 @@ final class CameraSession: NSObject {
         // compensation so custom exposure mode does not reset it; explicit iris
         // stays fixed because variable formats never enter full continuous AE.
         let generation = meterGeneration.issue()
+        isShutterMeteringPending = true
         sessionQueue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            guard let self, self.meterGeneration.accepts(generation), self.isShutterPriority,
+            guard let self, self.meterGeneration.accepts(generation) else { return }
+            self.isShutterMeteringPending = false
+            guard self.isShutterPriority,
                   !self.isRecordingOrPending,
                   let device = self.activeDevice else { return }
+            let latestEV = self.exposureBiasEV
+            let meteredISO = device.iso
             let iso: Float
             switch ExposureStabilizer.decide(
-                meteredISO: device.iso, ev: ev, current: self.pinnedExposure,
+                meteredISO: meteredISO, ev: latestEV, current: self.pinnedExposure,
                 minimum: device.activeFormat.minISO, maximum: device.activeFormat.maxISO
             ) {
             case .apply(let target):
@@ -1272,12 +1290,13 @@ final class CameraSession: NSObject {
                 self.reportCameraError(error)
                 return
             }
-            self.pinnedExposure = ExposureStabilizer.Pin(iso: iso, ev: ev, meteredISO: device.iso)
+            self.pinnedExposure = ExposureStabilizer.Pin(iso: iso, ev: latestEV, meteredISO: meteredISO)
         }
     }
 
     private func invalidateMetering() {
         meterGeneration.invalidate()
+        isShutterMeteringPending = false
         pinnedExposure = nil
     }
 
