@@ -8,6 +8,7 @@ import SwiftUI
 /// gear, imports, exposure readout); this bar owns the shooting controls.
 struct CameraControlBar: View {
     private let controlFaceSize: CGFloat = 44
+    private let selectorRowHeight: CGFloat = 54
     private let recordFaceSize: CGFloat = 84
     private let actionRowHeight: CGFloat = 88
     let cameraViewModel: CameraViewModel
@@ -47,7 +48,7 @@ struct CameraControlBar: View {
                     .frame(width: recordFaceSize, height: recordFaceSize)
             }
             .frame(height: actionRowHeight)
-                .padding(.top, controlFaceSize + 8)
+                .padding(.top, selectorRowHeight + 8)
         }
         .padding(.horizontal, 16)
         .sheet(isPresented: $isStorageInfoPresented) {
@@ -65,18 +66,21 @@ struct CameraControlBar: View {
 
     private var selectorRow: some View {
         GeometryReader { geometry in
-            let gapWidth = CGFloat(8 + max(availableLenses.count - 1, 0) * 4)
-            let itemCount = CGFloat(availableLenses.count + 1)
-            let faceSize = min(controlFaceSize, max(28, (geometry.size.width - gapWidth) / itemCount))
+            let lensCount = CGFloat(availableLenses.count)
+            // Reserve room for the stock key, gaps, and the well's two 6pt rims.
+            // All keys shrink together on narrow phones instead of clipping.
+            let gaps = 8 + max(lensCount - 1, 0) * 4 + 12
+            let faceSize = min(controlFaceSize,
+                               max(0, (geometry.size.width - gaps) / (1.15 + 1.35 * lensCount)))
 
             HStack(alignment: .center, spacing: 8) {
                 stockControl(faceSize: faceSize)
                 lensPills(faceSize: faceSize)
-                    .frame(maxWidth: .infinity, alignment: .center)
+                    .cameraControlWell()
             }
-            .frame(height: controlFaceSize)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
-        .frame(height: controlFaceSize)
+        .frame(height: selectorRowHeight)
     }
 
     // MARK: - Stock selector
@@ -116,7 +120,7 @@ struct CameraControlBar: View {
                             .frame(height: faceSize / 5)
                     }
                 }
-                .frame(width: faceSize, height: faceSize)
+                .frame(width: faceSize * 1.15, height: faceSize)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                 Text("\(Int(currentISO))\(stock.lightType)")
@@ -127,7 +131,7 @@ struct CameraControlBar: View {
                     .background(.ultraThinMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 3))
             }
-            .frame(width: faceSize, height: faceSize)
+            .frame(width: faceSize * 1.15, height: faceSize)
         }
         .buttonStyle(CameraRaisedButtonStyle(faceColor: stock.primaryColor))
     }
@@ -155,11 +159,13 @@ struct CameraControlBar: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
                     .foregroundStyle(lens == selectedLens ? .black : .white)
-                    .frame(width: faceSize, height: faceSize)
+                    // Rectangular and wider than tall, like the reference
+                    // panel's landscape slabs rather than squares.
+                    .frame(width: faceSize * 1.35, height: faceSize)
                 }
                 .buttonStyle(CameraRaisedButtonStyle(
-                    faceColor: lens == selectedLens ? .white : Color(red: 0.16, green: 0.17, blue: 0.19),
-                    cornerRadius: 6
+                    faceColor: lens == selectedLens ? .white : nil,
+                    cornerRadius: 7
                 ))
                 .accessibilityLabel(lens == .front ? "Front camera" : "\(lens.focalLengthMM) millimeter camera")
             }
@@ -322,22 +328,44 @@ struct CameraControlBar: View {
             }
         } label: {
             ZStack {
+                // A circular translucent cap, deliberately not a rectangular
+                // frame: the reference camera's REC is its own round recess.
                 Circle()
-                    .fill(cameraViewModel.isRecording ? .red : .white)
-                    .frame(width: 40, height: 40)
+                    .fill(.ultraThinMaterial)
+                    .overlay { Circle().fill(Color.black.opacity(0.18)) }
+
                 if cameraViewModel.isRecording {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 46, height: 46)
                     RoundedRectangle(cornerRadius: 4)
                         .fill(.white)
-                        .frame(width: 16, height: 16)
+                        .frame(width: 18, height: 18)
                 } else {
                     Circle()
                         .stroke(.white, lineWidth: 3)
                         .frame(width: 58, height: 58)
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 46, height: 46)
                 }
             }
             .frame(width: recordFaceSize, height: recordFaceSize)
+            .overlay {
+                Circle()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [.white.opacity(0.42), .white.opacity(0.05), .black.opacity(0.42)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+                    .allowsHitTesting(false)
+            }
+            .shadow(color: .black.opacity(0.38), radius: 6, x: 0, y: 3)
         }
-        .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 8))
+        .buttonStyle(.plain)
         .accessibilityLabel(cameraViewModel.isRecording ? "Stop recording" : "Start recording")
         .disabled(cameraViewModel.isSpaceCritical && !cameraViewModel.isRecording)
         .overlay(alignment: .top) {
@@ -380,7 +408,7 @@ struct CameraControlBar: View {
         }
         .buttonStyle(CameraRaisedButtonStyle(
             faceColor: cameraViewModel.hasStorageSnapshot && cameraViewModel.freeSpaceBytes < 1_000_000_000
-                ? .red : Color(red: 0.16, green: 0.17, blue: 0.19),
+                ? .red : nil,
             cornerRadius: 6
         ))
         .accessibilityLabel("Estimated recording time remaining, \(estimatedTimeText)")

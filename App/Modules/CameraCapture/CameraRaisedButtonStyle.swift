@@ -1,12 +1,14 @@
 import SwiftUI
 
-/// Shared tactile face for camera controls. A caller can retain a selected
-/// control's established color by supplying it as `faceColor`.
+/// Shared tactile face for camera controls, styled after the machined panel of a
+/// cinema camera: a soft-edged plate that is **translucent** rather than opaque,
+/// so the preview reads through it and only the bevel, the rim and the shadow
+/// define the control. A caller can still tint a control by supplying
+/// `faceColor`; the tint is laid into the translucent face, not painted over it.
 struct CameraRaisedButtonStyle: ButtonStyle {
-    var faceColor: Color = Color(red: 0.16, green: 0.17, blue: 0.19)
+    /// Tint mixed into the translucent face. Nil keeps it neutral.
+    var faceColor: Color?
     var cornerRadius: CGFloat = 8
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -15,8 +17,9 @@ struct CameraRaisedButtonStyle: ButtonStyle {
     }
 }
 
+/// The translucent raised face itself.
 struct CameraRaisedSurface: ViewModifier {
-    var faceColor: Color = Color(red: 0.16, green: 0.17, blue: 0.19)
+    var faceColor: Color?
     var cornerRadius: CGFloat = 8
     var isPressed = false
 
@@ -25,11 +28,61 @@ struct CameraRaisedSurface: ViewModifier {
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
-            .background { shape.fill(faceColor) }
+            .background {
+                shape
+                    .fill(.ultraThinMaterial)
+                    .overlay { shape.fill(fill) }
+            }
             .overlay {
-                shape.stroke(
+                shape.strokeBorder(bevel, lineWidth: 1).allowsHitTesting(false)
+            }
+            .shadow(color: .black.opacity(isPressed ? 0.16 : 0.38),
+                    radius: isPressed ? 1 : 4,
+                    x: 0,
+                    y: isPressed ? 1 : 2)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isPressed)
+            .contentShape(shape)
+    }
+
+    /// Barely tinted: the material supplies the body, so the face stays see-through
+    /// and the preview reads past the control.
+    private var fill: Color {
+        guard let faceColor else { return .black.opacity(isPressed ? 0.34 : 0.18) }
+        return faceColor.opacity(isPressed ? 0.78 : 0.62)
+    }
+
+    /// Bright along the top edge, dark underneath — the raised bevel.
+    private var bevel: LinearGradient {
+        LinearGradient(
+            colors: [.white.opacity(isPressed ? 0.16 : 0.42),
+                     .white.opacity(0.05),
+                     .black.opacity(isPressed ? 0.50 : 0.42)],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+}
+
+/// A translucent raised plate that groups related controls — the soft raised
+/// area a machined camera panel forms around a cluster of buttons. See-through,
+/// so it frames the group without hiding the preview behind it.
+struct CameraControlWell: ViewModifier {
+    var cornerRadius: CGFloat = 16
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .padding(.horizontal, 6)
+            .padding(.vertical, 5)
+            .background {
+                shape
+                    .fill(.ultraThinMaterial)
+                    .overlay { shape.fill(Color.black.opacity(0.18)) }
+            }
+            .overlay {
+                shape.strokeBorder(
                     LinearGradient(
-                        colors: [.white.opacity(0.34), .white.opacity(0.08), .black.opacity(0.45)],
+                        colors: [.white.opacity(0.26), .white.opacity(0.04), .black.opacity(0.34)],
                         startPoint: .top,
                         endPoint: .bottom
                     ),
@@ -37,12 +90,14 @@ struct CameraRaisedSurface: ViewModifier {
                 )
                 .allowsHitTesting(false)
             }
-            .shadow(color: .black.opacity(isPressed ? 0.12 : 0.42),
-                    radius: isPressed ? 1 : 3,
-                    x: 0,
-                    y: isPressed ? 1 : 3)
-            .offset(y: isPressed ? 1 : 0)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isPressed)
+            .shadow(color: .black.opacity(0.30), radius: 8, x: 0, y: 3)
             .contentShape(shape)
+    }
+}
+
+extension View {
+    /// Wrap a cluster of controls in the translucent raised plate.
+    func cameraControlWell(cornerRadius: CGFloat = 16) -> some View {
+        modifier(CameraControlWell(cornerRadius: cornerRadius))
     }
 }
