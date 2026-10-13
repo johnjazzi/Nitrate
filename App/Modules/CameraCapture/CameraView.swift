@@ -6,17 +6,11 @@ struct CameraView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State var viewModel: CameraViewModel
     @State private var previewLayer: AVCaptureVideoPreviewLayer?
-    @State private var previewSize: CGSize = .zero
+    var videoGravity: AVLayerVideoGravity = .resizeAspectFill
 
     var body: some View {
-        CameraPreviewRepresentable(previewLayer: $previewLayer, session: viewModel.session.session)
-            .background(
-                GeometryReader { geometry in
-                    Color.clear
-                        .onAppear { previewSize = geometry.size }
-                        .onChange(of: geometry.size) { _, size in previewSize = size }
-                }
-            )
+        CameraPreviewRepresentable(previewLayer: $previewLayer, session: viewModel.session.session,
+                                   videoGravity: videoGravity)
             .overlay {
                 // Where exposure is metered. Hidden during a take so it never
                 // draws over the recording.
@@ -28,6 +22,7 @@ struct CameraView: View {
             .onTapGesture { location in
                 guard let layer = previewLayer else { return }
                 viewModel.handleFocusTap(at: location, in: layer)
+                let previewSize = layer.bounds.size
                 if previewSize.width > 0, previewSize.height > 0 {
                     viewModel.setMeteringPoint(CGPoint(x: location.x / previewSize.width,
                                                        y: location.y / previewSize.height))
@@ -53,15 +48,14 @@ struct CameraView: View {
 private struct CameraPreviewRepresentable: UIViewRepresentable {
     @Binding var previewLayer: AVCaptureVideoPreviewLayer?
     let session: AVCaptureSession
+    let videoGravity: AVLayerVideoGravity
 
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        let layer = AVCaptureVideoPreviewLayer(session: session)
-        layer.videoGravity = .resizeAspectFill
-        view.layer.addSublayer(layer)
-        DispatchQueue.main.async { [weak view] in
+    func makeUIView(context: Context) -> CameraPreviewUIView {
+        let view = CameraPreviewUIView(session: session)
+        let layer = view.previewLayer
+        layer.videoGravity = videoGravity
+        DispatchQueue.main.async {
             previewLayer = layer
-            layer.frame = view?.bounds ?? .zero
             if #available(iOS 17.0, *),
                let connection = layer.connection,
                connection.isVideoRotationAngleSupported(90) {
@@ -71,7 +65,33 @@ private struct CameraPreviewRepresentable: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
-        previewLayer?.frame = uiView.bounds
+    func updateUIView(_ uiView: CameraPreviewUIView, context: Context) {
+        uiView.previewLayer.videoGravity = videoGravity
+        uiView.setNeedsLayout()
+    }
+}
+
+/// SwiftUI may update before UIKit has applied the new bounds. Resize the
+/// existing preview layer during layout, never recreate it for a mode change.
+private final class CameraPreviewUIView: UIView {
+    let previewLayer: AVCaptureVideoPreviewLayer
+
+    init(session: AVCaptureSession) {
+        previewLayer = AVCaptureVideoPreviewLayer(session: session)
+        super.init(frame: .zero)
+        backgroundColor = .black
+        layer.addSublayer(previewLayer)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        previewLayer.frame = bounds
+        CATransaction.commit()
     }
 }

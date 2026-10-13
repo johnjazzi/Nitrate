@@ -12,7 +12,8 @@ struct ContentView: View {
     @State private var showStockSheet = false
     @State private var showQueueSheet = false
     @State private var showSettings = false
-    @State private var showFramedPreview = false
+    @AppStorage("showFramedPreview") private var showFramedPreview = false
+    @State private var controlBounds: [String: CGRect] = [:]
     @State private var currentSourceURL: URL?
 
     /// Persisted stock selection — survives across recordings.
@@ -69,37 +70,44 @@ struct ContentView: View {
     /// The shipping camera screen. Kept as its own property so the DEBUG build
     /// can wrap it with the debug single-frame sheet without duplicating it.
     private var shippingBody: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
+        GeometryReader { geometry in
+            ZStack {
+                Color.black.ignoresSafeArea()
 
-            cameraLayer
+                cameraLayer(in: previewRect(in: geometry))
 
-            VStack(spacing: 0) {
-                topBar
-                    .padding(.bottom, showFramedPreview ? 8 : 0)
+                VStack(spacing: 0) {
+                    VStack(spacing: 0) {
+                        topBar
 
-                if showManualControls {
-                    ManualControlsPanel(
-                        cameraViewModel: cameraViewModel,
-                        zoomFactor: $zoomFactor,
-                        manualFocusPosition: $manualFocusPosition,
-                        isManualFocus: $isManualFocus,
-                        onDismiss: { withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false } }
-                    )
-                    .frame(maxWidth: .infinity)
-                    .padding(.leading, 76)
-                    .padding(.trailing, 16)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                        if showManualControls {
+                            ManualControlsPanel(
+                                cameraViewModel: cameraViewModel,
+                                zoomFactor: $zoomFactor,
+                                manualFocusPosition: $manualFocusPosition,
+                                isManualFocus: $isManualFocus,
+                                onDismiss: { withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false } }
+                            )
+                            .frame(maxWidth: .infinity)
+                            .padding(.leading, 76)
+                            .padding(.trailing, 16)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                        }
+                    }
+                    .background(controlMeasurement("top"))
+
+                    Spacer()
+
+                    controlBar
+                        .padding(.bottom, 8)
+                        .background(controlMeasurement("bottom"))
                 }
 
-                Spacer()
-
-                controlBar
-                    .padding(.top, showFramedPreview ? 8 : 0)
-                    .padding(.bottom, 8)
+                errorOverlays
             }
-
-            errorOverlays
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .coordinateSpace(name: "cameraCanvas")
+            .onPreferenceChange(CameraControlBoundsPreference.self) { controlBounds = $0 }
         }
         .sheet(isPresented: $showStockSheet) { stockSheet }
         .sheet(isPresented: $showQueueSheet) { queueSheet }
@@ -177,16 +185,44 @@ struct ContentView: View {
 
     // MARK: - Camera Layer
 
-    private var cameraLayer: some View {
-        CameraView(viewModel: cameraViewModel)
-            .ignoresSafeArea()
+    private func controlMeasurement(_ name: String) -> some View {
+        GeometryReader { geometry in
+            Color.clear.preference(key: CameraControlBoundsPreference.self,
+                                   value: [name: geometry.frame(in: .named("cameraCanvas"))])
+        }
+    }
+
+    private func previewRect(in geometry: GeometryProxy) -> CGRect {
+        if showFramedPreview {
+            // Keep the camera alive but hidden until both control bounds exist;
+            // a persisted framed launch must not flash behind the controls.
+            guard let top = controlBounds["top"], let bottom = controlBounds["bottom"] else {
+                return .zero
+            }
+            return FramedPreviewLayout.previewRect(
+                in: CGRect(origin: .zero, size: geometry.size),
+                topControlsBottom: top.maxY,
+                bottomControlsTop: bottom.minY
+            )
+        }
+        // Match the immersive preview's old ignored-safe-area extent without
+        // letting an ignoresSafeArea modifier enlarge the framed preview too.
+        let insets = geometry.safeAreaInsets
+        return CGRect(x: -insets.leading, y: -insets.top,
+                      width: geometry.size.width + insets.leading + insets.trailing,
+                      height: geometry.size.height + insets.top + insets.bottom)
+    }
+
+    private func cameraLayer(in rect: CGRect) -> some View {
+        // One structural identity in both modes: no camera lifecycle transition.
+        CameraView(viewModel: cameraViewModel,
+                   videoGravity: showFramedPreview ? .resizeAspect : .resizeAspectFill)
+            .frame(width: rect.width, height: rect.height)
             .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
-            .padding(.horizontal, showFramedPreview ? 8 : 0)
             .overlay {
                 if showFramedPreview {
                     RoundedRectangle(cornerRadius: 16)
-                        .stroke(.white.opacity(0.25), lineWidth: 2)
-                        .padding(.horizontal, 8)
+                        .strokeBorder(.white.opacity(0.25), lineWidth: 2)
                 }
             }
             .simultaneousGesture(
@@ -201,6 +237,7 @@ struct ContentView: View {
                     }
                     .onEnded { _ in pinchBaseZoom = zoomFactor }
             )
+            .position(x: rect.midX, y: rect.midY)
     }
 
     // MARK: - Top Bar
@@ -382,6 +419,14 @@ struct ContentView: View {
         let min = Int(seconds) / 60
         let sec = Int(seconds) % 60
         return String(format: "%d:%02d", min, sec)
+    }
+}
+
+private struct CameraControlBoundsPreference: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }
 
