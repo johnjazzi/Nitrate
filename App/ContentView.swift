@@ -199,7 +199,7 @@ struct ContentView: View {
     // MARK: - Top Bar
 
     /// Active stock lives in the control bar's selector row; the top toolbar
-    /// owns app settings and the manual controls button.
+    /// owns app settings, manual controls and the active lens menu.
     private var topBar: some View {
         HStack(spacing: 12) {
             // Settings
@@ -207,9 +207,9 @@ struct ContentView: View {
                 showSettings = true
             } label: {
                 Image(systemName: "gearshape.fill")
-                    .font(.title2)
+                    .font(.title3)
                     .foregroundStyle(.white)
-                    .padding(12)
+                    .frame(width: 44, height: 44)
             }
             .buttonStyle(CameraRaisedButtonStyle())
 
@@ -218,9 +218,9 @@ struct ContentView: View {
                 withAnimation(.easeInOut(duration: 0.2)) { showManualControls.toggle() }
             } label: {
                 Image(systemName: "slider.vertical.3")
-                    .font(.title2)
+                    .font(.title3)
                     .foregroundStyle(showManualControls ? .black : .white)
-                    .padding(12)
+                    .frame(width: 44, height: 44)
             }
             .buttonStyle(CameraRaisedButtonStyle(faceColor: showManualControls ? .yellow : Color(red: 0.16, green: 0.17, blue: 0.19)))
 
@@ -241,9 +241,44 @@ struct ContentView: View {
 #endif
 
             Spacer()
+
+            lensMenu
         }
-        .padding(.leading, 16)
+        .padding(.horizontal, 16)
         .padding(.top, 8)
+    }
+
+    private var lensMenu: some View {
+        Menu {
+            ForEach(availableLenses) { lens in
+                Button {
+                    selectLens(lens)
+                } label: {
+                    if lens == selectedLens {
+                        Label(lensTitle(lens), systemImage: "checkmark")
+                    } else {
+                        Text(lensTitle(lens))
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Text(lensTitle(selectedLens))
+                    .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .frame(width: 84, height: 44)
+        }
+        .buttonStyle(CameraRaisedButtonStyle())
+        .accessibilityLabel("Camera lens")
+        .accessibilityValue(lensTitle(selectedLens))
+        .accessibilityHint("Opens available camera lenses")
+    }
+
+    private func lensTitle(_ lens: CameraLens) -> String {
+        lens == .front ? "Front" : "\(lens.focalLengthMM) mm"
     }
 
     private func selectLens(_ lens: CameraLens) {
@@ -268,11 +303,8 @@ struct ContentView: View {
         CameraControlBar(
             cameraViewModel: cameraViewModel,
             renderQueueViewModel: renderQueueViewModel,
-            availableLenses: availableLenses,
-            selectedLens: selectedLens,
             selectedStock: selectedStock,
             currentISO: currentISO,
-            onSelectLens: { selectLens($0) },
             onShowQueueSheet: { showQueueSheet = true },
             onShowStockSheet: { showStockSheet = true },
             formatDuration: { formatDuration($0) }

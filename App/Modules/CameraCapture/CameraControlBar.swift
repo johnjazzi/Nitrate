@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Bottom camera controls: stock/lenses, queue/storage and record on the left,
+/// Bottom camera controls: stock, queue/storage and record on the left,
 /// with the exposure ruler in a persistent right column.
 ///
 /// Split out of `ContentView` so the screen stays inside the file-length limit.
@@ -13,11 +13,8 @@ struct CameraControlBar: View {
     private let actionRowHeight: CGFloat = 100
     let cameraViewModel: CameraViewModel
     let renderQueueViewModel: RenderQueueViewModel
-    let availableLenses: [CameraLens]
-    let selectedLens: CameraLens
     let selectedStock: FilmStockConfig?
     let currentISO: Float
-    let onSelectLens: (CameraLens) -> Void
     let onShowQueueSheet: () -> Void
     let onShowStockSheet: () -> Void
     let formatDuration: (TimeInterval) -> String
@@ -62,28 +59,15 @@ struct CameraControlBar: View {
     // MARK: - Left selector row
 
     private var selectorRow: some View {
-        GeometryReader { geometry in
-            let lensCount = CGFloat(availableLenses.count)
-            // Reserve room for the stock key, gaps, and the well's two 6pt rims.
-            // All keys shrink together on narrow phones instead of clipping.
-            let gaps = 8 + max(lensCount - 1, 0) * 4 + 12
-            let faceSize = min(controlFaceSize,
-                               max(0, (geometry.size.width - gaps) / (1.15 + 1.35 * lensCount)))
-
-            HStack(alignment: .center, spacing: 8) {
-                stockControl(faceSize: faceSize)
-                lensPills(faceSize: faceSize)
-                    .cameraControlWell()
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        }
-        .frame(height: selectorRowHeight)
+        stockControl(faceSize: controlFaceSize)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: selectorRowHeight)
     }
 
     // MARK: - Stock selector
 
     /// Active stock (or the stock picker when none is chosen yet). Lives in the
-    /// leading slot of the selector row, next to the lens pills.
+    /// leading slot of the selector row.
     private func stockControl(faceSize: CGFloat) -> some View {
         Group {
             if let stock = selectedStock {
@@ -131,42 +115,6 @@ struct CameraControlBar: View {
             .frame(width: faceSize * 1.15, height: faceSize)
         }
         .buttonStyle(CameraRaisedButtonStyle(faceColor: stock.primaryColor))
-    }
-
-    /// One direct selection tile per available camera, including Front.
-    private func lensPills(faceSize: CGFloat) -> some View {
-        HStack(spacing: 4) {
-            ForEach(availableLenses) { lens in
-                Button {
-                    onSelectLens(lens)
-                } label: {
-                    Group {
-                        if lens == .front {
-                            Text("Front")
-                                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        } else {
-                            VStack(spacing: -1) {
-                                Text("\(lens.focalLengthMM)")
-                                    .font(.system(size: 12, weight: .bold, design: .rounded).monospacedDigit())
-                                Text("mm")
-                                    .font(.system(size: 8, weight: .medium, design: .rounded))
-                            }
-                        }
-                    }
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .foregroundStyle(lens == selectedLens ? .black : .white)
-                    // Rectangular and wider than tall, like the reference
-                    // panel's landscape slabs rather than squares.
-                    .frame(width: faceSize * 1.35, height: faceSize)
-                }
-                .buttonStyle(CameraRaisedButtonStyle(
-                    faceColor: lens == selectedLens ? .white : nil,
-                    cornerRadius: 7
-                ))
-                .accessibilityLabel(lens == .front ? "Front camera" : "\(lens.focalLengthMM) millimeter camera")
-            }
-        }
     }
 
     // MARK: - Exposure control (dual mode)
