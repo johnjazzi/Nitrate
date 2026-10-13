@@ -216,6 +216,80 @@ struct CameraSampleBufferRecorderTests {
     }
 
     @available(macOS 14.2, iOS 17.2, *)
+    @Test func landscapeHoldWritesIdentityTransformAndPortraitHoldRotatesTheLandscapeBuffer() async throws {
+        // Landscape hold: the sensor's native landscape buffer is delivered as-is.
+        let landscapeRig = makeRig(FakeWriterBehavior())
+        let landscapeURL = try begin(landscapeRig.recorder, events: landscapeRig.events,
+                                     deliveryOrientation: .landscapeLeft)
+        landscapeRig.recorder.submitVideoSampleForTesting(try Self.log2Sample(width: 3840, height: 2160))
+        #expect(await landscapeRig.events.nextStarted() == nil)
+        #expect(landscapeRig.control.transform == .identity)
+        #expect((landscapeRig.control.settings?[AVVideoWidthKey] as? NSNumber)?.intValue == 3840)
+        #expect((landscapeRig.control.settings?[AVVideoHeightKey] as? NSNumber)?.intValue == 2160)
+        let landscapeWriter = try #require(landscapeRig.control.current)
+        landscapeRig.recorder.stop()
+        await landscapeRig.waitForFinishToBeRequested(on: landscapeWriter)
+        landscapeWriter.completeFinalization(success: true)
+        #expect(await landscapeRig.events.nextFinished() == nil)
+        try? FileManager.default.removeItem(at: landscapeURL)
+
+        // Portrait hold: the same buffer is rotated 90° to display portrait.
+        let portraitRig = makeRig(FakeWriterBehavior())
+        let portraitURL = try begin(portraitRig.recorder, events: portraitRig.events,
+                                    deliveryOrientation: .portrait)
+        portraitRig.recorder.submitVideoSampleForTesting(try Self.log2Sample(width: 3840, height: 2160))
+        #expect(await portraitRig.events.nextStarted() == nil)
+        #expect(portraitRig.control.transform == CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 2160, ty: 0))
+        let portraitWriter = try #require(portraitRig.control.current)
+        portraitRig.recorder.stop()
+        await portraitRig.waitForFinishToBeRequested(on: portraitWriter)
+        portraitWriter.completeFinalization(success: true)
+        #expect(await portraitRig.events.nextFinished() == nil)
+        try? FileManager.default.removeItem(at: portraitURL)
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test(arguments: [CameraSampleValidationPolicy.DeliveryOrientation.portrait, .portraitUpsideDown,
+                      .landscapeLeft, .landscapeRight],
+          [CameraSampleValidationPolicy.CodedDimensions.landscape4K, .portrait4K])
+    func recorderUsesExactMatrixAndKeepsSensorCodedSettings(
+        orientation: CameraSampleValidationPolicy.DeliveryOrientation,
+        coded: CameraSampleValidationPolicy.CodedDimensions
+    ) async throws {
+        let rig = makeRig(FakeWriterBehavior())
+        let url = try begin(rig.recorder, events: rig.events, deliveryOrientation: orientation)
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(width: coded.width, height: coded.height))
+        #expect(await rig.events.nextStarted() == nil)
+        let expected = CameraSampleValidationPolicy.deliveryGeometry(for: orientation, coded: coded)
+        #expect(rig.control.transform == expected.transform)
+        #expect((rig.control.settings?[AVVideoWidthKey] as? NSNumber)?.intValue == coded.width)
+        #expect((rig.control.settings?[AVVideoHeightKey] as? NSNumber)?.intValue == coded.height)
+        let writer = try #require(rig.control.current)
+        rig.recorder.stop()
+        await rig.waitForFinishToBeRequested(on: writer)
+        writer.completeFinalization(success: true)
+        #expect(await rig.events.nextFinished() == nil)
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func cameraSpecificCaptureAngleIsFrozenAcrossFrames() async throws {
+        let rig = makeRig(FakeWriterBehavior())
+        let url = try begin(rig.recorder, events: rig.events,
+                            deliveryOrientation: .landscapeLeft, captureRotationAngle: 180)
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 1))
+        #expect(await rig.events.nextStarted() == nil)
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 2))
+        let writer = try #require(rig.control.current)
+        rig.recorder.stop()
+        await rig.waitForFinishToBeRequested(on: writer)
+        #expect(rig.control.transform == CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 3840, ty: 2160))
+        writer.completeFinalization(success: true)
+        #expect(await rig.events.nextFinished() == nil)
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
     private static func log2Sample(width: Int = 3840, height: Int = 2160,
                                    pts: Double = 1) throws -> CMSampleBuffer {
         var optionalBuffer: CVPixelBuffer?
@@ -247,10 +321,14 @@ struct CameraSampleBufferRecorderTests {
 
     private func begin(_ recorder: CameraSampleBufferRecorder, events: RecorderEventQueue,
                        audioSettings: [String: Any]? = nil,
-                       startAfter: CMTime = .invalid) throws -> URL {
+                       startAfter: CMTime = .invalid,
+                       deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation = .unknown,
+                       captureRotationAngle: CGFloat? = nil) throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-\(UUID().uuidString).mov")
         recorder.begin(to: url, videoSettings: ["codec": "hevc"], audioSettings: audioSettings,
             acceptedPixelFormats: [kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange], metadata: [],
+            deliveryOrientation: deliveryOrientation,
+            captureRotationAngle: captureRotationAngle,
             startAfter: startAfter,
             onStarted: { error in events.recordStarted(error?.localizedDescription) },
             onFinished: { result in

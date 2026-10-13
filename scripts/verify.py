@@ -15,6 +15,8 @@ from datetime import datetime
 
 
 ROOT = Path(__file__).resolve().parent.parent
+PROJECT_NAME = "Nitrate"
+PROJECT_FILE = ROOT / f"{PROJECT_NAME}.xcodeproj"
 VERIFY_DIR = ROOT / "build" / "verification"
 DERIVED_DATA = VERIFY_DIR / "DerivedData"
 BUILD_LOCK = VERIFY_DIR / "build.lock"
@@ -106,20 +108,20 @@ def check() -> bool:
 def compile_check() -> bool:
     if not generate_project():
         return False
-    return run("check", xcodebuild("-project", str(ROOT / "FilmEmulation.xcodeproj"),
-                                    "-scheme", "FilmEmulation", "-destination", "generic/platform=iOS",
+    return run("check", xcodebuild("-project", str(PROJECT_FILE),
+                                    "-scheme", PROJECT_NAME, "-destination", "generic/platform=iOS",
                                     "build", "CODE_SIGNING_ALLOWED=NO"))
 
 
 def verify() -> bool:
     if not generate_project():
         return False
-    project = str(ROOT / "FilmEmulation.xcodeproj")
+    project = str(PROJECT_FILE)
     if not run("tests", xcodebuild("-project", project, "-scheme", "RenderCLI",
                                     "-destination", "platform=macOS", "test",
                                     "CODE_SIGN_IDENTITY=-", "DEVELOPMENT_TEAM=")):
         return False
-    if not run("verify-build", xcodebuild("-project", project, "-scheme", "FilmEmulation",
+    if not run("verify-build", xcodebuild("-project", project, "-scheme", PROJECT_NAME,
                                            "-destination", "generic/platform=iOS", "build",
                                            "CODE_SIGNING_ALLOWED=NO")):
         return False
@@ -129,8 +131,8 @@ def verify() -> bool:
 def device() -> bool:
     if not generate_project():
         return False
-    return run("device", xcodebuild("-project", str(ROOT / "FilmEmulation.xcodeproj"),
-                                     "-scheme", "FilmEmulation", "-destination", "generic/platform=iOS",
+    return run("device", xcodebuild("-project", str(PROJECT_FILE),
+                                     "-scheme", PROJECT_NAME, "-destination", "generic/platform=iOS",
                                      "build", "-allowProvisioningUpdates"))
 
 

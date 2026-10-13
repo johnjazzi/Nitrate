@@ -1,6 +1,50 @@
 import Foundation
 import AVFoundation
 import CoreVideo
+import CoreImage
+import ImageIO
+
+/// Per-camera, session-queue-confined memory of the latest real physical hold.
+/// A fresh source defaults through the portrait mapping; flat readings retain
+/// its last stable gravity angle instead of inventing a new orientation.
+struct CameraCaptureRotationPolicy: Sendable {
+    private var lastStableAngle: CGFloat?
+
+    mutating func snapshot(for orientation: CameraSampleValidationPolicy.DeliveryOrientation,
+                           liveAngle: CGFloat?) -> CGFloat? {
+        if orientation.isPhysicalHold, let liveAngle, liveAngle.isFinite {
+            lastStableAngle = liveAngle
+        }
+        return lastStableAngle
+    }
+}
+
+/// Orientation travels with the frozen buffer, not the portrait-locked UI or
+/// the later slider render. Only the final rendered BGRA image is rotated;
+/// sensor pixels and the existing Metal grading pipeline stay untouched.
+enum CameraFrozenFrameOrientationPolicy {
+    private static var attachmentKey: CFString { "com.fea.debug.capture-quarter-turns" as CFString }
+
+    static func setQuarterTurns(_ turns: Int, on buffer: CVPixelBuffer) {
+        CVBufferSetAttachment(buffer, attachmentKey, NSNumber(value: (turns % 4 + 4) % 4), .shouldPropagate)
+    }
+
+    static func quarterTurns(in buffer: CVPixelBuffer) -> Int {
+        let value = (CVBufferCopyAttachment(buffer, attachmentKey, nil) as? NSNumber)?.intValue ?? 0
+        return (value % 4 + 4) % 4
+    }
+
+    static func orient(_ image: CGImage, quarterTurns: Int) -> CGImage? {
+        let turns = (quarterTurns % 4 + 4) % 4
+        guard turns != 0 else { return image }
+        let orientations: [CGImagePropertyOrientation] = [.up, .right, .down, .left]
+        let oriented = CIImage(cgImage: image).oriented(orientations[turns])
+        // Rotation is a pixel permutation, not an additional color conversion.
+        let context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+        return context.createCGImage(oriented, from: oriented.extent, format: .BGRA8,
+                                     colorSpace: image.colorSpace)
+    }
+}
 
 /// Select a declared Log 2 4K/24fps format from device capability evidence.
 /// Keeping the policy independent of hardware lets tests cover mixed-format
@@ -184,6 +228,51 @@ struct CameraApertureSnapshot: Sendable {
 }
 
 enum CameraSampleValidationPolicy {
+    /// Physical device orientation held at the moment a recording starts. The
+    /// delivered movie's display orientation follows this value, so a take
+    /// recorded horizontally is saved landscape instead of portrait.
+    ///
+    /// The raw values mirror `UIDeviceOrientation`, which keeps the UIKit bridge
+    /// in `CameraSession` a plain pass-through and lets the mapping stay
+    /// UIKit-free so it can be unit-tested on macOS.
+    enum DeliveryOrientation: Equatable, Sendable {
+        case portrait
+        case portraitUpsideDown
+        case landscapeLeft
+        case landscapeRight
+        case faceUp
+        case faceDown
+        case unknown
+
+        /// Bridge from `UIDeviceOrientation.rawValue`. Unrecognised values (and
+        /// `unknown`, `faceUp`, `faceDown`) deliver portrait.
+        init(deviceOrientationRawValue: Int) {
+            switch deviceOrientationRawValue {
+            case 1: self = .portrait
+            case 2: self = .portraitUpsideDown
+            case 3: self = .landscapeLeft
+            case 4: self = .landscapeRight
+            case 5: self = .faceUp
+            case 6: self = .faceDown
+            default: self = .unknown
+            }
+        }
+
+        /// Only a face-on landscape hold selects landscape delivery. Lying flat
+        /// (faceUp/faceDown) and an unknown reading keep the portrait default.
+        var isLandscape: Bool { self == .landscapeLeft || self == .landscapeRight }
+        var isPhysicalHold: Bool { isLandscape || self == .portrait || self == .portraitUpsideDown }
+    }
+
+    /// The writer's track transform and the display dimensions it produces,
+    /// chosen from the sensor (coded) buffer orientation and the device
+    /// orientation held at recording start.
+    struct DeliveryGeometry: Equatable, Sendable {
+        let transform: CGAffineTransform
+        let displayWidth: Int
+        let displayHeight: Int
+    }
+
     struct CodedDimensions: Equatable, Sendable {
         let width: Int
         let height: Int
@@ -203,11 +292,49 @@ enum CameraSampleValidationPolicy {
             self.init(validatedWidth: width, height: height)
         }
 
-        var portraitDeliveryTransform: CGAffineTransform {
-            if self == .portrait4K { return .identity }
-            return CGAffineTransform(a: 0, b: 1, c: -1, d: 0,
-                                     tx: CGFloat(height), ty: 0)
+        var isPortrait: Bool { height > width }
+    }
+
+    /// Clockwise quarter turns relative to the unrotated sensor. Camera-specific
+    /// AVFoundation capture angles take precedence over the fallback convention.
+    /// Native portrait input is already one quarter turn from landscape-coded
+    /// input; its landscapeLeft mapping must therefore be 270°, not 90°.
+    static func deliveryQuarterTurns(for orientation: DeliveryOrientation,
+                                     coded: CodedDimensions,
+                                     captureRotationAngle: CGFloat? = nil) -> Int {
+        if let angle = captureRotationAngle, angle.isFinite {
+            let normalized = angle.truncatingRemainder(dividingBy: 360)
+            return (Int((normalized / 90).rounded()) % 4 + 4) % 4
         }
+        let landscapeTurns: Int
+        switch orientation {
+        case .landscapeLeft: landscapeTurns = 0
+        case .landscapeRight: landscapeTurns = 2
+        case .portraitUpsideDown: landscapeTurns = 3
+        case .portrait, .unknown, .faceUp, .faceDown: landscapeTurns = 1
+        }
+        return (landscapeTurns + (coded.isPortrait ? 3 : 0)) % 4
+    }
+
+    static func deliveryGeometry(for orientation: DeliveryOrientation,
+                                 coded: CodedDimensions,
+                                 captureRotationAngle: CGFloat? = nil) -> DeliveryGeometry {
+        let turns = deliveryQuarterTurns(for: orientation, coded: coded,
+                                         captureRotationAngle: captureRotationAngle)
+        let transform: CGAffineTransform
+        switch turns {
+        case 1:
+            transform = CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: CGFloat(coded.height), ty: 0)
+        case 2:
+            transform = CGAffineTransform(a: -1, b: 0, c: 0, d: -1,
+                                          tx: CGFloat(coded.width), ty: CGFloat(coded.height))
+        case 3:
+            transform = CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: CGFloat(coded.width))
+        default: transform = .identity
+        }
+        return DeliveryGeometry(transform: transform,
+                                displayWidth: turns % 2 == 0 ? coded.width : coded.height,
+                                displayHeight: turns % 2 == 0 ? coded.height : coded.width)
     }
 
     static var appleLog2Identifier: String {
@@ -540,13 +667,23 @@ enum ExposureStabilizer {
     /// Measured on device (iPhone 18 Pro, iOS 27): with custom exposure held,
     /// darkening the image two stops moved `exposureTargetOffset` to about -2.0,
     /// so a POSITIVE offset means the image is brighter than the target and the
-    /// held ISO must come down. Hence `heldISO * 2^-offset`. Returns nil when any
-    /// input is unusable, so the caller holds instead of writing nonsense.
-    static func correctedISO(heldISO: Float, meteredOffsetEV: Float,
+    /// held ISO must come down. To preserve the selected compensation, use
+    /// `heldISO * 2^(targetEV - offset)`; zero EV retains the neutral correction.
+    /// Returns nil when an input is unusable, so the caller holds instead.
+    static func correctedISO(heldISO: Float, meteredOffsetEV: Float, targetEV: Float = 0,
                              minimum: Float, maximum: Float) -> Float? {
-        guard heldISO.isFinite, heldISO > 0, meteredOffsetEV.isFinite,
+        guard heldISO.isFinite, heldISO > 0, meteredOffsetEV.isFinite, targetEV.isFinite,
               minimum.isFinite, maximum.isFinite, minimum <= maximum else { return nil }
-        return min(max(heldISO * powf(2, -meteredOffsetEV), minimum), maximum)
+        return min(max(heldISO * powf(2, targetEV - meteredOffsetEV), minimum), maximum)
+    }
+
+    /// Apply only the user's EV delta to the currently held scene exposure.
+    /// This is not a fresh meter reading: using the original metered ISO would
+    /// discard scene corrections, and applying the full EV would compound it.
+    static func retargetedISO(pin: Pin, targetEV: Float,
+                              minimum: Float, maximum: Float) -> Float? {
+        correctedISO(heldISO: pin.iso, meteredOffsetEV: pin.ev, targetEV: targetEV,
+                     minimum: minimum, maximum: maximum)
     }
 
     /// Decide the ISO to write from a fresh meter reading.

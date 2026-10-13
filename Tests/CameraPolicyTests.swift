@@ -1,6 +1,8 @@
 import Foundation
 import AVFoundation
 import CoreVideo
+import CoreImage
+
 import Testing
 
 @Suite("Camera lifecycle and recording policies")
@@ -332,10 +334,10 @@ struct CameraPolicyTests {
             AVVideoWidthKey: width,
             AVVideoHeightKey: height
         ]
-        #expect(writer.canApply(outputSettings: settings, forMediaType: .video))
+        try #require(writer.canApply(outputSettings: settings, forMediaType: .video))
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
         input.transform = transform
-        #expect(writer.canAdd(input))
+        try #require(writer.canAdd(input))
         writer.add(input)
 
         var optionalBuffer: CVPixelBuffer?
@@ -361,14 +363,14 @@ struct CameraPolicyTests {
             sampleTiming: &timing, sampleBufferOut: &sample
         )
         let videoSample = try #require(sampleStatus == noErr ? sample : nil)
-        #expect(writer.startWriting())
+        try #require(writer.startWriting())
         writer.startSession(atSourceTime: .zero)
-        #expect(input.append(videoSample))
+        try #require(input.append(videoSample))
         input.markAsFinished()
         await withCheckedContinuation { continuation in
             writer.finishWriting { continuation.resume() }
         }
-        #expect(writer.status == .completed)
+        try #require(writer.status == .completed)
         let asset = AVURLAsset(url: url)
         let track = try #require(asset.tracks(withMediaType: .video).first)
         #expect(track.preferredTransform == transform)
@@ -462,4 +464,249 @@ struct CameraPolicyTests {
             finishedPlayable: ((missingFlag as NSError).userInfo[key] as? NSNumber)?.boolValue
         ))
     }
+
+    @Test func deliveryOrientationMirrorsUIDeviceRawValuesAndDefaultsToPortrait() {
+        let mapping: [(Int, CameraSampleValidationPolicy.DeliveryOrientation)] = [
+            (0, .unknown), (1, .portrait), (2, .portraitUpsideDown),
+            (3, .landscapeLeft), (4, .landscapeRight),
+            (5, .faceUp), (6, .faceDown), (99, .unknown)
+        ]
+        for (raw, expected) in mapping {
+            #expect(CameraSampleValidationPolicy.DeliveryOrientation(
+                deviceOrientationRawValue: raw) == expected)
+        }
+        #expect(!CameraSampleValidationPolicy.DeliveryOrientation.portrait.isLandscape)
+        #expect(CameraSampleValidationPolicy.DeliveryOrientation.landscapeLeft.isLandscape)
+        #expect(CameraSampleValidationPolicy.DeliveryOrientation.landscapeRight.isLandscape)
+        #expect(!CameraSampleValidationPolicy.DeliveryOrientation.faceUp.isLandscape)
+        for hold in [CameraSampleValidationPolicy.DeliveryOrientation.portrait, .portraitUpsideDown,
+                     .landscapeLeft, .landscapeRight] { #expect(hold.isPhysicalHold) }
+        for flat in [CameraSampleValidationPolicy.DeliveryOrientation.unknown, .faceUp, .faceDown] {
+            #expect(!flat.isPhysicalHold)
+        }
+    }
+
+    @Test func landscapeHoldDeliversLandscapeAndPortraitHoldStaysPortraitForBothSensorBuffers() {
+        let landscape = CameraSampleValidationPolicy.CodedDimensions.landscape4K
+        let portrait = CameraSampleValidationPolicy.CodedDimensions.portrait4K
+
+        // Landscape sensor buffer (the real capture buffer) at 3840x2160.
+        let left = CameraSampleValidationPolicy.deliveryGeometry(for: .landscapeLeft, coded: landscape)
+        #expect(left.transform == .identity)
+        #expect(left.displayWidth == 3840 && left.displayHeight == 2160)
+        let right = CameraSampleValidationPolicy.deliveryGeometry(for: .landscapeRight, coded: landscape)
+        #expect(right.displayWidth == 3840 && right.displayHeight == 2160)
+        #expect(right.transform == CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 3840, ty: 2160))
+        let upright = CameraSampleValidationPolicy.deliveryGeometry(for: .portrait, coded: landscape)
+        #expect(upright.transform == CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 2160, ty: 0))
+        #expect(upright.displayWidth == 2160 && upright.displayHeight == 3840)
+
+        // Unknown and flat holds default to portrait; upside-down preserves the opposite matrix.
+        let portraitDefaults: [CameraSampleValidationPolicy.DeliveryOrientation] =
+            [.unknown, .faceUp, .faceDown, .portraitUpsideDown]
+        for orientation in portraitDefaults {
+            let geometry = CameraSampleValidationPolicy.deliveryGeometry(for: orientation, coded: landscape)
+            #expect(geometry.displayWidth == 2160 && geometry.displayHeight == 3840)
+        }
+
+        // Native portrait sensor buffer at 2160x3840.
+        let nativePortrait = CameraSampleValidationPolicy.deliveryGeometry(for: .portrait, coded: portrait)
+        #expect(nativePortrait.transform == .identity)
+        #expect(nativePortrait.displayWidth == 2160 && nativePortrait.displayHeight == 3840)
+        let nativeLandscape = CameraSampleValidationPolicy.deliveryGeometry(for: .landscapeLeft, coded: portrait)
+        #expect(nativeLandscape.transform == CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 2160))
+        #expect(nativeLandscape.displayWidth == 3840 && nativeLandscape.displayHeight == 2160)
+    }
+
+    @Test func oppositeHoldsHaveDistinctExactMatricesForBothCodedSizes() {
+        let holds: [CameraSampleValidationPolicy.DeliveryOrientation] =
+            [.portrait, .portraitUpsideDown, .landscapeLeft, .landscapeRight]
+        let landscapeMatrices = [
+            CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 2160, ty: 0),
+            CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 3840),
+            CGAffineTransform.identity,
+            CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 3840, ty: 2160)
+        ]
+        let portraitMatrices = [
+            CGAffineTransform.identity,
+            CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 2160, ty: 3840),
+            CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 2160),
+            CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 3840, ty: 0)
+        ]
+        for (coded, matrices) in [(CameraSampleValidationPolicy.CodedDimensions.landscape4K, landscapeMatrices),
+                                  (.portrait4K, portraitMatrices)] {
+            for (hold, expected) in zip(holds, matrices) {
+                let actual = CameraSampleValidationPolicy.deliveryGeometry(for: hold, coded: coded)
+                #expect(actual.transform == expected)
+                #expect(actual.transform.a * actual.transform.d - actual.transform.b * actual.transform.c == 1)
+                let bounds = CGRect(x: 0, y: 0, width: coded.width, height: coded.height)
+                    .applying(actual.transform)
+                #expect(bounds.minX == 0 && bounds.minY == 0)
+                #expect(Int(bounds.width) == actual.displayWidth && Int(bounds.height) == actual.displayHeight)
+            }
+        }
+    }
+
+    @Test func captureAngleOverridesPhysicalFallbackWithoutDoubleRotatingNativePortrait() {
+        let native = CameraSampleValidationPolicy.deliveryGeometry(
+            for: .portrait, coded: .portrait4K, captureRotationAngle: 0)
+        #expect(native.transform == .identity)
+        let opposite = CameraSampleValidationPolicy.deliveryGeometry(
+            for: .landscapeLeft, coded: .landscape4K, captureRotationAngle: 180)
+        #expect(opposite.transform == CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 3840, ty: 2160))
+        let invalid = CameraSampleValidationPolicy.deliveryGeometry(
+            for: .portraitUpsideDown, coded: .landscape4K, captureRotationAngle: .nan)
+        #expect(invalid.transform == CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 3840))
+    }
+
+    @Test func flatCaptureKeepsLastStableCameraAngleAndFreshCaptureFallsBackToPortrait() {
+        var state = CameraCaptureRotationPolicy()
+        #expect(state.snapshot(for: .unknown, liveAngle: 0) == nil)
+        #expect(state.snapshot(for: .landscapeRight, liveAngle: 180) == 180)
+        #expect(state.snapshot(for: .faceUp, liveAngle: 0) == 180)
+        #expect(state.snapshot(for: .faceDown, liveAngle: 90) == 180)
+        #expect(state.snapshot(for: .unknown, liveAngle: 270) == 180)
+        #expect(state.snapshot(for: .portrait, liveAngle: 90) == 90)
+        #expect(state.snapshot(for: .portraitUpsideDown, liveAngle: .nan) == 90)
+        // A camera switch replaces the policy state; mounting angles must not leak.
+        state = CameraCaptureRotationPolicy()
+        #expect(state.snapshot(for: .faceUp, liveAngle: 180) == nil)
+    }
+
+    @Test func frozenFrameRotationChangesPixelsAndNotOnlyDisplayAspect() throws {
+        // Asymmetric 3x2 source with midtones and saturated colors. Exact BGRA
+        // bytes detect opposite rotations, mirroring, and extra color conversion.
+        let pixels: [UInt8] = [
+            17, 89, 153, 255, 0, 255, 0, 255, 255, 0, 0, 255,
+            181, 47, 109, 255, 0, 255, 255, 255, 255, 0, 255, 255
+        ]
+        let provider = try #require(CGDataProvider(data: Data(pixels) as CFData))
+        let image = try #require(CGImage(width: 3, height: 2, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: 12, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue |
+                CGBitmapInfo.byteOrder32Little.rawValue), provider: provider,
+            decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let orders = [[0, 1, 2, 3, 4, 5], [3, 0, 4, 1, 5, 2],
+                      [5, 4, 3, 2, 1, 0], [2, 5, 1, 4, 0, 3]]
+        for turns in 0..<4 {
+            let oriented = try #require(CameraFrozenFrameOrientationPolicy.orient(image, quarterTurns: turns))
+            #expect(oriented.width == (turns % 2 == 0 ? 3 : 2))
+            #expect(oriented.height == (turns % 2 == 0 ? 2 : 3))
+            let data = try #require(oriented.dataProvider?.data)
+            let actual = try #require(CFDataGetBytePtr(data))
+            // CI's explicit BGRA8 output is read row by row (rows may be padded).
+            for (index, sourceIndex) in orders[turns].enumerated() {
+                let offset = (index / oriented.width) * oriented.bytesPerRow + (index % oriented.width) * 4
+                #expect(Array(UnsafeBufferPointer(start: actual + offset, count: 4)) ==
+                    Array(pixels[(sourceIndex * 4)..<(sourceIndex * 4 + 4)]))
+            }
+        }
+    }
+
+    @Test func frozenCaptureOrientationAttachmentDoesNotAlterSourcePixelsOrColorMetadata() throws {
+        var optionalBuffer: CVPixelBuffer?
+        #expect(CVPixelBufferCreate(kCFAllocatorDefault, 3, 2, kCVPixelFormatType_32BGRA,
+            nil, &optionalBuffer) == kCVReturnSuccess)
+        let buffer = try #require(optionalBuffer)
+        CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey,
+            kCVImageBufferYCbCrMatrix_ITU_R_2020, .shouldPropagate)
+        #expect(CVPixelBufferLockBaseAddress(buffer, []) == kCVReturnSuccess)
+        let base = try #require(CVPixelBufferGetBaseAddress(buffer))
+        let count = CVPixelBufferGetBytesPerRow(buffer) * CVPixelBufferGetHeight(buffer)
+        memset(base, 0x5A, count)
+        let before = Data(bytes: base, count: count)
+        CameraFrozenFrameOrientationPolicy.setQuarterTurns(3, on: buffer)
+        #expect(Data(bytes: base, count: count) == before)
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        #expect(CameraFrozenFrameOrientationPolicy.quarterTurns(in: buffer) == 3)
+        #expect(CVPixelBufferGetWidth(buffer) == 3 && CVPixelBufferGetHeight(buffer) == 2)
+        #expect(CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_32BGRA)
+        #expect(CVBufferCopyAttachment(buffer, kCVImageBufferYCbCrMatrixKey, nil) as? String == "ITU_R_2020")
+    }
+
+    @Test func deliveryGeometryDisplayMatchesTheTrackMatrixHelperForEveryHold() {
+        let sizes: [CameraSampleValidationPolicy.CodedDimensions] = [.landscape4K, .portrait4K]
+        let orientations: [CameraSampleValidationPolicy.DeliveryOrientation] = [
+            .portrait, .portraitUpsideDown, .landscapeLeft, .landscapeRight, .unknown, .faceUp, .faceDown
+        ]
+        for coded in sizes {
+            for orientation in orientations {
+                let geometry = CameraSampleValidationPolicy.deliveryGeometry(for: orientation, coded: coded)
+                let display = CameraSampleValidationPolicy.displayDimensions(
+                    codedWidth: coded.width, codedHeight: coded.height, transform: geometry.transform)
+                #expect(display.0 == geometry.displayWidth && display.1 == geometry.displayHeight,
+                    "coded \(coded.width)x\(coded.height) hold \(orientation)")
+            }
+        }
+    }
+
+    @Test(arguments: [CameraSampleValidationPolicy.DeliveryOrientation.portrait, .portraitUpsideDown,
+                      .landscapeLeft, .landscapeRight],
+          [CameraSampleValidationPolicy.CodedDimensions.landscape4K, .portrait4K])
+    func everyDeliveryMatrixRoundTripsThroughAVAssetWriter(
+        orientation: CameraSampleValidationPolicy.DeliveryOrientation,
+        coded: CameraSampleValidationPolicy.CodedDimensions
+    ) async throws {
+        let geometry = CameraSampleValidationPolicy.deliveryGeometry(for: orientation, coded: coded)
+        // Preserve exactly the same rotation and proportional translation, while
+        // keeping the real encoder round trip small enough for the test suite.
+        let width = coded.width / 60
+        let height = coded.height / 60
+        let expectedTransform = CGAffineTransform(a: geometry.transform.a, b: geometry.transform.b,
+            c: geometry.transform.c, d: geometry.transform.d,
+            tx: geometry.transform.tx / 60, ty: geometry.transform.ty / 60)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("landscape-transform-\(UUID().uuidString).mov")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let settings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: width,
+            AVVideoHeightKey: height
+        ]
+        try #require(writer.canApply(outputSettings: settings, forMediaType: .video))
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
+        input.transform = expectedTransform
+        try #require(writer.canAdd(input))
+        writer.add(input)
+
+        var optionalBuffer: CVPixelBuffer?
+        let attributes = [kCVPixelBufferIOSurfacePropertiesKey as String: [:]] as CFDictionary
+        let pixelStatus = CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+            kCVPixelFormatType_32BGRA, attributes, &optionalBuffer)
+        let buffer = try #require(pixelStatus == kCVReturnSuccess ? optionalBuffer : nil)
+        #expect(CVPixelBufferLockBaseAddress(buffer, []) == kCVReturnSuccess)
+        if let base = CVPixelBufferGetBaseAddress(buffer) {
+            memset(base, 0, CVPixelBufferGetBytesPerRow(buffer) * height)
+        }
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        var format: CMVideoFormatDescription?
+        let formatStatus = CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault, imageBuffer: buffer, formatDescriptionOut: &format
+        )
+        let videoFormat = try #require(formatStatus == noErr ? format : nil)
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 24),
+            presentationTimeStamp: .zero, decodeTimeStamp: .invalid)
+        var sample: CMSampleBuffer?
+        let sampleStatus = CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault, imageBuffer: buffer, formatDescription: videoFormat,
+            sampleTiming: &timing, sampleBufferOut: &sample
+        )
+        let videoSample = try #require(sampleStatus == noErr ? sample : nil)
+        try #require(writer.startWriting())
+        writer.startSession(atSourceTime: .zero)
+        try #require(input.append(videoSample))
+        input.markAsFinished()
+        await withCheckedContinuation { continuation in
+            writer.finishWriting { continuation.resume() }
+        }
+        try #require(writer.status == .completed)
+        let asset = AVURLAsset(url: url)
+        let track = try #require(asset.tracks(withMediaType: .video).first)
+        #expect(track.preferredTransform == expectedTransform)
+        let display = CameraSampleValidationPolicy.displayDimensions(
+            codedWidth: width, codedHeight: height, transform: track.preferredTransform)
+        #expect(display.0 == geometry.displayWidth / 60 && display.1 == geometry.displayHeight / 60)
+    }
+
 }

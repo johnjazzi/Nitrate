@@ -30,6 +30,10 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     private var acceptedPixelFormats: Set<UInt32> = []
     private var metadata: [AVMetadataItem] = []
     private var transform = CGAffineTransform.identity
+    /// Physical device orientation held at recording start. Drives the delivery
+    /// transform; unknown/flat holds stay portrait.
+    private var deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation = .unknown
+    private var captureRotationAngle: CGFloat?
     private var codedDimensions: CameraCaptureCodedDimensions?
     private var started: (@Sendable (Error?) -> Void)?
     private var finished: (@Sendable (Result<URL, Error>) -> Void)?
@@ -65,6 +69,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         audioSettings: [String: Any]?,
         acceptedPixelFormats: Set<UInt32>,
         metadata: [AVMetadataItem],
+        deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation = .unknown,
+        captureRotationAngle: CGFloat? = nil,
         preservationProbeEnabled: Bool = false,
         requiresAudioEvidence: Bool = false,
         startAfter: CMTime = .invalid,
@@ -85,6 +91,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             self.acceptedPixelFormats = acceptedPixelFormats
             self.metadata = metadata
             self.transform = .identity
+            self.deliveryOrientation = deliveryOrientation
+            self.captureRotationAngle = captureRotationAngle
             self.codedDimensions = nil
             self.startAfter = startAfter
 #if DEBUG
@@ -215,7 +223,9 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             }
         } else {
             codedDimensions = sampleDimensions
-            transform = sampleDimensions.portraitDeliveryTransform
+            let geometry = CameraSampleValidationPolicy.deliveryGeometry(
+                for: deliveryOrientation, coded: sampleDimensions, captureRotationAngle: captureRotationAngle)
+            transform = geometry.transform
             videoSettings[AVVideoWidthKey] = NSNumber(value: sampleDimensions.width)
             videoSettings[AVVideoHeightKey] = NSNumber(value: sampleDimensions.height)
         }
@@ -361,11 +371,12 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                         return
                     }
                     let requiresAudio = self.requiresAudioEvidence
+                    let deliveryTransform = self.transform
                     Task.detached(priority: .utility) {
                         do {
                             let evidence = try await CameraCapturePreservationProbe.inspect(
                                 url: destination, source: source, expectedDimensions: dimensions,
-                                requiresAudio: requiresAudio
+                                expectedTransform: deliveryTransform, requiresAudio: requiresAudio
                             )
                             self.queue.async {
                                 guard self.isCurrentClip(generation, writerIdentity: writerIdentity) else { return }
@@ -437,6 +448,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         acceptedPixelFormats = []
         metadata = []
         transform = .identity
+        deliveryOrientation = .unknown
+        captureRotationAngle = nil
         codedDimensions = nil
         started = nil
         finished = nil
@@ -512,17 +525,22 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                           "transform=\(transformText)"].joined(separator: ", ")
             throw CameraSampleBufferRecorderError.invalidFinalMovie(detail)
         }
+        let expectedDisplay = CameraSampleValidationPolicy.displayDimensions(
+            codedWidth: Int(dimensions.width), codedHeight: Int(dimensions.height), transform: transform
+        )
         let displaySize = CameraSampleValidationPolicy.displayDimensions(
             codedWidth: Int(dimensions.width), codedHeight: Int(dimensions.height), transform: track.preferredTransform
         )
-        guard displaySize.0 == 2160, displaySize.1 == 3840 else {
-            throw CameraSampleBufferRecorderError.invalidFinalMovie("track does not display as portrait 2160x3840")
+        guard displaySize.0 == expectedDisplay.0, displaySize.1 == expectedDisplay.1 else {
+            throw CameraSampleBufferRecorderError.invalidFinalMovie(
+                "track displays as \(displaySize.0)x\(displaySize.1), " +
+                "expected \(expectedDisplay.0)x\(expectedDisplay.1) for the chosen delivery orientation")
         }
         if appendedAudioSamples > 0, asset.tracks(withMediaType: .audio).isEmpty {
             throw CameraSampleBufferRecorderError.invalidFinalMovie("audio samples were appended without an audio track")
         }
         #if DEBUG
-        print("HEVC Log2 output validation: codec=hvc1, size=\(expectedDimensions.width)x\(expectedDimensions.height), bits=10, log=\(String(describing: logTransfer)), matrix=\(String(describing: matrix)), display=2160x3840, audioSamples=\(appendedAudioSamples), transform=\(track.preferredTransform)")
+        print("HEVC Log2 output validation: codec=hvc1, size=\(expectedDimensions.width)x\(expectedDimensions.height), bits=10, log=\(String(describing: logTransfer)), matrix=\(String(describing: matrix)), display=\(expectedDisplay.0)x\(expectedDisplay.1), audioSamples=\(appendedAudioSamples), transform=\(track.preferredTransform)")
         #endif
     }
 

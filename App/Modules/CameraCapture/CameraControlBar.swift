@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// Bottom camera controls: stock, queue/storage and record on the left,
-/// with the exposure ruler in a persistent right column.
+/// Compact stock/status column, screen-centred REC, and persistent exposure controls.
 ///
 /// Split out of `ContentView` so the screen stays inside the file-length limit.
 /// The top toolbar owns settings and the manual-controls popover; this bar
@@ -10,7 +9,7 @@ struct CameraControlBar: View {
     private let controlFaceSize: CGFloat = 44
     private let selectorRowHeight: CGFloat = 54
     private let recordFaceSize: CGFloat = 84
-    private let actionRowHeight: CGFloat = 100
+    private let statusSlotSize: CGFloat = 84
     let cameraViewModel: CameraViewModel
     let renderQueueViewModel: RenderQueueViewModel
     let selectedStock: FilmStockConfig?
@@ -19,41 +18,25 @@ struct CameraControlBar: View {
     let onShowStockSheet: () -> Void
     let formatDuration: (TimeInterval) -> String
 
-    @State private var isStorageInfoPresented = false
-
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            VStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 selectorRow
-                actionRow
+                storageIndicator.frame(width: statusSlotSize, height: statusSlotSize)
             }
-            .frame(maxWidth: .infinity)
+            .frame(width: statusSlotSize, alignment: .leading)
+
+            Spacer(minLength: 0)
 
             exposureControl
                 .frame(width: 92)
         }
-        .overlay(alignment: .top) {
-            ZStack {
-                Color.clear
-                    .frame(maxWidth: .infinity)
-                    .frame(height: actionRowHeight)
-                    .allowsHitTesting(false)
-                recordButton
-                    .frame(width: recordFaceSize, height: recordFaceSize)
-            }
-            .frame(height: actionRowHeight)
-                .padding(.top, selectorRowHeight + 8)
+        .overlay {
+            // Overlay the full bar, not the free space between columns. Keep
+            // REC centred on the screen and leave room above for its timer.
+            recordButton.frame(width: recordFaceSize, height: recordFaceSize)
         }
         .padding(.horizontal, 16)
-        .sheet(isPresented: $isStorageInfoPresented) {
-            CameraStorageInfoSheet(
-                freeSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.freeSpaceBytes : nil,
-                totalSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.totalSpaceBytes : nil,
-                estimatedSeconds: estimatedRemainingSeconds
-            )
-            .presentationDetents([.medium, .large])
-            .preferredColorScheme(.dark)
-        }
     }
 
     // MARK: - Left selector row
@@ -83,6 +66,7 @@ struct CameraControlBar: View {
                 .buttonStyle(CameraRaisedButtonStyle())
             }
         }
+        .cameraRotatingControl()
     }
 
     /// Duotone stripe card with ISO + D/T badge overlaid in black.
@@ -148,6 +132,7 @@ struct CameraControlBar: View {
                 .minimumScaleFactor(0.7)
                 .frame(height: 14)
                 .foregroundStyle(.white.opacity(0.9))
+                .cameraUpright()
 
             if cameraViewModel.isManualExposure {
                 // Match EV's 12pt detents and tick geometry. Logarithmic ISO
@@ -182,6 +167,7 @@ struct CameraControlBar: View {
             Text(cameraViewModel.isManualExposure ? "ISO" : "EV")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(.white.opacity(0.7))
+                .cameraUpright()
         }
         .contentShape(Rectangle())
         // Simultaneous so the whole control stays hittable: an exclusive
@@ -257,22 +243,6 @@ struct CameraControlBar: View {
         )
     }
 
-    // MARK: - Left action row: queue and remaining time beneath it
-
-    private var actionRow: some View {
-        HStack(alignment: .center, spacing: 8) {
-            // Share a leading edge with the stock key above. Queue and the
-            // remaining-time readout form one column; REC stays centered.
-            VStack(alignment: .leading, spacing: 6) {
-                queueButton.frame(width: controlFaceSize, height: controlFaceSize)
-                storageIndicator.frame(width: 96)
-            }
-            .frame(width: 96, alignment: .leading)
-            Spacer(minLength: 0)
-        }
-        .frame(height: actionRowHeight)
-    }
-
     private var recordButton: some View {
         Button {
             if cameraViewModel.isRecording {
@@ -327,6 +297,7 @@ struct CameraControlBar: View {
                 Text(formatDuration(cameraViewModel.recordingDuration))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.white)
+                    .cameraUpright()
                     .padding(.horizontal, 8)
                     .padding(.vertical, 2)
                     .background(.red.opacity(0.8))
@@ -336,27 +307,40 @@ struct CameraControlBar: View {
         }
     }
 
-    private var queueButton: some View {
-        RenderStatusButton(viewModel: renderQueueViewModel, action: onShowQueueSheet)
+    private var queueStatus: CameraStatusPresentation {
+        let latest = renderQueueViewModel.currentSessionResults.first
+        return CameraStatusPresentation(
+            outstandingCount: renderQueueViewModel.outstandingCount,
+            pendingCount: renderQueueViewModel.pendingCount,
+            isProcessing: renderQueueViewModel.isProcessing,
+            failedCount: renderQueueViewModel.currentSessionFailures.count,
+            errorMessage: renderQueueViewModel.rendererErrorMessage,
+            latestResultCompleted: latest?.status == .completed,
+            latestResultSavedToPhotos: latest?.outputSavedToPhotos
+        )
+    }
+
+    private var isStorageLow: Bool {
+        cameraViewModel.hasStorageSnapshot && cameraViewModel.freeSpaceBytes < 1_000_000_000
     }
 
     private var storageIndicator: some View {
-        Button {
-            cameraViewModel.updateFreeSpace()
-            isStorageInfoPresented = true
-        } label: {
+        Button(action: onShowQueueSheet) {
             RecordingTimeLCD(
                 estimatedSeconds: estimatedRemainingSeconds,
-                isStorageLow: cameraViewModel.hasStorageSnapshot
-                    && cameraViewModel.freeSpaceBytes < 1_000_000_000
+                isStorageLow: isStorageLow,
+                queueStatus: queueStatus
             )
-            .frame(maxWidth: .infinity)
+            .frame(width: statusSlotSize, height: 84)
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
-        .accessibilityLabel("Estimated recording time remaining, \(estimatedTimeText)")
-        .accessibilityValue("\(freeSpaceText) free")
-        .accessibilityHint("Opens storage details")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Storage, render queue, and estimated recording time remaining")
+        .accessibilityValue("\(estimatedTimeText). \(freeSpaceText) free. "
+                            + "\(isStorageLow ? "Low storage. " : "")\(queueStatus.accessibilityDescription)")
+        .accessibilityHint("Tap for storage and render queue details, video playback, sharing, and retry controls.")
+        .cameraRotatingControl()
     }
 
     private var estimatedTimeText: String {

@@ -66,7 +66,7 @@ struct PurchaseView: View {
                     .foregroundStyle(.secondary)
                 Text("Trial Expired")
                     .font(.title2.bold())
-                Text("Unlock to continue using FilmEmulation.")
+                Text("Unlock to continue using \(AppIdentity.name).")
                     .foregroundStyle(.secondary)
             }
         }

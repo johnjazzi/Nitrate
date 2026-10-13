@@ -1,6 +1,6 @@
-name: FilmEmulation
+name: Nitrate
 options:
-  bundleIdPrefix: com.filmemulation
+  bundleIdPrefix: com.nitrate
   deploymentTarget:
     iOS: "17.0"
   xcodeVersion: "16.0"
@@ -11,10 +11,16 @@ settings:
   base:
     SWIFT_VERSION: "6.0"
     GENERATE_INFOPLIST_FILE: "YES"
-    INFOPLIST_KEY_NSCameraUsageDescription: "FilmEmulation needs camera access to capture Apple Log video for film stock processing."
-    INFOPLIST_KEY_NSMicrophoneUsageDescription: "FilmEmulation records audio to accompany your film clips."
-    INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "FilmEmulation saves rendered videos to your photo library."
-    INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "FilmEmulation saves rendered videos to your photo library."
+    # Single source of truth for the version shown on the splash and in
+    # CFBundleShortVersionString / CFBundleVersion. Bump MARKETING_VERSION for a
+    # user-visible release, CURRENT_PROJECT_VERSION for every build.
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    INFOPLIST_KEY_CFBundleDisplayName: Nitrate
+    INFOPLIST_KEY_NSCameraUsageDescription: "Nitrate needs camera access to capture Apple Log video for film stock processing."
+    INFOPLIST_KEY_NSMicrophoneUsageDescription: "Nitrate records audio to accompany your film clips."
+    INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "Nitrate saves rendered videos to your photo library."
+    INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "Nitrate saves rendered videos to your photo library."
     INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
     INFOPLIST_KEY_UIRequiredDeviceCapabilities: "metal video-capture"
     INFOPLIST_KEY_UIStatusBarHidden: "YES"
@@ -25,6 +31,16 @@ configs:
   Release: release
 
 schemes:
+  Nitrate:
+    build:
+      targets:
+        Nitrate: all
+    run:
+      config: Debug
+    profile:
+      config: Release
+    archive:
+      config: Release
   RenderCLI:
     build:
       targets:
@@ -34,7 +50,7 @@ schemes:
         - RenderCLITests
 
 targets:
-  FilmEmulation:
+  Nitrate:
     type: application
     platform: iOS
     sources:
@@ -51,6 +67,8 @@ targets:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UILaunchStoryboardName: LaunchScreen
+        # Deliberately unchanged by the Nitrate rename: the App Store identifier
+        # and the com.filmemulation.* movie metadata keys are already shipped.
         PRODUCT_BUNDLE_IDENTIFIER: com.filmemulation.app
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: "U43C6BCZFS"
@@ -91,6 +109,8 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Tests
+      - path: App/AppIdentity.swift
+      - path: App/SplashEdgeDetails.swift
       - path: App/StartupSplashTiming.swift
       - path: App/Modules/ProcessingPipeline/
       - path: App/Modules/FilmStockLibrary/
@@ -99,6 +119,9 @@ targets:
       - path: App/Modules/RenderQueue/RenderQueueViewModel.swift
       - path: App/Modules/CameraCapture/CameraOriginalStorage.swift
       - path: App/Modules/CameraCapture/CameraPolicies.swift
+      - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
+      - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
+      - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
       - path: App/Modules/CameraCapture/RulerScale.swift
       - path: App/Modules/CameraCapture/CameraSampleBufferRecorder.swift
       - path: App/Modules/CameraCapture/CameraCapturePreservationProbe.swift

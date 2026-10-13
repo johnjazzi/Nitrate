@@ -90,6 +90,101 @@ struct ExposureStabilizerTests {
 
     // MARK: - Offset-driven correction
 
+    @Test func settledNonzeroTargetsDoNotReturnToNeutral() {
+        for target: Float in [-2, -1, 1, 2] {
+            #expect(ExposureStabilizer.correctedISO(
+                heldISO: 800, meteredOffsetEV: target, targetEV: target,
+                minimum: 25, maximum: 6400) == 800)
+        }
+    }
+
+    @Test func sceneChangesCorrectTowardTheSelectedTarget() {
+        #expect(ExposureStabilizer.correctedISO(
+            heldISO: 800, meteredOffsetEV: 2, targetEV: 1,
+            minimum: 25, maximum: 6400) == 400)
+        #expect(ExposureStabilizer.correctedISO(
+            heldISO: 800, meteredOffsetEV: -2, targetEV: -1,
+            minimum: 25, maximum: 6400) == 1600)
+        #expect(ExposureStabilizer.correctedISO(
+            heldISO: 800, meteredOffsetEV: 0, targetEV: 1,
+            minimum: 25, maximum: 6400) == 1600)
+        #expect(ExposureStabilizer.correctedISO(
+            heldISO: 800, meteredOffsetEV: 0, targetEV: -1,
+            minimum: 25, maximum: 6400) == 400)
+    }
+
+    @Test func explicitEVChangesUseOnlyTheDeltaWithoutCompounding() throws {
+        var pin = ExposureStabilizer.Pin(iso: 400, ev: 0, meteredISO: 400)
+        let targets: [Float] = [1, 2, 2, 1, 0, -1, -2, 0]
+        let expectedISOs: [Float] = [800, 1600, 1600, 800, 400, 200, 100, 400]
+        for (target, expectedISO) in zip(targets, expectedISOs) {
+            let iso = try #require(ExposureStabilizer.retargetedISO(
+                pin: pin, targetEV: target, minimum: 25, maximum: 6400))
+            #expect(iso == expectedISO)
+            pin = ExposureStabilizer.Pin(iso: iso, ev: target, meteredISO: pin.meteredISO)
+            #expect(ExposureStabilizer.correctedISO(
+                heldISO: pin.iso, meteredOffsetEV: target, targetEV: target,
+                minimum: 25, maximum: 6400) == iso)
+        }
+    }
+
+    @Test func explicitEVChangesBypassTheSceneDeadband() throws {
+        let pin = ExposureStabilizer.Pin(iso: 800, ev: 1, meteredISO: 400)
+        let iso = try #require(ExposureStabilizer.retargetedISO(
+            pin: pin, targetEV: 1.1, minimum: 25, maximum: 6400))
+        #expect(iso > pin.iso)
+        #expect(abs(log2(iso / pin.iso) - 0.1) < 0.0001)
+    }
+
+    @Test func clampedEVChangesDoNotReapplyFullCompensation() throws {
+        let original = ExposureStabilizer.Pin(iso: 4000, ev: 0, meteredISO: 4000)
+        let clamped = try #require(ExposureStabilizer.retargetedISO(
+            pin: original, targetEV: 1, minimum: 25, maximum: 6400))
+        #expect(clamped == 6400)
+        let updated = ExposureStabilizer.Pin(iso: clamped, ev: 1, meteredISO: original.meteredISO)
+        #expect(ExposureStabilizer.retargetedISO(
+            pin: updated, targetEV: 1, minimum: 25, maximum: 6400) == 6400)
+        #expect(ExposureStabilizer.retargetedISO(
+            pin: updated, targetEV: 0, minimum: 25, maximum: 6400) == 3200)
+    }
+
+    @Test func explicitEVChangesScaleTheSceneCorrectedPinNotTheOriginalMeter() {
+        let pin = ExposureStabilizer.Pin(iso: 1200, ev: 1, meteredISO: 400)
+        #expect(ExposureStabilizer.retargetedISO(
+            pin: pin, targetEV: 0, minimum: 25, maximum: 6400) == 600)
+        #expect(ExposureStabilizer.retargetedISO(
+            pin: pin, targetEV: 2, minimum: 25, maximum: 6400) == 2400)
+    }
+
+    @Test func targetCorrectionClampsAndRejectsUnusableInputs() {
+        #expect(ExposureStabilizer.correctedISO(
+            heldISO: 800, meteredOffsetEV: 0, targetEV: 1000,
+            minimum: 25, maximum: 6400) == 6400)
+        #expect(ExposureStabilizer.correctedISO(
+            heldISO: 800, meteredOffsetEV: 0, targetEV: -1000,
+            minimum: 25, maximum: 6400) == 25)
+        for target: Float in [.nan, .infinity, -.infinity] {
+            #expect(ExposureStabilizer.correctedISO(
+                heldISO: 800, meteredOffsetEV: 0, targetEV: target,
+                minimum: 25, maximum: 6400) == nil)
+            #expect(ExposureStabilizer.retargetedISO(
+                pin: .init(iso: 800, ev: 1, meteredISO: 400), targetEV: target,
+                minimum: 25, maximum: 6400) == nil)
+        }
+        #expect(ExposureStabilizer.correctedISO(
+            heldISO: .infinity, meteredOffsetEV: 0, targetEV: 1,
+            minimum: 25, maximum: 6400) == nil)
+        #expect(ExposureStabilizer.correctedISO(
+            heldISO: 800, meteredOffsetEV: 0, targetEV: 1,
+            minimum: 6400, maximum: 25) == nil)
+        #expect(ExposureStabilizer.retargetedISO(
+            pin: .init(iso: 800, ev: .nan, meteredISO: 400), targetEV: 1,
+            minimum: 25, maximum: 6400) == nil)
+        #expect(ExposureStabilizer.retargetedISO(
+            pin: .init(iso: 800, ev: 0, meteredISO: 400), targetEV: 10,
+            minimum: 25, maximum: 6400) == 6400)
+    }
+
     @Test func correctedIsoScalesTheHeldIsoByTwoToTheMinusOffset() {
         // Convention measured on device: a positive offset means the image is
         // brighter than the target, so the held ISO comes down.

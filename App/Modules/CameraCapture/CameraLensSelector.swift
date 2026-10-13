@@ -9,6 +9,10 @@ struct CameraLensSelector: View {
 
     @State private var isPresented = false
 
+    /// Physical orientation, re-injected into the popout so its keys rotate the
+    /// same way even if the popover does not inherit the presenter's values.
+    @Environment(\.cameraDeviceOrientation) private var deviceOrientation
+
     var body: some View {
         Group {
             if availableLenses.isEmpty {
@@ -42,17 +46,57 @@ struct CameraLensSelector: View {
     }
 
     private var triggerLabel: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "camera.aperture")
-                .font(.system(size: 16, weight: .medium))
-                .accessibilityHidden(true)
-            Text(title(selectedLens))
-                .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+        Group {
+            if isLandscape && selectedLens == .front {
+                // A horizontal icon + Front is wider than the turned 44pt
+                // interior. Stack the natural-size group rather than shrink it.
+                VStack(spacing: 2) {
+                    apertureIcon
+                    focalLabel(selectedLens)
+                }
+            } else {
+                HStack(spacing: 4) {
+                    apertureIcon
+                    focalLabel(selectedLens)
+                }
+            }
         }
         .foregroundStyle(.white)
+        .fixedSize()
+        .cameraRotatingControl()
         .frame(width: 84, height: 44)
+    }
+
+    private var isLandscape: Bool {
+        abs(CameraGlyphRotation.degrees(for: deviceOrientation)) == 90
+    }
+
+    private var apertureIcon: some View {
+        Image(systemName: "camera.aperture")
+            .font(.system(size: 16, weight: .medium))
+            .accessibilityHidden(true)
+    }
+
+    private var selectionMark: some View {
+        Image(systemName: "checkmark")
+            .font(.system(size: 11, weight: .bold))
+            .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private func focalLabel(_ lens: CameraLens) -> some View {
+        if isLandscape && lens != .front {
+            VStack(spacing: 0) {
+                Text("\(lens.focalLengthMM)")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
+                Text("mm")
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
+            }
+        } else {
+            Text(title(lens))
+                .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
+                .lineLimit(1)
+        }
     }
 
     private var lensWell: some View {
@@ -70,6 +114,7 @@ struct CameraLensSelector: View {
         .padding(10)
         .frame(width: 264)
         .fixedSize(horizontal: false, vertical: true)
+        .environment(\.cameraDeviceOrientation, deviceOrientation)
         .accessibilityLabel("Available camera lenses")
     }
 
@@ -79,19 +124,36 @@ struct CameraLensSelector: View {
             isPresented = false
             onSelectLens(lens)
         } label: {
-            HStack(spacing: 6) {
-                Text(title(lens))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .accessibilityHidden(true)
+            GeometryReader { geometry in
+                Group {
+                    if isLandscape && lens == .front {
+                        VStack(spacing: 2) {
+                            apertureIcon
+                            focalLabel(lens)
+                        }
+                    } else {
+                        HStack(spacing: 6) {
+                            focalLabel(lens)
+                            if isSelected { selectionMark }
+                        }
+                    }
+                }
+                .foregroundStyle(isSelected ? .black : .white)
+                .fixedSize()
+                .cameraRotatingControl()
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .overlay(alignment: .trailing) {
+                    // Keep Front's selected state out of the natural-width
+                    // group so both selected and unselected labels always turn.
+                    if isLandscape && lens == .front && isSelected {
+                        selectionMark
+                            .foregroundStyle(.black)
+                            .cameraRotatingControl()
+                            .padding(.trailing, 8)
+                    }
                 }
             }
-            .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
-            .foregroundStyle(isSelected ? .black : .white)
-            .frame(maxWidth: .infinity, minHeight: 44)
+            .frame(height: 44)
         }
         .buttonStyle(CameraRaisedButtonStyle(faceColor: isSelected ? .white : nil))
         .accessibilityLabel(title(lens))

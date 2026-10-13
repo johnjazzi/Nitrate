@@ -68,6 +68,7 @@ struct RenderStatusButton: View {
         .accessibilityLabel("Render activity")
         .accessibilityValue(statusDescription)
         .accessibilityHint("Opens video details, errors, and retry controls")
+        .cameraRotatingControl()
     }
 
     private var loadingRing: some View {

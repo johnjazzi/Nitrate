@@ -4,7 +4,8 @@ import SwiftUI
 /// the top toolbar's "Manual" button.
 ///
 /// Three compact columns: ZOOM, FOCUS, and APERTURE. ISO remains editable only in
-/// the control bar; the exposure values here are read-only.
+/// the control bar; the exposure values here are read-only. Recording
+/// stabilization is a separate row and does not change preview stabilization.
 struct ManualControlsPanel: View {
     let cameraViewModel: CameraViewModel
     @Binding var zoomFactor: Double
@@ -22,6 +23,7 @@ struct ManualControlsPanel: View {
                 focusColumn
                 apertureColumn
             }
+            recordingStabilizationRow
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 8)
@@ -34,11 +36,13 @@ struct ManualControlsPanel: View {
             Text("MANUAL")
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.white.opacity(0.7))
+                .cameraUpright()
             Spacer()
             Button(action: onDismiss) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.title3)
                     .foregroundStyle(.white.opacity(0.7))
+                    .cameraUpright()
                     .padding(6)
             }
             .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 7))
@@ -49,6 +53,7 @@ struct ManualControlsPanel: View {
         Text("ISO \(Int(cameraViewModel.liveISO)) · \(shutterText)")
             .font(.caption.monospacedDigit())
             .foregroundStyle(.white.opacity(0.9))
+            .cameraUpright()
             .lineLimit(1)
             .minimumScaleFactor(0.75)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -61,6 +66,49 @@ struct ManualControlsPanel: View {
     }
 
     // MARK: - Columns
+
+    private var recordingStabilizationRow: some View {
+        let snapshot = cameraViewModel.recordingStabilization
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Text("Recording stabilization")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .cameraUpright()
+                Spacer(minLength: 0)
+                Menu {
+                    ForEach(snapshot.capability.availableModes) { mode in
+                        Button {
+                            cameraViewModel.setRecordingStabilization(mode)
+                        } label: {
+                            if mode == snapshot.preferred {
+                                Label(mode.title, systemImage: "checkmark")
+                            } else {
+                                Text(mode.title)
+                            }
+                        }
+                    }
+                } label: {
+                    Label(snapshot.capability.effectiveMode(for: snapshot.preferred).title,
+                          systemImage: "chevron.up.chevron.down")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                        .cameraUpright()
+                        .padding(.horizontal, 8)
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 6))
+                .disabled(!cameraViewModel.canSetRecordingStabilization)
+            }
+            Text(snapshot.statusText)
+                .foregroundStyle(.white.opacity(0.8))
+            Text("Recording only; preview is independent. Stronger modes may crop more and add latency. " +
+                 "Extreme uses Apple extended cinematic stabilization.")
+                .foregroundStyle(.white.opacity(0.6))
+        }
+        .font(.caption2)
+        .padding(.top, 4)
+    }
 
     private var zoomColumn: some View {
         controlColumn(title: "ZOOM", readout: String(format: "%.1fx", zoomFactor)) {
@@ -104,6 +152,7 @@ struct ManualControlsPanel: View {
                 Text(isManualFocus ? "AF" : "MF")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(isManualFocus ? .black : .white)
+                    .cameraUpright()
                     .padding(.horizontal, 9)
                     .padding(.vertical, 6)
             }
@@ -131,6 +180,7 @@ struct ManualControlsPanel: View {
                           systemImage: "chevron.up.chevron.down")
                         .font(.caption2.weight(.bold).monospacedDigit())
                         .foregroundStyle(.white)
+                        .cameraUpright()
                         .padding(.horizontal, 8)
                         .padding(.vertical, 6)
                 }
@@ -143,8 +193,10 @@ struct ManualControlsPanel: View {
                 }()
                 VStack(spacing: 6) {
                     Image(systemName: measured == nil ? "minus.circle" : "lock.fill")
+                        .cameraUpright()
                     Text(stateLabel)
                         .font(.caption2.weight(.bold))
+                        .cameraUpright()
                 }
                 .foregroundStyle(.white.opacity(0.45))
                 .frame(height: 80)
@@ -162,12 +214,14 @@ struct ManualControlsPanel: View {
             Text(title)
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.white.opacity(0.7))
+                .cameraUpright()
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
             content()
             Text(readout)
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.white.opacity(0.9))
+                .cameraUpright()
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
         }

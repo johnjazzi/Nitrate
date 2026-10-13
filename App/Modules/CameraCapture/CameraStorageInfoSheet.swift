@@ -12,20 +12,11 @@ struct CameraStorageInfoSheet: View {
             header
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(spacing: 10) {
-                        storageRow("Available", value: formattedBytes(freeSpaceBytes))
-                        storageRow("Used", value: usedSpaceText)
-                        storageRow("Total", value: formattedBytes(totalSpaceBytes))
-                        Divider().overlay(.white.opacity(0.25))
-                        storageRow("Estimated recording time", value: formattedDuration(estimatedSeconds))
-                    }
-
-                    Text("Estimate reserves 500 MB and allows for both the original and rendered copy. Photos copies and variable encoding can reduce actual time.")
-                        .font(.footnote)
-                        .foregroundStyle(.white.opacity(0.65))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                CameraStorageSummary(
+                    freeSpaceBytes: freeSpaceBytes,
+                    totalSpaceBytes: totalSpaceBytes,
+                    estimatedSeconds: estimatedSeconds
+                )
                 .padding(.bottom, 8)
             }
         }
@@ -51,6 +42,30 @@ struct CameraStorageInfoSheet: View {
             .accessibilityLabel("Close storage details")
         }
     }
+}
+
+/// Shared storage content without its own scrolling or presentation container.
+struct CameraStorageSummary: View {
+    let freeSpaceBytes: Int64?
+    let totalSpaceBytes: Int64?
+    let estimatedSeconds: TimeInterval?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(spacing: 10) {
+                storageRow("Available", value: formattedBytes(freeSpaceBytes))
+                storageRow("Used", value: usedSpaceText)
+                storageRow("Total", value: formattedBytes(totalSpaceBytes))
+                Divider()
+                storageRow("Estimated recording time", value: formattedDuration(estimatedSeconds))
+            }
+
+            Text("Estimate reserves 500 MB and allows for both the original and rendered copy. Photos copies and variable encoding can reduce actual time.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
 
     private var usedSpaceText: String {
         guard let freeSpaceBytes, let totalSpaceBytes else { return "Unavailable" }
@@ -60,7 +75,7 @@ struct CameraStorageInfoSheet: View {
     private func storageRow(_ title: String, value: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title)
-                .foregroundStyle(.white.opacity(0.7))
+                .foregroundStyle(.secondary)
             Spacer(minLength: 12)
             Text(value)
                 .font(.body.monospacedDigit())

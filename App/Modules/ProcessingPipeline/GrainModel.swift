@@ -32,10 +32,10 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     /// pushing size into the aliased regime.
     var amplitudeMultiplier: Float {
         switch self {
-        case .eightMillimetre: return 0.60
-        case .sixteenMillimetre: return 0.50
-        case .thirtyFiveMillimetre: return 0.40
-        case .seventyFiveMillimetre: return 0.25
+        case .eightMillimetre: return 0.50
+        case .sixteenMillimetre: return 0.40
+        case .thirtyFiveMillimetre: return 0.30
+        case .seventyFiveMillimetre: return 0.15
         }
     }
 

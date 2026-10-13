@@ -60,6 +60,7 @@ struct ExposureIndicatorView: View {
             Text(hasReading ? String(format: "%+.1f", meteredEV) : "—")
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .foregroundStyle(accent)
+                .cameraUpright()
                 .frame(height: 14)
             VStack(spacing: 2) {
                 directionLabel("OVER")
@@ -70,6 +71,7 @@ struct ExposureIndicatorView: View {
             Text(statusText)
                 .font(.system(size: 7, weight: .heavy))
                 .foregroundStyle(accent)
+                .cameraUpright()
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -86,6 +88,7 @@ struct ExposureIndicatorView: View {
         Text(title)
             .font(.system(size: 6, weight: .bold))
             .foregroundStyle(.white.opacity(0.6))
+            .cameraUpright()
             .frame(height: 8)
     }
 

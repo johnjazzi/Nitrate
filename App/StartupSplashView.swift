@@ -34,6 +34,8 @@ struct StartupSplashView: View {
             }
             // Grain is applied after the baked smear and the live rotation.
             // Soft light leaves the black surround untouched, so no mask is needed.
+            // The group ignores the safe area so the reel stays centred on the
+            // display while the edge markings stay inside it.
             .overlay {
                 Image(
                     decorative: SplashGrain.frames[reduceMotion ? 0 : timing.frameIndex],
@@ -45,9 +47,13 @@ struct StartupSplashView: View {
                 .blendMode(.softLight)
                 .opacity(0.22)
             }
+            .ignoresSafeArea()
+            SplashEdgeOverlay(
+                details: .placeholder,
+                version: AppVersion.current()
+            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea()
         .opacity(timing.opacity)
         .accessibilityHidden(true)
         .onChange(of: scenePhase) { _, phase in
