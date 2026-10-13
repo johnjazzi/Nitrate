@@ -10,7 +10,9 @@ struct CameraControlBar: View {
     private let controlFaceSize: CGFloat = 44
     private let selectorRowHeight: CGFloat = 54
     private let recordFaceSize: CGFloat = 84
-    private let actionRowHeight: CGFloat = 100
+    // Queue 44 + gap 6 + rotation-safe LCD slot 96. REC keeps its old center.
+    private let actionRowHeight: CGFloat = 146
+    private let recordRowHeight: CGFloat = 100
     let cameraViewModel: CameraViewModel
     let renderQueueViewModel: RenderQueueViewModel
     let selectedStock: FilmStockConfig?
@@ -36,12 +38,12 @@ struct CameraControlBar: View {
             ZStack {
                 Color.clear
                     .frame(maxWidth: .infinity)
-                    .frame(height: actionRowHeight)
+                    .frame(height: recordRowHeight)
                     .allowsHitTesting(false)
                 recordButton
                     .frame(width: recordFaceSize, height: recordFaceSize)
             }
-            .frame(height: actionRowHeight)
+            .frame(height: recordRowHeight)
                 .padding(.top, selectorRowHeight + 8)
         }
         .padding(.horizontal, 16)
@@ -78,12 +80,12 @@ struct CameraControlBar: View {
                 } label: {
                     Image(systemName: "film").font(.title3)
                     .foregroundStyle(.white)
-                    .cameraUpright()
                     .frame(width: faceSize, height: faceSize)
                 }
                 .buttonStyle(CameraRaisedButtonStyle())
             }
         }
+        .cameraRotatingControl()
     }
 
     /// Duotone stripe card with ISO + D/T badge overlaid in black.
@@ -108,7 +110,6 @@ struct CameraControlBar: View {
                 Text("\(Int(currentISO))\(stock.lightType)")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(.black)
-                    .cameraUpright()
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
                     .background(.ultraThinMaterial)
@@ -269,7 +270,9 @@ struct CameraControlBar: View {
             // remaining-time readout form one column; REC stays centered.
             VStack(alignment: .leading, spacing: 6) {
                 queueButton.frame(width: controlFaceSize, height: controlFaceSize)
-                storageIndicator.frame(width: 96)
+                // The 96x56 face turns to 56x96 around the same slot center.
+                // Reserve both orientations, clear of the queue and bottom edge.
+                storageIndicator.frame(width: 96, height: 96)
             }
             .frame(width: 96, alignment: .leading)
             Spacer(minLength: 0)
@@ -355,13 +358,14 @@ struct CameraControlBar: View {
                 isStorageLow: cameraViewModel.hasStorageSnapshot
                     && cameraViewModel.freeSpaceBytes < 1_000_000_000
             )
-            .frame(maxWidth: .infinity)
+            .frame(width: 96, height: 56)
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .accessibilityLabel("Estimated recording time remaining, \(estimatedTimeText)")
         .accessibilityValue("\(freeSpaceText) free")
         .accessibilityHint("Opens storage details")
+        .cameraRotatingControl()
     }
 
     private var estimatedTimeText: String {

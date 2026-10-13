@@ -44,14 +44,12 @@ struct RenderStatusButton: View {
                             .foregroundStyle(.white)
                     }
                 }
-                .cameraUpright()
                 .frame(width: 36, height: 36)
 
                 if outstandingCount > 1 {
                     Text("\(outstandingCount)")
                         .font(.caption2.weight(.bold).monospacedDigit())
                         .foregroundStyle(.white)
-                        .cameraUpright()
                         .padding(4)
                         .background(.purple, in: Capsule())
                         .offset(x: 10, y: -8)
@@ -59,7 +57,6 @@ struct RenderStatusButton: View {
                 if hasError && outstandingCount > 0 {
                     Image(systemName: "exclamationmark.circle.fill")
                         .foregroundStyle(.red)
-                        .cameraUpright()
                         .background(.black, in: Circle())
                         .offset(x: -24, y: -6)
                 }
@@ -71,6 +68,7 @@ struct RenderStatusButton: View {
         .accessibilityLabel("Render activity")
         .accessibilityValue(statusDescription)
         .accessibilityHint("Opens video details, errors, and retry controls")
+        .cameraRotatingControl()
     }
 
     private var loadingRing: some View {

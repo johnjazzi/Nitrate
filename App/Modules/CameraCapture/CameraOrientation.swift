@@ -52,7 +52,7 @@ extension EnvironmentValues {
     }
 }
 
-/// Presentation only: neither control placement nor its touch rectangle changes.
+/// Shared physical-orientation mapping for glyphs and explicitly rotating faces.
 enum CameraGlyphRotation {
     /// Apple defines device landscapeLeft as the front camera/device top on the
     /// left, i.e. the phone turned counterclockwise. SwiftUI positive rotation
@@ -93,7 +93,21 @@ private struct CameraUprightModifier: ViewModifier {
     }
 }
 
+private struct CameraRotatingControlModifier: ViewModifier {
+    @Environment(\.cameraDeviceOrientation) private var orientation
+
+    func body(content: Content) -> some View {
+        content.rotationEffect(.degrees(CameraGlyphRotation.degrees(for: orientation)))
+    }
+}
+
 extension View {
+    /// Rotate a complete face and its hit target, without fitting or scaling.
+    /// Apply after button styling; the caller reserves its rotated bounds.
+    func cameraRotatingControl() -> some View {
+        modifier(CameraRotatingControlModifier())
+    }
+
     /// Apply only to glyphs, before their panel/background, never to a control.
     /// For grouped labels, pass the stationary button's usable interior size.
     func cameraUpright(in availableSize: CGSize? = nil) -> some View {
