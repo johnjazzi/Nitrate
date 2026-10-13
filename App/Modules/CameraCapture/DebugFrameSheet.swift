@@ -12,6 +12,7 @@ struct DebugFrameBitmap: Sendable {
     let bytesPerRow: Int
     let pixels: [UInt8]
     var milliseconds: Double = 0
+    var orientedImage: CGImage?
 
     init?(pixelBuffer: CVPixelBuffer) {
         let width = CVPixelBufferGetWidth(pixelBuffer)
@@ -30,6 +31,7 @@ struct DebugFrameBitmap: Sendable {
 
     /// The BGRA8 buffer the renderer produces is directly drawable.
     func makeCGImage() -> CGImage? {
+        if let orientedImage { return orientedImage }
         guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
         let bitmapInfo = CGBitmapInfo(
             rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
@@ -49,6 +51,7 @@ private struct DebugFrameRenderInput: @unchecked Sendable {
     let config: FilmStockConfig
     let parameters: PipelineRenderer.DebugFrameParameters
     let renderer: PipelineRenderer?
+    let quarterTurns: Int
 }
 
 /// Drives the debug single-frame sheet: owns the frozen frame, re-renders it
@@ -67,10 +70,12 @@ final class DebugFrameViewModel: Identifiable {
 
     private let frame: CVPixelBuffer
     private let renderer: PipelineRenderer?
+    private let quarterTurns: Int
     private var renderTask: Task<Void, Never>?
 
     init(frame: CVPixelBuffer, config: FilmStockConfig, stocks: [FilmStockConfig] = []) {
         self.frame = frame
+        self.quarterTurns = CameraFrozenFrameOrientationPolicy.quarterTurns(in: frame)
         self.config = config
         self.stocks = stocks.isEmpty ? [config] : stocks
         self.parameters = PipelineRenderer.DebugFrameParameters(config: config)
@@ -93,7 +98,7 @@ final class DebugFrameViewModel: Identifiable {
     func scheduleRender() {
         renderTask?.cancel()
         let input = DebugFrameRenderInput(frame: frame, config: config,
-                                          parameters: parameters, renderer: renderer)
+                                          parameters: parameters, renderer: renderer, quarterTurns: quarterTurns)
         renderTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(30))
             guard !Task.isCancelled, let self else { return }
@@ -120,7 +125,11 @@ final class DebugFrameViewModel: Identifiable {
         let start = DispatchTime.now()
         guard let result = renderer.renderDebugFrame(pixelBuffer: input.frame, config: input.config,
                                                      parameters: input.parameters),
-              var bitmap = DebugFrameBitmap(pixelBuffer: result.pixelBuffer) else { return nil }
+              var bitmap = DebugFrameBitmap(pixelBuffer: result.pixelBuffer),
+              let image = bitmap.makeCGImage(),
+              let oriented = CameraFrozenFrameOrientationPolicy.orient(image, quarterTurns: input.quarterTurns)
+        else { return nil }
+        bitmap.orientedImage = oriented
         bitmap.milliseconds = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
         return bitmap
     }
@@ -140,23 +149,49 @@ struct DebugFrameSheet: View {
     @State private var committedPan: CGSize = .zero
     private static let maxZoom: CGFloat = 8
 
+    /// Preview geometry. The sheet is a ScrollView; the preview is sized from the
+    /// frozen frame's real aspect ratio so a portrait frame is not letterboxed
+    /// into a short strip, and the height is capped so the sliders below stay
+    /// reachable on a small screen.
+    private static let maxPreviewHeight: CGFloat = 420
+    /// Neutral aspect used before the first render lands, so the loading box has
+    /// a sensible height instead of collapsing.
+    private static let fallbackAspect: CGFloat = 4.0 / 3.0
+
+    /// Each debug section is collapsible; all start expanded so the sheet reads
+    /// exactly as before until the user taps a header.
+    @State private var grainExpanded = true
+    @State private var halationExpanded = true
+    @State private var glowExpanded = true
+
     init(viewModel: DebugFrameViewModel) {
         _viewModel = State(initialValue: viewModel)
     }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    preview
-                    stockSection
-                    realizedValues
-                    grainSection
-                    halationSection
-                    glowSection
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    // Keep the image visible while any effect controls scroll.
+                    preview(height: min(Self.maxPreviewHeight,
+                                        max(1, geometry.size.height * 0.45),
+                                        max(1, geometry.size.width - 32) / previewAspect))
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .padding(.bottom, 12)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 20) {
+                            stockSection
+                            realizedValues
+                            grainSection
+                            halationSection
+                            glowSection
+                        }
+                        .padding()
+                    }
                 }
-                .padding()
             }
+            .onChange(of: previewAspect) { _, _ in resetZoom() }
             .navigationTitle("Debug · Single Frame")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -167,7 +202,15 @@ struct DebugFrameSheet: View {
 
     // MARK: - Sections
 
-    private var preview: some View {
+    /// Aspect ratio of the frozen frame currently on screen. Drives both the
+    /// preview height and the zoom/pan reset when a differently shaped frame
+    /// arrives. Falls back to a neutral ratio while the first render runs.
+    private var previewAspect: CGFloat {
+        guard let image = viewModel.image, image.height > 0 else { return Self.fallbackAspect }
+        return CGFloat(image.width) / CGFloat(image.height)
+    }
+
+    private func preview(height: CGFloat) -> some View {
         ZStack {
             if let image = viewModel.image {
                 Image(decorative: image, scale: 1.0)
@@ -180,7 +223,7 @@ struct DebugFrameSheet: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 240)
+        .frame(height: height)
         .background(Color.secondary.opacity(0.15))
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .contentShape(Rectangle())
@@ -289,8 +332,7 @@ struct DebugFrameSheet: View {
     }
 
     private var grainSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Grain").font(.headline)
+        DebugCollapsibleSection(title: "Grain", isExpanded: $grainExpanded) {
             labelled("Print gauge — re-seeds size and presence") {
                 Picker("Gauge", selection: gaugeBinding) {
                     ForEach(PrintGauge.allCases, id: \.self) { Text($0.displayName).tag($0) }
@@ -320,8 +362,7 @@ struct DebugFrameSheet: View {
     }
 
     private var halationSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Halation").font(.headline)
+        DebugCollapsibleSection(title: "Halation", isExpanded: $halationExpanded) {
             labelled(String(format: "Strength %.2f", viewModel.parameters.halationStrength)) {
                 Slider(value: float({ viewModel.parameters.halationStrength },
                                     { viewModel.parameters.halationStrength = $0 }),
@@ -349,8 +390,7 @@ struct DebugFrameSheet: View {
     }
 
     private var glowSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Glow").font(.headline)
+        DebugCollapsibleSection(title: "Glow", isExpanded: $glowExpanded) {
             labelled(String(format: "Strength %.2f", viewModel.parameters.glowStrength)) {
                 Slider(value: float({ viewModel.parameters.glowStrength },
                                     { viewModel.parameters.glowStrength = $0 }),
@@ -388,6 +428,46 @@ struct DebugFrameSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             content()
+        }
+    }
+}
+
+/// One collapsible debug section: a tappable header with a chevron that rotates
+/// to show its expanded state. All sections start expanded so the sheet reads
+/// exactly as before until the user taps a header to collapse it — which lets
+/// Grain be tucked away while the Halation controls and the preview stay on
+/// screen together.
+private struct DebugCollapsibleSection<Content: View>: View {
+    let title: String
+    @Binding var isExpanded: Bool
+    let content: Content
+
+    init(title: String, isExpanded: Binding<Bool>, @ViewBuilder content: () -> Content) {
+        self.title = title
+        _isExpanded = isExpanded
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(title).font(.headline).foregroundStyle(.primary)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                content
+            }
         }
     }
 }
