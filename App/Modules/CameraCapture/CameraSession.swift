@@ -104,6 +104,10 @@ final class CameraSession: NSObject {
     private var manualExposureISO: Float = 400
     private var recordingAperturePin: CameraAperturePolicy.RecordingPin?
     private var apertureCameraRevision: UInt64 = 0
+    // Queue-confined. Preserve the user's preference when a lens/format cannot
+    // fulfill it; only the recording connection falls back to Off.
+    private var preferredStabilization = CameraStabilizationMode(
+        persistedValue: UserDefaults.standard.string(forKey: CameraStabilizationPolicy.preferenceKey))
 
     /// Currently selected lens (rear wide/ultrawide/tele, or front).
     private(set) var activeLens: CameraLens = {
@@ -399,6 +403,78 @@ final class CameraSession: NSObject {
             }
         }
         configureRawLandscapeRecordingConnection()
+        applyRecordingStabilization()
+    }
+
+    // MARK: - Recording stabilization
+
+    /// Extreme means Apple's extended cinematic mode, not a proprietary algorithm.
+    private static func avStabilizationMode(_ mode: CameraStabilizationMode) -> AVCaptureVideoStabilizationMode {
+        switch mode {
+        case .off: return .off
+        case .standard: return .standard
+        case .cinematic: return .cinematic
+        case .extreme: return .cinematicExtended
+        }
+    }
+
+    private func stabilizationCapability() -> CameraStabilizationPolicy.Capability {
+        guard let device = activeDevice, let connection = videoOutput.connection(with: .video) else {
+            return .unavailable
+        }
+        let modes = Set(CameraStabilizationMode.allCases.filter {
+            $0 != .off && device.activeFormat.isVideoStabilizationModeSupported(Self.avStabilizationMode($0))
+        })
+        return .init(connectionSupported: connection.isVideoStabilizationSupported, formatModes: modes)
+    }
+
+    /// Only sessionQueue may write the data-output connection. No capture-format,
+    /// exposure, white-balance, metadata or preview-layer changes are made here.
+    private func applyRecordingStabilization() {
+        guard let connection = videoOutput.connection(with: .video) else { return }
+        let mode = stabilizationCapability().effectiveMode(for: preferredStabilization)
+        if connection.isVideoStabilizationSupported {
+            connection.preferredVideoStabilizationMode = Self.avStabilizationMode(mode)
+        }
+    }
+
+    private func stabilizationSnapshot() -> CameraStabilizationSnapshot {
+        let ready = isConfigured && session.isRunning
+        return CameraStabilizationSnapshot(
+            preferred: preferredStabilization,
+            capability: ready ? stabilizationCapability() : .unavailable,
+            activeRawValue: ready ? videoOutput.connection(with: .video)?.activeVideoStabilizationMode.rawValue : nil,
+            cameraRevision: apertureCameraRevision,
+            changesAllowed: ready && CameraStabilizationPolicy.canChange(
+                recording: recordingActive, starting: recordingStartPending, finishing: recordingFinishing))
+    }
+
+    func readStabilizationSnapshot(
+        completion: @escaping @MainActor @Sendable (CameraStabilizationSnapshot) -> Void
+    ) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            let snapshot = self.stabilizationSnapshot()
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(snapshot) } }
+        }
+    }
+
+    func setRecordingStabilization(
+        _ mode: CameraStabilizationMode,
+        completion: @escaping @MainActor @Sendable (CameraStabilizationSnapshot) -> Void
+    ) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            if self.isConfigured, self.session.isRunning,
+               CameraStabilizationPolicy.canChange(recording: self.recordingActive,
+                starting: self.recordingStartPending, finishing: self.recordingFinishing) {
+                self.preferredStabilization = mode
+                UserDefaults.standard.set(mode.rawValue, forKey: CameraStabilizationPolicy.preferenceKey)
+                self.applyRecordingStabilization()
+            }
+            let snapshot = self.stabilizationSnapshot()
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(snapshot) } }
+        }
     }
 
     private func applyCaptureFormat(_ format: AVCaptureDevice.Format, to device: AVCaptureDevice) throws {
@@ -1375,6 +1451,7 @@ final class CameraSession: NSObject {
                 self.configureCaptureRotation(for: device)
             }
             let captureRotationAngle = self.captureRotationAngle(for: deliveryOrientation)
+            self.applyRecordingStabilization()
             self.recordingStartPending = true
             self.pendingStartCompletion = completion
             self.recordingGeneration &+= 1
@@ -1854,6 +1931,7 @@ final class CameraSession: NSObject {
             if !self.session.isRunning {
                 self.session.startRunning()
             }
+            if !self.isRecordingOrPending { self.applyRecordingStabilization() }
         }
     }
 

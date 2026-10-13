@@ -44,6 +44,10 @@ final class CameraViewModel {
     var apertureStops: [Float] = []
     var apertureIsVariable = false
     var selectedLensAperture: Float?
+    private(set) var recordingStabilization = CameraStabilizationSnapshot(
+        preferred: CameraStabilizationMode(
+            persistedValue: UserDefaults.standard.string(forKey: CameraStabilizationPolicy.preferenceKey)),
+        capability: .unavailable, activeRawValue: nil, cameraRevision: 0, changesAllowed: false)
     private(set) var activeLens: CameraLens
     private(set) var isSwitchingCameraLens = false
     var isManualExposure = false
@@ -77,6 +81,7 @@ final class CameraViewModel {
     private var exposureCommandGeneration: UInt64 = 0
     private var apertureSnapshotRequestGeneration: UInt64 = 0
     private var apertureCameraRevision: UInt64 = 0
+    private var stabilizationSnapshotRequestGeneration: UInt64 = 0
     private var cameraLensSwitchGeneration: UInt64 = 0
     private var pendingLensSwitchCount = 0
     private var apertureCommandGeneration: UInt64 = 0
@@ -110,6 +115,7 @@ final class CameraViewModel {
         apertureCommandGeneration &+= 1
         isSwitchingCameraLens = pendingLensSwitchCount > 0
         invalidateApertureUIState()
+        invalidateStabilizationUIState()
         if isStartingRecording {
             captureGeneration &+= 1
             isStartingRecording = false
@@ -274,6 +280,7 @@ final class CameraViewModel {
                     return
                 }
                 self.isStartingRecording = false
+                self.refreshRecordingStabilization()
                 if let error {
                     self.isRecording = false
                     self.invalidateRecordingTimers()
@@ -294,7 +301,9 @@ final class CameraViewModel {
     func stopRecording() {
         if isStartingRecording { captureGeneration &+= 1 }
         isStartingRecording = false
+        invalidateStabilizationUIState()
         session.stopRecording()
+        refreshRecordingStabilization()
         invalidateRecordingTimers()
     }
 
@@ -333,6 +342,7 @@ final class CameraViewModel {
         isSwitchingCameraLens = true
         clearStaleApertureError()
         invalidateApertureUIState()
+        invalidateStabilizationUIState()
         session.selectCamera(lens) { [weak self] error in
             guard let self else { return }
             if error == nil {
@@ -438,6 +448,49 @@ final class CameraViewModel {
             && apertureIsVariable && !apertureStops.isEmpty
     }
 
+    // MARK: - Recording stabilization
+
+    var canSetRecordingStabilization: Bool {
+        lifecycleGate.isActive && cameraConfigured && !isSwitchingCameraLens
+            && !isStartingRecording && !isRecording && recordingStabilization.changesAllowed
+    }
+
+    func setRecordingStabilization(_ mode: CameraStabilizationMode) {
+        guard canSetRecordingStabilization,
+              recordingStabilization.capability.availableModes.contains(mode) else { return }
+        stabilizationSnapshotRequestGeneration &+= 1
+        let requestGeneration = stabilizationSnapshotRequestGeneration
+        let switchGeneration = cameraLensSwitchGeneration
+        session.setRecordingStabilization(mode) { [weak self] snapshot in
+            guard let self, self.lifecycleGate.isActive, self.cameraConfigured,
+                  !self.isSwitchingCameraLens, self.cameraLensSwitchGeneration == switchGeneration,
+                  self.stabilizationSnapshotRequestGeneration == requestGeneration,
+                  snapshot.cameraRevision >= self.recordingStabilization.cameraRevision else { return }
+            self.recordingStabilization = snapshot
+        }
+    }
+
+    private func refreshRecordingStabilization() {
+        guard lifecycleGate.isActive, cameraConfigured, !isSwitchingCameraLens else { return }
+        stabilizationSnapshotRequestGeneration &+= 1
+        let requestGeneration = stabilizationSnapshotRequestGeneration
+        let switchGeneration = cameraLensSwitchGeneration
+        session.readStabilizationSnapshot { [weak self] snapshot in
+            guard let self, self.lifecycleGate.isActive, self.cameraConfigured,
+                  !self.isSwitchingCameraLens, self.cameraLensSwitchGeneration == switchGeneration,
+                  self.stabilizationSnapshotRequestGeneration == requestGeneration,
+                  snapshot.cameraRevision >= self.recordingStabilization.cameraRevision else { return }
+            self.recordingStabilization = snapshot
+        }
+    }
+
+    private func invalidateStabilizationUIState() {
+        stabilizationSnapshotRequestGeneration &+= 1
+        recordingStabilization = CameraStabilizationSnapshot(
+            preferred: recordingStabilization.preferred, capability: .unavailable, activeRawValue: nil,
+            cameraRevision: recordingStabilization.cameraRevision, changesAllowed: false)
+    }
+
     // MARK: - Auto-Exposure Bias
 
     /// EV compensation range supported by the active device.
@@ -488,6 +541,7 @@ final class CameraViewModel {
     }
 
     private func refreshExposure() {
+        refreshRecordingStabilization()
         liveISO = session.currentISO
         liveShutterSeconds = session.currentShutterSeconds
         liveExposureTargetOffset = session.currentExposureTargetOffset
@@ -585,6 +639,7 @@ final class CameraViewModel {
 
     private func handleRecordingFinished(_ result: Result<RecordingCompletion, Error>) async {
         isRecording = false
+        refreshRecordingStabilization()
         invalidateRecordingTimers()
         switch result {
         case .success(let completion):
