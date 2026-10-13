@@ -7,6 +7,15 @@ struct FilmEmulationApp: App {
     @State private var purchaseViewModel: PurchaseViewModel
     @State private var library: FilmStockLibrary
     private let stockLibraryError: String?
+    @State private var showsStartupSplash = true
+
+    private var brandingPreview: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains("--branding-preview")
+        #else
+        false
+        #endif
+    }
 
     init() {
         let library = FilmStockLibrary()
@@ -31,6 +40,15 @@ struct FilmEmulationApp: App {
                 purchaseViewModel: purchaseViewModel
             )
             .preferredColorScheme(.dark)
+            .allowsHitTesting(!showsStartupSplash)
+            .accessibilityHidden(showsStartupSplash)
+            .overlay {
+                if showsStartupSplash {
+                    StartupSplashView(isPreview: brandingPreview) {
+                        showsStartupSplash = false
+                    }
+                }
+            }
             .onAppear {
                 renderQueueViewModel.library = library
                 renderQueueViewModel.externalErrorMessage = stockLibraryError

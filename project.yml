@@ -91,6 +91,7 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Tests
+      - path: App/StartupSplashTiming.swift
       - path: App/Modules/ProcessingPipeline/
       - path: App/Modules/FilmStockLibrary/
       - path: App/Modules/RenderQueue/RenderJob.swift
