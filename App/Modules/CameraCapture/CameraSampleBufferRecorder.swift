@@ -37,6 +37,9 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     private var lastVideoTime: CMTime?
     private var lastAudioTime: CMTime?
     private var appendedVideoFrames = 0
+    /// Presentation time at which the recording exposure took effect; video
+    /// frames older than this are dropped. Invalid means "do not filter".
+    private var startAfter: CMTime = .invalid
     private var appendedAudioSamples = 0
     private var recentDropTimes: [Double] = []
     private var clipGeneration: UInt64 = 0
@@ -64,6 +67,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         metadata: [AVMetadataItem],
         preservationProbeEnabled: Bool = false,
         requiresAudioEvidence: Bool = false,
+        startAfter: CMTime = .invalid,
         onStarted: @escaping @Sendable (Error?) -> Void,
         onFinished: @escaping @Sendable (Result<URL, Error>) -> Void
     ) {
@@ -82,6 +86,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             self.metadata = metadata
             self.transform = .identity
             self.codedDimensions = nil
+            self.startAfter = startAfter
 #if DEBUG
             self.preservationProbeEnabled = preservationProbeEnabled
             self.sourceProbe = nil
@@ -219,6 +224,13 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
 #endif
 
         let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        // Frames the sensor produced before the recording exposure actually took
+        // effect still carry the previous exposure, which shows up as the first
+        // frames of the clip looking exposed differently from the rest. The
+        // exposure call reports when it lands, so drop anything older.
+        if startAfter.isValid, startAfter.isNumeric, presentationTime < startAfter {
+            return
+        }
         guard CameraSampleValidationPolicy.timestampIsIncreasing(
             current: presentationTime.seconds, previous: lastVideoTime?.seconds
         ), presentationTime.isValid, presentationTime.isNumeric else {

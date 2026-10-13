@@ -1,5 +1,4 @@
 import SwiftUI
-import PhotosUI
 
 /// Single camera screen with stock/queue sheets and a settings gear.
 /// Toggle "Frame Mode" in Settings to show a viewfinder-style preview.
@@ -14,7 +13,6 @@ struct ContentView: View {
     @State private var showQueueSheet = false
     @State private var showSettings = false
     @State private var showFramedPreview = false
-    @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var currentSourceURL: URL?
 
     /// Persisted stock selection — survives across recordings.
@@ -43,7 +41,7 @@ struct ContentView: View {
     /// Pinch-zoom baseline (ISO/EV controls live in `CameraControlBar`).
     @State private var pinchBaseZoom: Double = 1.0
 
-    /// Manual zoom/focus pop-over. ISO lives in the control bar instead.
+    /// Manual zoom/focus pop-over with a live exposure readout.
     @State private var showManualControls = false
     @State private var manualFocusPosition: Double = 0.5
     @State private var isManualFocus = false
@@ -81,15 +79,13 @@ struct ContentView: View {
                         isManualFocus: $isManualFocus,
                         onDismiss: { withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false } }
                     )
-                    .containerRelativeFrame(.horizontal) { width, _ in width * 0.5 }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, 8)
+                    .frame(maxWidth: .infinity)
+                    .padding(.leading, 76)
+                    .padding(.trailing, 16)
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
 
                 Spacer()
-
-                exposureIndicator
 
                 controlBar
                     .padding(.top, showFramedPreview ? 8 : 0)
@@ -203,98 +199,61 @@ struct ContentView: View {
     // MARK: - Top Bar
 
     /// Active stock lives in the control bar's selector row; the top toolbar
-    /// owns app settings, imports and the live exposure readout.
+    /// owns app settings, manual controls and the active lens menu.
     private var topBar: some View {
-        VStack(spacing: 2) {
-            HStack(spacing: 12) {
-                // Settings
-                Button {
-                    showSettings = true
-                } label: {
-                    Image(systemName: "gearshape.fill")
-                        .font(.title2)
-                        .foregroundStyle(.white)
-                        .padding(12)
-                }
-                .buttonStyle(CameraRaisedButtonStyle())
+        HStack(spacing: 12) {
+            // Settings
+            Button {
+                showSettings = true
+            } label: {
+                Image(systemName: "gearshape.fill")
+                    .font(.title3)
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(CameraRaisedButtonStyle())
 
-                // Import from Photos
-                PhotosPicker(selection: $selectedPhotoItem, matching: .videos) {
-                    Image(systemName: "square.and.arrow.down")
-                        .font(.title2)
-                        .foregroundStyle(.white)
-                        .padding(12)
-                }
-                .buttonStyle(CameraRaisedButtonStyle())
-                .onChange(of: selectedPhotoItem) { _, item in
-                    guard let item else { return }
-                    Task {
-                        if let data = try? await item.loadTransferable(type: Data.self),
-                           let importURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("imported_\(UUID().uuidString).mov") {
-                            try data.write(to: importURL)
-                            currentSourceURL = importURL
-                            if let stock = selectedStock {
-                                enqueueRender(sourceURL: importURL, stock: stock)
-                            } else {
-                                showStockSheet = true
-                            }
-                        }
-                        selectedPhotoItem = nil
-                    }
-                }
-
-                // Manual zoom/focus pop-over over the preview.
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { showManualControls.toggle() }
-                } label: {
-                    Image(systemName: "slider.vertical.3")
-                        .font(.title2)
-                        .foregroundStyle(showManualControls ? .black : .white)
-                        .padding(12)
-                }
-                .buttonStyle(CameraRaisedButtonStyle(faceColor: showManualControls ? .yellow : Color(red: 0.16, green: 0.17, blue: 0.19)))
+            // Manual zoom/focus pop-over over the preview.
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { showManualControls.toggle() }
+            } label: {
+                Image(systemName: "slider.vertical.3")
+                    .font(.title3)
+                    .foregroundStyle(showManualControls ? .black : .white)
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(CameraRaisedButtonStyle(faceColor: showManualControls ? .yellow : Color(red: 0.16, green: 0.17, blue: 0.19)))
 
 #if DEBUG
-                // Debug single-frame tuning (grain / halation / glow). Debug
-                // builds only; opens a sheet over a frozen live frame.
-                Button {
-                    openDebugFrame()
-                } label: {
-                    Text("DEBUG")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(.yellow)
-                        .clipShape(Capsule())
-                }
+            // Debug single-frame tuning (grain / halation / glow). Debug
+            // builds only; opens a sheet over a frozen live frame.
+            Button {
+                openDebugFrame()
+            } label: {
+                Text("DEBUG")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(.yellow)
+                    .clipShape(Capsule())
+            }
 #endif
 
-                Spacer()
-            }
+            Spacer()
 
-            HStack {
-                Spacer()
-
-                // Live exposure readout; ISO/EV controls live in the selector row.
-                Text("ISO \(Int(cameraViewModel.liveISO)) · \(shutterText)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.9))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(.black.opacity(0.4))
-                    .clipShape(Capsule())
-                    .padding(.trailing, 16)
-            }
+            lensMenu
         }
-        .padding(.leading, 16)
+        .padding(.horizontal, 16)
         .padding(.top, 8)
     }
 
-    private var shutterText: String {
-        let seconds = cameraViewModel.liveShutterSeconds
-        guard seconds > 0 else { return "1/48" }
-        return "1/\(Int((1.0 / seconds).rounded()))"
+    private var lensMenu: some View {
+        CameraLensSelector(
+            availableLenses: availableLenses,
+            selectedLens: selectedLens,
+            onSelectLens: selectLens
+        )
     }
 
     private func selectLens(_ lens: CameraLens) {
@@ -319,31 +278,12 @@ struct ContentView: View {
         CameraControlBar(
             cameraViewModel: cameraViewModel,
             renderQueueViewModel: renderQueueViewModel,
-            availableLenses: availableLenses,
-            selectedLens: selectedLens,
             selectedStock: selectedStock,
             currentISO: currentISO,
-            onSelectLens: { selectLens($0) },
             onShowQueueSheet: { showQueueSheet = true },
             onShowStockSheet: { showStockSheet = true },
             formatDuration: { formatDuration($0) }
         )
-    }
-
-    // MARK: - Exposure Indicator
-
-    /// Under/over exposure indicator: the live metered EV against the target,
-    /// about two thirds of the screen width, sitting just above the control
-    /// rows. In manual ISO the target is 0 EV (the user dials ISO, not bias).
-    private var exposureIndicator: some View {
-        ExposureIndicatorView(
-            meteredEV: cameraViewModel.liveExposureTargetOffset,
-            targetEV: cameraViewModel.isManualExposure ? 0 : cameraViewModel.liveExposureBias,
-            isManual: cameraViewModel.isManualExposure,
-            isAvailable: cameraViewModel.hasExposureMeter
-        )
-        .containerRelativeFrame(.horizontal) { width, _ in width * 0.66 }
-        .padding(.bottom, 10)
     }
 
     // MARK: - Error Overlays

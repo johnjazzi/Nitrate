@@ -56,6 +56,26 @@ struct CameraSampleBufferRecorderTests {
     }
 
     @available(macOS 14.2, iOS 17.2, *)
+    @Test func framesOlderThanTheExposureSyncTimeAreNotAppended() async throws {
+        let rig = makeRig(FakeWriterBehavior())
+        let url = try begin(rig.recorder, events: rig.events,
+                            startAfter: CMTime(seconds: 10, preferredTimescale: 600))
+        // Produced before the recording exposure took effect: still the old
+        // exposure, so it must not open the clip.
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 9))
+        // The first frame at or after the sync time opens the clip.
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 11))
+        #expect(await rig.events.nextStarted() == nil)
+        #expect(rig.control.current?.appendedVideoCount == 1)
+        rig.recorder.stop()
+        let writer = try #require(rig.control.current)
+        await rig.waitForFinishToBeRequested(on: writer)
+        writer.completeFinalization(success: true)
+        #expect(await rig.events.nextFinished() == nil)
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
     @Test func recorderRejectsDimensionChangesWithinClipBeforeAppendingChangedFrame() async throws {
         let rig = makeRig(FakeWriterBehavior())
         let url = try begin(rig.recorder, events: rig.events)
@@ -226,10 +246,12 @@ struct CameraSampleBufferRecorderTests {
     }
 
     private func begin(_ recorder: CameraSampleBufferRecorder, events: RecorderEventQueue,
-                       audioSettings: [String: Any]? = nil) throws -> URL {
+                       audioSettings: [String: Any]? = nil,
+                       startAfter: CMTime = .invalid) throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-\(UUID().uuidString).mov")
         recorder.begin(to: url, videoSettings: ["codec": "hevc"], audioSettings: audioSettings,
             acceptedPixelFormats: [kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange], metadata: [],
+            startAfter: startAfter,
             onStarted: { error in events.recordStarted(error?.localizedDescription) },
             onFinished: { result in
                 let error: String?

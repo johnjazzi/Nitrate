@@ -132,6 +132,14 @@ struct DebugFrameSheet: View {
     @State private var viewModel: DebugFrameViewModel
     @Environment(\.dismiss) private var dismiss
 
+    /// Preview zoom/pan. Live values follow the gesture; the `committed` copies
+    /// are the baseline the next gesture starts from.
+    @State private var zoom: CGFloat = 1
+    @State private var committedZoom: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @State private var committedPan: CGSize = .zero
+    private static let maxZoom: CGFloat = 8
+
     init(viewModel: DebugFrameViewModel) {
         _viewModel = State(initialValue: viewModel)
     }
@@ -160,19 +168,84 @@ struct DebugFrameSheet: View {
     // MARK: - Sections
 
     private var preview: some View {
-        Group {
+        ZStack {
             if let image = viewModel.image {
                 Image(decorative: image, scale: 1.0)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: 240)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .scaleEffect(zoom)
+                    .offset(pan)
             } else {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color.secondary.opacity(0.15))
-                    .frame(height: 200)
-                    .overlay { ProgressView() }
+                ProgressView()
             }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 240)
+        .background(Color.secondary.opacity(0.15))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .contentShape(Rectangle())
+        .gesture(zoomGesture.simultaneously(with: panGesture))
+        .onTapGesture(count: 2) { resetZoom() }
+        .overlay(alignment: .bottomTrailing) { zoomBadge }
+        .overlay(alignment: .bottomLeading) { zoomHint }
+    }
+
+    /// Pinch to zoom. Never below 1:1 — the frame is already fit to the viewport,
+    /// so zooming out would only add empty space.
+    private var zoomGesture: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                zoom = min(max(committedZoom * value.magnification, 1), Self.maxZoom)
+            }
+            .onEnded { _ in
+                committedZoom = zoom
+                if zoom <= 1.001 { resetZoom() }
+            }
+    }
+
+    /// Drag to pan, only while zoomed in, so an un-zoomed sheet still scrolls.
+    private var panGesture: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                guard zoom > 1 else { return }
+                pan = CGSize(width: committedPan.width + value.translation.width,
+                             height: committedPan.height + value.translation.height)
+            }
+            .onEnded { _ in
+                if zoom > 1 { committedPan = pan } else { resetZoom() }
+            }
+    }
+
+    @ViewBuilder
+    private var zoomBadge: some View {
+        if zoom > 1.001 {
+            Text(String(format: "%.1fx", zoom))
+                .font(.caption2.monospacedDigit().bold())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(.black.opacity(0.55))
+                .clipShape(Capsule())
+                .padding(8)
+        }
+    }
+
+    @ViewBuilder
+    private var zoomHint: some View {
+        if zoom <= 1.001 {
+            Text("Pinch to zoom")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(8)
+        }
+    }
+
+    private func resetZoom() {
+        withAnimation(.easeOut(duration: 0.2)) {
+            zoom = 1
+            committedZoom = 1
+            pan = .zero
+            committedPan = .zero
         }
     }
 
@@ -218,11 +291,25 @@ struct DebugFrameSheet: View {
     private var grainSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Grain").font(.headline)
-            labelled("Print gauge — owns grain size and presence") {
+            labelled("Print gauge — re-seeds size and presence") {
                 Picker("Gauge", selection: gaugeBinding) {
                     ForEach(PrintGauge.allCases, id: \.self) { Text($0.displayName).tag($0) }
                 }
                 .pickerStyle(.segmented)
+            }
+            labelled(String(format: "Size %.2f  (footprint %.2f)",
+                            viewModel.parameters.sizeMultiplier,
+                            viewModel.parameters.realizedFootprint)) {
+                Slider(value: float({ viewModel.parameters.sizeMultiplier },
+                                    { viewModel.parameters.sizeMultiplier = $0 }),
+                       in: 0.3...6, step: 0.05)
+            }
+            labelled(String(format: "Presence %.2f  (amount %.3f)",
+                            viewModel.parameters.presenceMultiplier,
+                            viewModel.parameters.realizedAmount)) {
+                Slider(value: float({ viewModel.parameters.presenceMultiplier },
+                                    { viewModel.parameters.presenceMultiplier = $0 }),
+                       in: 0...1.5, step: 0.01)
             }
             labelled(String(format: "Edge boost %.2f", viewModel.parameters.edgeBoostMultiplier)) {
                 Slider(value: float({ viewModel.parameters.edgeBoostMultiplier },
@@ -285,13 +372,13 @@ struct DebugFrameSheet: View {
         )
     }
 
-    /// The gauge is the single grain control: changing it moves both footprint
-    /// and presence, so nothing else needs re-seeding.
+    /// Picking a gauge re-seeds the size and presence dials from its authored
+    /// multipliers; the sliders then take over.
     private var gaugeBinding: Binding<PrintGauge> {
         Binding(
             get: { viewModel.parameters.gauge },
             set: { gauge in
-                viewModel.parameters.gauge = gauge
+                viewModel.parameters.applyGauge(gauge)
                 viewModel.scheduleRender()
             }
         )

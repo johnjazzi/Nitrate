@@ -91,6 +91,7 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Tests
+      - path: App/StartupSplashTiming.swift
       - path: App/Modules/ProcessingPipeline/
       - path: App/Modules/FilmStockLibrary/
       - path: App/Modules/RenderQueue/RenderJob.swift
@@ -98,6 +99,7 @@ targets:
       - path: App/Modules/RenderQueue/RenderQueueViewModel.swift
       - path: App/Modules/CameraCapture/CameraOriginalStorage.swift
       - path: App/Modules/CameraCapture/CameraPolicies.swift
+      - path: App/Modules/CameraCapture/RulerScale.swift
       - path: App/Modules/CameraCapture/CameraSampleBufferRecorder.swift
       - path: App/Modules/CameraCapture/CameraCapturePreservationProbe.swift
       - path: Resources/Shaders/

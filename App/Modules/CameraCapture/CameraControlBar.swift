@@ -1,22 +1,20 @@
 import SwiftUI
 
-/// Bottom camera controls: stock/lenses and queue/record on the left, with the
-/// exposure ruler and storage indicator in a persistent right column.
+/// Bottom camera controls: stock, queue/storage and record on the left,
+/// with the exposure ruler in a persistent right column.
 ///
 /// Split out of `ContentView` so the screen stays inside the file-length limit.
-/// Division of labour: the top toolbar owns app/stock settings (active stock,
-/// gear, imports, exposure readout); this bar owns the shooting controls.
+/// The top toolbar owns settings and the manual-controls popover; this bar
+/// owns the shooting controls and remaining-recording-time readout.
 struct CameraControlBar: View {
     private let controlFaceSize: CGFloat = 44
+    private let selectorRowHeight: CGFloat = 54
     private let recordFaceSize: CGFloat = 84
-    private let actionRowHeight: CGFloat = 88
+    private let actionRowHeight: CGFloat = 100
     let cameraViewModel: CameraViewModel
     let renderQueueViewModel: RenderQueueViewModel
-    let availableLenses: [CameraLens]
-    let selectedLens: CameraLens
     let selectedStock: FilmStockConfig?
     let currentISO: Float
-    let onSelectLens: (CameraLens) -> Void
     let onShowQueueSheet: () -> Void
     let onShowStockSheet: () -> Void
     let formatDuration: (TimeInterval) -> String
@@ -31,11 +29,8 @@ struct CameraControlBar: View {
             }
             .frame(maxWidth: .infinity)
 
-            VStack(spacing: 6) {
-                exposureControl
-                storageIndicator
-            }
-            .frame(width: 92)
+            exposureControl
+                .frame(width: 92)
         }
         .overlay(alignment: .top) {
             ZStack {
@@ -47,7 +42,7 @@ struct CameraControlBar: View {
                     .frame(width: recordFaceSize, height: recordFaceSize)
             }
             .frame(height: actionRowHeight)
-                .padding(.top, controlFaceSize + 8)
+                .padding(.top, selectorRowHeight + 8)
         }
         .padding(.horizontal, 16)
         .sheet(isPresented: $isStorageInfoPresented) {
@@ -64,25 +59,15 @@ struct CameraControlBar: View {
     // MARK: - Left selector row
 
     private var selectorRow: some View {
-        GeometryReader { geometry in
-            let gapWidth = CGFloat(8 + max(availableLenses.count - 1, 0) * 4)
-            let itemCount = CGFloat(availableLenses.count + 1)
-            let faceSize = min(controlFaceSize, max(28, (geometry.size.width - gapWidth) / itemCount))
-
-            HStack(alignment: .center, spacing: 8) {
-                stockControl(faceSize: faceSize)
-                lensPills(faceSize: faceSize)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
-            .frame(height: controlFaceSize)
-        }
-        .frame(height: controlFaceSize)
+        stockControl(faceSize: controlFaceSize)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: selectorRowHeight)
     }
 
     // MARK: - Stock selector
 
     /// Active stock (or the stock picker when none is chosen yet). Lives in the
-    /// leading slot of the selector row, next to the lens pills.
+    /// leading slot of the selector row.
     private func stockControl(faceSize: CGFloat) -> some View {
         Group {
             if let stock = selectedStock {
@@ -116,7 +101,7 @@ struct CameraControlBar: View {
                             .frame(height: faceSize / 5)
                     }
                 }
-                .frame(width: faceSize, height: faceSize)
+                .frame(width: faceSize * 1.15, height: faceSize)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                 Text("\(Int(currentISO))\(stock.lightType)")
@@ -127,87 +112,66 @@ struct CameraControlBar: View {
                     .background(.ultraThinMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 3))
             }
-            .frame(width: faceSize, height: faceSize)
+            .frame(width: faceSize * 1.15, height: faceSize)
         }
         .buttonStyle(CameraRaisedButtonStyle(faceColor: stock.primaryColor))
     }
 
-    /// One direct selection tile per available camera, including Front.
-    private func lensPills(faceSize: CGFloat) -> some View {
-        HStack(spacing: 4) {
-            ForEach(availableLenses) { lens in
-                Button {
-                    onSelectLens(lens)
-                } label: {
-                    Group {
-                        if lens == .front {
-                            Text("Front")
-                                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        } else {
-                            VStack(spacing: -1) {
-                                Text("\(lens.focalLengthMM)")
-                                    .font(.system(size: 12, weight: .bold, design: .rounded).monospacedDigit())
-                                Text("mm")
-                                    .font(.system(size: 8, weight: .medium, design: .rounded))
-                            }
-                        }
-                    }
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .foregroundStyle(lens == selectedLens ? .black : .white)
-                    .frame(width: faceSize, height: faceSize)
-                }
-                .buttonStyle(CameraRaisedButtonStyle(
-                    faceColor: lens == selectedLens ? .white : Color(red: 0.16, green: 0.17, blue: 0.19),
-                    cornerRadius: 6
-                ))
-                .accessibilityLabel(lens == .front ? "Front camera" : "\(lens.focalLengthMM) millimeter camera")
-            }
-        }
-    }
-
     // MARK: - Exposure control (dual mode)
 
-    /// One control, two modes. Auto drives the scene's auto-exposure target bias
-    /// (EV); manual drives the ISO chooser. Long-press toggles between them.
+    /// The live meter and setting share the existing 92pt column: 28pt meter,
+    /// 56pt ruler, and two 4pt rims. The footprint stays clear of centred REC
+    /// and the left queue/remaining-time column even on a 320pt-wide phone.
     private var exposureControl: some View {
+        HStack(alignment: .top, spacing: 0) {
+            ExposureIndicatorView(
+                meteredEV: cameraViewModel.liveExposureTargetOffset,
+                targetEV: cameraViewModel.isManualExposure ? 0 : cameraViewModel.liveExposureBias,
+                isManual: cameraViewModel.isManualExposure,
+                isAvailable: cameraViewModel.hasExposureMeter
+            )
+            exposureSetting
+                .frame(width: 56)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
+        .modifier(CameraRaisedSurface(cornerRadius: 14))
+    }
+
+    /// One setting, two modes. Auto drives the scene's auto-exposure target bias
+    /// (EV); manual drives the ISO chooser. Long-press toggles between them.
+    private var exposureSetting: some View {
         VStack(spacing: 6) {
             Text(exposureReadout)
                 .font(.caption2.monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(height: 14)
                 .foregroundStyle(.white.opacity(0.9))
 
             if cameraViewModel.isManualExposure {
-                // Same ruler affordance as EV, so the two modes of this control
-                // feel identical — but ISO needs a different travel curve. A
-                // linear rate that is comfortable at 100 is unusably slow at
-                // 3200, and vice versa. The exponential scale below grows the
-                // rate with the value, and the ladder restricts snapping to the
-                // standard 1/3-stop ISO sequence so every detent is a real
-                // exposure step.
+                // Match EV's 12pt detents and tick geometry. Logarithmic ISO
+                // travel keeps each nominal 1/3 stop equally reachable.
                 RulerSlider(
                     value: isoBinding,
                     range: isoSliderRange,
                     step: isoFineStep,
-                    pointsPerStep: 8,
+                    pointsPerStep: CGFloat(RulerScale.detentTravel),
                     majorValues: isoMajorValues,
                     tickLabel: { "\(Int($0.rounded()))" },
                     scale: isoScale,
                     ladder: isoLadder,
-                    ladderSubdivisions: 3,
                     tint: .yellow,
                     length: 120
                 )
             } else {
                 // Ruler rather than a 1:1 slider: EV compensation needs
-                // deliberate, repeatable 0.1 EV detents, which a track-mapped
-                // slider cannot give. 10mm of travel = 0.25 EV, and the ruler
-                // snaps to every tick (0.1) with a haptic click — ~153ppi gives
-                // roughly 6pt/mm, so 10mm is ~60pt for 2.5 steps.
+                // repeatable 0.1 EV detents, with 12pt of travel per tick.
                 RulerSlider(
                     value: evBiasBinding,
                     range: evBiasSliderRange,
                     step: 0.1,
-                    pointsPerStep: 24,
+                    pointsPerStep: CGFloat(RulerScale.detentTravel),
                     tint: .orange,
                     length: 120
                 )
@@ -219,15 +183,14 @@ struct CameraControlBar: View {
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(.white.opacity(0.7))
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 6)
-        .modifier(CameraRaisedSurface(cornerRadius: 14))
         .contentShape(Rectangle())
         // Simultaneous so the whole control stays hittable: an exclusive
         // long-press would never fire over the slider track, which is the
         // widest touch target in this stack.
+        // Cancel a moving press before it reaches the first 6pt detent
+        // midpoint; otherwise a slow adjustment can replace the active ruler.
         .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.5).onEnded { _ in
+            LongPressGesture(minimumDuration: 0.5, maximumDistance: 3).onEnded { _ in
                 cameraViewModel.toggleManualExposure()
             }
         )
@@ -273,18 +236,9 @@ struct CameraControlBar: View {
     /// parameter, kept non-zero so the accessibility path stays sane.
     private var isoFineStep: Double { 25 }
 
-    /// Equal travel must not mean equal ISO change: the useful rate is fine at
-    /// the bottom of the range and coarse at the top. Calibrated to the agreed
-    /// feel — roughly 50 ISO per 10mm around 100, and 500 ISO per 10mm by 5000
-    /// (~6pt per mm on a typical iPhone, so 10mm ≈ 60pt).
+    /// 36pt per exposure stop = 12pt per nominal 1/3-stop detent.
     private var isoScale: RulerScale {
-        let pointsPerMillimetre = 6.0
-        return .exponential(
-            lowValue: 100,
-            lowRate: 50 / (10 * pointsPerMillimetre),
-            highValue: 5000,
-            highRate: 500 / (10 * pointsPerMillimetre)
-        )
+        .logarithmic(pointsPerStop: RulerScale.detentTravel * 3)
     }
 
     /// Binding for the EV-bias slider.
@@ -303,11 +257,17 @@ struct CameraControlBar: View {
         )
     }
 
-    // MARK: - Left action row: queue + record
+    // MARK: - Left action row: queue and remaining time beneath it
 
     private var actionRow: some View {
         HStack(alignment: .center, spacing: 8) {
-            queueButton.frame(width: controlFaceSize, height: controlFaceSize)
+            // Share a leading edge with the stock key above. Queue and the
+            // remaining-time readout form one column; REC stays centered.
+            VStack(alignment: .leading, spacing: 6) {
+                queueButton.frame(width: controlFaceSize, height: controlFaceSize)
+                storageIndicator.frame(width: 96)
+            }
+            .frame(width: 96, alignment: .leading)
             Spacer(minLength: 0)
         }
         .frame(height: actionRowHeight)
@@ -322,22 +282,44 @@ struct CameraControlBar: View {
             }
         } label: {
             ZStack {
+                // A circular translucent cap, deliberately not a rectangular
+                // frame: the reference camera's REC is its own round recess.
                 Circle()
-                    .fill(cameraViewModel.isRecording ? .red : .white)
-                    .frame(width: 40, height: 40)
+                    .fill(.ultraThinMaterial)
+                    .overlay { Circle().fill(Color.black.opacity(0.18)) }
+
                 if cameraViewModel.isRecording {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 46, height: 46)
                     RoundedRectangle(cornerRadius: 4)
                         .fill(.white)
-                        .frame(width: 16, height: 16)
+                        .frame(width: 18, height: 18)
                 } else {
                     Circle()
                         .stroke(.white, lineWidth: 3)
                         .frame(width: 58, height: 58)
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 46, height: 46)
                 }
             }
             .frame(width: recordFaceSize, height: recordFaceSize)
+            .overlay {
+                Circle()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [.white.opacity(0.42), .white.opacity(0.05), .black.opacity(0.42)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+                    .allowsHitTesting(false)
+            }
+            .shadow(color: .black.opacity(0.38), radius: 6, x: 0, y: 3)
         }
-        .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 8))
+        .buttonStyle(.plain)
         .accessibilityLabel(cameraViewModel.isRecording ? "Stop recording" : "Start recording")
         .disabled(cameraViewModel.isSpaceCritical && !cameraViewModel.isRecording)
         .overlay(alignment: .top) {
@@ -363,34 +345,24 @@ struct CameraControlBar: View {
             cameraViewModel.updateFreeSpace()
             isStorageInfoPresented = true
         } label: {
-            VStack(spacing: 2) {
-                Text(estimatedTimeText)
-                    .font(.caption.weight(.semibold).monospacedDigit())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                Text("~ REC LEFT")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.75))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(.white)
+            RecordingTimeLCD(
+                estimatedSeconds: estimatedRemainingSeconds,
+                isStorageLow: cameraViewModel.hasStorageSnapshot
+                    && cameraViewModel.freeSpaceBytes < 1_000_000_000
+            )
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 5)
         }
-        .buttonStyle(CameraRaisedButtonStyle(
-            faceColor: cameraViewModel.hasStorageSnapshot && cameraViewModel.freeSpaceBytes < 1_000_000_000
-                ? .red : Color(red: 0.16, green: 0.17, blue: 0.19),
-            cornerRadius: 6
-        ))
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
         .accessibilityLabel("Estimated recording time remaining, \(estimatedTimeText)")
         .accessibilityValue("\(freeSpaceText) free")
         .accessibilityHint("Opens storage details")
     }
 
     private var estimatedTimeText: String {
-        guard let seconds = estimatedRemainingSeconds else { return "Unavailable" }
-        return formatDuration(seconds)
+        guard estimatedRemainingSeconds != nil else { return "Unavailable" }
+        let text = RecordingTimeLCD.timeText(for: estimatedRemainingSeconds)
+        return text == "--:--" ? "Unavailable" : text
     }
 
     private var freeSpaceText: String {

@@ -14,17 +14,19 @@
                         <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                         <subviews>
-                            <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" image="LaunchArtwork" translatesAutoresizingMaskIntoConstraints="NO" id="launch-artwork">
-                                <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
+                            <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" image="HalationLogo" translatesAutoresizingMaskIntoConstraints="NO" id="launch-artwork">
+                                <rect key="frame" x="76.5" y="306" width="240" height="240"/>
+                                <constraints>
+                                    <constraint firstAttribute="width" constant="240" id="launch-width"/>
+                                    <constraint firstAttribute="height" constant="240" id="launch-height"/>
+                                </constraints>
                             </imageView>
                         </subviews>
                         <viewLayoutGuide key="safeArea" id="launch-safe-area"/>
                         <color key="backgroundColor" red="0.0" green="0.0" blue="0.0" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
                         <constraints>
-                            <constraint firstItem="launch-artwork" firstAttribute="leading" secondItem="launch-view" secondAttribute="leading" id="launch-leading"/>
-                            <constraint firstItem="launch-artwork" firstAttribute="trailing" secondItem="launch-view" secondAttribute="trailing" id="launch-trailing"/>
-                            <constraint firstItem="launch-artwork" firstAttribute="top" secondItem="launch-view" secondAttribute="top" id="launch-top"/>
-                            <constraint firstItem="launch-artwork" firstAttribute="bottom" secondItem="launch-view" secondAttribute="bottom" id="launch-bottom"/>
+                            <constraint firstItem="launch-artwork" firstAttribute="centerX" secondItem="launch-view" secondAttribute="centerX" id="launch-center-x"/>
+                            <constraint firstItem="launch-artwork" firstAttribute="centerY" secondItem="launch-view" secondAttribute="centerY" id="launch-center-y"/>
                         </constraints>
                     </view>
                 </viewController>
@@ -33,6 +35,6 @@
         </scene>
     </scenes>
     <resources>
-        <image name="LaunchArtwork" width="430" height="932"/>
+        <image name="HalationLogo" width="1024" height="1024"/>
     </resources>
 </document>

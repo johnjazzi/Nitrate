@@ -301,6 +301,7 @@ enum RenderMovieMetadata {
         let json = String(decoding: try encoder.encode(snapshot), as: UTF8.self)
         let values: [String: String] = [
             "film-stock": config.stockId, "stock-name": config.displayName, "lut": config.lutName,
+            "light-type": config.lightType,
             "iso": String(Int(config.defaultISO)), "iso-role": "selected-render-exposure-index",
             "halation-level": String(config.halationStrength), "glow-level": String(config.glowStrength),
             "halation-radius-fraction": String(config.halationRadiusFraction),

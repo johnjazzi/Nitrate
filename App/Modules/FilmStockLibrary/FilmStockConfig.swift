@@ -84,11 +84,14 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
     /// Secondary tint hex for duotone display. Optional; defaults to a darker shade.
     var secondaryTint: String?
 
-    /// Daylight (D) or Tungsten (T) based on display name.
+    /// Daylight (D) or Tungsten (T).
+    ///
+    /// Derived from the stock's white-balance temperature — the actual
+    /// discriminator, 5600 K daylight versus 3200 K tungsten — rather than
+    /// parsed out of the display name, which tagged any name containing a "T"
+    /// as tungsten.
     var lightType: String {
-        let uppercased = displayName.uppercased()
-        if uppercased.contains("T") && !uppercased.contains("DI") { return "T" }
-        return "D"
+        colorTemperature > 4500 ? "D" : "T"
     }
 
 #if canImport(SwiftUI)
