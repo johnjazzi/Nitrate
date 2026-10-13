@@ -1,6 +1,43 @@
 import Testing
 
 struct StartupSplashTimingTests {
+    @Test func lateTicksSkipFramesWithoutCatchUpBursts() {
+        var schedule = StartupSplashFrameSchedule(start: 100)
+        #expect(abs(schedule.nextDeadline - (100 + 1.0 / 24)) < 0.000001)
+        schedule.didDeliver(at: 100.15)
+        #expect(schedule.nextDeadline >= 100.15 + 1.0 / 24)
+        #expect(schedule.nextDeadline < 100.15 + 2.0 / 24)
+        var timing = StartupSplashTiming()
+        timing.setActive(true, at: 100)
+        timing.advance(to: 100.15)
+        #expect(timing.frameIndex == 3)
+    }
+
+    @Test func deadlinesNeverReplayMissedTicksOrExceedFrameRate() {
+        var schedule = StartupSplashFrameSchedule(start: 0)
+        var previousDelivery = 0.0
+        for tick in 0..<240 {
+            let delivery = schedule.nextDeadline + (tick.isMultiple(of: 7) ? 0.17 : 0.0001)
+            #expect(delivery - previousDelivery >= 1.0 / 24 - 0.000001)
+            schedule.didDeliver(at: delivery)
+            #expect(schedule.nextDeadline > delivery)
+            previousDelivery = delivery
+        }
+    }
+
+    @Test func resumedScheduleDoesNotReplayInactiveDeadlines() {
+        var timing = StartupSplashTiming(isPreview: true)
+        timing.setActive(true, at: 0)
+        timing.setActive(false, at: 0.5)
+        timing.setActive(true, at: 100)
+        let schedule = StartupSplashFrameSchedule(start: 100)
+        #expect(schedule.nextDeadline > 100)
+        #expect(timing.frameIndex == 12)
+        timing.advance(to: schedule.nextDeadline)
+        #expect(abs(timing.elapsed - (0.5 + 1.0 / 24)) < 0.000001)
+        #expect(!timing.isFinished)
+    }
+
     @Test func quantizesAtTwentyFourFramesPerSecond() {
         var timing = StartupSplashTiming()
         timing.setActive(true, at: 0)

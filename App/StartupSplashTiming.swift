@@ -1,5 +1,23 @@
 import Foundation
 
+/// Absolute deadlines derive from the original 24 Hz grid. A minimum spacing
+/// floor takes precedence after a late wake so missed frames never burst.
+struct StartupSplashFrameSchedule {
+    private let start: TimeInterval
+    private(set) var nextDeadline: TimeInterval
+
+    init(start: TimeInterval) {
+        self.start = start
+        nextDeadline = start + 1 / StartupSplashTiming.framesPerSecond
+    }
+
+    mutating func didDeliver(at timestamp: TimeInterval) {
+        let interval = 1 / StartupSplashTiming.framesPerSecond
+        let nextTick = floor(max(0, timestamp - start) / interval) + 1
+        nextDeadline = max(start + nextTick * interval, timestamp + interval)
+    }
+}
+
 /// Monotonic active time drives a quantized 48-frame loop and a separate exit fade.
 struct StartupSplashTiming {
     static let framesPerSecond = 24.0

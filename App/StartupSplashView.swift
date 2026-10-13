@@ -16,27 +16,35 @@ struct StartupSplashView: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            Image("HalationLogo")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 240, height: 240)
-                .overlay {
-                    Image(
-                        decorative: SplashGrain.frames[reduceMotion ? 0 : timing.frameIndex],
-                        scale: 1,
-                        orientation: .up
-                    )
-                    .resizable(resizingMode: .tile)
-                    .interpolation(.none)
-                    .blendMode(.softLight)
-                    .opacity(0.22)
-                    .mask {
-                        Image("HalationLogo")
-                            .resizable()
-                            .scaledToFit()
-                    }
-                }
-                .rotationEffect(.degrees(reduceMotion ? 0 : timing.rotationDegrees))
+            ZStack {
+                // Each exposure spins about its own centre; only the view offset
+                // separates them, so neither orbits the other.
+                Image("HalationRear")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 240, height: 240)
+                    .rotationEffect(.degrees(reduceMotion ? 0 : timing.rotationDegrees))
+                    .offset(x: 4.9, y: -4.0)
+                Image("HalationFront")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 240, height: 240)
+                    .rotationEffect(.degrees(reduceMotion ? 0 : timing.rotationDegrees))
+                    .offset(x: -1.9, y: 1.6)
+            }
+            // Grain is applied after the baked smear and the live rotation.
+            // Soft light leaves the black surround untouched, so no mask is needed.
+            .overlay {
+                Image(
+                    decorative: SplashGrain.frames[reduceMotion ? 0 : timing.frameIndex],
+                    scale: 1,
+                    orientation: .up
+                )
+                .resizable(resizingMode: .tile)
+                .interpolation(.none)
+                .blendMode(.softLight)
+                .opacity(0.22)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
@@ -48,14 +56,23 @@ struct StartupSplashView: View {
         .task(id: scenePhase) {
             timing.setActive(scenePhase == .active, at: ProcessInfo.processInfo.systemUptime)
             guard scenePhase == .active else { return }
+            let clock = ContinuousClock()
+            let anchor = clock.now
+            let start = ProcessInfo.processInfo.systemUptime
+            var schedule = StartupSplashFrameSchedule(start: start)
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(for: .seconds(1 / StartupSplashTiming.framesPerSecond))
+                    try await clock.sleep(
+                        until: anchor.advanced(by: .seconds(schedule.nextDeadline - start)),
+                        tolerance: .zero
+                    )
                 } catch {
                     return
                 }
                 guard !Task.isCancelled, scenePhase == .active else { return }
-                timing.advance(to: ProcessInfo.processInfo.systemUptime)
+                let timestamp = ProcessInfo.processInfo.systemUptime
+                timing.advance(to: timestamp)
+                schedule.didDeliver(at: timestamp)
                 if timing.isFinished {
                     onFinished()
                     return
