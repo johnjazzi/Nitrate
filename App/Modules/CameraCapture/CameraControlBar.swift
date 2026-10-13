@@ -394,34 +394,24 @@ struct CameraControlBar: View {
             cameraViewModel.updateFreeSpace()
             isStorageInfoPresented = true
         } label: {
-            VStack(spacing: 2) {
-                Text(estimatedTimeText)
-                    .font(.caption.weight(.semibold).monospacedDigit())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                Text("~ REC LEFT")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.75))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(.white)
+            RecordingTimeLCD(
+                estimatedSeconds: estimatedRemainingSeconds,
+                isStorageLow: cameraViewModel.hasStorageSnapshot
+                    && cameraViewModel.freeSpaceBytes < 1_000_000_000
+            )
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 5)
         }
-        .buttonStyle(CameraRaisedButtonStyle(
-            faceColor: cameraViewModel.hasStorageSnapshot && cameraViewModel.freeSpaceBytes < 1_000_000_000
-                ? .red : nil,
-            cornerRadius: 6
-        ))
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
         .accessibilityLabel("Estimated recording time remaining, \(estimatedTimeText)")
         .accessibilityValue("\(freeSpaceText) free")
         .accessibilityHint("Opens storage details")
     }
 
     private var estimatedTimeText: String {
-        guard let seconds = estimatedRemainingSeconds else { return "Unavailable" }
-        return formatDuration(seconds)
+        guard estimatedRemainingSeconds != nil else { return "Unavailable" }
+        let text = RecordingTimeLCD.timeText(for: estimatedRemainingSeconds)
+        return text == "--:--" ? "Unavailable" : text
     }
 
     private var freeSpaceText: String {
