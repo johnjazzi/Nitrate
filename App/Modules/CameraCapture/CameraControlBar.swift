@@ -202,23 +202,17 @@ struct CameraControlBar: View {
                 .foregroundStyle(.white.opacity(0.9))
 
             if cameraViewModel.isManualExposure {
-                // Same ruler affordance as EV, so the two modes of this control
-                // feel identical — but ISO needs a different travel curve. A
-                // linear rate that is comfortable at 100 is unusably slow at
-                // 3200, and vice versa. The exponential scale below grows the
-                // rate with the value, and the ladder restricts snapping to the
-                // standard 1/3-stop ISO sequence so every detent is a real
-                // exposure step.
+                // Match EV's 24pt detents and tick geometry. Logarithmic ISO
+                // travel keeps each nominal 1/3 stop equally reachable.
                 RulerSlider(
                     value: isoBinding,
                     range: isoSliderRange,
                     step: isoFineStep,
-                    pointsPerStep: 8,
+                    pointsPerStep: 24,
                     majorValues: isoMajorValues,
                     tickLabel: { "\(Int($0.rounded()))" },
                     scale: isoScale,
                     ladder: isoLadder,
-                    ladderSubdivisions: 3,
                     tint: .yellow,
                     length: 120
                 )
@@ -295,18 +289,9 @@ struct CameraControlBar: View {
     /// parameter, kept non-zero so the accessibility path stays sane.
     private var isoFineStep: Double { 25 }
 
-    /// Equal travel must not mean equal ISO change: the useful rate is fine at
-    /// the bottom of the range and coarse at the top. Calibrated to the agreed
-    /// feel — roughly 50 ISO per 10mm around 100, and 500 ISO per 10mm by 5000
-    /// (~6pt per mm on a typical iPhone, so 10mm ≈ 60pt).
+    /// 72pt per exposure stop = 24pt per nominal 1/3-stop detent.
     private var isoScale: RulerScale {
-        let pointsPerMillimetre = 6.0
-        return .exponential(
-            lowValue: 100,
-            lowRate: 50 / (10 * pointsPerMillimetre),
-            highValue: 5000,
-            highRate: 500 / (10 * pointsPerMillimetre)
-        )
+        .logarithmic(pointsPerStop: 72)
     }
 
     /// Binding for the EV-bias slider.

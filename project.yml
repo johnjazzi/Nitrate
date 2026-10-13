@@ -99,6 +99,7 @@ targets:
       - path: App/Modules/RenderQueue/RenderQueueViewModel.swift
       - path: App/Modules/CameraCapture/CameraOriginalStorage.swift
       - path: App/Modules/CameraCapture/CameraPolicies.swift
+      - path: App/Modules/CameraCapture/RulerScale.swift
       - path: App/Modules/CameraCapture/CameraSampleBufferRecorder.swift
       - path: App/Modules/CameraCapture/CameraCapturePreservationProbe.swift
       - path: Resources/Shaders/
