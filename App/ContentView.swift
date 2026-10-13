@@ -96,7 +96,7 @@ struct ContentView: View {
 
                 controlBar
                     .padding(.top, showFramedPreview ? 8 : 0)
-                    .padding(.bottom, 20)
+                    .padding(.bottom, 8)
             }
 
             errorOverlays

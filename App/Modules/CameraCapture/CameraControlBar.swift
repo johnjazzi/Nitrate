@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// Bottom camera controls: stock, queue/storage and record on the left,
-/// with the exposure ruler in a persistent right column.
+/// Compact stock/status column, screen-centred REC, and persistent exposure controls.
 ///
 /// Split out of `ContentView` so the screen stays inside the file-length limit.
 /// The top toolbar owns settings and the manual-controls popover; this bar
@@ -10,9 +9,7 @@ struct CameraControlBar: View {
     private let controlFaceSize: CGFloat = 44
     private let selectorRowHeight: CGFloat = 54
     private let recordFaceSize: CGFloat = 84
-    // Queue 44 + gap 6 + rotation-safe LCD slot 96. REC keeps its old center.
-    private let actionRowHeight: CGFloat = 146
-    private let recordRowHeight: CGFloat = 100
+    private let statusSlotSize: CGFloat = 84
     let cameraViewModel: CameraViewModel
     let renderQueueViewModel: RenderQueueViewModel
     let selectedStock: FilmStockConfig?
@@ -25,26 +22,21 @@ struct CameraControlBar: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            VStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 selectorRow
-                actionRow
+                storageIndicator.frame(width: statusSlotSize, height: statusSlotSize)
             }
-            .frame(maxWidth: .infinity)
+            .frame(width: statusSlotSize, alignment: .leading)
+
+            Spacer(minLength: 0)
 
             exposureControl
                 .frame(width: 92)
         }
-        .overlay(alignment: .top) {
-            ZStack {
-                Color.clear
-                    .frame(maxWidth: .infinity)
-                    .frame(height: recordRowHeight)
-                    .allowsHitTesting(false)
-                recordButton
-                    .frame(width: recordFaceSize, height: recordFaceSize)
-            }
-            .frame(height: recordRowHeight)
-                .padding(.top, selectorRowHeight + 8)
+        .overlay {
+            // Overlay the full bar, not the free space between columns. Keep
+            // REC centred on the screen and leave room above for its timer.
+            recordButton.frame(width: recordFaceSize, height: recordFaceSize)
         }
         .padding(.horizontal, 16)
         .sheet(isPresented: $isStorageInfoPresented) {
@@ -262,24 +254,6 @@ struct CameraControlBar: View {
         )
     }
 
-    // MARK: - Left action row: queue and remaining time beneath it
-
-    private var actionRow: some View {
-        HStack(alignment: .center, spacing: 8) {
-            // Share a leading edge with the stock key above. Queue and the
-            // remaining-time readout form one column; REC stays centered.
-            VStack(alignment: .leading, spacing: 6) {
-                queueButton.frame(width: controlFaceSize, height: controlFaceSize)
-                // The 96x56 face turns to 56x96 around the same slot center.
-                // Reserve both orientations, clear of the queue and bottom edge.
-                storageIndicator.frame(width: 96, height: 96)
-            }
-            .frame(width: 96, alignment: .leading)
-            Spacer(minLength: 0)
-        }
-        .frame(height: actionRowHeight)
-    }
-
     private var recordButton: some View {
         Button {
             if cameraViewModel.isRecording {
@@ -344,27 +318,48 @@ struct CameraControlBar: View {
         }
     }
 
-    private var queueButton: some View {
-        RenderStatusButton(viewModel: renderQueueViewModel, action: onShowQueueSheet)
+    private var queueStatus: CameraStatusPresentation {
+        let latest = renderQueueViewModel.currentSessionResults.first
+        return CameraStatusPresentation(
+            outstandingCount: renderQueueViewModel.outstandingCount,
+            pendingCount: renderQueueViewModel.pendingCount,
+            isProcessing: renderQueueViewModel.isProcessing,
+            failedCount: renderQueueViewModel.currentSessionFailures.count,
+            errorMessage: renderQueueViewModel.rendererErrorMessage,
+            latestResultCompleted: latest?.status == .completed,
+            latestResultSavedToPhotos: latest?.outputSavedToPhotos
+        )
+    }
+
+    private func showStorageInfo() {
+        cameraViewModel.updateFreeSpace()
+        isStorageInfoPresented = true
+    }
+
+    private var isStorageLow: Bool {
+        cameraViewModel.hasStorageSnapshot && cameraViewModel.freeSpaceBytes < 1_000_000_000
     }
 
     private var storageIndicator: some View {
-        Button {
-            cameraViewModel.updateFreeSpace()
-            isStorageInfoPresented = true
-        } label: {
+        Button(action: onShowQueueSheet) {
             RecordingTimeLCD(
                 estimatedSeconds: estimatedRemainingSeconds,
-                isStorageLow: cameraViewModel.hasStorageSnapshot
-                    && cameraViewModel.freeSpaceBytes < 1_000_000_000
+                isStorageLow: isStorageLow,
+                queueStatus: queueStatus
             )
-            .frame(width: 96, height: 56)
+            .frame(width: statusSlotSize, height: 68)
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
-        .accessibilityLabel("Estimated recording time remaining, \(estimatedTimeText)")
-        .accessibilityValue("\(freeSpaceText) free")
-        .accessibilityHint("Opens storage details")
+        .highPriorityGesture(LongPressGesture(minimumDuration: 0.5, maximumDistance: 10).onEnded { _ in
+            showStorageInfo()
+        })
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Queue and estimated recording time remaining")
+        .accessibilityValue("\(estimatedTimeText). \(freeSpaceText) free. "
+                            + "\(isStorageLow ? "Low storage. " : "")\(queueStatus.accessibilityDescription)")
+        .accessibilityHint("Tap for video details and retry controls. Long-press for storage details.")
+        .accessibilityAction(named: Text("Storage details")) { showStorageInfo() }
         .cameraRotatingControl()
     }
 
