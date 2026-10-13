@@ -19,6 +19,44 @@ struct CameraCapturePreservationProbeTests {
         #expect(error.maximumChromaMeanError == 0)
     }
 
+    @Test func orientationMetadataLeavesTenBitSensorPlanesAndLogColorAttachmentsUntouched() throws {
+        guard #available(macOS 14.2, iOS 17.2, *) else { return }
+        let buffer = try makeBuffer(format: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
+        fill(buffer, luma: { x, y in 200 + (x * 3 + y * 5) % 600 },
+             cb: { x, y in 300 + (x + y) % 200 }, cr: { x, y in 600 - (x + y) % 200 })
+        CVBufferSetAttachment(buffer, kCVImageBufferLogTransferFunctionKey,
+            CameraSampleValidationPolicy.appleLog2Identifier as CFString, .shouldPropagate)
+        CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey,
+            kCVImageBufferYCbCrMatrix_ITU_R_2020, .shouldPropagate)
+        let original = try CameraYUVProbe.sample(buffer)
+        let before = try planeBytes(buffer)
+        let holds: [CameraSampleValidationPolicy.DeliveryOrientation] =
+            [.portrait, .portraitUpsideDown, .landscapeLeft, .landscapeRight]
+        for coded in [CameraSampleValidationPolicy.CodedDimensions.landscape4K, .portrait4K] {
+            for hold in holds {
+                let turns = CameraSampleValidationPolicy.deliveryQuarterTurns(for: hold, coded: coded)
+                CameraFrozenFrameOrientationPolicy.setQuarterTurns(turns, on: buffer)
+                #expect(try planeBytes(buffer) == before)
+                let error = original.maximumMeanError(comparedTo: try CameraYUVProbe.sample(buffer))
+                #expect(error.maximumLumaMeanError == 0 && error.maximumChromaMeanError == 0)
+                #expect(CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
+                #expect(CVBufferCopyAttachment(buffer, kCVImageBufferLogTransferFunctionKey, nil) as? String ==
+                    CameraSampleValidationPolicy.appleLog2Identifier)
+                #expect(CVBufferCopyAttachment(buffer, kCVImageBufferYCbCrMatrixKey, nil) as? String == "ITU_R_2020")
+            }
+        }
+    }
+
+    private func planeBytes(_ buffer: CVPixelBuffer) throws -> [Data] {
+        try #require(CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        return try (0..<CVPixelBufferGetPlaneCount(buffer)).map { plane in
+            let base = try #require(CVPixelBufferGetBaseAddressOfPlane(buffer, plane))
+            return Data(bytes: base, count: CVPixelBufferGetBytesPerRowOfPlane(buffer, plane) *
+                CVPixelBufferGetHeightOfPlane(buffer, plane))
+        }
+    }
+
     @Test func normalizes420And422VideoAndFullRangeWithoutRgbConversion() throws {
         let formats: [OSType] = [
             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,

@@ -166,15 +166,17 @@ enum CameraCapturePreservationProbe {
 
     static func inspect(url: URL, source: CameraYUVProbe,
                         expectedDimensions: CameraSampleValidationPolicy.CodedDimensions,
+                        expectedTransform: CGAffineTransform,
                         requiresAudio: Bool) async throws -> String {
         try await Task.detached(priority: .utility) {
             try await inspectOffQueue(url: url, source: source, expectedDimensions: expectedDimensions,
-                                      requiresAudio: requiresAudio)
+                                      expectedTransform: expectedTransform, requiresAudio: requiresAudio)
         }.value
     }
 
     private static func inspectOffQueue(url: URL, source: CameraYUVProbe,
                                         expectedDimensions: CameraSampleValidationPolicy.CodedDimensions,
+                                        expectedTransform: CGAffineTransform,
                                         requiresAudio: Bool) async throws -> String {
         let asset = AVURLAsset(url: url)
         let tracks = try await asset.load(.tracks)
@@ -192,11 +194,15 @@ enum CameraCapturePreservationProbe {
             throw PreservationError.invalidVideoFormat
         }
         let transform = try await videoTrack.load(.preferredTransform)
+        let expectedDisplay = CameraSampleValidationPolicy.displayDimensions(
+            codedWidth: expectedDimensions.width, codedHeight: expectedDimensions.height,
+            transform: expectedTransform
+        )
         let displayDimensions = CameraSampleValidationPolicy.displayDimensions(
             codedWidth: expectedDimensions.width, codedHeight: expectedDimensions.height, transform: transform
         )
-        guard transform == expectedDimensions.portraitDeliveryTransform,
-              displayDimensions.0 == 2160, displayDimensions.1 == 3840 else {
+        guard transform == expectedTransform,
+              displayDimensions.0 == expectedDisplay.0, displayDimensions.1 == expectedDisplay.1 else {
             throw PreservationError.invalidVideoFormat
         }
 
@@ -270,8 +276,9 @@ enum CameraCapturePreservationProbe {
             ? "audio=absent"
             : String(format: "audio=present, skew=%.3fs, end-delta=%.3fs", audioSkew, endDifference)
         return "HEVC Main10 4:2:0 \(expectedDimensions.width)x\(expectedDimensions.height) " +
-            String(format: "decoded YUV passed (portrait display 2160x3840; max luma error %.4f, " +
+            String(format: "decoded YUV passed (display %dx%d; max luma error %.4f, " +
                    "chroma %.4f; limits %.2f/%.2f); %@",
+                   expectedDisplay.0, expectedDisplay.1,
                    difference.maximumLumaMeanError, difference.maximumChromaMeanError,
                    lumaTolerance, chromaTolerance, audioEvidence)
     }
@@ -307,7 +314,7 @@ enum CameraCapturePreservationProbe {
         var errorDescription: String? {
             switch self {
             case .missingVideo: return "Preservation check failed: movie has no video track."
-            case .invalidVideoFormat: return "Preservation check failed: video dimensions, portrait transform, or hvc1 HEVC Main10 4:2:0 profile did not match the captured format."
+            case .invalidVideoFormat: return "Preservation check failed: video dimensions, delivery transform, or hvc1 HEVC Main10 4:2:0 profile did not match the captured format."
             case .cannotDecodeVideo: return "Preservation check failed: the first ten-bit 4:2:0 video frame could not be decoded."
             case .pixelValuesExceededTolerance(let luma, let chroma):
                 return String(format: "Preservation check failed: YUV mean errors %.4f/%.4f exceed limits %.2f/%.2f.", luma, chroma, lumaTolerance, chromaTolerance)

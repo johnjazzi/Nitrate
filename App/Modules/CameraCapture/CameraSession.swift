@@ -1,5 +1,8 @@
 import AVFoundation
 import VideoToolbox
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Selectable capture lenses. Maps a UI-facing name to an AVCaptureDevice type
 /// + position. "Normal" is the rear wide (1x) camera.
@@ -51,6 +54,13 @@ enum CameraLens: String, CaseIterable, Identifiable, Sendable {
         case .front: return 24
         }
     }
+}
+
+/// Narrow bridge for requests that cross main only to read device orientation.
+/// The reference may only submit queue-confined recording/debug work; it never
+/// reads or mutates the session's state on the main actor.
+private struct CameraOrientationSessionReference: @unchecked Sendable {
+    weak var session: CameraSession?
 }
 
 /// AD-3: Manages the AVCaptureSession — Apple Log, HEVC H.265, 4K, 24fps, clean preview.
@@ -115,6 +125,14 @@ final class CameraSession: NSObject {
     /// pin is released (manual ISO, auto exposure, lens switch, session stop).
     private var pinnedExposure: ExposureStabilizer.Pin?
     private var recordingStartPending = false
+    /// Set once so device-orientation notifications (needed for a live
+    /// `UIDevice.current.orientation`) are started exactly once per session.
+    private var deviceOrientationNotificationsStarted = false
+    // Session-queue confined and replaced with the active camera. AVFoundation
+    // accounts for rear/front sensor mounting; interface orientation is irrelevant.
+    private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
+    private var rotationObservation: NSKeyValueObservation?
+    private var captureRotationState = CameraCaptureRotationPolicy()
     private var recordingGeneration: UInt64 = 0
     private var recorderCompletionBridge = CameraRecorderCompletionBridge()
     private var pendingStartCompletion: (@MainActor @Sendable (Error?) -> Void)?
@@ -252,7 +270,9 @@ final class CameraSession: NSObject {
     }
 
     /// Samples remain sensor-coded at 3840x2160; the MOV track matrix rotates
-    /// display to portrait. Front-camera movies are intentionally unmirrored.
+    /// display to the orientation the device was held in at recording start
+    /// (see `CameraSampleValidationPolicy.deliveryGeometry`). Front-camera movies
+    /// are intentionally unmirrored.
     private func configureRawLandscapeRecordingConnection() {
         guard let connection = videoOutput.connection(with: .video) else { return }
         connection.automaticallyAdjustsVideoMirroring = false
@@ -265,6 +285,69 @@ final class CameraSession: NSObject {
                   "applied=\(connection.videoRotationAngle)°")
 #endif
         }
+    }
+
+    /// Coordinator updates arrive on main. Remember the last angle associated
+    /// with a real four-way hold, so pointing the phone flat doesn't unexpectedly
+    /// flip the next take. Cache writes stay on the session queue.
+    private func configureCaptureRotation(for device: AVCaptureDevice) {
+        let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: nil)
+        rotationCoordinator = coordinator
+        captureRotationState = CameraCaptureRotationPolicy()
+        let deviceID = device.uniqueID
+        rotationObservation = coordinator.observe(\.videoRotationAngleForHorizonLevelCapture,
+                                                  options: [.initial, .new]) { [weak self] _, change in
+            guard let angle = change.newValue, angle.isFinite else { return }
+            Self.withPhysicalOrientation { [weak self] orientation in
+                guard orientation.isPhysicalHold else { return }
+                self?.sessionQueue.async { [weak self] in
+                    guard let self, self.rotationCoordinator?.device?.uniqueID == deviceID else { return }
+                    _ = self.captureRotationState.snapshot(for: orientation, liveAngle: angle)
+                }
+            }
+        }
+    }
+
+    private func captureRotationAngle(for orientation: CameraSampleValidationPolicy.DeliveryOrientation) -> CGFloat? {
+        captureRotationState.snapshot(for: orientation,
+            liveAngle: rotationCoordinator?.videoRotationAngleForHorizonLevelCapture)
+    }
+
+    /// Transfer only the Sendable orientation value across the main boundary,
+    /// not the queue-confined session object.
+    private static func withPhysicalOrientation(
+        _ completion: @escaping @Sendable (CameraSampleValidationPolicy.DeliveryOrientation) -> Void
+    ) {
+        DispatchQueue.main.async {
+            let orientation = MainActor.assumeIsolated { captureDeliveryOrientation() }
+            completion(orientation)
+        }
+    }
+
+    /// Only called from the main-thread recording/debug entry points. Never
+    /// synchronously wait for main from sessionQueue (main may wait for session).
+    @MainActor
+    private static func captureDeliveryOrientation() -> CameraSampleValidationPolicy.DeliveryOrientation {
+#if canImport(UIKit)
+        return CameraSampleValidationPolicy.DeliveryOrientation(
+            deviceOrientationRawValue: UIDevice.current.orientation.rawValue)
+#else
+        return .unknown
+#endif
+    }
+
+    /// Start the accelerometer-backed orientation readings once so
+    /// `UIDevice.current.orientation` reports the physical hold instead of
+    /// `unknown`. The session keeps them alive for the app's lifetime, so there
+    /// is no matching `endGeneratingDeviceOrientationNotifications`.
+    private func beginDeviceOrientationNotificationsIfNeeded() {
+#if canImport(UIKit)
+        guard !deviceOrientationNotificationsStarted else { return }
+        deviceOrientationNotificationsStarted = true
+        DispatchQueue.main.async {
+            UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+        }
+#endif
     }
 
     private func configureDevice(_ device: AVCaptureDevice, applyDefaultExposure: Bool = true) throws {
@@ -304,6 +387,7 @@ final class CameraSession: NSObject {
             }
         }
         activeDevice = device
+        configureCaptureRotation(for: device)
         apertureCameraRevision &+= 1
         if #available(iOS 27.0, *), selectedLensAperture != nil {
             let capability = Self.apertureCapability(for: device)
@@ -1230,6 +1314,15 @@ final class CameraSession: NSObject {
     // MARK: - Recording
 
     func startRecording(to url: URL, completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+        let reference = CameraOrientationSessionReference(session: self)
+        Self.withPhysicalOrientation { orientation in
+            reference.session?.startRecording(to: url, deliveryOrientation: orientation, completion: completion)
+        }
+    }
+
+    private func startRecording(to url: URL,
+                                deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation,
+                                completion: @escaping @MainActor @Sendable (Error?) -> Void) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.invalidateMetering()
@@ -1257,6 +1350,12 @@ final class CameraSession: NSObject {
                 } }
                 return
             }
+            // Snapshot once, before exposure settling. Do not re-read the angle
+            // when the first buffer arrives or if the phone turns during the take.
+            if self.rotationCoordinator?.device !== device {
+                self.configureCaptureRotation(for: device)
+            }
+            let captureRotationAngle = self.captureRotationAngle(for: deliveryOrientation)
             self.recordingStartPending = true
             self.pendingStartCompletion = completion
             self.recordingGeneration &+= 1
@@ -1273,7 +1372,9 @@ final class CameraSession: NSObject {
                         guard let self, self.recordingGeneration == generation,
                               self.recordingStartPending else { return }
                         self.beginSampleBufferRecording(to: url, generation: generation,
-                                                        startAfter: syncTime)
+                                                        startAfter: syncTime,
+                                                        deliveryOrientation: deliveryOrientation,
+                                                        captureRotationAngle: captureRotationAngle)
                     }
                 }
                 if #available(iOS 27.0, *), let heldAperture = self.heldAperture(on: device) {
@@ -1321,7 +1422,9 @@ final class CameraSession: NSObject {
     }
 
     private func beginSampleBufferRecording(to url: URL, generation: UInt64,
-                                            startAfter: CMTime = .invalid) {
+                                            startAfter: CMTime = .invalid,
+                                            deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation = .unknown,
+                                            captureRotationAngle: CGFloat? = nil) {
         guard let device = activeDevice,
               #available(iOS 26.0, *),
               device.activeColorSpace == .appleLog2,
@@ -1364,6 +1467,8 @@ final class CameraSession: NSObject {
             audioSettings: audioSettings,
             acceptedPixelFormats: acceptedPixelFormats,
             metadata: captureMetadataItems(),
+            deliveryOrientation: deliveryOrientation,
+            captureRotationAngle: captureRotationAngle,
             preservationProbeEnabled: preservationProbeEnabled,
             requiresAudioEvidence: microphoneAdded,
             startAfter: startAfter,
@@ -1542,6 +1647,14 @@ final class CameraSession: NSObject {
     /// and reconfigures nothing but its own output. `completion` runs on
     /// `sessionQueue`.
     func captureDebugFrame(completion: @escaping @Sendable (CVPixelBuffer?) -> Void) {
+        let reference = CameraOrientationSessionReference(session: self)
+        Self.withPhysicalOrientation { orientation in
+            reference.session?.captureDebugFrame(deliveryOrientation: orientation, completion: completion)
+        }
+    }
+
+    private func captureDebugFrame(deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation,
+                                   completion: @escaping @Sendable (CVPixelBuffer?) -> Void) {
         sessionQueue.async { [weak self] in
             guard let self else {
                 completion(nil)
@@ -1564,6 +1677,10 @@ final class CameraSession: NSObject {
             }
             print("Debug frame: output attached, awaiting frame")
             let request = CameraDebugFrameRequest()
+            if let device = self.activeDevice, self.rotationCoordinator?.device !== device {
+                self.configureCaptureRotation(for: device)
+            }
+            let captureRotationAngle = self.captureRotationAngle(for: deliveryOrientation)
             connection.isEnabled = true
             self.debugFrameTap.request { [weak self] buffer in
                 guard let self else { return }
@@ -1571,6 +1688,16 @@ final class CameraSession: NSObject {
                     guard request.finish() else { return }
                     connection.isEnabled = false
                     let converted = DebugFrameConverter.rgbaHalfBuffer(from: buffer)
+                    if let converted {
+                        // The tap can fall back to its advertised format, which
+                        // need not be 4K. Only its native aspect is needed here;
+                        // the recording path retains strict 4K validation.
+                        let coded: CameraSampleValidationPolicy.CodedDimensions =
+                            CVPixelBufferGetHeight(buffer) > CVPixelBufferGetWidth(buffer) ? .portrait4K : .landscape4K
+                        let turns = CameraSampleValidationPolicy.deliveryQuarterTurns(
+                            for: deliveryOrientation, coded: coded, captureRotationAngle: captureRotationAngle)
+                        CameraFrozenFrameOrientationPolicy.setQuarterTurns(turns, on: converted)
+                    }
                     print("Debug frame: received, converted=\(converted != nil)")
                     completion(converted)
                 }
@@ -1611,7 +1738,12 @@ final class CameraSession: NSObject {
                 kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat)
             ]
         }
-        debugFrameOutput.connection(with: .video)?.isEnabled = false
+        if let connection = debugFrameOutput.connection(with: .video) {
+            connection.automaticallyAdjustsVideoMirroring = false
+            if connection.isVideoMirroringSupported { connection.isVideoMirrored = false }
+            if connection.isVideoRotationAngleSupported(0) { connection.videoRotationAngle = 0 }
+            connection.isEnabled = false
+        }
         return true
     }
 
@@ -1699,6 +1831,7 @@ final class CameraSession: NSObject {
     func start() {
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured else { return }
+            self.beginDeviceOrientationNotificationsIfNeeded()
             if !self.session.isRunning {
                 self.session.startRunning()
             }
