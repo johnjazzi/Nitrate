@@ -19,14 +19,19 @@ struct CameraStatusPresentation {
         guard outstandingCount > 0 else { return nil }
         return outstandingCount > 99 ? "99+" : "\(outstandingCount)"
     }
+    func shouldAnimateRendering(reduceMotion: Bool) -> Bool {
+        isProcessing && !reduceMotion
+    }
+
     var label: String {
-        if isBusy { return isProcessing ? "WORKING" : "WAITING" }
+        if isBusy { return isProcessing ? "RENDERING" : "WAITING" }
         if hasError { return "FAILED" }
         return isSaved ? "SAVED" : "QUEUE"
     }
     var accessibilityDescription: String {
+        let activity = isProcessing ? "Rendering..." : "Waiting."
         var description = isBusy
-            ? "\(outstandingCount) videos outstanding, \(pendingCount) waiting."
+            ? "\(activity) \(outstandingCount) videos outstanding, \(pendingCount) waiting."
             : (isSaved ? "Video saved to Photos." : "No active renders.")
         if hasError {
             description += " " + (errorMessage ?? "\(failedCount) videos failed. Open details to retry.")

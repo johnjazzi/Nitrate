@@ -20,11 +20,42 @@ struct CameraStatusPresentationTests {
 
     @Test func liveWorkAndWaitingHaveCountsWithoutInventedProgress() {
         let working = status(outstanding: 3, pending: 2, processing: true)
-        #expect(working.label == "WORKING")
+        #expect(working.label == "RENDERING")
         #expect(working.countText == "3")
         #expect(working.accessibilityDescription.contains("3 videos outstanding, 2 waiting"))
         #expect(status(outstanding: 1, pending: 1).label == "WAITING")
-        #expect(status(processing: true, completed: true, saved: true).label == "WORKING")
+        #expect(status(processing: true, completed: true, saved: true).label == "RENDERING")
+    }
+
+    @Test func renderingMotionOnlyRunsWhileProcessingWithoutReducedMotion() {
+        let rendering = status(outstanding: 3, pending: 2, processing: true)
+        #expect(rendering.shouldAnimateRendering(reduceMotion: false))
+        #expect(!rendering.shouldAnimateRendering(reduceMotion: true))
+        #expect(rendering.accessibilityDescription.hasPrefix("Rendering..."))
+        let waiting = status(outstanding: 2, pending: 2)
+        #expect(!waiting.shouldAnimateRendering(reduceMotion: false))
+        #expect(waiting.accessibilityDescription.hasPrefix("Waiting."))
+        #expect(!status().shouldAnimateRendering(reduceMotion: false))
+        #expect(!status(failed: 1).shouldAnimateRendering(reduceMotion: false))
+        #expect(!status(completed: true, saved: true).shouldAnimateRendering(reduceMotion: false))
+        #expect(status(processing: true, failed: 1).shouldAnimateRendering(reduceMotion: false))
+    }
+
+    @Test func renderingTransitionsThroughWaitingBeforeConfirmedPhotosSave() {
+        let rendering = status(outstanding: 2, pending: 1, processing: true)
+        #expect(rendering.label == "RENDERING")
+        #expect(!rendering.isSaved)
+        let waiting = status(outstanding: 1, pending: 1, completed: true, saved: true)
+        #expect(waiting.label == "WAITING")
+        #expect(!waiting.isSaved)
+        #expect(!waiting.shouldAnimateRendering(reduceMotion: false))
+        let completedOnly = status(completed: true, saved: false)
+        #expect(completedOnly.label == "QUEUE")
+        #expect(!completedOnly.isSaved)
+        let delivered = status(completed: true, saved: true)
+        #expect(delivered.label == "SAVED")
+        #expect(delivered.isSaved)
+        #expect(!delivered.shouldAnimateRendering(reduceMotion: false))
     }
 
     @Test func visualCountCapDoesNotCapAccessibility() {
@@ -36,7 +67,7 @@ struct CameraStatusPresentationTests {
 
     @Test func failureBadgeSurvivesConcurrentWorkAndNewerSuccess() {
         let busy = status(outstanding: 2, processing: true, failed: 1, error: "Photos save failed")
-        #expect(busy.label == "WORKING")
+        #expect(busy.label == "RENDERING")
         #expect(busy.hasError)
         #expect(busy.accessibilityDescription.contains("Photos save failed"))
         let failed = status(failed: 1, completed: true, saved: true)

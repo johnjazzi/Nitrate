@@ -331,7 +331,7 @@ struct CameraControlBar: View {
                 isStorageLow: isStorageLow,
                 queueStatus: queueStatus
             )
-            .frame(width: statusSlotSize, height: 68)
+            .frame(width: statusSlotSize, height: 84)
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())

@@ -2,6 +2,7 @@ import SwiftUI
 
 /// White information on dark green; the entire face is one queue control.
 struct RecordingTimeLCD: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let estimatedSeconds: TimeInterval?
     let isStorageLow: Bool
     let queueStatus: CameraStatusPresentation
@@ -25,14 +26,17 @@ struct RecordingTimeLCD: View {
                 .fill(.white.opacity(0.22))
                 .frame(height: 0.5)
 
-            Text(CameraStatusPresentation.compactTimeText(for: estimatedSeconds))
-                .font(.system(size: 20, weight: .medium))
-                .monospacedDigit()
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if queueStatus.isProcessing {
+                renderingActivity
+            } else {
+                remainingTime(fontSize: 20)
+                    .frame(maxHeight: .infinity)
+            }
 
             HStack(spacing: 3) {
+                if queueStatus.isProcessing {
+                    remainingTime(fontSize: 11)
+                }
                 if queueStatus.hasError {
                     Image(systemName: "exclamationmark.circle.fill")
                         .foregroundStyle(.red)
@@ -40,7 +44,9 @@ struct RecordingTimeLCD: View {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                 }
-                Text(queueStatus.label)
+                if !queueStatus.isProcessing {
+                    Text(queueStatus.label)
+                }
                 Spacer(minLength: 0)
                 if isStorageLow {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -67,6 +73,49 @@ struct RecordingTimeLCD: View {
                         )
                 }
         }
+    }
+
+    private func remainingTime(fontSize: CGFloat) -> some View {
+        Text(CameraStatusPresentation.compactTimeText(for: estimatedSeconds))
+            .font(.system(size: fontSize, weight: .medium))
+            .monospacedDigit()
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var renderingActivity: some View {
+        VStack(spacing: 2) {
+            // The timeline exists only during active rendering with motion enabled.
+            // A static arc replaces it under Reduce Motion; no animation state or timer survives idle.
+            if queueStatus.shouldAnimateRendering(reduceMotion: reduceMotion) {
+                TimelineView(.animation(paused: reduceMotion)) { context in
+                    let phase = context.date.timeIntervalSinceReferenceDate
+                        .truncatingRemainder(dividingBy: 1.2) / 1.2
+                    loadingRing(rotation: phase * 360)
+                }
+                .frame(width: 18, height: 18)
+                .accessibilityHidden(true)
+            } else {
+                loadingRing(rotation: 0)
+                    .accessibilityHidden(true)
+            }
+            Text("RENDERING")
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .fixedSize()
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func loadingRing(rotation: Double) -> some View {
+        Circle()
+            .trim(from: 0, to: 0.72)
+            .stroke(.white, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+            .rotationEffect(.degrees(rotation))
+            .frame(width: 18, height: 18)
     }
 
     static func timeText(for seconds: TimeInterval?) -> String {
