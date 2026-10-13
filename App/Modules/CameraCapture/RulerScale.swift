@@ -2,6 +2,9 @@ import Foundation
 
 /// Monotonic value ↔ ruler position mapping, measured in points.
 struct RulerScale: Sendable {
+    /// Shared travel for EV 0.1 and nominal ISO third-stop detents.
+    static let detentTravel = 12.0
+
     let toPosition: @Sendable (Double) -> Double
     let fromPosition: @Sendable (Double) -> Double
 
@@ -13,9 +16,9 @@ struct RulerScale: Sendable {
         )
     }
 
-    /// Equal exposure ratios have equal travel. At 72pt per stop, a nominal
-    /// 1/3-stop ISO detent travels 24pt, regardless of the starting ISO.
-    /// Printed camera ISO values are rounded, so their spacing is near 24pt.
+    /// Equal exposure ratios have equal travel. At 36pt per stop, a nominal
+    /// 1/3-stop ISO detent travels 12pt, regardless of the starting ISO.
+    /// Printed camera ISO values are rounded, so their spacing is near 12pt.
     static func logarithmic(pointsPerStop: Double) -> RulerScale {
         RulerScale(
             toPosition: { log2($0) * pointsPerStop },
@@ -30,8 +33,37 @@ struct RulerScale: Sendable {
     }
 }
 
+/// Canonical selections shared by rendering, binding writes, and feedback.
+/// Compare detents, not raw Doubles: camera bindings round-trip through Float.
+struct RulerDetents {
+    let scale: RulerScale
+    let range: ClosedRange<Double>
+    let step: Double
+    let anchor: Double
+    var ladder: [Double]?
+
+    func snap(_ raw: Double) -> Double {
+        let clamped = min(max(raw, range.lowerBound), range.upperBound)
+        if let ladder, !ladder.isEmpty {
+            return scale.nearestDetent(to: scale.toPosition(clamped), in: ladder) ?? clamped
+        }
+        // Preserve exact sensor endpoints, including their Float binding echo.
+        if Float(clamped) == Float(range.lowerBound) { return range.lowerBound }
+        if Float(clamped) == Float(range.upperBound) { return range.upperBound }
+        guard step > 0 else { return clamped }
+        let count = ((clamped - anchor) / step + 1e-6).rounded()
+        return min(max(anchor + count * step, range.lowerBound), range.upperBound)
+    }
+
+    /// A non-nil selection is the only event that should write/fire feedback.
+    func changedValue(from current: Double, to raw: Double) -> Double? {
+        let selected = snap(raw)
+        return selected == snap(current) ? nil : selected
+    }
+}
+
 /// Keeps total gesture translation anchored to the original (unsnapped) start.
-/// The rendered position stays continuous even when the binding crosses ticks.
+/// This continuous candidate must not be used as the rendered selection.
 struct RulerDragState {
     private var startPosition: Double?
     private(set) var position: Double?

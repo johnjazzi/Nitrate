@@ -1,8 +1,5 @@
 import Foundation
 import SwiftUI
-#if canImport(UIKit)
-import UIKit
-#endif
 
 /// A scrolling "ruler" control for values that need very fine, repeatable
 /// adjustment.
@@ -24,7 +21,6 @@ struct RulerSlider: View {
     /// Value change per tick. Ignored for snapping when `ladder` is set.
     let step: Double
     /// Finger travel, in points, that moves the value by exactly one `step`.
-    /// 4mm is roughly 24pt on a typical iPhone.
     let pointsPerStep: CGFloat
     /// Every Nth tick is a labelled major tick.
     var majorEvery: Int = 5
@@ -54,18 +50,21 @@ struct RulerSlider: View {
     var width: CGFloat = 56
 
     @State private var drag = RulerDragState()
-
-    #if canImport(UIKit)
-    /// Fires one tick of feedback each time the value crosses a detent.
-    /// `@State` so the same generator survives view re-renders — a freshly
-    /// constructed generator would not be warmed up and would tick unreliably.
-    @State private var haptic = UISelectionFeedbackGenerator()
-    #endif
+    @State private var feedbackTrigger = 0
 
     /// The scale actually used for layout: the caller's, or linear travel at the
     /// configured detent size.
     private var effectiveScale: RulerScale {
         scale ?? .linear(pointsPerStep: Double(pointsPerStep) / (step > 0 ? step : 1))
+    }
+
+    private var detents: RulerDetents {
+        RulerDetents(scale: effectiveScale, range: range, step: step,
+                     anchor: majorAnchor ?? range.lowerBound, ladder: ladder)
+    }
+
+    private var selectedPosition: Double {
+        effectiveScale.toPosition(detents.snap(value))
     }
 
     var body: some View {
@@ -75,6 +74,7 @@ struct RulerSlider: View {
         .frame(width: width, height: length)
         .contentShape(Rectangle())
         .gesture(dragGesture)
+        .sensoryFeedback(.selection, trigger: feedbackTrigger)
         .accessibilityElement()
         .accessibilityValue(String(format: "%.2f", value))
         .accessibilityAdjustableAction { direction in
@@ -93,11 +93,6 @@ struct RulerSlider: View {
         // alone produces no movement and therefore no change.
         DragGesture(minimumDistance: 0)
             .onChanged { gesture in
-                if drag.position == nil {
-                    #if canImport(UIKit)
-                    haptic.prepare()
-                    #endif
-                }
                 // Dragging up (negative height) raises the position, and a
                 // higher position is a higher value.
                 let position = drag.update(
@@ -116,12 +111,9 @@ struct RulerSlider: View {
     }
 
     /// Clamp to the range, snap to the nearest detent, and fire one haptic tick
-    /// whenever the snapped value actually changes — once per detent crossed,
-    /// not once per frame of the drag.
+    /// whenever the selected detent changes, not once per frame or Float echo.
     private func setValue(_ raw: Double) {
-        let clamped = min(max(raw, range.lowerBound), range.upperBound)
-        let snapped = snap(clamped)
-        guard snapped != value else { return }
+        guard let snapped = detents.changedValue(from: value, to: raw) else { return }
         value = snapped
         fireHaptic()
     }
@@ -133,40 +125,21 @@ struct RulerSlider: View {
            let index = ladder.firstIndex(of: nearest) {
             let next = index + Int(direction)
             guard ladder.indices.contains(next) else { return }
-            value = ladder[next]
-            fireHaptic()
+            setValue(ladder[next])
         } else {
             setValue(value + direction * step)
         }
     }
 
     private func fireHaptic() {
-        #if canImport(UIKit)
-        haptic.selectionChanged()
-        #endif
-    }
-
-    /// Nearest entry of the ladder, or the nearest whole `step` from the anchor
-    /// (tolerating a tiny epsilon so 0.1-style steps don't drift). Snapping is
-    /// anchored the same way as the major ticks, so a value can always land
-    /// exactly on a labelled tick.
-    private func snap(_ raw: Double) -> Double {
-        if let ladder, !ladder.isEmpty {
-            let nearest = effectiveScale.nearestDetent(to: effectiveScale.toPosition(raw), in: ladder)
-            return min(max(nearest ?? raw, range.lowerBound), range.upperBound)
-        }
-        guard step > 0 else { return raw }
-        let anchor = majorAnchor ?? range.lowerBound
-        let stepCount = ((raw - anchor) / step + 1e-6).rounded()
-        let snapped = anchor + stepCount * step
-        return min(max(snapped, range.lowerBound), range.upperBound)
+        feedbackTrigger &+= 1
     }
 
     // MARK: - Rendering
 
     private func draw(in context: inout GraphicsContext, size: CGSize) {
         let centerY = size.height / 2
-        let centerPosition = drag.position ?? effectiveScale.toPosition(value)
+        let centerPosition = selectedPosition
 
         for tick in visibleTicks(halfHeight: Double(size.height / 2)) {
             let tickY = centerY - CGFloat(tick.position - centerPosition)
@@ -213,7 +186,7 @@ struct RulerSlider: View {
             return ladderTicks(ladder)
         }
 
-        let centerPosition = drag.position ?? effectiveScale.toPosition(value)
+        let centerPosition = selectedPosition
         let valueTop = effectiveScale.fromPosition(centerPosition + halfHeight)
         let valueBottom = effectiveScale.fromPosition(centerPosition - halfHeight)
 

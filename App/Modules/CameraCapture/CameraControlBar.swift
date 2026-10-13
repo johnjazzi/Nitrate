@@ -150,13 +150,13 @@ struct CameraControlBar: View {
                 .foregroundStyle(.white.opacity(0.9))
 
             if cameraViewModel.isManualExposure {
-                // Match EV's 24pt detents and tick geometry. Logarithmic ISO
+                // Match EV's 12pt detents and tick geometry. Logarithmic ISO
                 // travel keeps each nominal 1/3 stop equally reachable.
                 RulerSlider(
                     value: isoBinding,
                     range: isoSliderRange,
                     step: isoFineStep,
-                    pointsPerStep: 24,
+                    pointsPerStep: CGFloat(RulerScale.detentTravel),
                     majorValues: isoMajorValues,
                     tickLabel: { "\(Int($0.rounded()))" },
                     scale: isoScale,
@@ -166,15 +166,12 @@ struct CameraControlBar: View {
                 )
             } else {
                 // Ruler rather than a 1:1 slider: EV compensation needs
-                // deliberate, repeatable 0.1 EV detents, which a track-mapped
-                // slider cannot give. 10mm of travel = 0.25 EV, and the ruler
-                // snaps to every tick (0.1) with a haptic click — ~153ppi gives
-                // roughly 6pt/mm, so 10mm is ~60pt for 2.5 steps.
+                // repeatable 0.1 EV detents, with 12pt of travel per tick.
                 RulerSlider(
                     value: evBiasBinding,
                     range: evBiasSliderRange,
                     step: 0.1,
-                    pointsPerStep: 24,
+                    pointsPerStep: CGFloat(RulerScale.detentTravel),
                     tint: .orange,
                     length: 120
                 )
@@ -190,8 +187,10 @@ struct CameraControlBar: View {
         // Simultaneous so the whole control stays hittable: an exclusive
         // long-press would never fire over the slider track, which is the
         // widest touch target in this stack.
+        // Cancel a moving press before it reaches the first 6pt detent
+        // midpoint; otherwise a slow adjustment can replace the active ruler.
         .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.5).onEnded { _ in
+            LongPressGesture(minimumDuration: 0.5, maximumDistance: 3).onEnded { _ in
                 cameraViewModel.toggleManualExposure()
             }
         )
@@ -237,9 +236,9 @@ struct CameraControlBar: View {
     /// parameter, kept non-zero so the accessibility path stays sane.
     private var isoFineStep: Double { 25 }
 
-    /// 72pt per exposure stop = 24pt per nominal 1/3-stop detent.
+    /// 36pt per exposure stop = 12pt per nominal 1/3-stop detent.
     private var isoScale: RulerScale {
-        .logarithmic(pointsPerStop: 72)
+        .logarithmic(pointsPerStop: RulerScale.detentTravel * 3)
     }
 
     /// Binding for the EV-bias slider.
