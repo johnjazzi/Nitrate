@@ -4,7 +4,7 @@ import SwiftUI
 struct PurchaseView: View {
     @State var viewModel: PurchaseViewModel
     @Binding var showFramedPreview: Bool
-    @AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.stock.rawValue
+    @AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.neutral.rawValue
     @AppStorage(DeliverySettings.saveOriginalLogKey) private var saveOriginalLog = false
     @AppStorage(DeliverySettings.renderQualityKey) private var renderQuality = RenderExportQuality.high.rawValue
 
@@ -143,10 +143,11 @@ struct PurchaseView: View {
             Picker("Preview Color", selection: Binding(
                 get: { CameraPreviewMode.resolved(previewMode) },
                 set: { previewMode = $0.rawValue })) {
+                Text("Neutral").tag(CameraPreviewMode.neutral)
                 Text("Stock LUT").tag(CameraPreviewMode.stock)
                 Text("Log").tag(CameraPreviewMode.log)
             }
-            Text("Selected stock LUT only; no grain, halation, or glow. Preview only. Recording stays Apple Log 2; film effects are applied after capture. If Stock LUT preview is unavailable, the monitor shows Log with a warning.")
+            Text("Neutral is the default monitor; Stock LUT uses the selected film look; Log is ungraded. Preview only, with no grain, halation, or glow. Recording stays Apple Log 2; film effects are applied after capture. If a preview LUT is unavailable, the monitor shows Log with a warning.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

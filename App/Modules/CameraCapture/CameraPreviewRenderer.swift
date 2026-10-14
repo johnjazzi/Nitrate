@@ -62,9 +62,9 @@ final class CameraPreviewRenderer: @unchecked Sendable {
 
     /// Invalidates in-flight presentation before changing modes/geometry/lens.
     @discardableResult
-    func configure(active: Bool, geometry: Geometry, selectedStockLUTName: String? = nil) -> Bool {
+    func configure(active: Bool, geometry: Geometry, selectedLUTName: String? = nil) -> Bool {
         lock.lock()
-        let nameChanged = selection.select(selectedStockLUTName)
+        let nameChanged = selection.select(selectedLUTName)
         guard self.active != active || self.geometry != geometry || nameChanged else { lock.unlock(); return false }
         self.active = active
         self.geometry = geometry
@@ -73,23 +73,23 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         lastAdmission = 0
         let requested = selection
         lock.unlock()
-        if nameChanged { renderQueue.async { [weak self] in self?.loadStockLUT(requested) } }
+        if nameChanged { renderQueue.async { [weak self] in self?.loadLUT(requested) } }
         return true
     }
 
-    func reset(warning: String = "Stock LUT preview pending — showing Log") {
+    func reset(warning: String = "Preview LUT pending — showing Log") {
         lock.lock()
         revision &+= 1
         publishedStatus = nil
         let current = revision
         lock.unlock()
-        publish(stockActive: false, warning: warning, revision: current)
+        publish(lutActive: false, warning: warning, revision: current)
     }
 
     /// Capture queue does only bounded admission and a read-only retain.
     func receive(_ frame: CameraPreviewFrame?) {
         guard let frame else {
-            reset(warning: "Stock LUT preview source unavailable — showing Log")
+            reset(warning: "Preview LUT source unavailable — showing Log")
             return
         }
         lock.lock()
@@ -110,7 +110,7 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         let snapshot = geometry
         let selected = selection
         lock.unlock()
-        if sourceChanged { publish(stockActive: false, warning: "Stock LUT preview pending — showing Log", revision: current) }
+        if sourceChanged { publish(lutActive: false, warning: "Preview LUT pending — showing Log", revision: current) }
         renderQueue.async { [self] in render(frame, geometry: snapshot, selected: selected, revision: current) }
     }
 
@@ -120,19 +120,19 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         return active && revision == current
     }
 
-    private func publish(stockActive: Bool, warning: String?, revision current: UInt64) {
-        let key = stockActive ? "stockActive" : warning ?? "log"
+    private func publish(lutActive: Bool, warning: String?, revision current: UInt64) {
+        let key = lutActive ? "lutActive" : warning ?? "log"
         lock.lock()
         guard active, revision == current, publishedStatus != key else { lock.unlock(); return }
         publishedStatus = key
         let selectedName = selection.name ?? "none"
         lock.unlock()
 #if DEBUG
-        print("Camera preview: \(stockActive ? "Stock LUT preview active [\(selectedName)]" : warning ?? "Log")")
+        print("Camera preview: \(lutActive ? "Preview LUT active [\(selectedName)]" : warning ?? "Log")")
 #endif
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isCurrent(current) else { return }
-            MainActor.assumeIsolated { self.status(stockActive, warning) }
+            MainActor.assumeIsolated { self.status(lutActive, warning) }
         }
     }
 
@@ -156,9 +156,9 @@ final class CameraPreviewRenderer: @unchecked Sendable {
             self.device = device
             self.commands = commands
             self.cache = cache
-            // Stock LUT resources load separately, only when the selected filename changes.
+            // Preview LUT resources load separately, only when the selected filename changes.
         } catch {
-            initializationFailure = "Stock LUT preview unavailable — showing Log"
+            initializationFailure = "Preview LUT unavailable — showing Log"
         }
     }
 
@@ -168,14 +168,14 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         guard isCurrent(current) else { return }
         guard initializationFailure == nil, let commands, let pipeline, let cache, let lut,
               selected.name != nil, loadedSelection == selected else {
-            publish(stockActive: false, warning: initializationFailure ?? lutFailure ?? "Stock LUT preview missing selected LUT — showing Log", revision: current)
+            publish(lutActive: false, warning: initializationFailure ?? lutFailure ?? "Preview LUT missing selection — showing Log", revision: current)
             return
         }
         let buffer = frame.buffer
         // Recording stabilization can crop/warp the data-output image independently
         // of the native preview. Do not misregister focus/metering over that source.
         guard !frame.stabilized else {
-            publish(stockActive: false, warning: "Stock LUT preview unavailable with recording stabilization — showing Log", revision: current)
+            publish(lutActive: false, warning: "Preview LUT unavailable with recording stabilization — showing Log", revision: current)
             return
         }
         guard #available(iOS 26.0, *),
@@ -186,7 +186,7 @@ final class CameraPreviewRenderer: @unchecked Sendable {
               Self.unspecifiedAttachment(buffer, key: kCVImageBufferTransferFunctionKey),
               let format = CameraPreviewPolicy.format(CVPixelBufferGetPixelFormatType(buffer)),
               CVPixelBufferGetPlaneCount(buffer) == 2 else {
-            publish(stockActive: false, warning: "Stock LUT preview unsupported for this source — showing Log", revision: current)
+            publish(lutActive: false, warning: "Preview LUT unsupported for this source — showing Log", revision: current)
             return
         }
         let turns = (Int(((geometry.rotationAngle - frame.rotationAngle) / 90).rounded()) % 4 + 4) % 4
@@ -203,7 +203,7 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         guard yResult == kCVReturnSuccess, cResult == kCVReturnSuccess,
               let yRef, let cRef, let y = CVMetalTextureGetTexture(yRef), let c = CVMetalTextureGetTexture(cRef),
               let drawable = layer.nextDrawable(), let command = commands.makeCommandBuffer() else {
-            publish(stockActive: false, warning: "Stock LUT preview rendering unavailable — showing Log", revision: current)
+            publish(lutActive: false, warning: "Preview LUT rendering unavailable — showing Log", revision: current)
             return
         }
         let pass = MTLRenderPassDescriptor()
@@ -212,7 +212,7 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
         guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else {
-            publish(stockActive: false, warning: "Stock LUT preview rendering unavailable — showing Log", revision: current)
+            publish(lutActive: false, warning: "Preview LUT rendering unavailable — showing Log", revision: current)
             return
         }
         var uniforms = Uniforms(imageScale: scale, quarterTurns: UInt32(turns),
@@ -231,8 +231,8 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         command.addCompletedHandler { [self, lease] completed in
             // Explicit ownership through GPU completion, including CV texture wrappers.
             withExtendedLifetime(lease) {}
-            publish(stockActive: completed.status == .completed,
-                    warning: completed.status == .completed ? nil : "Stock LUT preview GPU error — showing Log", revision: current)
+            publish(lutActive: completed.status == .completed,
+                    warning: completed.status == .completed ? nil : "Preview LUT GPU error — showing Log", revision: current)
             admission.signal()
         }
         committed = true
@@ -251,11 +251,11 @@ final class CameraPreviewRenderer: @unchecked Sendable {
     }
 
     /// Queue-owned lookup/load; obsolete selections cannot publish a late result.
-    private func loadStockLUT(_ requested: CameraPreviewLUTSelection) {
+    private func loadLUT(_ requested: CameraPreviewLUTSelection) {
         guard isSelected(requested) else { return }
         lut = nil
         loadedSelection = nil
-        lutFailure = "Stock LUT preview missing selected LUT — showing Log"
+        lutFailure = "Preview LUT missing selection — showing Log"
         guard let name = requested.name, !name.isEmpty, let device else { return }
         do {
             guard let url = findBundleFile(named: name) else { throw PreviewError.unavailable }
@@ -271,16 +271,17 @@ final class CameraPreviewRenderer: @unchecked Sendable {
             lock.lock()
             defer { lock.unlock() }
             guard selection == requested else { return }
-            lutFailure = "Stock LUT preview LUT unavailable or invalid — showing Log"
+            lutFailure = "Preview LUT unavailable or invalid — showing Log"
         }
     }
 
-    /// Root and LUTs folder references first; build the recursive fallback index once.
+    /// Root and LUT folder references first; build the recursive fallback index once.
     /// No bundle lookup, disk read, or LUT allocation runs in the per-frame path.
     private func findBundleFile(named filename: String) -> URL? {
         let bundle = Bundle.main
         if let url = bundle.url(forResource: filename, withExtension: nil) { return url }
         if let url = bundle.url(forResource: filename, withExtension: nil, subdirectory: "LUTs") { return url }
+        if let url = bundle.url(forResource: filename, withExtension: nil, subdirectory: "Preview") { return url }
         if bundleFiles == nil {
             var files: [String: URL] = [:]
             if let root = bundle.resourceURL,

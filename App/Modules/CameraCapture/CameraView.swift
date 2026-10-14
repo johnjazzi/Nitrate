@@ -7,7 +7,7 @@ struct CameraView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State var viewModel: CameraViewModel
     @State private var previewLayer: AVCaptureVideoPreviewLayer?
-    @AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.stock.rawValue
+    @AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.neutral.rawValue
     var videoGravity: AVLayerVideoGravity = .resizeAspectFill
     var selectedStockLUTName: String? = nil
 
@@ -95,10 +95,10 @@ private final class CameraPreviewUIView: UIView {
     private let monitorLabel = UILabel()
     private let owner = UUID()
     private var renderer: CameraPreviewRenderer?
-    private var wantsStock = false
+    private var wantsLUT = false
     private var attached = false
     private var activeLens: CameraLens?
-    private var selectedStockLUTName: String?
+    private var resolvedLUTName: String?
 #if DEBUG
     private var diagnosticGeometry = ""
 #endif
@@ -126,9 +126,9 @@ private final class CameraPreviewUIView: UIView {
         if let metalLayer = metalView.layer as? CAMetalLayer {
             metalLayer.colorspace = CGColorSpace(name: CGColorSpace.itur_709)
             metalLayer.framebufferOnly = true
-            renderer = CameraPreviewRenderer(layer: metalLayer) { [weak self] stockActive, warning in
-                guard let self, self.wantsStock else { return }
-                self.metalView.isHidden = !stockActive
+            renderer = CameraPreviewRenderer(layer: metalLayer) { [weak self] lutActive, warning in
+                guard let self, self.wantsLUT else { return }
+                self.metalView.isHidden = !lutActive
                 self.monitorLabel.text = warning
                 self.monitorLabel.isHidden = warning == nil
                 self.setNeedsLayout()
@@ -137,22 +137,23 @@ private final class CameraPreviewUIView: UIView {
     }
 
     func update(mode: CameraPreviewMode, active: Bool, lens: CameraLens, selectedStockLUTName: String?) {
-        let requested = mode == .stock && active
-        if wantsStock != requested || activeLens != lens || self.selectedStockLUTName != selectedStockLUTName {
+        let requested = mode != .log && active
+        let lutName = mode.lutName(for: selectedStockLUTName)
+        if wantsLUT != requested || activeLens != lens || resolvedLUTName != lutName {
             metalView.isHidden = true
-            monitorLabel.text = requested ? "Stock LUT preview pending — showing Log" : nil
+            monitorLabel.text = requested ? "Preview LUT pending — showing Log" : nil
             monitorLabel.isHidden = !requested
             renderer?.reset()
         }
-        wantsStock = requested
+        wantsLUT = requested
         activeLens = lens
-        self.selectedStockLUTName = selectedStockLUTName
+        resolvedLUTName = lutName
         updateRendererGeometry()
         refreshSink()
     }
 
     private func refreshSink() {
-        let shouldAttach = wantsStock && window != nil && renderer != nil
+        let shouldAttach = wantsLUT && window != nil && renderer != nil
         guard shouldAttach != attached else { return }
         attached = shouldAttach
         if shouldAttach, let renderer {
@@ -164,8 +165,8 @@ private final class CameraPreviewUIView: UIView {
     }
 
     func detach() {
-        wantsStock = false
-        renderer?.configure(active: false, geometry: .init(), selectedStockLUTName: selectedStockLUTName)
+        wantsLUT = false
+        renderer?.configure(active: false, geometry: .init(), selectedLUTName: resolvedLUTName)
         camera.removePreviewTap(owner: owner)
         attached = false
         metalView.isHidden = true
@@ -187,11 +188,11 @@ private final class CameraPreviewUIView: UIView {
             rotationAngle: connection?.videoRotationAngle ?? 90,
             mirrored: connection?.isVideoMirrored ?? false,
             fill: previewLayer.videoGravity == .resizeAspectFill)
-        if renderer?.configure(active: wantsStock && window != nil, geometry: geometry,
-                               selectedStockLUTName: selectedStockLUTName) == true {
+        if renderer?.configure(active: wantsLUT && window != nil, geometry: geometry,
+                               selectedLUTName: resolvedLUTName) == true {
             metalView.isHidden = true
-            monitorLabel.text = wantsStock ? "Stock LUT preview pending — showing Log" : nil
-            monitorLabel.isHidden = !wantsStock
+            monitorLabel.text = wantsLUT ? "Preview LUT pending — showing Log" : nil
+            monitorLabel.isHidden = !wantsLUT
         }
     }
 

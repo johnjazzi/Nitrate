@@ -5,15 +5,72 @@ import Testing
 struct CameraPreviewPolicyTests {
     @Test func persistedModeDefaultsAndKey() {
         #expect(CameraPreviewMode.preferenceKey == "camera.previewMode")
-        #expect(CameraPreviewMode.allCases == [.stock, .log])
-        #expect(CameraPreviewMode.resolved(nil) == .stock)
-        #expect(CameraPreviewMode.resolved("normal") == .stock)
-        #expect(CameraPreviewMode.resolved("") == .stock)
-        #expect(CameraPreviewMode.resolved("invalid") == .stock)
-        #expect(CameraPreviewMode.resolved("LOG") == .stock)
-        #expect(CameraPreviewMode.resolved(" log ") == .stock)
+        #expect(CameraPreviewMode.allCases == [.neutral, .stock, .log])
+        #expect(CameraPreviewMode.resolved(nil) == .neutral)
+        #expect(CameraPreviewMode.resolved("normal") == .neutral)
+        #expect(CameraPreviewMode.resolved("") == .neutral)
+        #expect(CameraPreviewMode.resolved("invalid") == .neutral)
+        #expect(CameraPreviewMode.resolved("LOG") == .neutral)
+        #expect(CameraPreviewMode.resolved(" log ") == .neutral)
+        #expect(CameraPreviewMode.resolved("stock") == .stock)
+        #expect(CameraPreviewMode.resolved("log") == .log)
         for mode in CameraPreviewMode.allCases {
             #expect(CameraPreviewMode.resolved(mode.rawValue) == mode)
+        }
+    }
+
+    @Test func modesResolveExactlyOneLUTFromLog2() {
+        let neutralName = "AppleLog2ToRec709.cube"
+        let stockName = "50D K2383 - Apple Log 2.cube"
+        #expect(CameraPreviewMode.neutral.lutName(for: nil) == neutralName)
+        #expect(CameraPreviewMode.neutral.lutName(for: stockName) == neutralName)
+        #expect(CameraPreviewMode.stock.lutName(for: nil) == nil)
+        #expect(CameraPreviewMode.stock.lutName(for: stockName) == stockName)
+        #expect(CameraPreviewMode.log.lutName(for: nil) == nil)
+        #expect(CameraPreviewMode.log.lutName(for: stockName) == nil)
+    }
+
+    @Test func neutralStockChangesKeepTheSameSelectionGeneration() {
+        var selection = CameraPreviewLUTSelection()
+        var changed = selection.select(CameraPreviewMode.neutral.lutName(for: nil))
+        #expect(changed)
+        let neutralRequest = selection
+        for stockName in ["50D K2383 - Apple Log 2.cube", "500T K2383 - Apple Log 2.cube"] {
+            changed = selection.select(CameraPreviewMode.neutral.lutName(for: stockName))
+            #expect(!changed)
+            #expect(selection == neutralRequest)
+            #expect(selection.generation == neutralRequest.generation)
+        }
+        changed = selection.select(CameraPreviewMode.stock.lutName(for: "50D K2383 - Apple Log 2.cube"))
+        #expect(changed)
+        let stockRequest = selection
+        changed = selection.select(CameraPreviewMode.neutral.lutName(for: nil))
+        #expect(changed)
+        #expect(selection != neutralRequest)
+        #expect(selection != stockRequest)
+        let newNeutralRequest = selection
+        changed = selection.select(CameraPreviewMode.log.lutName(for: nil))
+        #expect(changed)
+        #expect(selection.name == nil)
+        #expect(selection != newNeutralRequest)
+    }
+
+    @Test func productionParserReadsBundledNeutralCubeWithoutReordering() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let text = try String(contentsOf: root.appendingPathComponent(
+            "App/Resources/Preview/AppleLog2ToRec709.cube"), encoding: .utf8)
+        let cube = try CameraPreviewCube.parse(text)
+        #expect(cube.size == 33)
+        #expect(cube.rgba.count == 33 * 33 * 33 * 4)
+        #expect(cube.rgba.allSatisfy { $0.isFinite })
+        // Asymmetric grid samples pin production parser RGB/red-fastest indexing.
+        let redIndex = ((4 * 33 + 8) * 33 + 16) * 4
+        let blueIndex = ((16 * 33 + 8) * 33 + 4) * 4
+        let redSample: [Float] = [0.406324685, 0.138296574, 0, 1]
+        let blueSample: [Float] = [0, 0.092437297, 0.244335920, 1]
+        for channel in 0..<4 {
+            #expect(abs(cube.rgba[redIndex + channel] - redSample[channel]) < 0.00001)
+            #expect(abs(cube.rgba[blueIndex + channel] - blueSample[channel]) < 0.00001)
         }
     }
 
@@ -319,17 +376,38 @@ struct CameraPreviewPolicyTests {
         let content = try String(contentsOf: root.appendingPathComponent("App/ContentView.swift"), encoding: .utf8)
         let view = try String(contentsOf: root.appendingPathComponent("App/Modules/CameraCapture/CameraView.swift"), encoding: .utf8)
         let renderer = try String(contentsOf: root.appendingPathComponent("App/Modules/CameraCapture/CameraPreviewRenderer.swift"), encoding: .utf8)
+        let policy = try String(contentsOf: root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraPreviewPolicy.swift"), encoding: .utf8)
+        let settings = try String(contentsOf: root.appendingPathComponent("App/Modules/Purchase/PurchaseView.swift"), encoding: .utf8)
         #expect(content.contains("selectedStockLUTName: selectedStock?.lutName"))
         #expect(view.contains("var selectedStockLUTName: String? = nil"))
-        #expect(view.contains("self.selectedStockLUTName != selectedStockLUTName"))
-        #expect(view.contains("selectedStockLUTName: selectedStockLUTName"))
-        #expect(renderer.contains("selection.select(selectedStockLUTName)"))
+        #expect(view.contains("let requested = mode != .log && active"))
+        #expect(view.contains("let lutName = mode.lutName(for: selectedStockLUTName)"))
+        #expect(view.contains("resolvedLUTName != lutName"))
+        #expect(!view.contains("self.selectedStockLUTName != selectedStockLUTName"))
+        #expect(view.contains("selectedLUTName: resolvedLUTName"))
+        #expect(view.contains("let shouldAttach = wantsLUT && window != nil && renderer != nil"))
+        #expect(view.contains("camera.removePreviewTap(owner: owner)"))
+        for surface in [view, settings] {
+            #expect(surface.contains("@AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.neutral.rawValue"))
+        }
+        let neutralOption = try #require(settings.range(of: "Text(\"Neutral\").tag(CameraPreviewMode.neutral)"))
+        let stockOption = try #require(settings.range(of: "Text(\"Stock LUT\").tag(CameraPreviewMode.stock)"))
+        let logOption = try #require(settings.range(of: "Text(\"Log\").tag(CameraPreviewMode.log)"))
+        #expect(neutralOption.lowerBound < stockOption.lowerBound)
+        #expect(stockOption.lowerBound < logOption.lowerBound)
+        #expect(policy.contains("case .neutral: return \"AppleLog2ToRec709.cube\""))
+        #expect(renderer.contains("selection.select(selectedLUTName)"))
         #expect(renderer.contains("if nameChanged { renderQueue.async"))
         #expect(renderer.contains("guard isSelected(requested) else { return }"))
         #expect(renderer.contains("loadedSelection == selected"))
         #expect(renderer.contains("guard let self, self.isCurrent(current) else { return }"))
         #expect(renderer.contains("CameraPreviewCube.parse"))
-        #expect(!renderer.contains("AppleLog2ToRec709"))
+        #expect(renderer.contains("subdirectory: \"Preview\""))
+        #expect(renderer.contains("Preview LUT active [\\(selectedName)]"))
+        #expect(!renderer.contains("Stock LUT preview"))
+        #expect(renderer.components(separatedBy: "encoder.setFragmentTexture(lut, index: 2)").count == 2)
+        #expect(renderer.components(separatedBy: "encoder.drawPrimitives").count == 2)
         for forbidden in ["PipelineRenderer(", "grain", "halation", "toneMapper", "CIImage"] {
             #expect(!renderer.contains(forbidden))
         }

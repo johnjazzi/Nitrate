@@ -2,13 +2,22 @@ import Foundation
 
 /// A display preference only; it does not change the camera's capture format.
 enum CameraPreviewMode: String, CaseIterable, Sendable {
-    case stock, log
+    case neutral, stock, log
 
     static let preferenceKey = "camera.previewMode"
 
     static func resolved(_ raw: String?) -> Self {
-        // The retired "normal" value migrates to the stock-only default.
-        raw.flatMap(Self.init(rawValue:)) ?? .stock
+        // Missing/invalid values and the retired "normal" value use Neutral.
+        raw.flatMap(Self.init(rawValue:)) ?? .neutral
+    }
+
+    /// Each monitor mode consumes Log 2 directly; never stack Neutral and stock LUTs.
+    func lutName(for selectedStockName: String?) -> String? {
+        switch self {
+        case .neutral: return "AppleLog2ToRec709.cube"
+        case .stock: return selectedStockName
+        case .log: return nil
+        }
     }
 }
 
