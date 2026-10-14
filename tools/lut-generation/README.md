@@ -7,8 +7,9 @@ Builds the two shipped film look-up tables from source:
 | `5207 - Apple Log 2.cube` | Apple Log 2 code values in Apple Wide Gamut | Rec. 709, gamma 2.4 |
 | `5219 - Apple Log 2.cube` | same | same |
 
-Named by emulsion number: 5207 is Kodak Vision3 250D (daylight), 5219 is Vision3
-500T (tungsten). Both print on a fixed Kodak Vision 2383.
+Files are named by emulsion number alone: a slash cannot appear in a filename.
+The app labels the two stocks the way the canister does — **250D / 5207** and
+**500T / 5219**. Both print on a fixed Kodak Vision 2383.
 
 33³, `.cube`, red-fastest row order (`row = r + g·33 + b·33²`) — the convention
 the app's parser and sampling kernel expect.
