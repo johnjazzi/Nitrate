@@ -193,6 +193,11 @@ departures from the obvious reading of the source data:
    pulled onto it along the white-point ray at constant luminance (57% of knots),
    leaving in-locus colours bit-identical.
 
+**Rebuilding them.** The generator is checked in at
+[`tools/lut-generation/`](tools/lut-generation/), with pinned dependencies and
+the upstream commit it was run against. Its README has the commands, and the
+hashes a regeneration must reproduce byte-for-byte.
+
 **What this is not.** These are generated approximations of a film look. They
 are not Kodak products, not Kodak-authorised, and not a colorimetric calibration
 of any camera or display. "250D", "500T" and "2383" identify the emulated stocks

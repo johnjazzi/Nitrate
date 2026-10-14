@@ -24,6 +24,14 @@ build/
 __pycache__/
 *.pyc
 
+# LUT generator environment (tools/lut-generation): local venv and the pinned
+# upstream clone. Neither is a repo artefact — bootstrap.sh rebuilds both.
+tools/lut-generation/.venv/
+tools/lut-generation/.vendor/
+tools/lut-generation/out*/
+tools/lut-generation/preview/
+tools/lut-generation/*.log
+
 # Swift Package Manager
 .build/
 Packages/
