@@ -1,53 +1,6 @@
 {
   "stocks": [
     {
-      "stockId": "cinestill50d_k2383",
-      "displayName": "50D K2383",
-      "category": "video",
-      "lutName": "50D K2383 - Apple Log 2.cube",
-      "halationStrength": 0.43,
-      "glowStrength": 0.31,
-      "grainSize": 1.00,
-      "halationRadiusFraction": 0.008,
-      "halationTint": [1.0, 0.20, 0.10],
-      "outputContrast": 1.0,
-      "colorTemperature": 5600,
-      "defaultISO": 50,
-      "primaryTint": "#E9D79B",
-      "secondaryTint": "#C7AE68",
-      "recipe": {
-        "schemaVersion": 1,
-        "version": "50d-current-v1",
-        "input": {
-          "gamut": "Rec.2020",
-          "transfer": "Apple Log 2",
-          "provenance": "user-declared"
-        },
-        "output": {
-          "gamut": "Rec.709",
-          "transfer": "Rec.709",
-          "provenance": "user-declared"
-        },
-        "domainMin": [
-          0,
-          0,
-          0
-        ],
-        "domainMax": [
-          1,
-          1,
-          1
-        ],
-        "domainProvenance": "implicit-cube-default",
-        "lutAlgorithm": "resolve-rgb-red-fastest-texel-center-linear-clamp-v2",
-        "halationAlgorithm": "input-luma-spatial-highlight-addition-v2",
-        "glowAlgorithm": "blurred-warm-highlight-addition-v2",
-        "grainAlgorithm": "coherent-multiscale-edge-amplitude-v3",
-        "edgeBoostMultiplier": 3,
-        "deliveryAlgorithm": "clamp-bgra8-hevc-rec709-tagged-v1"
-      }
-    },
-    {
       "stockId": "kodak250d_k2383",
       "displayName": "250D K2383",
       "category": "video",
@@ -65,53 +18,6 @@
       "recipe": {
         "schemaVersion": 1,
         "version": "250d-current-v1",
-        "input": {
-          "gamut": "Rec.2020",
-          "transfer": "Apple Log 2",
-          "provenance": "user-declared"
-        },
-        "output": {
-          "gamut": "Rec.709",
-          "transfer": "Rec.709",
-          "provenance": "user-declared"
-        },
-        "domainMin": [
-          0,
-          0,
-          0
-        ],
-        "domainMax": [
-          1,
-          1,
-          1
-        ],
-        "domainProvenance": "implicit-cube-default",
-        "lutAlgorithm": "resolve-rgb-red-fastest-texel-center-linear-clamp-v2",
-        "halationAlgorithm": "input-luma-spatial-highlight-addition-v2",
-        "glowAlgorithm": "blurred-warm-highlight-addition-v2",
-        "grainAlgorithm": "coherent-multiscale-edge-amplitude-v3",
-        "edgeBoostMultiplier": 3,
-        "deliveryAlgorithm": "clamp-bgra8-hevc-rec709-tagged-v1"
-      }
-    },
-    {
-      "stockId": "kodak200t_k2383",
-      "displayName": "200T K2383",
-      "category": "video",
-      "lutName": "200T K2383 - Apple Log 2.cube",
-      "halationStrength": 0.43,
-      "glowStrength": 0.31,
-      "grainSize": 1.05,
-      "halationRadiusFraction": 0.010,
-      "halationTint": [1.0, 0.24, 0.10],
-      "outputContrast": 1.0,
-      "colorTemperature": 3200,
-      "defaultISO": 200,
-      "primaryTint": "#5E7EA5",
-      "secondaryTint": "#223550",
-      "recipe": {
-        "schemaVersion": 1,
-        "version": "200t-current-v1",
         "input": {
           "gamut": "Rec.2020",
           "transfer": "Apple Log 2",

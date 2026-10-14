@@ -16,7 +16,7 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
     let glowStrength: Float
     let grainSize: Float
     /// Per-stock halo geometry. Halation radius tracks emulsion thickness and
-    /// stock speed, so a slow 50D and a fast 500T must not share halo size;
+    /// stock speed, so a slow 250D and a fast 500T must not share halo size;
     /// `halationRadiusFraction` is the blur radius as a fraction of the
     /// half-resolution frame width (resolution-independent, like the glow
     /// radius). `halationTint` is the red-dominant colour cast of the halo,

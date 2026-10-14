@@ -149,9 +149,9 @@ struct RenderContractTests {
         #expect(app == cli)
         for config in app { try config.validate() }
         let shippedGrainStocks = app.filter {
-            ["cinestill50d_k2383", "kodak250d_k2383", "kodak200t_k2383", "kodak500t_k2383"].contains($0.stockId)
+            ["kodak250d_k2383", "kodak500t_k2383"].contains($0.stockId)
         }
-        #expect(shippedGrainStocks.count == 4)
+        #expect(shippedGrainStocks.count == 2)
         #expect(shippedGrainStocks.allSatisfy { $0.effectiveRecipe.grainAlgorithm == RenderRecipe.edgeAmplitudeAlgorithm })
         #expect(shippedGrainStocks.allSatisfy { $0.effectiveRecipe.edgeBoostMultiplier == 3 })
         let template = try #require(app.first { $0.stockId == "kodak500t_k2383" })
@@ -193,9 +193,7 @@ struct RenderContractTests {
             try #require(app.first { $0.stockId == id }).colorTemperature
         }
         #expect(try temp("kodak500t_k2383") == 3200)
-        #expect(try temp("kodak200t_k2383") == 3200)
         #expect(try temp("kodak250d_k2383") == 5600)
-        #expect(try temp("cinestill50d_k2383") == 5600)
         // Tungsten stocks must NOT fall back to the daylight default (5600),
         // which would be the silent-failure mode of a `let`-declared property.
         #expect(try temp("kodak500t_k2383") != 5600)
@@ -316,21 +314,19 @@ struct RenderContractTests {
         func tint(_ id: String) throws -> SIMD3<Float> {
             try #require(app.first { $0.stockId == id }).halationTint
         }
-        #expect(try radius("cinestill50d_k2383") == 0.008)
-        #expect(try radius("kodak200t_k2383") == 0.010)
         #expect(try radius("kodak250d_k2383") == 0.011)
         #expect(try radius("kodak500t_k2383") == 0.014)
         // Faster stock, wider halo — the values must not all be identical.
-        let slowest = try radius("cinestill50d_k2383")
+        let slower = try radius("kodak250d_k2383")
         let fastest = try radius("kodak500t_k2383")
-        #expect(fastest > slowest)
-        #expect(Set(app.map(\.halationRadiusFraction)).count == 4)
+        #expect(fastest > slower)
+        #expect(Set(app.map(\.halationRadiusFraction)).count == 2)
 
         // Published red-dominant range, full-scale red.
         #expect(try tint("kodak500t_k2383") == SIMD3(1.0, 0.32, 0.10))
-        #expect(try tint("cinestill50d_k2383") == SIMD3(1.0, 0.20, 0.10))
+        #expect(try tint("kodak250d_k2383") == SIMD3(1.0, 0.28, 0.10))
         #expect(app.allSatisfy { $0.halationTint.x == 1.0 })
-        #expect(try tint("cinestill50d_k2383") != tint("kodak500t_k2383"))
+        #expect(try tint("kodak250d_k2383") != tint("kodak500t_k2383"))
     }
 
     @Test func halationGeometryValidationBounds() throws {
