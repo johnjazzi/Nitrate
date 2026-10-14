@@ -21,7 +21,7 @@ struct CameraPreviewPolicyTests {
 
     @Test func modesResolveExactlyOneLUTFromLog2() {
         let neutralName = "AppleLog2ToRec709.cube"
-        let stockName = "250D K2383 - Apple Log 2.cube"
+        let stockName = "5207 - Apple Log 2.cube"
         #expect(CameraPreviewMode.neutral.lutName(for: nil) == neutralName)
         #expect(CameraPreviewMode.neutral.lutName(for: stockName) == neutralName)
         #expect(CameraPreviewMode.stock.lutName(for: nil) == nil)
@@ -35,13 +35,13 @@ struct CameraPreviewPolicyTests {
         var changed = selection.select(CameraPreviewMode.neutral.lutName(for: nil))
         #expect(changed)
         let neutralRequest = selection
-        for stockName in ["250D K2383 - Apple Log 2.cube", "500T K2383 - Apple Log 2.cube"] {
+        for stockName in ["5207 - Apple Log 2.cube", "5219 - Apple Log 2.cube"] {
             changed = selection.select(CameraPreviewMode.neutral.lutName(for: stockName))
             #expect(!changed)
             #expect(selection == neutralRequest)
             #expect(selection.generation == neutralRequest.generation)
         }
-        changed = selection.select(CameraPreviewMode.stock.lutName(for: "250D K2383 - Apple Log 2.cube"))
+        changed = selection.select(CameraPreviewMode.stock.lutName(for: "5207 - Apple Log 2.cube"))
         #expect(changed)
         let stockRequest = selection
         changed = selection.select(CameraPreviewMode.neutral.lutName(for: nil))
@@ -306,13 +306,13 @@ struct CameraPreviewPolicyTests {
         var selection = CameraPreviewLUTSelection()
         var changed = selection.select(nil)
         #expect(!changed)
-        changed = selection.select("250D K2383 - Apple Log 2.cube")
+        changed = selection.select("5207 - Apple Log 2.cube")
         #expect(changed)
         let firstRequest = selection
         changed = selection.select(firstRequest.name)
         #expect(!changed)
         #expect(selection == firstRequest)
-        changed = selection.select("500T K2383 - Apple Log 2.cube")
+        changed = selection.select("5219 - Apple Log 2.cube")
         #expect(changed)
         #expect(selection != firstRequest)
         let secondRequest = selection

@@ -962,7 +962,7 @@ struct GrainShadowTests {
         }
         let output = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("grain-shadow-preview.ppm")
         try ppm.write(to: output, options: .atomic)
-        let legend = ["source", "original-500t", "50iso-size0.6", "250iso-size1.0", "200iso-size0.8", "500iso-size1.3"]
+        let legend = ["source", "original-5219", "50iso-size0.6", "250iso-size1.0", "200iso-size0.8", "500iso-size1.3"]
         let legendURL = output.deletingPathExtension().appendingPathExtension("json")
         try JSONEncoder().encode(legend).write(to: legendURL, options: .atomic)
         print("Grain preview: \(output.path) (\(panelCount * Self.side)x\(Self.side), \(legend.joined(separator: ", ")))")

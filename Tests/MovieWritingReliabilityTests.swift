@@ -646,8 +646,8 @@ struct MovieWritingReliabilityTests {
         let configURL = testBundle.url(forResource: "stocks", withExtension: "json")
             ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../App/Resources/stocks.json").standardizedFileURL
         let stockContainer = try JSONDecoder().decode(StockContainer.self, from: Data(contentsOf: configURL))
-        guard let config = stockContainer.stocks.first(where: { $0.stockId == "kodak500t_k2383" }) else {
-            throw FixtureError.missingResource("kodak500t_k2383 stock configuration")
+        guard let config = stockContainer.stocks.first(where: { $0.stockId == "kodak5219" }) else {
+            throw FixtureError.missingResource("kodak5219 stock configuration")
         }
         return config
     }

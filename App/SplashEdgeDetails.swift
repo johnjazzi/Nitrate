@@ -23,9 +23,9 @@ struct SplashEdgeDetails: Equatable {
     static let placeholder = SplashEdgeDetails(
         format: "35MM · 4-PERF",
         capture: "APPLE LOG 2",
-        stock: "500T · EI 500",
+        stock: "5219 · EI 500",
         marking: "SAFETY FILM",
-        edgeCode: "NITRATE 500T 031",
+        edgeCode: "NITRATE 5219 031",
         frameCounter: "0042 0043"
     )
 }

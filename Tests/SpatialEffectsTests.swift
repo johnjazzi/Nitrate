@@ -233,7 +233,7 @@ struct SpatialEffectsTests {
 
     /// Per-stock halo geometry: two stocks with different radius and tint must
     /// produce measurably different halo spread AND colour, not merely a
-    /// different intensity. 250D (tight, saturated red) vs 500T (wide, less
+    /// different intensity. 5207 (tight, saturated red) vs 5219 (wide, less
     /// saturated) per the published starting values.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
     func perStockGeometryChangesSpreadAndColour() throws {

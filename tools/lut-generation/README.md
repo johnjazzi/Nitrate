@@ -4,8 +4,11 @@ Builds the two shipped film look-up tables from source:
 
 | Output | Input domain | Output domain |
 |---|---|---|
-| `250D K2383 - Apple Log 2.cube` | Apple Log 2 code values in Apple Wide Gamut | Rec. 709, gamma 2.4 |
-| `500T K2383 - Apple Log 2.cube` | same | same |
+| `5207 - Apple Log 2.cube` | Apple Log 2 code values in Apple Wide Gamut | Rec. 709, gamma 2.4 |
+| `5219 - Apple Log 2.cube` | same | same |
+
+Named by emulsion number: 5207 is Kodak Vision3 250D (daylight), 5219 is Vision3
+500T (tungsten). Both print on a fixed Kodak Vision 2383.
 
 33³, `.cube`, red-fastest row order (`row = r + g·33 + b·33²`) — the convention
 the app's parser and sampling kernel expect.
@@ -21,7 +24,7 @@ the record of what was built and why; this file is how to rebuild it.
 . .venv/bin/activate
 cd tools/lut-generation
 
-python generate.py 33 out      # writes out/250D...cube and out/500T...cube
+python generate.py 33 out      # writes out/5207...cube and out/5219...cube
 python verify_cubes.py out     # structure, neutral axis, and a diff vs what ships
 python preview.py out          # renders a synthetic chart through the tables (preview/)
 ```
@@ -36,8 +39,8 @@ oversampling filter. Both tables together take about 10 seconds.
 A regeneration must reproduce the committed tables exactly:
 
 ```
-e3b5af91c5f15246d2fdcb810590df8a38aa2f34e308f31f761e29189505d7c4  250D K2383 - Apple Log 2.cube
-9b32205552626cdc3850fa01ef45920171fc0ea9af0540c31570cc2e9210bc37  500T K2383 - Apple Log 2.cube
+f483e2fb151b3b4699b8d5fd1c36df9f583952941d48c0bc99dd311e574d32b5  5207 - Apple Log 2.cube
+d2320ea308730f3aa5186d66691b91d4a94595806970cbb16059c2d067d4924a  5219 - Apple Log 2.cube
 ```
 
 Confirm with `shasum -a 256 out/*.cube` before copying anything into the app. If

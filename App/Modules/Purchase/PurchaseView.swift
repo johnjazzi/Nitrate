@@ -213,7 +213,7 @@ struct PurchaseView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Label("Film emulation for iPhone video", systemImage: "movieclapper")
                 Label("Apple Log + Metal GPU pipeline", systemImage: "cpu")
-                Label("Kodak 250D & 500T", systemImage: "film")
+                Label("Kodak 5207 & 5219", systemImage: "film")
             }
             .font(.caption)
             .foregroundStyle(.secondary)

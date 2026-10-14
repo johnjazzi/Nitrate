@@ -1,4 +1,9 @@
-"""Home-built Kodak Vision3 250D / 500T -> 2383 LUTs with an Apple Log 2 input.
+"""Home-built Kodak Vision3 5207 (250D) / 5219 (500T) -> 2383 LUTs.
+
+Stocks are named by their emulsion number, which is the unambiguous identifier;
+the descriptive names for those emulsions are Kodak Vision3 250D 5207 (daylight)
+and Vision3 500T 5219 (tungsten). The print stage is Kodak Vision 2383 and is
+recorded in docs/lut-provenance.md.
 
 Grid domain: Apple Log 2 encoded code values in Apple Wide Gamut (i.e. exactly
 what the iPhone records), decoded here to linear Apple Wide Gamut, converted to
@@ -146,8 +151,8 @@ def load_films():
 def make_lut(negative_name: str, size: int, out_path: Path, oversample: bool = False,
              **overrides) -> dict:
     negative_data, print_data = {
-        "250D": (KODAK_5207, KODAK_2383),
-        "500T": (KODAK_5219, KODAK_2383),
+        "5207": (KODAK_5207, KODAK_2383),
+        "5219": (KODAK_5219, KODAK_2383),
     }[negative_name]
     negative = FilmSpectral(negative_data)
     negative.set_color_checker()
@@ -163,7 +168,7 @@ def make_lut(negative_name: str, size: int, out_path: Path, oversample: bool = F
         input_colorspace=None,
         # The iPhone records with white balance locked to the stock's own
         # temperature, so the Log 2 input is already balanced. Feeding that into
-        # an illuminant-tilted calibration (e.g. 3200 K for 500T) produced a
+        # an illuminant-tilted calibration (e.g. 3200 K for 5219) produced a
         # strong cast on neutral tones; the pipeline's neutral reference is the
         # correct "already balanced" illuminant.
         exp_kelvin=6504,
@@ -214,8 +219,10 @@ if __name__ == "__main__":
     size = int(sys.argv[1]) if len(sys.argv) > 1 else 33
     out_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("out")
     out_dir.mkdir(parents=True, exist_ok=True)
-    for stock in ["250D", "500T"]:
-        path = out_dir / f"{stock} K2383 - Apple Log 2.cube"
+    # Tables are named by emulsion number alone. The print stage is a fixed
+    # 2383 for both and does not belong in the identifier the app ships.
+    for stock in ["5207", "5219"]:
+        path = out_dir / f"{stock} - Apple Log 2.cube"
         result = make_lut(stock, size, path, oversample=OVERSAMPLE)
         table = result["table"]
         print(f"\n=== {stock} === wrote {path} in {result['seconds']:.1f}s")
