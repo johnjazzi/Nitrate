@@ -23,6 +23,6 @@ struct StockCatalogTests {
             #expect(stock.lutName.hasSuffix(" - Apple Log 2.cube"))
             try stock.validate()
         }
-        #expect(stocks.map(\.displayName) == ["5207", "5219"])
+        #expect(stocks.map(\.displayName) == ["250D / 5207", "500T / 5219"])
     }
 }

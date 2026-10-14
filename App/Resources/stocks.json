@@ -2,7 +2,7 @@
   "stocks": [
     {
       "stockId": "kodak5207",
-      "displayName": "5207",
+      "displayName": "250D / 5207",
       "category": "video",
       "lutName": "5207 - Apple Log 2.cube",
       "halationStrength": 0.43,
@@ -49,7 +49,7 @@
     },
     {
       "stockId": "kodak5219",
-      "displayName": "5219",
+      "displayName": "500T / 5219",
       "category": "video",
       "lutName": "5219 - Apple Log 2.cube",
       "halationStrength": 0.43,

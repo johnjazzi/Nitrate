@@ -148,13 +148,15 @@ a wrong image.
 
 ### Film stocks
 
-| Stock | Emulsion | Type | LUT |
-|---|---|---|---|
-| 5207 | Kodak Vision3 250D | Daylight | `5207 - Apple Log 2.cube` |
-| 5219 | Kodak Vision3 500T | Tungsten | `5219 - Apple Log 2.cube` |
+| Stock | Type | LUT |
+|---|---|---|
+| 250D / 5207 | Daylight | `5207 - Apple Log 2.cube` |
+| 500T / 5219 | Tungsten | `5219 - Apple Log 2.cube` |
 
-Stocks are named by their Kodak emulsion number. The print stage is a fixed
-Kodak Vision 2383 for both, so it is not part of the name; it is recorded in the
+Stocks are labelled the way the emulsion is printed on the canister: common
+name, then emulsion number. The LUT file carries the emulsion number alone,
+because a slash cannot go in a filename. The print stage is a fixed Kodak
+Vision 2383 for both, so it is not part of the name; it is recorded in the
 provenance below.
 
 **Print gauge** is a separate axis from stock: 8mm, 16mm, 35mm, 75mm. The gauge
