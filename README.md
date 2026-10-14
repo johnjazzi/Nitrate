@@ -49,6 +49,44 @@ Your media never leaves the phone. The only network access in the app is Apple's
 StoreKit, for purchases. The only data the app touches is the camera, the
 microphone, and the photo library when you ask it to save.
 
+## Platform
+
+### Why iPhone
+
+Apple Log 2 is the reason this is an iPhone app. It is a real log curve in a wide
+gamut, shipped by Apple as a capture colour space rather than reverse-engineered,
+and it is supported downstream: Final Cut applies Apple's own Log 2 LUT, and
+OpenColorIO implements the transfer function that this project's LUT generator is
+built on.
+
+That matters because the emulation needs an honest starting point. A film model
+of a negative and a print can only be applied to an ungraded signal; against a
+look already baked into the camera it would be guesswork on top of a guess.
+
+### Supported iPhones
+
+| | |
+|---|---|
+| OS | **iOS 26 or later.** The app installs on iOS 17 and later, but the camera needs 26. Below that it reports the capture path as unsupported rather than recording something else |
+| Aperture | **iOS 27 or later.** The variable-aperture API the app uses is not available before that, and the app reports aperture as unavailable |
+| Hardware | Any device whose camera advertises an **Apple Log 2** capture format. Apple Log 2 arrived with the iPhone 17 Pro; the reference device here is an iPhone 18 Pro |
+| Anything else | No Apple Log 2 format means no recording. The app fails with an explicit unsupported error instead of falling back to a baked-in look |
+
+The app never tests for model names. It asks the hardware which formats it
+declares and requires one that is 4K Apple Log 2 with a 24 fps rate among them,
+so a later Pro iPhone works without a code change.
+
+### Android
+
+I have no plans to build one. The emulation is portable in principle — the look
+is a 33³ cube, the effects are specified above, and the bake is plain Python — but
+the capture path is Apple's (there is no Apple Log 2 on Android) and the render
+kernels are Metal.
+
+A port would be welcome. Note though that **this repository carries no licence
+yet**, so the code is currently all rights reserved: an undecided thing rather
+than a refusal, but ask before shipping anything derived from it.
+
 ## Feature breakdown
 
 ### Capture
@@ -56,7 +94,7 @@ microphone, and the photo library when you ask it to save.
 | | |
 |---|---|
 | Format | Apple Log 2, 10-bit HEVC Main10 (`hvc1`), 3840×2160 or 2160×3840 |
-| Requirement | Apple Log 2 capture (iOS 26 and later, supported hardware) |
+| Requirement | Apple Log 2 capture — see [Platform](#platform) for the specific iOS versions and iPhones |
 | Lenses | Ultrawide, Normal (1×), Tele, Front — the device's real lenses, with the active focal length shown |
 | Aperture | Per-lens, over the stops the device reports (f/1.5–f/4.0 on the reference iPhone 18 Pro) |
 | Exposure | 180° shutter priority by default (shutter locked to 1/48 s, ISO meters), plus manual EV and manual ISO |
