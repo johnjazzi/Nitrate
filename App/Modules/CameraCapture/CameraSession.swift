@@ -71,6 +71,13 @@ final class CameraSession: NSObject {
     private let sampleBufferQueue = DispatchQueue(label: "camera.sample-buffer-writer")
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
+    // Attached only during initial configuration. Normal/Log switches only gate
+    // this connection; neither the writer nor the capture device is reconfigured.
+    private let previewOutput = AVCaptureVideoDataOutput()
+    private let previewTap = CameraPreviewTap()
+    private var previewOwner: UUID?
+    private var previewFormatReady = false
+    private var previewSuspended = true
 #if DEBUG
     /// Debug single-frame tap: an independent second video output with its own
     /// delegate, so the recorder's `videoOutput` and delegate stay untouched. Its
@@ -148,6 +155,83 @@ final class CameraSession: NSObject {
     private var debugSmokeTimedOut = false
 #endif
 
+    // MARK: - Preview-only read-only sink
+
+    func setPreviewTap(owner: UUID, tap: @escaping @Sendable (CameraPreviewFrame?) -> Void) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.previewOutput.connection(with: .video)?.isEnabled = false
+            self.previewTap.setEnabled(false)
+            self.previewOwner = owner
+            self.previewTap.set(owner: owner, tap: tap)
+            self.updatePreviewConnection()
+        }
+    }
+
+    func removePreviewTap(owner: UUID) {
+        sessionQueue.async { [weak self] in
+            guard let self, self.previewOwner == owner else { return }
+            self.previewOutput.connection(with: .video)?.isEnabled = false
+            self.previewTap.remove(owner: owner)
+            self.previewOwner = nil
+        }
+    }
+
+    /// Only invoked inside the initial configuration, after the recording output
+    /// has been attached. Rejection is nonfatal: original Log capture still works.
+    private func attachPreviewOutput() {
+        guard session.canAddOutput(previewOutput) else {
+            print("Camera preview: independent output unavailable — showing Log")
+            return
+        }
+        previewOutput.alwaysDiscardsLateVideoFrames = true
+        previewOutput.automaticallyConfiguresOutputBufferDimensions = false
+        previewOutput.deliversPreviewSizedOutputBuffers = true
+        previewOutput.setSampleBufferDelegate(previewTap, queue: previewTap.queue)
+        session.addOutput(previewOutput)
+        previewOutput.connection(with: .video)?.isEnabled = false
+    }
+
+    /// Advertised formats are valid only after attachment and must be refreshed
+    /// after every active lens/format change, including a successful rollback.
+    /// Never fall back to 8-bit, nor change the device to satisfy this output.
+    private func refreshPreviewFormat() {
+        previewFormatReady = false
+        guard session.outputs.contains(where: { $0 === previewOutput }),
+              let connection = previewOutput.connection(with: .video) else { return }
+        connection.isEnabled = false
+        let advertised = previewOutput.availableVideoPixelFormatTypes.map {
+            UInt32(truncating: $0 as NSNumber)
+        }
+        guard let format = CameraSampleValidationPolicy.preferredTenBitPixelFormats(from: advertised).first else {
+            print("Camera preview: no advertised ten-bit source — showing Log")
+            return
+        }
+        // Preview-sized output is incompatible with explicit width/height keys.
+        previewOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: format)]
+        connection.automaticallyAdjustsVideoMirroring = false
+        if connection.isVideoMirroringSupported { connection.isVideoMirrored = false }
+        if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = .off }
+        guard connection.isVideoRotationAngleSupported(0) else { return }
+        connection.videoRotationAngle = 0
+        previewFormatReady = true
+    }
+
+    private func updatePreviewConnection() {
+        let enabled = previewOwner != nil && !previewSuspended && isConfigured && session.isRunning
+            && previewFormatReady && previewOutput.connection(with: .video) != nil
+        // Synchronize delivery invalidation before enabling the connection. The
+        // session clock excludes buffered frames from an old lens/start/owner.
+        let startAfter = session.masterClock.map { CMClockGetTime($0) } ?? .invalid
+        previewTap.setEnabled(enabled, startAfter: startAfter)
+        previewOutput.connection(with: .video)?.isEnabled = enabled
+    }
+
+    private func suspendPreview(_ suspended: Bool) {
+        previewSuspended = suspended
+        updatePreviewConnection()
+    }
+
     // MARK: - Setup
 
     /// Configure the session without blocking the caller's thread.
@@ -192,6 +276,7 @@ final class CameraSession: NSObject {
             audioOutput.setSampleBufferDelegate(sampleBufferRecorder, queue: sampleBufferQueue)
             addMicrophoneInputLocked()
             try addDevice(device)
+            attachPreviewOutput()
         } catch { configError = error }
         session.commitConfiguration()
         guard configError == nil else { return configError }
@@ -404,6 +489,8 @@ final class CameraSession: NSObject {
         }
         configureRawLandscapeRecordingConnection()
         applyRecordingStabilization()
+        refreshPreviewFormat()
+        updatePreviewConnection()
     }
 
     // MARK: - Recording stabilization
@@ -695,6 +782,8 @@ final class CameraSession: NSObject {
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.exposureChangeDuringRecording) } }
                 return
             }
+            self.suspendPreview(true)
+            defer { self.suspendPreview(false) }
             self.invalidateMetering()
             var switchError: Error?
             let previousDevice = self.activeDevice
@@ -1931,6 +2020,7 @@ final class CameraSession: NSObject {
             if !self.session.isRunning {
                 self.session.startRunning()
             }
+            self.suspendPreview(false)
             if !self.isRecordingOrPending { self.applyRecordingStabilization() }
         }
     }
@@ -1939,6 +2029,7 @@ final class CameraSession: NSObject {
     func stop() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            self.suspendPreview(true)
             self.invalidateMetering()
             if self.recordingStartPending {
                 self.recordingStartPending = false
