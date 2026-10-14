@@ -216,7 +216,8 @@ struct ContentView: View {
     private func cameraLayer(in rect: CGRect) -> some View {
         // One structural identity in both modes: no camera lifecycle transition.
         CameraView(viewModel: cameraViewModel,
-                   videoGravity: showFramedPreview ? .resizeAspect : .resizeAspectFill)
+                   videoGravity: showFramedPreview ? .resizeAspect : .resizeAspectFill,
+                   selectedStockLUTName: selectedStock?.lutName)
             .frame(width: rect.width, height: rect.height)
             .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
             .overlay {

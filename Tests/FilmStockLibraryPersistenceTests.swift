@@ -61,7 +61,7 @@ struct FilmStockLibraryPersistenceTests {
         #expect(restored.lastGauge(for: "kodak250d_k2383") == .eightMillimetre)
         #expect(restored.lastGauge(for: "kodak500t_k2383") == .seventyFiveMillimetre)
         // A stock with no saved gauge falls back to the neutral 35mm reference.
-        #expect(restored.lastGauge(for: "cinestill50d_k2383") == nil)
+        #expect(restored.lastGauge(for: "removed_stock_k2383") == nil)
 
         let config = try #require(restored.config(for: "kodak250d_k2383", iso: 250,
                                                   gauge: .eightMillimetre))

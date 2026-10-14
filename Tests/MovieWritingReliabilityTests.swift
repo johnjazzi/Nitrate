@@ -74,6 +74,51 @@ struct MovieWritingReliabilityTests {
         #expect(audioDuration < 0.45)
     }
 
+    @Test(arguments: RenderExportQuality.allCases)
+    func exportQualitiesProduceReadableHEVCWithoutChangingSource(quality: RenderExportQuality) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("source.mov")
+        try await makeFixture(at: source)
+        let sourceData = try Data(contentsOf: source)
+        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory,
+                                            allowsSyntheticInputForTests: true)
+        let output = try await renderer.render(sourceURL: source, config: loadConfig(), bitrate: quality.averageBitRate)
+        let sourceAsset = AVURLAsset(url: source)
+        let outputAsset = AVURLAsset(url: output)
+        let sourceVideo = try #require(try await sourceAsset.loadTracks(withMediaType: .video).first)
+        let outputVideo = try #require(try await outputAsset.loadTracks(withMediaType: .video).first)
+        let sourceSize = try await sourceVideo.load(.naturalSize)
+        let outputSize = try await outputVideo.load(.naturalSize)
+        let sourceRate = try await sourceVideo.load(.nominalFrameRate)
+        let outputRate = try await outputVideo.load(.nominalFrameRate)
+        #expect(outputSize == sourceSize)
+        #expect(abs(outputRate - sourceRate) < 0.01)
+        #expect(try await outputAsset.loadTracks(withMediaType: .audio).count == 1)
+        let descriptions = try await outputVideo.load(.formatDescriptions)
+        let description = try #require(descriptions.first)
+        #expect(CMFormatDescriptionGetMediaSubType(description) == kCMVideoCodecType_HEVC)
+        var settingsJSON: String?
+        for item in try await outputAsset.load(.metadata) {
+            if item.key as? String == "com.filmemulation.render-settings" {
+                settingsJSON = try await item.load(.stringValue)
+            }
+        }
+        let settings = try JSONDecoder().decode(RenderDiagnosticsManifest.RecipeSnapshot.self,
+                                                 from: Data(try #require(settingsJSON).utf8))
+        #expect(settings.averageBitRate == quality.averageBitRate)
+        let reader = try AVAssetReader(asset: outputAsset)
+        let decoded = AVAssetReaderTrackOutput(track: outputVideo,
+            outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        reader.add(decoded)
+        #expect(reader.startReading())
+        let frame = try #require(decoded.copyNextSampleBuffer())
+        #expect(CMSampleBufferGetImageBuffer(frame) != nil)
+        reader.cancelReading()
+        #expect(try Data(contentsOf: source) == sourceData)
+    }
+
     @Test func defaultRendererRejectsUntaggedSyntheticInputBeforeOutputCreation() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

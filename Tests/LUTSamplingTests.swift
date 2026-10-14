@@ -108,9 +108,7 @@ struct LUTSamplingTests {
             + Self.boundaryAndRampProbes()
 
         for lutName in [
-            "50D K2383 - Apple Log 2.cube",
             "250D K2383 - Apple Log 2.cube",
-            "200T K2383 - Apple Log 2.cube",
             "500T K2383 - Apple Log 2.cube"
         ] {
             let cube = try Self.parseCube(named: lutName)

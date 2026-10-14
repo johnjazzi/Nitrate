@@ -10,6 +10,8 @@ struct RenderJob: Codable, Identifiable, Equatable {
     /// Print gauge for this render. Optional so older queue JSON stays readable;
     /// nil means the stock's own gauge (or the neutral 35mm reference).
     let printGauge: PrintGauge?
+    /// Immutable enqueue-time preferences; nil preserves legacy delivery behavior.
+    let deliveryPreferences: RenderDeliveryPreferences?
     let trimStartSeconds: Double?
     let trimEndSeconds: Double?
     let createdAt: Date
@@ -24,12 +26,14 @@ struct RenderJob: Codable, Identifiable, Equatable {
 
     init(sourceURL: URL, stockId: String, iso: Float, printGauge: PrintGauge? = nil,
          trimStart: CMTime? = nil, trimEnd: CMTime? = nil,
-         sessionId: String? = nil, createdAt: Date = Date()) {
+         sessionId: String? = nil, createdAt: Date = Date(),
+         deliveryPreferences: RenderDeliveryPreferences? = nil) {
         self.id = UUID()
         self.sourceURL = sourceURL
         self.stockId = stockId
         self.iso = iso
         self.printGauge = printGauge
+        self.deliveryPreferences = deliveryPreferences
         self.trimStartSeconds = trimStart.map { $0.seconds }
         self.trimEndSeconds = trimEnd.map { $0.seconds }
         self.createdAt = createdAt

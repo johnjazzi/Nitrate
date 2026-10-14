@@ -4,6 +4,9 @@ import SwiftUI
 struct PurchaseView: View {
     @State var viewModel: PurchaseViewModel
     @Binding var showFramedPreview: Bool
+    @AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.neutral.rawValue
+    @AppStorage(DeliverySettings.saveOriginalLogKey) private var saveOriginalLog = false
+    @AppStorage(DeliverySettings.renderQualityKey) private var renderQuality = RenderExportQuality.high.rawValue
 
     var body: some View {
         NavigationStack {
@@ -21,6 +24,7 @@ struct PurchaseView: View {
 
                     // Preview mode
                     previewModeSection
+                    exportSection
 
                     // App info
                     appInfoSection
@@ -136,6 +140,17 @@ struct PurchaseView: View {
             Text("Preview")
                 .font(.headline)
 
+            Picker("Preview Color", selection: Binding(
+                get: { CameraPreviewMode.resolved(previewMode) },
+                set: { previewMode = $0.rawValue })) {
+                Text("Neutral").tag(CameraPreviewMode.neutral)
+                Text("Stock LUT").tag(CameraPreviewMode.stock)
+                Text("Log").tag(CameraPreviewMode.log)
+            }
+            Text("Neutral is the default monitor; Stock LUT uses the selected film look; Log is ungraded. Preview only, with no grain, halation, or glow. Recording stays Apple Log 2; film effects are applied after capture. If a preview LUT is unavailable, the monitor shows Log with a warning.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Toggle(isOn: $showFramedPreview) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Frame Mode")
@@ -149,6 +164,36 @@ struct PurchaseView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var exportSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Export").font(.headline)
+            Toggle("Save Original Log to Photos", isOn: $saveOriginalLog)
+            Text("Saves the ungraded original recording alongside the rendered video; uses additional storage. Not sensor RAW.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker("Rendered File Size", selection: exportQualityBinding) {
+                ForEach(RenderExportQuality.allCases) { quality in
+                    Text(quality.title).tag(quality)
+                }
+            }
+            Text("High: 60 Mbps. Smaller: 30 Mbps — roughly half the video bitrate, not an exact file-size reduction; may soften grain. Resolution and frame rate are unchanged.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Changes apply only to newly queued clips, not existing jobs or retries.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var exportQualityBinding: Binding<RenderExportQuality> {
+        Binding(get: { RenderExportQuality(rawValue: renderQuality) ?? .high },
+                set: { renderQuality = $0.rawValue })
     }
 
     private var purchasedBanner: some View {

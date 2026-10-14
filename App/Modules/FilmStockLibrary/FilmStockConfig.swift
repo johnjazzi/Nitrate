@@ -16,7 +16,7 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
     let glowStrength: Float
     let grainSize: Float
     /// Per-stock halo geometry. Halation radius tracks emulsion thickness and
-    /// stock speed, so a slow 50D and a fast 500T must not share halo size;
+    /// stock speed, so a slow 250D and a fast 500T must not share halo size;
     /// `halationRadiusFraction` is the blur radius as a fraction of the
     /// half-resolution frame width (resolution-independent, like the glow
     /// radius). `halationTint` is the red-dominant colour cast of the halo,
@@ -251,14 +251,70 @@ enum RenderEncodingContract {
     static let yCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
 }
 
-/// App-side configurable delivery parameters, backed by UserDefaults so a future
-/// settings UI can change them without touching the render pipeline. RenderCLI
-/// overrides the bitrate via `--bitrate` instead of this store.
+/// Rendered-video bitrate policy only; original capture and RenderCLI remain independent.
+enum RenderExportQuality: String, Codable, CaseIterable, Identifiable, Sendable {
+    case high
+    case smaller
+
+    var id: String { rawValue }
+
+    var averageBitRate: Int {
+        switch self {
+        case .high: return 60_000_000
+        case .smaller: return 30_000_000
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .high: return "High"
+        case .smaller: return "Smaller"
+        }
+    }
+}
+
+/// Value snapshot of export preferences, suitable for persisting with a queued render.
+struct RenderDeliveryPreferences: Codable, Equatable, Sendable {
+    var saveOriginalLog: Bool
+    var quality: RenderExportQuality
+
+    init(saveOriginalLog: Bool = false, quality: RenderExportQuality = .high) {
+        self.saveOriginalLog = saveOriginalLog
+        self.quality = quality
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case saveOriginalLog, quality
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        saveOriginalLog = try values.decodeIfPresent(Bool.self, forKey: .saveOriginalLog) ?? false
+        // Newer queues may carry a quality this version does not recognize.
+        let rawQuality = try? values.decodeIfPresent(String.self, forKey: .quality)
+        quality = rawQuality.flatMap(RenderExportQuality.init(rawValue:)) ?? .high
+    }
+}
+
+/// App-side preferences. The legacy bitrate store also controls original capture
+/// and storage estimates; render quality must not change it. RenderCLI overrides
+/// bitrate via `--bitrate` independently of these export preferences.
 enum DeliverySettings {
     static let defaultAverageBitRate = 60_000_000
     /// AAC bitrate for the recorded original's audio track.
     static let aacAverageBitRate = 192_000
     private static let bitrateKey = "delivery.averageBitRate"
+    static let saveOriginalLogKey = "delivery.saveOriginalLog"
+    static let renderQualityKey = "delivery.renderQuality"
+
+    static func renderPreferences(defaults: UserDefaults = .standard) -> RenderDeliveryPreferences {
+        let quality = defaults.string(forKey: renderQualityKey)
+            .flatMap(RenderExportQuality.init(rawValue:)) ?? .high
+        return RenderDeliveryPreferences(
+            saveOriginalLog: defaults.bool(forKey: saveOriginalLogKey),
+            quality: quality
+        )
+    }
 
     static var averageBitRate: Int {
         get {

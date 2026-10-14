@@ -18,7 +18,7 @@ struct LUTContractTests {
 
     @Test func allStockLUTsTrackNeutralAxisWithoutClipping() throws {
         let stocks = try loadStocks()
-        #expect(stocks.count == 4)
+        #expect(stocks.count == 2)
         for config in stocks {
             let (_, values) = try parseCubeLUT(config.lutName)
             let axis = neutralAxis(values: values)
@@ -28,8 +28,7 @@ struct LUTContractTests {
 
     @Test func shippedStocksCarryTheExpectedDaylightOrTungstenTag() throws {
         let stocks = try loadStocks()
-        let expected = ["cinestill50d_k2383": "D", "kodak250d_k2383": "D",
-                        "kodak200t_k2383": "T", "kodak500t_k2383": "T"]
+        let expected = ["kodak250d_k2383": "D", "kodak500t_k2383": "T"]
         for config in stocks {
             #expect(config.lightType == expected[config.stockId],
                     "\(config.stockId) tagged \(config.lightType)")

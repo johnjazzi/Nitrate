@@ -40,8 +40,10 @@ struct RenderQueueReliabilityTests {
             maximumActive = max(maximumActive, active)
             active -= 1
         })
-        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400)
-        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400)
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
         try #require(model.jobs.count == 2)
         let activeID = model.jobs[0].id
         let pendingID = model.jobs[1].id
@@ -77,8 +79,10 @@ struct RenderQueueReliabilityTests {
             if saves == 1 { await gate.suspend() }
             active -= 1
         })
-        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400)
-        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400)
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
         try await waitUntil { saves == 1 }
         #expect(model.jobs.map(\.status) == [.processing, .pending])
         #expect(renders == 1)
@@ -101,8 +105,10 @@ struct RenderQueueReliabilityTests {
             saves += 1
             if saves == 1 { await gate.suspend() }
         })
-        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400)
-        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400)
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
         try await waitUntil { saves == 1 }
         let firstID = try #require(model.jobs.first?.id)
         #expect(model.jobs.map(\.status) == [.processing, .pending])
@@ -126,7 +132,8 @@ struct RenderQueueReliabilityTests {
             }, save: { _ in
                 if !saveSucceeds { throw QueueTestError.save }
             })
-            model.enqueue(sourceURL: files.source, stockId: "test", iso: 400)
+            model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
             try await waitUntil { model.jobs.first?.status == .failed && model.jobs.first?.sourceSavedToPhotos != nil }
             let job = try #require(model.jobs.first)
             #expect(job.sourceSavedToPhotos == saveSucceeds)
@@ -152,7 +159,8 @@ struct RenderQueueReliabilityTests {
             saves += 1
             if saves == 1 { throw QueueTestError.save }
         })
-        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400)
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
         try await waitUntil { model.jobs.first?.status == .failed }
         #expect(model.jobs.first?.outputURL == files.output)
         model.retry(jobId: try #require(model.jobs.first).id)
@@ -178,7 +186,8 @@ struct RenderQueueReliabilityTests {
             await gate.suspend()
         })
 
-        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400)
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
         try await waitUntil { saves == 1 && model.jobs.first?.outputSavedToPhotos == true }
         let reloaded = RenderQueueViewModel(persistenceURL: files.persistence,
                                             render: { _ in renders += 1; return files.output },
@@ -307,6 +316,7 @@ struct RenderQueueReliabilityTests {
         #expect(loaded.count == 1)
         #expect(loaded[0].sourceSavedToPhotos == nil)
         #expect(loaded[0].outputSavedToPhotos == nil)
+        #expect(loaded[0].deliveryPreferences == nil)
     }
 
     @Test func persistenceSaveFailureIsVisibleAndKeepsMediaFiles() async throws {
@@ -322,7 +332,8 @@ struct RenderQueueReliabilityTests {
         )
         let originalSource = try Data(contentsOf: files.source)
         let originalOutput = try Data(contentsOf: files.output)
-        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400)
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
         try await waitUntil { model.jobs.first?.status == .completed }
         #expect(model.rendererErrorMessage?.contains("Queue state could not be saved") == true)
         #expect(try Data(contentsOf: files.source) == originalSource)
@@ -346,10 +357,194 @@ struct RenderQueueReliabilityTests {
         #expect(model.jobs.isEmpty)
         #expect(model.rendererErrorMessage?.contains("Queue state could not be loaded") == true)
         #expect(try Data(contentsOf: files.persistence) == corruptData)
-        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400)
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
         try await waitUntil { model.jobs.first?.status == .completed }
         #expect(try Data(contentsOf: files.persistence) == corruptData)
         #expect(model.rendererErrorMessage?.contains("Queue state could not be loaded") == true)
+    }
+
+    @Test(arguments: [false, true])
+    func requestedDeliverySavesRenderedFirstAndWaitsForOriginal(saveOriginal: Bool) async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        let gate = QueueTestGate()
+        var saves: [URL] = []
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in files.output }, save: { url in
+            saves.append(url)
+            if url == files.source { await gate.suspend() }
+        }, postDelivery: { _, _ in })
+        let preferences = RenderDeliveryPreferences(saveOriginalLog: saveOriginal)
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400, deliveryPreferences: preferences)
+        if saveOriginal {
+            try await waitUntil { saves.count == 2 }
+            #expect(saves == [files.output, files.source])
+            #expect(model.jobs.first?.status == .processing)
+            #expect(model.jobs.first?.outputSavedToPhotos == true)
+            #expect(model.jobs.first?.sourceSavedToPhotos != true)
+            let persisted = try #require(try QueuePersister(storageURL: files.persistence).load().first)
+            #expect(persisted.status == .processing)
+            #expect(persisted.outputSavedToPhotos == true)
+            await gate.resume()
+        }
+        try await waitUntil { !model.isProcessing }
+        #expect(model.jobs.first?.status == .completed)
+        #expect(saves == (saveOriginal ? [files.output, files.source] : [files.output]))
+        #expect(model.jobs.first?.sourceSavedToPhotos == (saveOriginal ? true : nil))
+        #expect(model.jobs.first?.outputSavedToPhotos == true)
+        #expect(try Data(contentsOf: files.source) == Data([1, 2, 3]))
+        let delivered = try #require(try QueuePersister(storageURL: files.persistence).load().first)
+        #expect(delivered.status == .completed)
+        #expect(delivered.sourceSavedToPhotos == (saveOriginal ? true : nil))
+    }
+
+    @Test(arguments: [false, true])
+    func failedOriginalRetriesOnlyOriginalEvenWithoutRetainedOutput(removeOutput: Bool) async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        var renders = 0
+        var saves: [URL] = []
+        var failOriginal = true
+        // Use an isolated preferences domain rather than mutating shared defaults
+        // while other Swift Testing suites run concurrently.
+        let suiteName = "RenderQueueReliabilityTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: DeliverySettings.saveOriginalLogKey)
+        defaults.set(RenderExportQuality.smaller.rawValue, forKey: DeliverySettings.renderQualityKey)
+        let preferences = DeliverySettings.renderPreferences(defaults: defaults)
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { job in
+            renders += 1
+            #expect(job.deliveryPreferences == preferences)
+            return files.output
+        }, save: { url in
+            saves.append(url)
+            if url == files.source && failOriginal { throw QueueTestError.save }
+        }, postDelivery: { _, _ in })
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400, deliveryPreferences: preferences)
+        try await waitUntil { !model.isProcessing }
+        let failed = try #require(model.jobs.first)
+        #expect(failed.status == .failed)
+        #expect(failed.outputSavedToPhotos == true)
+        #expect(failed.sourceSavedToPhotos == false)
+        #expect(failed.errorMessage?.contains("Rendered movie saved to Photos") == true)
+        #expect(failed.outputURL == files.output)
+        #expect(failed.sourceURL == files.source)
+        let roundTrip = try #require(try QueuePersister(storageURL: files.persistence).load().first)
+        #expect(roundTrip == failed)
+        #expect(roundTrip.deliveryPreferences?.quality.averageBitRate == 30_000_000)
+        if removeOutput { try FileManager.default.removeItem(at: files.output) }
+        defaults.set(false, forKey: DeliverySettings.saveOriginalLogKey)
+        defaults.set(RenderExportQuality.high.rawValue, forKey: DeliverySettings.renderQualityKey)
+        #expect(DeliverySettings.renderPreferences(defaults: defaults) == RenderDeliveryPreferences())
+        failOriginal = false
+        model.retry(jobId: failed.id)
+        try await waitUntil { !model.isProcessing }
+        #expect(model.jobs.first?.status == .completed)
+        #expect(model.jobs.first?.outputSavedToPhotos == true)
+        #expect(model.jobs.first?.sourceSavedToPhotos == true)
+        #expect(model.jobs.first?.outputURL == files.output)
+        #expect(model.jobs.first?.deliveryPreferences == preferences)
+        #expect(renders == 1)
+        #expect(saves == [files.output, files.source, files.source])
+    }
+
+    @Test func outputSaveFailureDoesNotAttemptRequestedOriginal() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        var saves: [URL] = []
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in files.output }, save: { url in
+            saves.append(url)
+            throw QueueTestError.save
+        }, postDelivery: { _, _ in })
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences(saveOriginalLog: true))
+        try await waitUntil { !model.isProcessing }
+        #expect(saves == [files.output])
+        #expect(model.jobs.first?.status == .failed)
+        #expect(model.jobs.first?.outputSavedToPhotos == false)
+        #expect(model.jobs.first?.sourceSavedToPhotos == nil)
+        #expect(model.jobs.first?.errorMessage?.contains("Photos save failed") == true)
+    }
+
+    @Test(arguments: [false, true])
+    func renderFallbackRemainsEnabledAndRetryDoesNotDuplicateOriginal(saveOriginal: Bool) async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        var renders = 0
+        var saves: [URL] = []
+        let preferences = RenderDeliveryPreferences(saveOriginalLog: saveOriginal, quality: .smaller)
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { job in
+            renders += 1
+            #expect(job.deliveryPreferences == preferences)
+            if renders < 3 { throw QueueTestError.render }
+            return files.output
+        }, save: { saves.append($0) }, postDelivery: { _, _ in })
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400, deliveryPreferences: preferences)
+        try await waitUntil { !model.isProcessing }
+        let id = try #require(model.jobs.first?.id)
+        #expect(model.jobs.first?.sourceSavedToPhotos == true)
+        #expect(model.jobs.first?.status == .failed)
+        model.retry(jobId: id)
+        try await waitUntil { !model.isProcessing }
+        #expect(saves == [files.source])
+        #expect(model.jobs.first?.errorMessage?.contains("already saved") == true)
+        model.retry(jobId: id)
+        try await waitUntil { !model.isProcessing }
+        #expect(model.jobs.first?.status == .completed)
+        #expect(model.jobs.first?.sourceSavedToPhotos == true)
+        #expect(model.jobs.first?.deliveryPreferences == preferences)
+        #expect(saves == [files.source, files.output])
+    }
+
+    @Test(arguments: [false, true])
+    func restoredConfirmedOutputNeedsOnlyOriginal(hasOutputURL: Bool) async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let preferences = RenderDeliveryPreferences(saveOriginalLog: true, quality: .smaller)
+        var interrupted = RenderJob(sourceURL: files.source, stockId: "test", iso: 400,
+                                    deliveryPreferences: preferences)
+        interrupted.status = .processing
+        interrupted.outputURL = hasOutputURL ? files.output : nil
+        interrupted.outputSavedToPhotos = true
+        try QueuePersister(storageURL: files.persistence).save([interrupted])
+        var saves: [URL] = []
+        var renders = 0
+        let restored = RenderQueueViewModel(persistenceURL: files.persistence, render: { _ in
+            renders += 1
+            throw QueueTestError.render
+        }, save: { saves.append($0) }, postDelivery: { _, _ in })
+        restored.onAppear()
+        try await waitUntil { !restored.isProcessing }
+        #expect(restored.jobs.first?.status == .completed)
+        #expect(restored.jobs.first?.outputSavedToPhotos == true)
+        #expect(restored.jobs.first?.sourceSavedToPhotos == true)
+        #expect(restored.jobs.first?.deliveryPreferences == preferences)
+        #expect(renders == 0)
+        #expect(saves == [files.source])
+    }
+
+    @Test func legacyJobWithoutPreferencesDeliversRenderedOnly() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        let legacy = RenderJob(sourceURL: files.source, stockId: "test", iso: 400)
+        try QueuePersister(storageURL: files.persistence).save([legacy])
+        var saves: [URL] = []
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in files.output }, save: { saves.append($0) },
+                                         postDelivery: { _, _ in })
+        model.onAppear()
+        try await waitUntil { !model.isProcessing }
+        #expect(model.jobs.first?.status == .completed)
+        #expect(model.jobs.first?.deliveryPreferences == nil)
+        #expect(saves == [files.output])
     }
 
     @Test func oneUnreadablePersistedJobDoesNotDiscardTheQueue() throws {
