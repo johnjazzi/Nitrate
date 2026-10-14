@@ -148,10 +148,14 @@ a wrong image.
 
 ### Film stocks
 
-| Stock | Type | LUT |
-|---|---|---|
-| 250D K2383 | Daylight | `250D K2383 - Apple Log 2.cube` |
-| 500T K2383 | Tungsten | `500T K2383 - Apple Log 2.cube` |
+| Stock | Emulsion | Type | LUT |
+|---|---|---|---|
+| 5207 | Kodak Vision3 250D | Daylight | `5207 - Apple Log 2.cube` |
+| 5219 | Kodak Vision3 500T | Tungsten | `5219 - Apple Log 2.cube` |
+
+Stocks are named by their Kodak emulsion number. The print stage is a fixed
+Kodak Vision 2383 for both, so it is not part of the name; it is recorded in the
+provenance below.
 
 **Print gauge** is a separate axis from stock: 8mm, 16mm, 35mm, 75mm. The gauge
 owns grain, both its size and its presence, and is chosen per stock. 35mm is the
@@ -257,9 +261,9 @@ a regeneration has to reproduce byte-for-byte.
 
 These are generated approximations of a film look. They are not Kodak products,
 not Kodak-authorised, and not a colorimetric calibration of any camera or
-display. "250D", "500T" and "2383" describe the emulated stocks. The film data is
-limited by published datasheet precision, and interlayer effects in the model are
-simplified.
+display. "5207", "5219" and "2383" are Kodak emulsion numbers, used here
+descriptively. The film data is limited by published datasheet precision, and
+interlayer effects in the model are simplified.
 
 ## How the grain works
 
@@ -372,7 +376,7 @@ launch splash renders them through `AppVersion` (`App/AppIdentity.swift`).
   a device capture smoke that measured a 0.650 s audio/video end-time difference
   against a 0.12 s bound. It is unresolved, and the bound has not been relaxed
   to hide it.
-- **Unverified aesthetic:** the home-built 250D and 500T tables pass structural,
+- **Unverified aesthetic:** the home-built 5207 and 5219 tables pass structural,
   smoothness and GPU-sampling checks, but nobody but the author has judged how
   they look on real footage.
 - **No performance or power benchmark** has been run on the preview path.

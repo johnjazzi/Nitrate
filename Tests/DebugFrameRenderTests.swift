@@ -112,7 +112,7 @@ struct DebugFrameRenderTests {
             ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent()
                 .appendingPathComponent("../App/Resources/stocks.json").standardizedFileURL
         let container = try JSONDecoder().decode(Container.self, from: Data(contentsOf: url))
-        return try #require(container.stocks.first { $0.stockId == "kodak500t_k2383" })
+        return try #require(container.stocks.first { $0.stockId == "kodak5219" })
     }
 
     private struct Container: Decodable { let stocks: [FilmStockConfig] }

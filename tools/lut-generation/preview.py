@@ -131,10 +131,10 @@ if __name__ == "__main__":
     app_luts = Path(__file__).resolve().parents[2] / "App" / "Resources" / "LUTs"
     source_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("out-over")
     targets = [
-        ("mine 250D", source_dir / "250D K2383 - Apple Log 2.cube"),
-        ("mine 500T", source_dir / "500T K2383 - Apple Log 2.cube"),
-        ("shipped 250D", app_luts / "250D K2383 - Apple Log 2.cube"),
-        ("shipped 500T", app_luts / "500T K2383 - Apple Log 2.cube"),
+        ("mine 5207", source_dir / "5207 - Apple Log 2.cube"),
+        ("mine 5219", source_dir / "5219 - Apple Log 2.cube"),
+        ("shipped 5207", app_luts / "5207 - Apple Log 2.cube"),
+        ("shipped 5219", app_luts / "5219 - Apple Log 2.cube"),
     ]
     reports = {}
     for label, path in targets:

@@ -49,7 +49,7 @@ struct RenderContractTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        for (index, stockID) in ["kodak500t_k2383", "kodak250d_k2383"].enumerated() {
+        for (index, stockID) in ["kodak5219", "kodak5207"].enumerated() {
             let config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == stockID })
                 .overridingISO(index == 0 ? 600 : 4900.5)
             let url = directory.appendingPathComponent("\(index).mov")
@@ -106,7 +106,7 @@ struct RenderContractTests {
     }
 
     @Test func metadataReflectsBitrateOverride() throws {
-        let config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
+        let config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak5219" })
         let items = try RenderMovieMetadata.make(config: config, bitrate: 80_000_000)
         var values: [String: String] = [:]
         for item in items {
@@ -119,7 +119,7 @@ struct RenderContractTests {
     }
 
     @Test func metadataDocumentsFilmShutterContract() throws {
-        let config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
+        let config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak5219" })
         let items = try RenderMovieMetadata.make(config: config)
         var values: [String: String] = [:]
         for item in items {
@@ -149,14 +149,14 @@ struct RenderContractTests {
         #expect(app == cli)
         for config in app { try config.validate() }
         let shippedGrainStocks = app.filter {
-            ["kodak250d_k2383", "kodak500t_k2383"].contains($0.stockId)
+            ["kodak5207", "kodak5219"].contains($0.stockId)
         }
         #expect(shippedGrainStocks.count == 2)
         #expect(shippedGrainStocks.allSatisfy { $0.effectiveRecipe.grainAlgorithm == RenderRecipe.edgeAmplitudeAlgorithm })
         #expect(shippedGrainStocks.allSatisfy { $0.effectiveRecipe.edgeBoostMultiplier == 3 })
-        let template = try #require(app.first { $0.stockId == "kodak500t_k2383" })
+        let template = try #require(app.first { $0.stockId == "kodak5219" })
         #expect(template.grainSize == 1.3)
-        #expect(template.effectiveRecipe.version == "500t-current-v6")
+        #expect(template.effectiveRecipe.version == "5219-current-v6")
         #expect(template.effectiveRecipe.grainAlgorithm == RenderRecipe.edgeAmplitudeAlgorithm)
         #expect(template.effectiveRecipe.edgeBoostMultiplier == 3)
         let low = template.overridingISO(250)
@@ -174,7 +174,7 @@ struct RenderContractTests {
         #expect(app.allSatisfy { $0.outputContrast == 1.0 })
         #expect(try stocks("Resources/stocks.json").allSatisfy { $0.outputContrast == 1.0 })
 
-        let historical = try #require(app.first { $0.stockId == "kodak500t_k2383" })
+        let historical = try #require(app.first { $0.stockId == "kodak5219" })
         var historicalJSON = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(historical)) as? [String: Any])
         historicalJSON["outputContrast"] = 0.6
         let decodedHistorical = try JSONDecoder().decode(FilmStockConfig.self,
@@ -192,17 +192,17 @@ struct RenderContractTests {
         func temp(_ id: String) throws -> Float {
             try #require(app.first { $0.stockId == id }).colorTemperature
         }
-        #expect(try temp("kodak500t_k2383") == 3200)
-        #expect(try temp("kodak250d_k2383") == 5600)
+        #expect(try temp("kodak5219") == 3200)
+        #expect(try temp("kodak5207") == 5600)
         // Tungsten stocks must NOT fall back to the daylight default (5600),
         // which would be the silent-failure mode of a `let`-declared property.
-        #expect(try temp("kodak500t_k2383") != 5600)
+        #expect(try temp("kodak5219") != 5600)
     }
 
     @Test func recipeRoundTripAndRevisionEvidence() throws {
-        var config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
+        var config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak5219" })
         let first = RenderDiagnosticsManifest.RecipeSnapshot(config: config, averageBitRate: RenderEncodingContract.averageBitRate, codec: RenderEncodingContract.codec)
-        config.recipe?.version = "500t-current-v7"
+        config.recipe?.version = "5219-current-v7"
         let second = RenderDiagnosticsManifest.RecipeSnapshot(config: config, averageBitRate: RenderEncodingContract.averageBitRate, codec: RenderEncodingContract.codec)
         let data = try JSONEncoder().encode(second)
         let decoded = try JSONDecoder().decode(RenderDiagnosticsManifest.RecipeSnapshot.self, from: data)
@@ -215,7 +215,7 @@ struct RenderContractTests {
         #expect(decoded.effectiveRecipe.output.transfer == "Rec.709")
         #expect(decoded.effectiveRecipe.output.gamut == "Rec.709")
         #expect(decoded.effectiveRecipe.output.provenance == "user-declared")
-        // Apple Log is documented as BT.2020 primaries, so the shipped 500T
+        // Apple Log is documented as BT.2020 primaries, so the shipped 5219
         // recipes declare the input gamut. The contract is still user-declared.
         #expect(decoded.effectiveRecipe.input.gamut == "Rec.2020")
         #expect(decoded.effectiveRecipe.input.transfer == "Apple Log 2")
@@ -224,7 +224,7 @@ struct RenderContractTests {
     }
 
     @Test func historicalLUTAlgorithmMetadataDecodesButCannotExecute() throws {
-        let current = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
+        let current = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak5219" })
         var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any])
         var recipe = try #require(object["recipe"] as? [String: Any])
         recipe["lutAlgorithm"] = "resolve-rgb-red-fastest-linear-clamp-v1"
@@ -237,7 +237,7 @@ struct RenderContractTests {
     }
 
     @Test func historicalGrainAlgorithmMetadataDecodesButCannotExecute() throws {
-        let current = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
+        let current = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak5219" })
         var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any])
         var recipe = try #require(object["recipe"] as? [String: Any])
         recipe["grainAlgorithm"] = "hashed-128-volume-iso-subtractive-dither-v1"
@@ -250,7 +250,7 @@ struct RenderContractTests {
     }
 
     @Test func grainRecipeArchivesPreserveVersionedEdgeBoostDefaults() throws {
-        let current = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
+        let current = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak5219" })
         var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any])
         var recipe = try #require(object["recipe"] as? [String: Any])
 
@@ -262,7 +262,7 @@ struct RenderContractTests {
         try newRecipeWithoutScalar.validate()
 
         recipe["grainAlgorithm"] = RenderRecipe.legacyGrainAlgorithm
-        recipe["version"] = "500t-current-v5"
+        recipe["version"] = "5219-current-v5"
         object["recipe"] = recipe
         let legacyRecipe = try JSONDecoder().decode(FilmStockConfig.self,
             from: JSONSerialization.data(withJSONObject: object))
@@ -277,7 +277,7 @@ struct RenderContractTests {
     }
 
     @Test func invalidParametersIdentifyTheStock() throws {
-        let config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
+        let config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak5219" })
         for iso: Float in [.nan, .infinity, 0, -1] {
             do { try config.overridingISO(iso).validate(); Issue.record("Invalid ISO accepted") }
             catch { #expect(error.localizedDescription.contains(config.stockId)); #expect(error.localizedDescription.contains("ISO")) }
@@ -314,23 +314,23 @@ struct RenderContractTests {
         func tint(_ id: String) throws -> SIMD3<Float> {
             try #require(app.first { $0.stockId == id }).halationTint
         }
-        #expect(try radius("kodak250d_k2383") == 0.011)
-        #expect(try radius("kodak500t_k2383") == 0.014)
+        #expect(try radius("kodak5207") == 0.011)
+        #expect(try radius("kodak5219") == 0.014)
         // Faster stock, wider halo — the values must not all be identical.
-        let slower = try radius("kodak250d_k2383")
-        let fastest = try radius("kodak500t_k2383")
+        let slower = try radius("kodak5207")
+        let fastest = try radius("kodak5219")
         #expect(fastest > slower)
         #expect(Set(app.map(\.halationRadiusFraction)).count == 2)
 
         // Published red-dominant range, full-scale red.
-        #expect(try tint("kodak500t_k2383") == SIMD3(1.0, 0.32, 0.10))
-        #expect(try tint("kodak250d_k2383") == SIMD3(1.0, 0.28, 0.10))
+        #expect(try tint("kodak5219") == SIMD3(1.0, 0.32, 0.10))
+        #expect(try tint("kodak5207") == SIMD3(1.0, 0.28, 0.10))
         #expect(app.allSatisfy { $0.halationTint.x == 1.0 })
-        #expect(try tint("kodak250d_k2383") != tint("kodak500t_k2383"))
+        #expect(try tint("kodak5207") != tint("kodak5219"))
     }
 
     @Test func halationGeometryValidationBounds() throws {
-        let config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak500t_k2383" })
+        let config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak5219" })
 
         var dimRed = config
         dimRed.halationTint = SIMD3(0.9, 0.30, 0.10)

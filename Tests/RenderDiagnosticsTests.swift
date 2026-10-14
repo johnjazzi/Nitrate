@@ -12,7 +12,7 @@ struct RenderDiagnosticsTests {
             runID: UUID(),
             startedAt: Date(timeIntervalSince1970: 1),
             finishedAt: Date(timeIntervalSince1970: 2),
-            stockID: "500T",
+            stockID: "5219",
             iso: 500,
             environment: .init(
                 operatingSystem: "test",
@@ -60,10 +60,10 @@ struct RenderDiagnosticsTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         for (iso, expected): (Float, String) in [(.nan, "NaN"), (.infinity, "Infinity"), (-.infinity, "-Infinity")] {
-            let error = RenderContractError.invalid(stockID: "500T", field: "ISO")
+            let error = RenderContractError.invalid(stockID: "5219", field: "ISO")
             let bundle = try #require(await RenderDiagnostics.writeInitialFailure(
                 bundleDirectory: directory, inputURL: directory.appendingPathComponent("missing.mov"),
-                stockID: "500T", iso: iso, stage: "configuration", error: error
+                stockID: "5219", iso: iso, stage: "configuration", error: error
             ))
             let data = try Data(contentsOf: bundle.appendingPathComponent("manifest.json"))
             let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -80,8 +80,8 @@ struct RenderDiagnosticsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         for (iso, expected): (Float, String) in [(.nan, "NaN"), (.infinity, "Infinity"), (-.infinity, "-Infinity")] {
-            let config = FilmStockConfig(stockId: "500T", displayName: "500T", category: .video,
-                lutName: "500T.cube", halationStrength: 0.2, glowStrength: 0.08,
+            let config = FilmStockConfig(stockId: "5219", displayName: "5219", category: .video,
+                lutName: "5219.cube", halationStrength: 0.2, glowStrength: 0.08,
                 grainSize: 1.3, defaultISO: iso)
             #expect(throws: RenderContractError.self) { try config.validate() }
             var manifest = RenderDiagnosticsManifest(runID: UUID(), startedAt: Date(), stockID: config.stockId,

@@ -83,11 +83,11 @@ def compare(label: str, mine: np.ndarray, shipped: np.ndarray, size: int):
 if __name__ == "__main__":
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("out")
     app_luts = Path(__file__).resolve().parents[2] / "App" / "Resources" / "LUTs"
-    for stock in ["250D", "500T"]:
-        gen_path = out / f"{stock} K2383 - Apple Log 2.cube"
+    for stock in ["5207", "5219"]:
+        gen_path = out / f"{stock} - Apple Log 2.cube"
         size, table = load_app_convention(gen_path)
         describe(gen_path, table, size)
-        shipped_path = app_luts / f"{stock} K2383 - Apple Log 2.cube"
+        shipped_path = app_luts / f"{stock} - Apple Log 2.cube"
         if shipped_path.exists():
             ssize, shipped = load_app_convention(shipped_path)
             describe(shipped_path, shipped, ssize)

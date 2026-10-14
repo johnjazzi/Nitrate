@@ -6,19 +6,23 @@ struct StockCatalogTests {
         let stocks: [FilmStockConfig]
     }
 
-    @Test func shippedCatalogContainsOnlyK2383VideoStocksInPickerOrder() throws {
+    /// The catalogue ships exactly these two stocks, in picker order, and nothing
+    /// else. The fixed Kodak Vision 2383 print stage is not declared here: it is
+    /// baked into the cubes (see docs/lut-provenance.md), so the identifiers and
+    /// LUT names carry the negative emulsion only.
+    @Test func shippedCatalogContainsExactlyTheTwoVideoStocksInPickerOrder() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let data = try Data(contentsOf: root.appendingPathComponent("Resources/stocks.json"))
         let stocks = try JSONDecoder().decode(Catalog.self, from: data).stocks
 
         #expect(stocks.map(\.stockId) == [
-            "kodak250d_k2383", "kodak500t_k2383"
+            "kodak5207", "kodak5219"
         ])
         for stock in stocks {
             #expect(stock.category == .video)
-            #expect(stock.lutName.contains("K2383"))
+            #expect(stock.lutName.hasSuffix(" - Apple Log 2.cube"))
             try stock.validate()
         }
-        #expect(stocks[0].displayName == "250D K2383")
+        #expect(stocks.map(\.displayName) == ["5207", "5219"])
     }
 }

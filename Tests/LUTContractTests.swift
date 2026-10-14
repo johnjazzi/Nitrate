@@ -28,7 +28,7 @@ struct LUTContractTests {
 
     @Test func shippedStocksCarryTheExpectedDaylightOrTungstenTag() throws {
         let stocks = try loadStocks()
-        let expected = ["kodak250d_k2383": "D", "kodak500t_k2383": "T"]
+        let expected = ["kodak5207": "D", "kodak5219": "T"]
         for config in stocks {
             #expect(config.lightType == expected[config.stockId],
                     "\(config.stockId) tagged \(config.lightType)")

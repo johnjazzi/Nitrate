@@ -100,7 +100,7 @@ struct LUTSamplingTests {
     }
 
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func shippedK2383CubesMatchIndependentTrilinearReference() throws {
+    func shippedCubesMatchIndependentTrilinearReference() throws {
         let gpu = try Self.makeGPU()
         let fixture = try Self.loadColorChecker()
         #expect(fixture.patches.count == 24)
@@ -108,8 +108,8 @@ struct LUTSamplingTests {
             + Self.boundaryAndRampProbes()
 
         for lutName in [
-            "250D K2383 - Apple Log 2.cube",
-            "500T K2383 - Apple Log 2.cube"
+            "5207 - Apple Log 2.cube",
+            "5219 - Apple Log 2.cube"
         ] {
             let cube = try Self.parseCube(named: lutName)
             #expect(cube.size == 33, "\(lutName): expected 33³ cube")
