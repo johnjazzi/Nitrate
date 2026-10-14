@@ -121,6 +121,6 @@ contrasty:
 - Numerical checks establish structure, domain, monotonicity, smoothness and GPU
   sampling agreement. They do not establish that the look is pleasing or correct
   — that needs eyes on real footage.
-- The generation script is intentionally kept out of the repository, matching the
-  project's existing handling of one-off asset generators. Ask if you want it
-  checked in under `tools/`.
+- The generation script is checked in under `tools/lut-generation/`, with its
+  dependency pins and the upstream commit it was run against, so the tables can
+  be rebuilt rather than taken on trust. See that directory's README.
