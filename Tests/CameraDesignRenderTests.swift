@@ -50,6 +50,19 @@ struct CameraDesignRenderTests {
         }
     }
 
+    @Test func landscapeStatusDoesNotOccupyPortraitToolbarRow() {
+        for width: CGFloat in [320, 390, 430] {
+            for diagnosticsHeight: CGFloat in [0, 44, 92] {
+                let geometry = CameraTopPanelGeometry(width: width - 32,
+                                                      statusSize: CGSize(width: 40, height: 112),
+                                                      diagnosticsHeight: diagnosticsHeight)
+                #expect(geometry.status.isEmpty, "Landscape status belongs to the physical upper edge, not the portrait toolbar.")
+                #expect(geometry.height == 50 + diagnosticsHeight,
+                        "No 112pt ghost row may remain after moving the entire status face.")
+            }
+        }
+    }
+
     @MainActor @Test func statusDistinguishesPendingConfirmedAndStoppingWithoutColor() throws {
         #expect(RecordingIndicatorStyle.resolved("missing") == .red)
         let suite = "CameraDesignTests.indicator"
