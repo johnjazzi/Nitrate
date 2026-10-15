@@ -15,6 +15,18 @@ struct RecordingFailureOverlay: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isBright = false
 
+    /// Slow enough to read rather than strobe. The first cut used 0.12 s per
+    /// phase — about 8 Hz, which is both too fast to read and inside the range
+    /// that can trigger photosensitive seizures. This is eight times slower.
+    static let flashHalfCycle: TimeInterval = 0.96
+
+    /// Two cycles: the card stays up for a bit under four seconds.
+    static let flashCycles = 2
+
+    /// How long the card is on screen. The screen holds it for this long so the
+    /// animation cannot be cut off part-way through a cycle.
+    static var flashDuration: TimeInterval { flashHalfCycle * Double(flashCycles) * 2 }
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.55)
@@ -22,6 +34,10 @@ struct RecordingFailureOverlay: View {
 
             VStack(spacing: 10) {
                 headline
+                    // Only the headline pulses. The reason line stays steady and
+                    // the scrim never fades, so the card reads as a card with a
+                    // throbbing warning on it rather than a flickering screen.
+                    .opacity(isBright ? 1 : 0.55)
                 if let detail {
                     Text(detail)
                         .font(.footnote.weight(.semibold))
@@ -31,13 +47,13 @@ struct RecordingFailureOverlay: View {
                 }
             }
         }
-        .opacity(isBright ? 1 : 0.3)
         .onAppear {
             guard !reduceMotion else {
                 isBright = true
                 return
             }
-            withAnimation(.easeInOut(duration: 0.12).repeatCount(12, autoreverses: true)) {
+            withAnimation(.easeInOut(duration: Self.flashHalfCycle)
+                .repeatCount(Self.flashCycles, autoreverses: true)) {
                 isBright = true
             }
         }

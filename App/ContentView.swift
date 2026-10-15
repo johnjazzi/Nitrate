@@ -59,6 +59,11 @@ struct ContentView: View {
 #if DEBUG
     /// Frozen frame + live tuning sheet (DEBUG builds only).
     @State private var debugFrameViewModel: DebugFrameViewModel?
+    /// Whether the debug affordances are on the screen. Mirrored in the debug
+    /// sheet and in Settings, so hiding the DEBUG button cannot strand the menu
+    /// that turns it back on.
+    @AppStorage(DebugControlPreferences.showsDebugButtonKey) private var showsDebugButton = true
+    @AppStorage(DebugControlPreferences.showsFaultButtonKey) private var showsFaultButton = true
 #endif
 
     var body: some View {
@@ -290,37 +295,41 @@ struct ContentView: View {
 #if DEBUG
             // Debug single-frame tuning (grain / halation / glow). Debug
             // builds only; opens a sheet over a frozen live frame.
-            Button {
-                openDebugFrame()
-            } label: {
-                Text("DEBUG")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.black)
-                    .fixedSize()
-                    .cameraUpright(in: CGSize(width: 43, height: 27))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(.yellow)
-                    .clipShape(Capsule())
+            if showsDebugButton {
+                Button {
+                    openDebugFrame()
+                } label: {
+                    Text("DEBUG")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.black)
+                        .fixedSize()
+                        .cameraUpright(in: CGSize(width: 43, height: 27))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(.yellow)
+                        .clipShape(Capsule())
+                }
             }
 
             // Preview the "recording never started" treatment without provoking a
             // real failure. It lives here rather than inside the debug sheet
             // because the overlay renders on the camera screen, which a presented
             // sheet would cover.
-            Button {
-                failureDetail = "Debug preview — no recording was attempted."
-                flashRecordingFailure()
-            } label: {
-                Text("FAULT")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white)
-                    .fixedSize()
-                    .cameraUpright(in: CGSize(width: 43, height: 27))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(.red)
-                    .clipShape(Capsule())
+            if showsFaultButton {
+                Button {
+                    failureDetail = "Debug preview — no recording was attempted."
+                    flashRecordingFailure()
+                } label: {
+                    Text("FAULT")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .fixedSize()
+                        .cameraUpright(in: CGSize(width: 43, height: 27))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(.red)
+                        .clipShape(Capsule())
+                }
             }
 #endif
 
@@ -462,7 +471,9 @@ struct ContentView: View {
         let generation = failureFlashGeneration
         withAnimation(.easeIn(duration: 0.08)) { showsRecordingFailure = true }
         Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1.6))
+            // Hold for the whole animation: cutting it short mid-cycle is what made
+            // the first version look like a fast strobe.
+            try? await Task.sleep(for: .seconds(RecordingFailureOverlay.flashDuration + 0.4))
             guard generation == failureFlashGeneration else { return }
             withAnimation(.easeOut(duration: 0.25)) { showsRecordingFailure = false }
         }

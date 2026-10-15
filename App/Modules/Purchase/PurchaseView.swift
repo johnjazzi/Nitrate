@@ -7,6 +7,10 @@ struct PurchaseView: View {
     @AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.neutral.rawValue
     @AppStorage(DeliverySettings.saveOriginalLogKey) private var saveOriginalLog = false
     @AppStorage(DeliverySettings.renderQualityKey) private var renderQuality = RenderExportQuality.high.rawValue
+#if DEBUG
+    @AppStorage(DebugControlPreferences.showsDebugButtonKey) private var showsDebugButton = true
+    @AppStorage(DebugControlPreferences.showsFaultButtonKey) private var showsFaultButton = true
+#endif
 
     var body: some View {
         NavigationStack {
@@ -25,6 +29,10 @@ struct PurchaseView: View {
                     // Preview mode
                     previewModeSection
                     exportSection
+
+#if DEBUG
+                    debugSection
+#endif
 
                     // App info
                     appInfoSection
@@ -223,6 +231,28 @@ struct PurchaseView: View {
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
+
+#if DEBUG
+    /// Mirrors the switches in the debug sheet. They live here too because the
+    /// debug sheet is reachable only from the DEBUG button: without this, turning
+    /// that button off would leave no way to turn it back on.
+    private var debugSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Debug")
+                .font(.headline)
+            Toggle("Show DEBUG button", isOn: $showsDebugButton)
+            Toggle("Show FAULT test button", isOn: $showsFaultButton)
+            Text("The FAULT button previews the recording-failure overlay. "
+                 + "Same switches as the debug sheet.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+#endif
 
     private var errorBinding: Binding<Bool> {
         Binding(

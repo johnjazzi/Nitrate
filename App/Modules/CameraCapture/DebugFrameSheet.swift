@@ -140,6 +140,10 @@ final class DebugFrameViewModel: Identifiable {
 struct DebugFrameSheet: View {
     @State private var viewModel: DebugFrameViewModel
     @Environment(\.dismiss) private var dismiss
+    /// Switches for the on-screen debug affordances. Mirrored in Settings, because
+    /// this sheet is reachable only from the DEBUG button it can hide.
+    @AppStorage(DebugControlPreferences.showsDebugButtonKey) private var showsDebugButton = true
+    @AppStorage(DebugControlPreferences.showsFaultButtonKey) private var showsFaultButton = true
 
     /// Preview zoom/pan. Live values follow the gesture; the `committed` copies
     /// are the baseline the next gesture starts from.
@@ -186,6 +190,7 @@ struct DebugFrameSheet: View {
                             grainSection
                             halationSection
                             glowSection
+                            debugControlsSection
                         }
                         .padding()
                     }
@@ -328,6 +333,21 @@ struct DebugFrameSheet: View {
                 Text(String(format: "render %.0f ms", viewModel.lastRenderMilliseconds))
                     .font(.caption2).foregroundStyle(.secondary)
             }
+        }
+    }
+
+    /// Switches for the on-screen debug affordances. Mirrored in Settings, so
+    /// hiding the DEBUG button cannot strand this sheet.
+    private var debugControlsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Debug controls")
+                .font(.headline)
+            Toggle("Show DEBUG button", isOn: $showsDebugButton)
+            Toggle("Show FAULT test button", isOn: $showsFaultButton)
+            Text("FAULT previews the recording-failure overlay. "
+                 + "The same switches are in Settings.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
