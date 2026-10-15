@@ -156,7 +156,7 @@ struct RenderContractTests {
         #expect(shippedGrainStocks.allSatisfy { $0.effectiveRecipe.edgeBoostMultiplier == 3 })
         let template = try #require(app.first { $0.stockId == "kodak5219" })
         #expect(template.grainSize == 1.3)
-        #expect(template.effectiveRecipe.version == "5219-current-v6")
+        #expect(template.effectiveRecipe.version == "5219-current-v7")
         #expect(template.effectiveRecipe.grainAlgorithm == RenderRecipe.edgeAmplitudeAlgorithm)
         #expect(template.effectiveRecipe.edgeBoostMultiplier == 3)
         let low = template.overridingISO(250)
@@ -167,6 +167,20 @@ struct RenderContractTests {
         #expect(high.overridingISO(template.defaultISO) == template)
         #expect(template.effectiveRecipe.input.transfer == "Apple Log 2")
         #expect(!template.effectiveRecipe.colorContractVerified)
+    }
+
+    @Test func shippedGlowReductionsPreserveHalation() throws {
+        for path in ["App/Resources/stocks.json", "Resources/stocks.json"] {
+            let catalog = try stocks(path)
+            let daylight = try #require(catalog.first { $0.stockId == "kodak5207" })
+            let tungsten = try #require(catalog.first { $0.stockId == "kodak5219" })
+            #expect(daylight.glowStrength == 0.155)
+            #expect(tungsten.glowStrength == 0.2325)
+            #expect(daylight.halationStrength == 0.43)
+            #expect(tungsten.halationStrength == 0.43)
+            #expect(daylight.effectiveRecipe.version == "5207-current-v2")
+            #expect(tungsten.effectiveRecipe.version == "5219-current-v7")
+        }
     }
 
     @Test func shippedContrastIsNeutralAndHistoricalExplicitContrastStillDecodes() throws {
@@ -202,7 +216,7 @@ struct RenderContractTests {
     @Test func recipeRoundTripAndRevisionEvidence() throws {
         var config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak5219" })
         let first = RenderDiagnosticsManifest.RecipeSnapshot(config: config, averageBitRate: RenderEncodingContract.averageBitRate, codec: RenderEncodingContract.codec)
-        config.recipe?.version = "5219-current-v7"
+        config.recipe?.version = "5219-current-v8"
         let second = RenderDiagnosticsManifest.RecipeSnapshot(config: config, averageBitRate: RenderEncodingContract.averageBitRate, codec: RenderEncodingContract.codec)
         let data = try JSONEncoder().encode(second)
         let decoded = try JSONDecoder().decode(RenderDiagnosticsManifest.RecipeSnapshot.self, from: data)
