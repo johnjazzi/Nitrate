@@ -12,6 +12,8 @@ enum RecordButtonPresentation: Equatable, Sendable {
     case idle
     /// Press accepted, capture still spinning up: tap cancels the pending start.
     case starting
+    /// Stop requested, recorder still finalising: tap does nothing.
+    case stopping
     /// Capture is running: tap stops.
     case recording
 }
@@ -20,12 +22,16 @@ enum RecordButtonPresentation: Equatable, Sendable {
 enum RecordButtonAction: Equatable, Sendable {
     case start
     case stop
+    /// The press is acknowledged but has nothing left to do; no feedback fires.
+    case none
 }
 
 enum RecordButtonPresentationPolicy {
-    /// Recording wins over starting: `CameraSession` never reports both, but a
-    /// late start callback must not downgrade a live take.
-    static func presentation(isRecording: Bool, isStarting: Bool) -> RecordButtonPresentation {
+    /// Stopping wins over everything: finalising can take seconds, and until it
+    /// finishes the take is still live, so the control must not fall back to the
+    /// running look or accept another tap.
+    static func presentation(isRecording: Bool, isStarting: Bool, isStopping: Bool) -> RecordButtonPresentation {
+        if isStopping { return .stopping }
         if isRecording { return .recording }
         if isStarting { return .starting }
         return .idle
@@ -38,15 +44,21 @@ enum RecordButtonPresentationPolicy {
     }
 
     /// Both `.starting` and `.recording` resolve to stop: `stopRecording()`
-    /// already cancels a pending start.
+    /// already cancels a pending start. `.stopping` ignores the tap so a second
+    /// press cannot queue another stop or re-fire feedback.
     static func action(for presentation: RecordButtonPresentation) -> RecordButtonAction {
-        presentation == .idle ? .start : .stop
+        switch presentation {
+        case .idle: .start
+        case .starting, .recording: .stop
+        case .stopping: .none
+        }
     }
 
     static func accessibilityLabel(for presentation: RecordButtonPresentation) -> String {
         switch presentation {
         case .idle: "Start recording"
         case .starting: "Cancel starting recording"
+        case .stopping: "Stopping recording"
         case .recording: "Stop recording"
         }
     }

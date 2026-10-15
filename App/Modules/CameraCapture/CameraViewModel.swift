@@ -81,6 +81,15 @@ final class CameraViewModel {
     /// the start fails). Drives the button's immediate pressed affordance, so
     /// the control does not look dead while capture spins up.
     private(set) var isStartingRecording = false
+    /// True from the stop tap until the recorder finishes finalising. Stopping a
+    /// take is not instant, so the control has to acknowledge the press itself.
+    private(set) var isStoppingRecording = false
+    /// Wall clock when the take actually started, and when stop was requested.
+    /// The REC timer is rendered from these rather than the ticked duration so
+    /// it can show hundredths, and it freezes at the stop request instead of
+    /// appearing to still be recording while the recorder drains.
+    private(set) var recordingStartedAt: Date?
+    private(set) var recordingStoppedAt: Date?
     private var captureGeneration: UInt64 = 0
     private var exposureCommandGeneration: UInt64 = 0
     private var apertureSnapshotRequestGeneration: UInt64 = 0
@@ -296,6 +305,9 @@ final class CameraViewModel {
                 }
                 self.isRecording = true
                 self.recordingDuration = 0
+                self.recordingStartedAt = Date()
+                self.recordingStoppedAt = nil
+                self.isStoppingRecording = false
                 self.startRecordingTimer()
                 self.startSpacePolling()
             }
@@ -308,6 +320,13 @@ final class CameraViewModel {
     func stopRecording() {
         if isStartingRecording { captureGeneration &+= 1 }
         isStartingRecording = false
+        // Acknowledge the stop on the tap. The recorder still has to drain and
+        // finalise, which can take seconds; without this the control keeps its
+        // running look and the press appears to have been ignored.
+        if isRecording {
+            isStoppingRecording = true
+            recordingStoppedAt = Date()
+        }
         invalidateStabilizationUIState()
         session.stopRecording()
         refreshRecordingStabilization()
@@ -646,6 +665,9 @@ final class CameraViewModel {
 
     private func handleRecordingFinished(_ result: Result<RecordingCompletion, Error>) async {
         isRecording = false
+        isStoppingRecording = false
+        recordingStartedAt = nil
+        recordingStoppedAt = nil
         refreshRecordingStabilization()
         invalidateRecordingTimers()
         switch result {

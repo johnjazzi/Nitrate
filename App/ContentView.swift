@@ -330,8 +330,7 @@ struct ContentView: View {
             selectedStock: selectedStock,
             currentISO: currentISO,
             onShowQueueSheet: { showQueueSheet = true },
-            onShowStockSheet: { showStockSheet = true },
-            formatDuration: { formatDuration($0) }
+            onShowStockSheet: { showStockSheet = true }
         )
     }
 
@@ -417,11 +416,6 @@ struct ContentView: View {
 
     // MARK: - Helpers
 
-    private func formatDuration(_ seconds: TimeInterval) -> String {
-        let min = Int(seconds) / 60
-        let sec = Int(seconds) % 60
-        return String(format: "%d:%02d", min, sec)
-    }
 }
 
 private struct CameraControlBoundsPreference: PreferenceKey {

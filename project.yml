@@ -134,6 +134,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraSampleBufferRecorder.swift
       - path: App/Modules/CameraCapture/CameraCapturePreservationProbe.swift
       - path: App/Modules/CameraCapture/RecordButtonPresentation.swift
+      - path: App/Modules/CameraCapture/RecordingDurationText.swift
       - path: Resources/Shaders/
         type: metal
       - path: Resources/Grain

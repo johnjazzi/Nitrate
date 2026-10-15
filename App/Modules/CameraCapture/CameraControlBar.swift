@@ -20,7 +20,6 @@ struct CameraControlBar: View {
     let currentISO: Float
     let onShowQueueSheet: () -> Void
     let onShowStockSheet: () -> Void
-    let formatDuration: (TimeInterval) -> String
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -268,7 +267,8 @@ struct CameraControlBar: View {
     private var recordPresentation: RecordButtonPresentation {
         RecordButtonPresentationPolicy.presentation(
             isRecording: cameraViewModel.isRecording,
-            isStarting: cameraViewModel.isStartingRecording
+            isStarting: cameraViewModel.isStartingRecording,
+            isStopping: cameraViewModel.isStoppingRecording
         )
     }
 
@@ -276,11 +276,13 @@ struct CameraControlBar: View {
         let presentation = recordPresentation
         let action = RecordButtonPresentationPolicy.action(for: presentation)
         return Button {
+            guard action != .none else { return }
             recordFeedback = action == .start ? .start : .stop
             recordFeedbackTrigger &+= 1
-            switch action {
-            case .start: cameraViewModel.startRecording()
-            case .stop: cameraViewModel.stopRecording()
+            if action == .start {
+                cameraViewModel.startRecording()
+            } else {
+                cameraViewModel.stopRecording()
             }
         } label: {
             recordFace(presentation)
@@ -291,17 +293,34 @@ struct CameraControlBar: View {
         .sensoryFeedback(trigger: recordFeedbackTrigger) { _, _ in recordFeedback.sensory }
         .accessibilityLabel(RecordButtonPresentationPolicy.accessibilityLabel(for: presentation))
         .overlay(alignment: .top) {
-            if presentation == .recording {
-                Text(formatDuration(cameraViewModel.recordingDuration))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.white)
-                    .cameraUpright()
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(.red.opacity(0.8))
-                    .clipShape(Capsule())
-                    .offset(y: -18)
+            recordingTimerBadge(presentation)
+        }
+    }
+
+    /// The elapsed-time badge, to hundredths, driven off wall clock rather than
+    /// the ticked duration so it can show hundredths. It freezes at the stop
+    /// request: the recorder may drain for another second, and a still-ticking
+    /// clock would read as "still recording".
+    @ViewBuilder
+    private func recordingTimerBadge(_ presentation: RecordButtonPresentation) -> some View {
+        if let startedAt = cameraViewModel.recordingStartedAt {
+            Group {
+                if let stoppedAt = cameraViewModel.recordingStoppedAt {
+                    Text(RecordingDurationText.format(seconds: stoppedAt.timeIntervalSince(startedAt)))
+                } else {
+                    TimelineView(.animation) { context in
+                        Text(RecordingDurationText.format(seconds: context.date.timeIntervalSince(startedAt)))
+                    }
+                }
             }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.white)
+            .cameraUpright()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(presentation == .stopping ? Color.gray.opacity(0.85) : Color.red.opacity(0.8))
+            .clipShape(Capsule())
+            .offset(y: -18)
         }
     }
 
@@ -323,6 +342,17 @@ struct CameraControlBar: View {
                     .frame(width: 46, height: 46)
                 RoundedRectangle(cornerRadius: 4)
                     .fill(.white)
+                    .frame(width: 18, height: 18)
+            case .stopping:
+                // Dimmed and grey-badged: unmistakably different from a running
+                // take the instant stop is pressed, while the recorder finalises.
+                Circle()
+                    .fill(.red)
+                    .opacity(0.45)
+                    .frame(width: 46, height: 46)
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(.white)
+                    .opacity(0.85)
                     .frame(width: 18, height: 18)
             case .starting:
                 Circle()

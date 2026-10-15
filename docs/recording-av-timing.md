@@ -152,6 +152,13 @@ when the recorder confirms. A second tap during the pending window cancels the
 start. `CameraViewModel.isStartingRecording` is the flag behind that state, and
 `RecordButtonPresentationPolicy` decides the label, enablement and tap action.
 
+Stop is acknowledged the same way, for the same reason: finalising is not
+instant. The face dims, the badge greys and the timer freezes at the stop request
+while the recorder drains (`isStoppingRecording`, `recordingStoppedAt`), and a
+further tap is ignored rather than queued. The timer renders hundredths
+(`mm:ss.cc`) from wall clock, truncated rather than rounded, so it never shows a
+hundredth that has not elapsed.
+
 Limits: measured on a warm session with the debug smoke. Cold starts, longer
 recordings, and the exact cause of the Extreme stall inside AVFoundation are not
 characterized here. The per-mode offsets above are what make a take start late, so
