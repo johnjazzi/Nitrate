@@ -52,6 +52,10 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     private(set) var pendingAudioHandoffs = 0
     private var audioHandoffEpoch: UInt64 = 0
     private var audioOverflowEpoch: UInt64?
+    /// A source-audio or output quality problem detected while the clip is
+    /// still live. Latched so the take is finished and its readable original
+    /// retained instead of being cancelled and deleted.
+    private var latchedQualityError: Error?
     private let scheduleDrainTimeout: (TimeInterval, @escaping @Sendable () -> Void) -> Void
     private var appendedVideoFrames = 0
     /// Presentation time at which the recording exposure took effect; video
@@ -107,6 +111,12 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             self.clipGeneration &+= 1
             self.audioHandoffLock.lock()
             self.audioHandoffEpoch = self.clipGeneration
+            // Start the handoff bookkeeping clean: a new clip must not inherit
+            // the previous clip's in-flight count or overflow latch. Stale
+            // handoffs from the previous clip are fenced by their captured
+            // epoch, so their deferred decrements are skipped, not applied.
+            self.pendingAudioHandoffs = 0
+            self.audioOverflowEpoch = nil
             self.audioHandoffLock.unlock()
             self.recentDropTimes.removeAll()
             self.videoSettings = videoSettings
@@ -184,7 +194,9 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                         if self.audioOverflowEpoch == generation { self.audioOverflowEpoch = nil }
                         self.audioHandoffLock.unlock()
                     }
-                    guard self.clipGeneration == generation else { return }
+                    // Only a live clip can be failed by its own overflow: an
+                    // error that arrives after stop must not touch the take.
+                    guard self.isClipLive, self.clipGeneration == generation else { return }
                     self.fail(CameraSampleBufferRecorderError.backpressure("audio capture handoff"))
                 }
             }
@@ -196,22 +208,45 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             let ownedSample = try Self.copyCapturedPCM(sampleBuffer)
             queue.async { [weak self] in
                 guard let self else { return }
-                defer { self.releaseAudioHandoff() }
+                defer { self.releaseAudioHandoff(generation) }
+                // Fence on the clip generation so a stale handoff from clip N
+                // cannot land in clip N+1 and evict its valid preroll audio.
+                guard self.clipGeneration == generation else { return }
                 self.appendAudio(ownedSample)
             }
         } catch {
             queue.async { [weak self] in
                 guard let self else { return }
-                defer { self.releaseAudioHandoff() }
-                guard self.clipGeneration == generation else { return }
-                self.fail(error)
+                defer { self.releaseAudioHandoff(generation) }
+                // A source-audio defect detected while the clip is live latches
+                // and finishes the material already captured; it must never
+                // cancel and delete a readable take, nor touch a later clip.
+                guard self.isClipLive, self.clipGeneration == generation else { return }
+                self.latchQualityErrorAndFinish(error)
             }
         }
     }
 
-    private func releaseAudioHandoff() {
+    /// The clip is still accepting source media (before stop / finalize).
+    private var isClipLive: Bool { state == .awaitingVideo || state == .recording }
+
+    /// Latch a source-quality error and finalize whatever has been captured.
+    /// The finalized original is retained on disk and reported as a failure.
+    private func latchQualityErrorAndFinish(_ error: Error) {
+        if latchedQualityError == nil { latchedQualityError = error }
+        switch state {
+        case .recording: finalizeOnQueue()
+        case .awaitingVideo: fail(error)
+        default: break
+        }
+    }
+
+    private func releaseAudioHandoff(_ generation: UInt64) {
         audioHandoffLock.lock()
-        pendingAudioHandoffs -= 1
+        // Only the current clip's handoffs may move the shared counter. A stale
+        // decrement is dropped, so the per-clip reset in begin/clearClipState
+        // cannot be driven negative by the previous clip's still-queued work.
+        if audioHandoffEpoch == generation { pendingAudioHandoffs -= 1 }
         audioHandoffLock.unlock()
     }
 
@@ -221,10 +256,15 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
               CMFormatDescriptionGetMediaSubType(description) == kAudioFormatLinearPCM else {
             throw CameraSampleBufferRecorderError.invalidAudioSample("missing PCM data or format")
         }
+        // Validate timing, format and size before allocating or copying so a
+        // malformed packet returns a typed error instead of trapping or
+        // allocating an unbounded buffer.
+        let byteCount = try validatedPCMByteCount(
+            sample, description: description, availableBytes: CMBlockBufferGetDataLength(data))
         var ownedData: CMBlockBuffer?
         let copyStatus = CMBlockBufferCreateContiguous(allocator: kCFAllocatorDefault, sourceBuffer: data,
             blockAllocator: kCFAllocatorDefault, customBlockSource: nil, offsetToData: 0,
-            dataLength: CMBlockBufferGetDataLength(data), flags: kCMBlockBufferAlwaysCopyDataFlag,
+            dataLength: byteCount, flags: kCMBlockBufferAlwaysCopyDataFlag,
             blockBufferOut: &ownedData)
         guard copyStatus == noErr, let ownedData else {
             throw CameraSampleBufferRecorderError.invalidAudioSample("PCM copy status \(copyStatus)")
@@ -238,6 +278,56 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             throw CameraSampleBufferRecorderError.invalidAudioSample("PCM sample status \(sampleStatus)")
         }
         return ownedSample
+    }
+
+    /// Strict PCM packet gate. Rejects non-finite timing, non-positive or
+    /// inconsistent packet duration, an unusable AudioStreamBasicDescription,
+    /// and a byte count that would overflow or exceed the packet's data.
+    /// Returns the exact packet byte length to allocate and copy.
+    private static func validatedPCMByteCount(_ sample: CMSampleBuffer,
+                                              description: CMFormatDescription,
+                                              availableBytes: Int) throws -> Int {
+        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sample)
+        guard presentationTime.isValid, presentationTime.isNumeric,
+              presentationTime.seconds.isFinite else {
+            throw CameraSampleBufferRecorderError.invalidAudioSample("non-finite presentation timestamp")
+        }
+        let duration = CMSampleBufferGetDuration(sample)
+        guard duration.isValid, duration.isNumeric, duration.seconds.isFinite, duration.seconds > 0 else {
+            throw CameraSampleBufferRecorderError.invalidAudioSample("missing or non-positive packet duration")
+        }
+        guard let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee else {
+            throw CameraSampleBufferRecorderError.invalidAudioSample("missing PCM stream description")
+        }
+        let sampleRate = asbd.mSampleRate
+        let channels = asbd.mChannelsPerFrame
+        let bytesPerFrame = asbd.mBytesPerFrame
+        let framesPerPacket = asbd.mFramesPerPacket
+        let bitsPerChannel = asbd.mBitsPerChannel
+        guard sampleRate.isFinite, sampleRate > 0, channels > 0,
+              bytesPerFrame > 0, framesPerPacket > 0, bitsPerChannel > 0 else {
+            throw CameraSampleBufferRecorderError.invalidAudioSample("unusable PCM format description")
+        }
+        let expectedBytesPerFrame = UInt32((bitsPerChannel + 7) / 8) * channels
+        guard bytesPerFrame == expectedBytesPerFrame else {
+            throw CameraSampleBufferRecorderError.invalidAudioSample("inconsistent PCM byte geometry")
+        }
+        let sampleCount = CMSampleBufferGetNumSamples(sample)
+        guard sampleCount > 0 else {
+            throw CameraSampleBufferRecorderError.invalidAudioSample("empty PCM packet")
+        }
+        let expectedDuration = Double(sampleCount) * Double(framesPerPacket) / sampleRate
+        guard abs(duration.seconds - expectedDuration) <= 1.0 / sampleRate else {
+            throw CameraSampleBufferRecorderError.invalidAudioSample("packet duration does not match sample count and rate")
+        }
+        let (expectedBytes, overflow) = sampleCount.multipliedReportingOverflow(by: Int(bytesPerFrame))
+        guard !overflow, expectedBytes > 0 else {
+            throw CameraSampleBufferRecorderError.invalidAudioSample("unbounded PCM packet allocation")
+        }
+        guard availableBytes >= expectedBytes else {
+            throw CameraSampleBufferRecorderError.invalidAudioSample("PCM packet is truncated")
+        }
+        return expectedBytes
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
@@ -430,6 +520,16 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             fail(CameraSampleBufferRecorderError.nonMonotonicTimestamp("audio"))
             return
         }
+        // Interior continuity: a missing or overlapping packet inside the take
+        // is a source defect. Use the existing 0.12-second bound, latch, and
+        // finalize the material already captured without retiming or padding.
+        if let previousEnd = lastAudioEndTime {
+            let delta = CMTimeSubtract(time, previousEnd).seconds
+            if delta.isFinite, abs(delta) > CameraCapturePreservationProbe.synchronizationTolerance {
+                latchQualityErrorAndFinish(CameraSampleBufferRecorderError.discontinuousSourceAudio(delta))
+                return
+            }
+        }
         guard writer.isReady(for: .audio) else {
             fail(CameraSampleBufferRecorderError.backpressure("audio"))
             return
@@ -484,7 +584,14 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                 guard self.state == .recording, self.stopAudioEndTime != nil,
                       self.clipGeneration == generation,
                       self.writer.map(ObjectIdentifier.init) == writerIdentity else { return }
-                self.fail(CameraSampleBufferRecorderError.stopDrainTimedOut)
+                // A latched source-audio defect finalizes the material already
+                // captured and retains it; otherwise the drain timeout keeps
+                // its existing cancel-and-delete behaviour for an unfinalized take.
+                if self.latchedQualityError != nil {
+                    self.finalizeOnQueue()
+                } else {
+                    self.fail(CameraSampleBufferRecorderError.stopDrainTimedOut)
+                }
             }
         }
     }
@@ -512,6 +619,27 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         writer.markInputsAsFinished()
         let generation = clipGeneration
         let writerIdentity = ObjectIdentifier(writer)
+        // Bounded finishWriting timeout, fenced on this clip generation and
+        // writer identity so a stale deadline can never touch a later take.
+        scheduleDrainTimeout(5) { [weak self] in
+            guard let self else { return }
+            self.queue.async {
+                guard self.state == .finishing, self.clipGeneration == generation,
+                      let activeWriter = self.writer,
+                      ObjectIdentifier(activeWriter) == writerIdentity else { return }
+                // A writer that already produced a readable file is retained;
+                // one that never reached completed status is unplayable.
+                if activeWriter.status == .completed,
+                   let attributes = try? FileManager.default.attributesOfItem(atPath: destination.path),
+                   ((attributes[.size] as? NSNumber)?.intValue ?? 0) > 0 {
+                    self.complete(.failure(CameraRetainedRecordingError(
+                        originalURL: destination,
+                        reason: CameraSampleBufferRecorderError.finishWritingTimedOut)))
+                } else {
+                    self.fail(CameraSampleBufferRecorderError.finishWritingTimedOut)
+                }
+            }
+        }
         writer.finishWriting { [weak self] in
             guard let self else { return }
             self.queue.async {
@@ -529,10 +657,26 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                     }
                     try self.outputValidator(destination, dimensions, self.transform, self.appendedAudioSamples)
                 } catch {
-                    self.complete(.failure(error))
+                    // The original finalized readably; a validation failure
+                    // must retain it rather than delete the take.
+                    self.complete(.failure(CameraRetainedRecordingError(originalURL: destination, reason: error)))
+                    return
+                }
+                // A source-audio defect latched while recording is reported
+                // against the readable, retained original.
+                if let latched = self.latchedQualityError {
+                    self.complete(.failure(CameraRetainedRecordingError(originalURL: destination, reason: latched)))
                     return
                 }
 #if DEBUG
+                // A configured microphone that produced no audio is not a clean
+                // success, but the video-only original is still retained.
+                if self.requiresAudioEvidence, self.audioSettings != nil, self.appendedAudioSamples == 0 {
+                    self.complete(.failure(CameraRetainedRecordingError(
+                        originalURL: destination,
+                        reason: CameraSampleBufferRecorderError.configuredMicrophoneProducedNoAudio)))
+                    return
+                }
                 if self.preservationProbeEnabled {
                     guard let source = self.sourceProbe else {
                         self.complete(.failure(CameraSampleBufferRecorderError.invalidFinalMovie("missing captured YUV smoke probe")))
@@ -598,7 +742,13 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         started = nil
         let callback = finished
         finished = nil
-        if case .failure = result, let destination { try? FileManager.default.removeItem(at: destination) }
+        // Delete only a failure that carries no retained original. A readable
+        // finalized file wrapped in a CameraRetainedRecordingError stays.
+        if case .failure(let error) = result,
+           CameraRetainedRecordingError.retainedURL(from: error) == nil,
+           let destination {
+            try? FileManager.default.removeItem(at: destination)
+        }
         clearClipState()
         if case .failure(let error) = result { startCallback?(error) }
         callback?(result)
@@ -633,6 +783,15 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         lastAudioEndTime = nil
         stopAudioEndTime = nil
         audioPreroll.removeAll()
+        // Handoff bookkeeping is per-clip: reset the in-flight count, epoch and
+        // overflow latch so the next take starts clean. releaseAudioHandoff is
+        // epoch-fenced, so a previous clip's late decrement cannot go negative.
+        audioHandoffLock.lock()
+        pendingAudioHandoffs = 0
+        audioHandoffEpoch = 0
+        audioOverflowEpoch = nil
+        audioHandoffLock.unlock()
+        latchedQualityError = nil
         appendedVideoFrames = 0
         appendedAudioSamples = 0
         recentDropTimes = []
@@ -838,6 +997,9 @@ enum CameraSampleBufferRecorderError: LocalizedError {
     case noVideoFrames
     case cancelled
     case stopDrainTimedOut
+    case finishWritingTimedOut
+    case configuredMicrophoneProducedNoAudio
+    case discontinuousSourceAudio(Double)
     case finalizationFailed
     case invalidFinalMovie(String)
 
@@ -856,6 +1018,10 @@ enum CameraSampleBufferRecorderError: LocalizedError {
         case .noVideoFrames: return "Recording stopped before a valid video frame was written."
         case .cancelled: return "Recording was cancelled before its first frame was written."
         case .stopDrainTimedOut: return "Recording timed out waiting for delayed video to reach the audio endpoint."
+        case .finishWritingTimedOut: return "Recording timed out while finalizing; the take was not reported."
+        case .configuredMicrophoneProducedNoAudio: return "The configured microphone delivered no audio for this take."
+        case .discontinuousSourceAudio(let seconds):
+            return "Capture audio has a \(String(format: "%.3f", seconds))-second discontinuity inside the take."
         case .finalizationFailed: return "The HEVC recording could not be finalized."
         case .invalidFinalMovie(let detail): return "The finalized movie failed Apple Log 2 validation: \(detail)."
         }
