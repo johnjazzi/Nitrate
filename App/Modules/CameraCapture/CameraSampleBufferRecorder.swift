@@ -170,7 +170,11 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     }
 
     private func recordVideoDrop(at now: Double) {
-        guard state == .awaitingVideo || state == .recording else { return }
+        // Once stop has been requested the take is finalising rather than running:
+        // its frames are already in the writer, so a drop burst here must not abort
+        // and discard a recording the user has finished. The drain timeout still
+        // bounds a tail that never arrives.
+        guard state == .awaitingVideo || state == .recording, stopAudioEndTime == nil else { return }
         recentDropTimes = CameraSampleValidationPolicy.dropTimesWithinWindow(recentDropTimes, now: now)
         if CameraSampleValidationPolicy.shouldFailForFrameDrops(recentDropCount: recentDropTimes.count) {
             fail(CameraSampleBufferRecorderError.sustainedFrameDrops(recentDropTimes.count))

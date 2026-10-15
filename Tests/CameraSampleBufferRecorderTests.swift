@@ -395,6 +395,43 @@ struct CameraSampleBufferRecorderTests {
     }
 
     @available(macOS 14.2, iOS 17.2, *)
+    @Test func aDropBurstAfterStopCannotFailOrDeleteTheTake() async throws {
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        let video = try Self.log2Sample(pts: 10)
+        rig.recorder.submitVideoSampleForTesting(video)
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 10.6))
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+
+        // Stop freezes the accepted audio endpoint past the video, so the take is
+        // still live — and still receiving drop callbacks — while it drains.
+        rig.recorder.stop()
+        await rig.drainSubmittedWork()
+        #expect(!writer.finishWasRequested)
+
+        // A burst that would fail a live take must not abort one the user has
+        // already ended: everything up to the stop is captured, and discarding it
+        // would lose a completed recording.
+        rig.recorder.submitDropForTesting(at: 200)
+        rig.recorder.submitDropForTesting(at: 200.5)
+        rig.recorder.submitDropForTesting(at: 201)
+        await rig.drainSubmittedWork()
+        #expect(rig.events.finishedCount == 0,
+                "A drop burst after stop must not finish the take, let alone fail it")
+
+        // It still finalises normally once video reaches the frozen endpoint.
+        rig.recorder.submitVideoSampleForTesting(try Self.retimed(video, pts: 10.7))
+        await rig.drainSubmittedWork()
+        #expect(writer.finishWasRequested)
+        writer.completeFinalization(success: true)
+        await rig.drainSubmittedWork()
+        try #require(rig.events.finishedCount == 1)
+        #expect(await rig.events.nextFinished() == nil)
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
     @Test(arguments: [false, true])
     func stopWithoutAcceptedAudioRequestsFinishImmediately(audioConfigured: Bool) async throws {
         let rig = makeRig(FakeWriterBehavior(delayedFinish: true))

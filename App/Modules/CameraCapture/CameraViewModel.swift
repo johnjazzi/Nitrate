@@ -775,7 +775,10 @@ final class CameraViewModel {
 
     private func recordingTimerTick(generation: UInt64) {
         guard recordingTimerGeneration.accepts(generation), isRecording else { return }
-        recordingDuration += 0.1
+        // Count the clock the counter shows, so the five-minute limit and the
+        // displayed time cannot disagree about how long the take has run.
+        recordingDuration = recordingTimerOrigin.map { Date().timeIntervalSince($0) }
+            ?? (recordingDuration + 0.1)
         // AD-8: auto-stop at 5 minutes
         if recordingDuration >= Self.maxClipDuration {
             stopRecording()
