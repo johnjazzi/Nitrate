@@ -12,6 +12,15 @@ struct CameraZoomPolicyTests {
         #expect(bounds.target(2) == 1)
     }
 
+    @Test func telephotoFourTimesDisplayScaleCanReachSixteen() throws {
+        // At the tele camera's 4x display multiplier, fourfold device crop is 16x displayed.
+        let bounds = try #require(CameraZoomPolicy.bounds(multiplier: 4, effectiveMinimum: 1,
+                                                           effectiveMaximum: 12, formatMaximum: 20))
+        #expect(bounds.minimumDisplay == 4)
+        #expect(bounds.maximumDisplay == 16)
+        #expect(bounds.target(16) == 4)
+    }
+
     @Test func effectiveBoundsOverrideFormatAndPreservePerLensMinimum() throws {
         let bounds = try #require(CameraZoomPolicy.bounds(multiplier: 0.5, effectiveMinimum: 1.5,
                                                            effectiveMaximum: 4, formatMaximum: 20))
