@@ -6,10 +6,9 @@ import SwiftUI
 /// The top toolbar owns settings and the manual-controls popover; this bar
 /// owns the shooting controls and remaining-recording-time readout.
 struct CameraControlBar: View {
+    @Environment(\.cameraDeviceOrientation) private var orientation
     private let controlFaceSize: CGFloat = 44
-    private let selectorRowHeight: CGFloat = 54
-    private let recordFaceSize: CGFloat = 84
-    private let statusSlotSize: CGFloat = 84
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Drives `.sensoryFeedback`; bumped on every REC tap so the press is felt
     /// immediately instead of when capture reports it started.
     @State private var recordFeedbackTrigger = 0
@@ -23,26 +22,16 @@ struct CameraControlBar: View {
     let renderQueueViewModel: RenderQueueViewModel
     let selectedStock: FilmStockConfig?
     let currentISO: Float
+    let selectedGauge: PrintGauge
     let onShowQueueSheet: () -> Void
     let onShowStockSheet: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 6) {
-                selectorRow
-                storageIndicator.frame(width: statusSlotSize, height: statusSlotSize)
-            }
-            .frame(width: statusSlotSize, alignment: .leading)
-
-            Spacer(minLength: 0)
-
-            exposureControl
-                .frame(width: 92)
-        }
-        .overlay {
-            // Overlay the full bar, not the free space between columns. Keep
-            // REC centred on the screen and leave room above for its timer.
-            recordButton.frame(width: recordFaceSize, height: recordFaceSize)
+        CameraShootingLayout() {
+            selectorRow
+            storageIndicator
+            recordButton
+            exposureControl.frame(width: CameraControlGeometry.exposureWidth)
         }
         .padding(.horizontal, 16)
     }
@@ -50,9 +39,15 @@ struct CameraControlBar: View {
     // MARK: - Left selector row
 
     private var selectorRow: some View {
-        stockControl(faceSize: controlFaceSize)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: selectorRowHeight)
+        HStack(spacing: 6) {
+            stockControl(faceSize: controlFaceSize)
+                .frame(width: 52, height: 52)
+            if selectedStock != nil {
+                CameraGaugeLabel(gauge: selectedGauge,
+                                 rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
     // MARK: - Stock selector
@@ -84,27 +79,8 @@ struct CameraControlBar: View {
         Button {
             onShowStockSheet()
         } label: {
-            ZStack {
-                VStack(spacing: 0) {
-                    ForEach(0..<5) { idx in
-                        let isPrimary = idx == 0 || idx == 1 || idx == 4
-                        (isPrimary ? stock.primaryColor : stock.secondaryColor)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: faceSize / 5)
-                    }
-                }
-                .frame(width: faceSize * 1.15, height: faceSize)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                Text("\(Int(currentISO))\(stock.lightType)")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
-                    .background(.ultraThinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 3))
-            }
-            .frame(width: faceSize * 1.15, height: faceSize)
+            CameraFilmStockFace(primary: stock.primaryColor, secondary: stock.secondaryColor,
+                                isoLight: "\(Int(currentISO))\(stock.lightType)", faceSize: faceSize)
         }
         .buttonStyle(CameraRaisedButtonStyle(faceColor: stock.primaryColor))
     }
@@ -298,124 +274,24 @@ struct CameraControlBar: View {
                                                            presentation: presentation))
         .sensoryFeedback(trigger: recordFeedbackTrigger) { _, _ in recordFeedback.sensory }
         .accessibilityLabel(RecordButtonPresentationPolicy.accessibilityLabel(for: presentation))
-        .overlay(alignment: .top) {
-            recordingTimerBadge(presentation)
-        }
     }
 
-    /// The elapsed-time badge, to hundredths, counted from the modelled capture
-    /// start rather than from the ticked duration or from confirmation. It is
-    /// visible from the press — holding 00:00.00 through the 0.2 s before capture
-    /// begins — so the display is continuous, and it freezes at the stop request
-    /// because the recorder may drain for another second and a still-ticking
-    /// clock would read as "still recording".
-    @ViewBuilder
-    private func recordingTimerBadge(_ presentation: RecordButtonPresentation) -> some View {
-        if let origin = cameraViewModel.recordingTimerOrigin {
-            Group {
-                if let stoppedAt = cameraViewModel.recordingStoppedAt {
-                    Text(RecordingDurationText.format(seconds: stoppedAt.timeIntervalSince(origin)))
-                } else {
-                    TimelineView(.animation) { context in
-                        Text(RecordingDurationText.format(seconds: context.date.timeIntervalSince(origin)))
-                    }
-                }
-            }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.white)
-            .cameraUpright()
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(presentation == .stopping ? Color.gray.opacity(0.85) : Color.red.opacity(0.8))
-            .clipShape(Capsule())
-            .offset(y: -18)
-        }
-    }
-
-    /// Idle is a white ring with a white dot; the press turns that dot red
-    /// immediately, so the control responds on the tap rather than when the
-    /// writer comes up. A running take is the filled red disc with a stop square.
+    /// Shared circular plunger: quiet washed red in every state, no bezel slab.
     private func recordFace(_ presentation: RecordButtonPresentation) -> some View {
-        ZStack {
-            // A circular translucent cap, deliberately not a rectangular
-            // frame: the reference camera's REC is its own round recess.
-            Circle()
-                .fill(.ultraThinMaterial)
-                .overlay { Circle().fill(Color.black.opacity(0.18)) }
-
-            switch presentation {
-            case .recording:
-                Circle()
-                    .fill(.red)
-                    .frame(width: 46, height: 46)
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(.white)
-                    .frame(width: 18, height: 18)
-            case .stopping:
-                // Dimmed and grey-badged: unmistakably different from a running
-                // take the instant stop is pressed, while the recorder finalises.
-                Circle()
-                    .fill(.red)
-                    .opacity(0.45)
-                    .frame(width: 46, height: 46)
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(.white)
-                    .opacity(0.85)
-                    .frame(width: 18, height: 18)
-            case .starting:
-                Circle()
-                    .stroke(.white, lineWidth: 3)
-                    .frame(width: 58, height: 58)
-                Circle()
-                    .fill(.red)
-                    .frame(width: 46, height: 46)
-            case .idle:
-                Circle()
-                    .stroke(.white, lineWidth: 3)
-                    .frame(width: 58, height: 58)
-                Circle()
-                    .fill(.white)
-                    .frame(width: 46, height: 46)
-            }
-        }
-        .frame(width: recordFaceSize, height: recordFaceSize)
-        .overlay {
-            Circle()
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [.white.opacity(0.42), .white.opacity(0.05), .black.opacity(0.42)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 1
-                )
-                .allowsHitTesting(false)
-        }
-        .shadow(color: .black.opacity(0.38), radius: 6, x: 0, y: 3)
-        .animation(.easeInOut(duration: 0.12), value: presentation)
-        // The unclick: the plunger settles a beat after the finger lands, with a
-        // ring springing off it, so the press reads as mechanical.
-        .scaleEffect(isUnclicked ? 0.92 : 1)
-        .overlay {
-            Circle()
-                .stroke(.white, lineWidth: 2)
-                .opacity(isUnclicked ? 0 : 0.55)
-                .scaleEffect(isUnclicked ? 1.3 : 0.88)
-                .allowsHitTesting(false)
-        }
+        RecordPlungerFace(presentation: presentation, isPressed: isUnclicked,
+                          rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
     }
 
-    /// Spring the face back shortly after the press, before the counter moves.
+    /// Immediate 2.5pt depression, released at the established 100ms unclick.
+    /// The same generation guard prevents a rapid cancel from releasing a newer tap.
     private func animateUnclick() {
         pressGeneration &+= 1
         let generation = pressGeneration
+        isUnclicked = true
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(RecordButtonTimingPolicy.unclickDelay))
             guard generation == pressGeneration else { return }
-            withAnimation(.spring(response: 0.16, dampingFraction: 0.5)) { isUnclicked = true }
-            try? await Task.sleep(for: .seconds(0.2))
-            guard generation == pressGeneration else { return }
-            withAnimation(.easeOut(duration: 0.14)) { isUnclicked = false }
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { isUnclicked = false }
         }
     }
 
@@ -437,14 +313,14 @@ struct CameraControlBar: View {
     }
 
     private var storageIndicator: some View {
-        Button(action: onShowQueueSheet) {
-            RecordingTimeLCD(
-                estimatedSeconds: estimatedRemainingSeconds,
-                isStorageLow: isStorageLow,
-                queueStatus: queueStatus
-            )
-            .frame(width: statusSlotSize, height: 84)
-        }
+        CameraRotatingSlot(rotationDegrees: CameraGlyphRotation.degrees(for: orientation)) {
+            Button(action: onShowQueueSheet) {
+                RecordingTimeLCD(
+                    estimatedSeconds: estimatedRemainingSeconds,
+                    isStorageLow: isStorageLow,
+                    queueStatus: queueStatus
+                )
+            }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
@@ -452,7 +328,7 @@ struct CameraControlBar: View {
         .accessibilityValue("\(estimatedTimeText). \(freeSpaceText) free. "
                             + "\(isStorageLow ? "Low storage. " : "")\(queueStatus.accessibilityDescription)")
         .accessibilityHint("Tap for storage and render queue details, video playback, sharing, and retry controls.")
-        .cameraRotatingControl()
+        }
     }
 
     private var estimatedTimeText: String {

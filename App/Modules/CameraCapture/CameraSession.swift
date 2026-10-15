@@ -115,6 +115,9 @@ final class CameraSession: NSObject {
     private var manualExposureISO: Float = 400
     private var recordingAperturePin: CameraAperturePolicy.RecordingPin?
     private var apertureCameraRevision: UInt64 = 0
+    private var zoomLifecycle = CameraZoomRampLifecycle()
+    private var zoomObserver: (@MainActor @Sendable (CameraZoomSnapshot?) -> Void)?
+    private var zoomSamplingGeneration: UInt64 = 0
     // Queue-confined. Preserve the user's preference when a lens/format cannot
     // fulfill it; only the recording connection falls back to Off.
     private var preferredStabilization = CameraStabilizationMode(
@@ -514,6 +517,7 @@ final class CameraSession: NSObject {
     }
 
     private func configureDevice(_ device: AVCaptureDevice, applyDefaultExposure: Bool = true) throws {
+        cancelZoomOnQueue()
         acceptedPixelFormats = []
         acceptedVideoSettings = [:]
         guard #available(iOS 26.0, *) else { throw CameraError.appleLog2NotSupported }
@@ -550,6 +554,13 @@ final class CameraSession: NSObject {
             }
         }
         activeDevice = device
+        zoomLifecycle.cameraChanged()
+        if let bounds = zoomBounds(for: device), Double(device.videoZoomFactor) > bounds.maximumDevice {
+            try device.lockForConfiguration()
+            device.videoZoomFactor = CGFloat(bounds.maximumDevice)
+            device.unlockForConfiguration()
+        }
+        publishZoom()
         configureCaptureRotation(for: device)
         apertureCameraRevision &+= 1
         if #available(iOS 27.0, *), selectedLensAperture != nil {
@@ -860,6 +871,9 @@ final class CameraSession: NSObject {
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.exposureChangeDuringRecording) } }
                 return
             }
+            self.cancelZoomOnQueue()
+            self.zoomLifecycle.cameraChanged()
+            self.publishZoom()
             self.suspendPreview(true)
             defer { self.suspendPreview(false) }
             self.invalidateMetering()
@@ -945,39 +959,118 @@ final class CameraSession: NSObject {
                 }
             }
 
+            self.publishZoom()
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(switchError) } }
         }
     }
 
     // MARK: - Zoom
 
-    /// Set zoom factor (1.0–5.0). Clamped to device capabilities.
-    func setZoom(_ factor: CGFloat) {
+    private func zoomBounds(for device: AVCaptureDevice) -> CameraZoomPolicy.Bounds? {
+        let multiplier: Double
+        if #available(iOS 18.0, *) {
+            multiplier = Double(device.displayVideoZoomFactorMultiplier)
+        } else {
+            multiplier = 1 // iOS 17: explicitly per-lens, never a fabricated global ratio.
+        }
+        return CameraZoomPolicy.bounds(multiplier: multiplier,
+                                       effectiveMinimum: Double(device.minAvailableVideoZoomFactor),
+                                       effectiveMaximum: Double(device.maxAvailableVideoZoomFactor),
+                                       formatMaximum: Double(device.activeFormat.videoMaxZoomFactor))
+    }
+
+    func observeZoom(_ observer: @escaping @MainActor @Sendable (CameraZoomSnapshot?) -> Void) {
         sessionQueue.async { [weak self] in
-            guard let self, let device = self.activeDevice else { return }
-            do {
-                try device.lockForConfiguration()
-                defer { device.unlockForConfiguration() }
-                device.videoZoomFactor = min(max(factor, 1.0), device.activeFormat.videoMaxZoomFactor)
-            } catch { self.reportCameraError(error) }
+            self?.zoomObserver = observer
+            self?.publishZoom()
         }
     }
 
-    /// Ramp zoom smoothly.
-    func rampZoom(to factor: CGFloat, rate: Float = 2.0) {
-        sessionQueue.async { [weak self] in
-            guard let self, let device = self.activeDevice else { return }
-            do {
-                try device.lockForConfiguration()
-                defer { device.unlockForConfiguration() }
-                device.ramp(toVideoZoomFactor: min(max(factor, 1.0), device.activeFormat.videoMaxZoomFactor),
-                            withRate: rate)
-            } catch { self.reportCameraError(error) }
+    private func publishZoom() {
+        let snapshot: CameraZoomSnapshot?
+        if let device = activeDevice, let bounds = zoomBounds(for: device) {
+            let raw = Double(device.videoZoomFactor) * bounds.multiplier
+            snapshot = CameraZoomSnapshot(cameraRevision: zoomLifecycle.cameraRevision,
+                                          displayFactor: min(max(raw, bounds.minimumDisplay), bounds.maximumDisplay),
+                                          minimumDisplayFactor: bounds.minimumDisplay,
+                                          maximumDisplayFactor: bounds.maximumDisplay,
+                                          isRamping: device.isRampingVideoZoom,
+                                          isPerLens: {
+                                            if #available(iOS 18.0, *) { return false }
+                                            return true
+                                          }())
+        } else { snapshot = nil }
+        if let zoomObserver {
+            DispatchQueue.main.async { MainActor.assumeIsolated { zoomObserver(snapshot) } }
         }
     }
 
-    var currentZoomFactor: CGFloat {
-        activeDevice?.videoZoomFactor ?? 1.0
+    /// Every UI source sends displayed magnification and the snapshot's revision.
+    func setDisplayZoom(_ factor: Double, revision: UInt64) {
+        sessionQueue.async { [weak self] in
+            guard let self, self.zoomLifecycle.cameraRevision == revision,
+                  let device = self.activeDevice, let bounds = self.zoomBounds(for: device),
+                  let target = bounds.target(factor) else { return }
+            self.cancelZoomOnQueue()
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                device.videoZoomFactor = CGFloat(target)
+            } catch { self.reportCameraError(error) }
+            self.publishZoom()
+        }
+    }
+
+    func beginSlowZoom(_ direction: CameraZoomDirection, revision: UInt64) {
+        sessionQueue.async { [weak self] in
+            guard let self, self.zoomLifecycle.cameraRevision == revision,
+                  let device = self.activeDevice, let bounds = self.zoomBounds(for: device) else { return }
+            self.cancelZoomOnQueue()
+            let endpoint = direction == .in ? bounds.maximumDevice : bounds.minimumDevice
+            guard abs(Double(device.videoZoomFactor) - endpoint) > 0.001 else { self.publishZoom(); return }
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                device.ramp(toVideoZoomFactor: CGFloat(endpoint), withRate: CameraZoomPolicy.rampRate)
+                _ = self.zoomLifecycle.begin(revision: revision)
+                self.zoomSamplingGeneration &+= 1
+                self.sampleZoom(generation: self.zoomSamplingGeneration, remaining: 600)
+            } catch { self.reportCameraError(error) }
+            self.publishZoom()
+        }
+    }
+
+    func endSlowZoom(revision: UInt64) {
+        sessionQueue.async { [weak self] in
+            guard let self, self.zoomLifecycle.cameraRevision == revision else { return }
+            self.cancelZoomOnQueue()
+            self.publishZoom()
+            self.zoomSamplingGeneration &+= 1
+            self.sampleZoom(generation: self.zoomSamplingGeneration, remaining: 20)
+        }
+    }
+
+    private func cancelZoomOnQueue() {
+        zoomSamplingGeneration &+= 1
+        if let device = activeDevice, device.isRampingVideoZoom {
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                device.cancelVideoZoomRamp()
+            } catch { reportCameraError(error) }
+        }
+        _ = zoomLifecycle.end(revision: zoomLifecycle.cameraRevision)
+    }
+
+    private func sampleZoom(generation: UInt64, remaining: Int) {
+        guard remaining > 0 else { return }
+        sessionQueue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self, self.zoomSamplingGeneration == generation else { return }
+            self.publishZoom()
+            if self.activeDevice?.isRampingVideoZoom == true || remaining > 590 {
+                self.sampleZoom(generation: generation, remaining: remaining - 1)
+            }
+        }
     }
 
     /// Focus the active lens at a normalized device point (0–1).
@@ -1052,9 +1145,6 @@ final class CameraSession: NSObject {
         activeDevice?.isLockingFocusWithCustomLensPositionSupported ?? false
     }
 
-    var maxZoomFactor: CGFloat {
-        activeDevice?.activeFormat.videoMaxZoomFactor ?? 5.0
-    }
 
     /// Current sensor ISO (0 if no active device). Read from any thread for display.
     var currentISO: Float {
@@ -2159,6 +2249,8 @@ final class CameraSession: NSObject {
     func stop() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            self.cancelZoomOnQueue()
+            self.publishZoom()
             self.suspendPreview(true)
             self.invalidateMetering()
             if self.recordingStartPending {

@@ -49,7 +49,44 @@ schemes:
       targets:
         - RenderCLITests
 
+  CameraDesign:
+    build:
+      targets:
+        CameraDesignTests: all
+    test:
+      targets:
+        - CameraDesignTests
+
 targets:
+  CameraDesignTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests/CameraDesignTests.swift
+      - path: Tests/CameraDesignRenderTests.swift
+      - path: Tests/ManualControlsOverlayTests.swift
+      - path: Tests/CameraZoomPolicyTests.swift
+      - path: App/Modules/CameraCapture/CameraZoomPolicy.swift
+      - path: App/Modules/ProcessingPipeline/GrainModel.swift
+      - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
+      - path: Tests/CameraCleanupPresentationTests.swift
+      - path: App/Modules/CameraCapture/RecordingTimerBadge.swift
+      - path: App/Modules/CameraCapture/ManualControlsOverlay.swift
+      - path: App/Modules/CameraCapture/ManualControlsSurface.swift
+      - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
+      - path: App/Modules/CameraCapture/RecordButtonPresentation.swift
+      - path: App/Modules/CameraCapture/RecordingStatusFace.swift
+      - path: App/Modules/CameraCapture/CameraTopPanelLayout.swift
+      - path: App/Modules/CameraCapture/CameraDesignFaces.swift
+      - path: App/Modules/CameraCapture/CameraShootingLayout.swift
+      - path: App/Modules/CameraCapture/CameraLensFace.swift
+      - path: App/Modules/CameraCapture/CameraRaisedButtonStyle.swift
+      - path: App/Modules/CameraCapture/RecordingTimeLCD.swift
+      - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
+    settings:
+      SWIFT_VERSION: "6.0"
+
   Nitrate:
     type: application
     platform: iOS
@@ -127,14 +164,25 @@ targets:
       - path: App/Modules/CameraCapture/CameraPreviewPolicy.swift
       - path: App/Modules/CameraCapture/CameraPreviewTap.swift
       - path: App/Modules/CameraCapture/CameraPolicies.swift
+      - path: App/Modules/CameraCapture/CameraZoomPolicy.swift
       - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
       - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
+      - path: App/Modules/CameraCapture/ManualControlsOverlay.swift
+      - path: App/Modules/CameraCapture/ManualControlsSurface.swift
       - path: App/Modules/CameraCapture/RulerScale.swift
       - path: App/Modules/CameraCapture/CameraSampleBufferRecorder.swift
       - path: App/Modules/CameraCapture/CameraCapturePreservationProbe.swift
       - path: App/Modules/CameraCapture/RecordButtonPresentation.swift
       - path: App/Modules/CameraCapture/RecordingDurationText.swift
+      - path: App/Modules/CameraCapture/RecordingTimerBadge.swift
+      - path: App/Modules/CameraCapture/RecordingStatusFace.swift
+      - path: App/Modules/CameraCapture/CameraTopPanelLayout.swift
+      - path: App/Modules/CameraCapture/CameraDesignFaces.swift
+      - path: App/Modules/CameraCapture/CameraShootingLayout.swift
+      - path: App/Modules/CameraCapture/CameraLensFace.swift
+      - path: App/Modules/CameraCapture/CameraRaisedButtonStyle.swift
+      - path: App/Modules/CameraCapture/RecordingTimeLCD.swift
       - path: App/Modules/CameraCapture/RecordingFeedbackPolicy.swift
       - path: Resources/Shaders/
         type: metal

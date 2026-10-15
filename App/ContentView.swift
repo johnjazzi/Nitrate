@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var showQueueSheet = false
     @State private var showSettings = false
     @AppStorage("showFramedPreview") private var showFramedPreview = false
+    @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
     @State private var controlBounds: [String: CGRect] = [:]
     @State private var currentSourceURL: URL?
     /// Shown briefly when a take never started.
@@ -39,12 +40,12 @@ struct ContentView: View {
     }
 
     /// Camera controls state
-    @State private var zoomFactor: Double = 1.0
     @State private var selectedLens: CameraLens
     @State private var availableLenses: [CameraLens] = []
 
     /// Pinch-zoom baseline (ISO/EV controls live in `CameraControlBar`).
     @State private var pinchBaseZoom: Double = 1.0
+    @State private var pinchIsActive = false
 
     /// Physical orientation source for the `.cameraUpright()` chrome modifier.
     /// Every icon/text glyph in the camera UI rotates to stay readable in
@@ -53,6 +54,7 @@ struct ContentView: View {
 
     /// Manual zoom/focus pop-over with a live exposure readout.
     @State private var showManualControls = false
+    @AppStorage("camera.manualControlsExpanded") private var manualControlsExpanded = false
     @State private var manualFocusPosition: Double = 0.5
     @State private var isManualFocus = false
 
@@ -86,30 +88,43 @@ struct ContentView: View {
                 cameraLayer(in: previewRect(in: geometry))
 
                 VStack(spacing: 0) {
-                    VStack(spacing: 0) {
-                        topBar
-
-                        if showManualControls {
-                            ManualControlsPanel(
-                                cameraViewModel: cameraViewModel,
-                                zoomFactor: $zoomFactor,
-                                manualFocusPosition: $manualFocusPosition,
-                                isManualFocus: $isManualFocus,
-                                onDismiss: { withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false } }
-                            )
-                            .frame(maxWidth: .infinity)
-                            .padding(.leading, 76)
-                            .padding(.trailing, 16)
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                        }
-                    }
-                    .background(controlMeasurement("top"))
+                    topBar
+                        .background(controlMeasurement("top"))
 
                     Spacer()
 
                     controlBar
                         .padding(.bottom, 8)
                         .background(controlMeasurement("bottom"))
+                }
+
+                if let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
+                    RecordingStatusOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
+                                           rotationDegrees: statusRotationDegrees) {
+                        recordingStatus
+                    }
+                }
+
+                if showManualControls, let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
+                    ManualControlsOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
+                                          excluding: RecordingStatusOverlayGeometry.rect(
+                                            viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
+                                            rotationDegrees: statusRotationDegrees),
+                                          expanded: manualControlsExpanded,
+                                          rotationDegrees: statusRotationDegrees) {
+                        ManualControlsPanel(
+                            cameraViewModel: cameraViewModel,
+                            manualFocusPosition: $manualFocusPosition,
+                            isManualFocus: $isManualFocus,
+                            expanded: $manualControlsExpanded,
+                            landscape: abs(statusRotationDegrees) == 90,
+                            onDismiss: {
+                                cameraViewModel.endSlowZoom()
+                                withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false }
+                            }
+                        )
+                    }
+                    .transition(.opacity)
                 }
 
                 errorOverlays
@@ -157,6 +172,16 @@ struct ContentView: View {
             if let stock = newStock {
                 applyStockWhiteBalance(stock)
             }
+        }
+        .onChange(of: showManualControls) { _, shown in
+            if !shown { cameraViewModel.endSlowZoom() }
+        }
+        .onChange(of: showSettings || showQueueSheet || showStockSheet) { _, shown in
+            if shown { cameraViewModel.endSlowZoom() }
+        }
+        .onChange(of: cameraViewModel.zoomSnapshot?.cameraRevision) { _, _ in
+            pinchIsActive = false
+            pinchBaseZoom = cameraViewModel.zoomSnapshot?.displayFactor ?? 1
         }
     }
 
@@ -222,7 +247,8 @@ struct ContentView: View {
             }
             return FramedPreviewLayout.previewRect(
                 in: CGRect(origin: .zero, size: geometry.size),
-                topControlsBottom: top.maxY,
+                topControlsBottom: CameraTopPanelGeometry.framingBottom(toolbarBottom: top.maxY,
+                                                                         rotationDegrees: statusRotationDegrees),
                 bottomControlsTop: bottom.minY
             )
         }
@@ -250,14 +276,19 @@ struct ContentView: View {
             .simultaneousGesture(
                 MagnificationGesture()
                     .onChanged { value in
+                        guard let snapshot = cameraViewModel.zoomSnapshot else { return }
+                        if !pinchIsActive {
+                            pinchBaseZoom = snapshot.displayFactor
+                            pinchIsActive = true
+                        }
                         // Damped (0.45) so a small pinch doesn't jump the zoom.
                         let damped = 1.0 + (value - 1.0) * 0.45
-                        let target = min(max(pinchBaseZoom * damped, 1.0),
-                                          Double(cameraViewModel.session.maxZoomFactor))
-                        zoomFactor = target
-                        cameraViewModel.session.setZoom(CGFloat(target))
+                        cameraViewModel.setDisplayZoom(pinchBaseZoom * damped)
                     }
-                    .onEnded { _ in pinchBaseZoom = zoomFactor }
+                    .onEnded { _ in
+                        pinchIsActive = false
+                        pinchBaseZoom = cameraViewModel.zoomSnapshot?.displayFactor ?? pinchBaseZoom
+                    }
             )
             .position(x: rect.midX, y: rect.midY)
     }
@@ -267,78 +298,119 @@ struct ContentView: View {
     /// Active stock lives in the control bar's selector row; the top toolbar
     /// owns app settings, manual controls and the active lens menu.
     private var topBar: some View {
-        HStack(spacing: 12) {
-            // Settings
-            Button {
-                showSettings = true
-            } label: {
-                Image(systemName: "gearshape.fill")
-                    .font(.title3)
-                    .foregroundStyle(.white)
-                    .cameraUpright()
-                    .frame(width: 44, height: 44)
-            }
-            .buttonStyle(CameraRaisedButtonStyle())
-
-            // Manual zoom/focus pop-over over the preview.
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) { showManualControls.toggle() }
-            } label: {
-                Image(systemName: "slider.vertical.3")
-                    .font(.title3)
-                    .foregroundStyle(showManualControls ? .black : .white)
-                    .cameraUpright()
-                    .frame(width: 44, height: 44)
-            }
-            .buttonStyle(CameraRaisedButtonStyle(faceColor: showManualControls ? .yellow : Color(red: 0.16, green: 0.17, blue: 0.19)))
-
-#if DEBUG
-            // Debug single-frame tuning (grain / halation / glow). Debug
-            // builds only; opens a sheet over a frozen live frame.
-            if showsDebugButton {
-                Button {
-                    openDebugFrame()
-                } label: {
-                    Text("DEBUG")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.black)
-                        .fixedSize()
-                        .cameraUpright(in: CGSize(width: 43, height: 27))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(.yellow)
-                        .clipShape(Capsule())
-                }
-            }
-
-            // Preview the "recording never started" treatment without provoking a
-            // real failure. It lives here rather than inside the debug sheet
-            // because the overlay renders on the camera screen, which a presented
-            // sheet would cover.
-            if showsFaultButton {
-                Button {
-                    failureDetail = "Debug preview — no recording was attempted."
-                    flashRecordingFailure()
-                } label: {
-                    Text("FAULT")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .fixedSize()
-                        .cameraUpright(in: CGSize(width: 43, height: 27))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(.red)
-                        .clipShape(Capsule())
-                }
-            }
-#endif
-
-            Spacer()
-
+        CameraTopPanel(statusInToolbar: abs(statusRotationDegrees) != 90) {
+            settingsButton
+        } manual: {
+            manualButton
+        } lens: {
             lensMenu
+        } status: {
+            recordingStatus
+        } diagnostics: {
+            VStack(spacing: 4) { diagnosticButtons }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
+    }
+
+    private var settingsButton: some View {
+        Button {
+            showSettings = true
+        } label: {
+            Image(systemName: "gearshape.fill")
+                .font(.title3)
+                .foregroundStyle(.white)
+                .cameraUpright()
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(CameraRaisedButtonStyle())
+    }
+
+    private var manualButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { showManualControls.toggle() }
+        } label: {
+            Image(systemName: "slider.vertical.3")
+                .font(.title3)
+                .foregroundStyle(showManualControls ? .black : .white)
+                .cameraUpright()
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(CameraRaisedButtonStyle(faceColor: showManualControls ? .yellow : Color(red: 0.16, green: 0.17, blue: 0.19)))
+
+    }
+
+    @ViewBuilder private var diagnosticButtons: some View {
+#if DEBUG
+        // Debug single-frame tuning (grain / halation / glow). Debug
+        // builds only; opens a sheet over a frozen live frame.
+        if showsDebugButton {
+            Button {
+                openDebugFrame()
+            } label: {
+                Text("DEBUG")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.black)
+                    .fixedSize()
+                    .cameraUpright(in: CGSize(width: 43, height: 27))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(.yellow)
+                    .clipShape(Capsule())
+            }
+        }
+
+        // Preview the "recording never started" treatment without provoking a
+        // real failure. It lives here rather than inside the debug sheet
+        // because the overlay renders on the camera screen, which a presented
+        // sheet would cover.
+        if showsFaultButton {
+            Button {
+                failureDetail = "Debug preview — no recording was attempted."
+                flashRecordingFailure()
+            } label: {
+                Text("FAULT")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .fixedSize()
+                    .cameraUpright(in: CGSize(width: 43, height: 27))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(.red)
+                    .clipShape(Capsule())
+            }
+        }
+#endif
+    }
+
+    private var recordPresentation: RecordButtonPresentation {
+        RecordButtonPresentationPolicy.presentation(
+            isRecording: cameraViewModel.isRecording,
+            isStarting: cameraViewModel.isStartingRecording,
+            isStopping: cameraViewModel.isStoppingRecording
+        )
+    }
+
+    @ViewBuilder private var recordingStatus: some View {
+        if let origin = cameraViewModel.recordingTimerOrigin {
+            if let stoppedAt = cameraViewModel.recordingStoppedAt {
+                statusFace(text: RecordingDurationText.format(seconds: stoppedAt.timeIntervalSince(origin)))
+            } else {
+                TimelineView(.animation) { context in
+                    statusFace(text: RecordingDurationText.format(seconds: context.date.timeIntervalSince(origin)))
+                }
+            }
+        } else {
+            statusFace(text: recordPresentation == .idle ? "--:--.--" : "00:00.00")
+        }
+    }
+
+    private var statusRotationDegrees: Double {
+        CameraGlyphRotation.degrees(for: orientation.deviceOrientation)
+    }
+
+    private func statusFace(text: String) -> some View {
+        RecordingStatusFace(presentation: recordPresentation, text: text,
+                            style: RecordingIndicatorStyle.resolved(recordingIndicatorStyle),
+                            rotationDegrees: CameraGlyphRotation.degrees(for: orientation.deviceOrientation))
     }
 
     private var lensMenu: some View {
@@ -357,8 +429,6 @@ struct ContentView: View {
             selectedLens = cameraViewModel.activeLens
             if let error {
                 cameraViewModel.errorMessage = "Camera switch failed: \(error.localizedDescription)"
-            } else {
-                zoomFactor = 1.0
             }
         }
     }
@@ -373,6 +443,7 @@ struct ContentView: View {
             renderQueueViewModel: renderQueueViewModel,
             selectedStock: selectedStock,
             currentISO: currentISO,
+            selectedGauge: selectedStock.flatMap { library.lastGauge(for: $0.stockId) } ?? .neutral,
             onShowQueueSheet: { showQueueSheet = true },
             onShowStockSheet: { showStockSheet = true }
         )

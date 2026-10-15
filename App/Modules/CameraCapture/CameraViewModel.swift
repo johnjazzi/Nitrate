@@ -12,6 +12,14 @@ final class CameraViewModel {
 
     init() {
         activeLens = session.activeLens
+        session.observeZoom { [weak self] snapshot in
+            guard let self else { return }
+            if let snapshot, let current = self.zoomSnapshot {
+                self.zoomSnapshot = current.accepting(snapshot)
+            } else {
+                self.zoomSnapshot = snapshot
+            }
+        }
     }
 
     // MARK: - Observable State
@@ -53,6 +61,7 @@ final class CameraViewModel {
             persistedValue: UserDefaults.standard.string(forKey: CameraStabilizationPolicy.preferenceKey)),
         capability: .unavailable, activeRawValue: nil, cameraRevision: 0, changesAllowed: false)
     private(set) var activeLens: CameraLens
+    private(set) var zoomSnapshot: CameraZoomSnapshot?
     private(set) var isSwitchingCameraLens = false
     var isManualExposure = false
     var manualISO: Float = 400
@@ -129,6 +138,7 @@ final class CameraViewModel {
     }
 
     func onSceneInactive() {
+        endSlowZoom()
         guard lifecycleGate.isActive else { return }
         lifecycleGate.deactivate()
         exposureCommandGeneration &+= 1
@@ -278,6 +288,21 @@ final class CameraViewModel {
         onSceneInactive()
     }
 
+    func setDisplayZoom(_ factor: Double) {
+        guard lifecycleGate.isActive, let snapshot = zoomSnapshot, !isSwitchingCameraLens else { return }
+        session.setDisplayZoom(factor, revision: snapshot.cameraRevision)
+    }
+
+    func beginSlowZoom(_ direction: CameraZoomDirection) {
+        guard lifecycleGate.isActive, let snapshot = zoomSnapshot, !isSwitchingCameraLens else { return }
+        session.beginSlowZoom(direction, revision: snapshot.cameraRevision)
+    }
+
+    func endSlowZoom(revision: UInt64? = nil) {
+        guard let revision = revision ?? zoomSnapshot?.cameraRevision else { return }
+        session.endSlowZoom(revision: revision)
+    }
+
     func startRecording() {
         guard !isStartingRecording, !isRecording else { return }
         guard lifecycleGate.isActive, cameraConfigured else {
@@ -387,6 +412,7 @@ final class CameraViewModel {
     /// Switch the active lens and refresh tap-to-focus for the new device.
     /// Completion runs on the main queue; `nil` error means the swap succeeded.
     func selectLens(_ lens: CameraLens, completion: @escaping (Error?) -> Void) {
+        endSlowZoom()
         exposureCommandGeneration &+= 1
         cameraLensSwitchGeneration &+= 1
         pendingLensSwitchCount += 1
