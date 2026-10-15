@@ -18,6 +18,7 @@ struct ContentView: View {
     /// Shown briefly when a take never started.
     @State private var showsRecordingFailure = false
     @State private var failureFlashGeneration = 0
+    @State private var failureDetail: String?
 
     /// Persisted stock selection — survives across recordings.
     @State private var selectedStock: FilmStockConfig?
@@ -137,6 +138,7 @@ struct ContentView: View {
         }
         .onChange(of: cameraViewModel.recordingFailureToken) { _, token in
             guard token > 0 else { return }
+            failureDetail = cameraViewModel.recordingFailureDetail
             flashRecordingFailure()
         }
         .onAppear {
@@ -301,6 +303,25 @@ struct ContentView: View {
                     .background(.yellow)
                     .clipShape(Capsule())
             }
+
+            // Preview the "recording never started" treatment without provoking a
+            // real failure. It lives here rather than inside the debug sheet
+            // because the overlay renders on the camera screen, which a presented
+            // sheet would cover.
+            Button {
+                failureDetail = "Debug preview — no recording was attempted."
+                flashRecordingFailure()
+            } label: {
+                Text("FAULT")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .fixedSize()
+                    .cameraUpright(in: CGSize(width: 43, height: 27))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(.red)
+                    .clipShape(Capsule())
+            }
 #endif
 
             Spacer()
@@ -366,7 +387,7 @@ struct ContentView: View {
                 }
             }
             if showsRecordingFailure {
-                RecordingFailureOverlay(detail: cameraViewModel.recordingFailureDetail)
+                RecordingFailureOverlay(detail: failureDetail)
                     .transition(.opacity)
             }
         }

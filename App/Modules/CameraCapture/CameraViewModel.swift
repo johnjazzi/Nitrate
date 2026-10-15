@@ -335,12 +335,21 @@ final class CameraViewModel {
     }
 
     func stopRecording() {
-        if isStartingRecording { captureGeneration &+= 1 }
+        let wasStarting = isStartingRecording
+        if wasStarting { captureGeneration &+= 1 }
         isStartingRecording = false
-        // Acknowledge the stop on the tap. The recorder still has to drain and
-        // finalise, which can take seconds; without this the control keeps its
-        // running look and the press appears to have been ignored.
-        if isRecording {
+        if wasStarting, !isRecording {
+            // Cancelling a pending start. The take never began, so the recorder
+            // produces no file and never reports a finish — this is the only place
+            // that can clear the counter, and without it the counter would keep
+            // running with nothing behind it.
+            recordingTimerOrigin = nil
+            recordingStoppedAt = nil
+            isStoppingRecording = false
+        } else if isRecording {
+            // Acknowledge the stop on the tap. The recorder still has to drain and
+            // finalise, which can take seconds; without this the control keeps its
+            // running look and the press appears to have been ignored.
             isStoppingRecording = true
             recordingStoppedAt = Date()
         }
