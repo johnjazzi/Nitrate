@@ -7,6 +7,34 @@ import Testing
 import UniformTypeIdentifiers
 
 struct ManualControlsOverlayTests {
+    @Test func compactFootprintIsNotAvailableViewportSlab() {
+        let rect = ManualControlsOverlayGeometry.rect(viewport: CGSize(width: 390, height: 763),
+                                                      toolbarBottom: 60, controlsTop: 580)
+        #expect(rect.width <= 304)
+        #expect(rect.height <= 210)
+    }
+
+    @MainActor @Test func defaultOverlayDoesNotStretchIntoAvailableSlab() throws {
+        let view = ManualControlsOverlay(viewport: CGSize(width: 390, height: 763),
+                                         toolbarBottom: 60, controlsTop: 580) {
+            Text("MANUAL").frame(maxWidth: .infinity).frame(height: 100).background(.red)
+        }
+        let host = NSHostingView(rootView: view)
+        host.frame = CGRect(x: 0, y: 0, width: 390, height: 763)
+        host.layoutSubtreeIfNeeded()
+        let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: rep)
+        let redColumns = (0..<rep.pixelsWide).filter { x in
+            (0..<rep.pixelsHigh).contains { y in
+                guard let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return false }
+                return color.redComponent > 0.8 && color.greenComponent < 0.2
+            }
+        }
+        #expect(redColumns.count > 100)
+        #expect(redColumns.count <= Int(304 * CGFloat(rep.pixelsWide) / 390),
+                "Compact overlay must not stretch to the full 358pt available width.")
+    }
+
     @Test func panelGeometryUsesOnlyAvailableViewportAndStationaryChrome() {
         for size in [CGSize(width: 320, height: 430), CGSize(width: 390, height: 763), CGSize(width: 430, height: 820)] {
             for toolbar: CGFloat in [52, 154, 174] {

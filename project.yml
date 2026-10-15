@@ -66,6 +66,8 @@ targets:
       - path: Tests/CameraDesignTests.swift
       - path: Tests/CameraDesignRenderTests.swift
       - path: Tests/ManualControlsOverlayTests.swift
+      - path: App/Modules/ProcessingPipeline/GrainModel.swift
+      - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
       - path: Tests/CameraCleanupPresentationTests.swift
       - path: App/Modules/CameraCapture/RecordingTimerBadge.swift
       - path: App/Modules/CameraCapture/ManualControlsOverlay.swift
