@@ -4,6 +4,7 @@ import SwiftUI
 struct PurchaseView: View {
     @State var viewModel: PurchaseViewModel
     @Binding var showFramedPreview: Bool
+    @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
     @AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.neutral.rawValue
     @AppStorage(DeliverySettings.saveOriginalLogKey) private var saveOriginalLog = false
     @AppStorage(DeliverySettings.renderQualityKey) private var renderQuality = RenderExportQuality.high.rawValue
@@ -156,6 +157,17 @@ struct PurchaseView: View {
                 Text("Log").tag(CameraPreviewMode.log)
             }
             Text("Neutral is the default monitor; Stock LUT uses the selected film look; Log is ungraded. Preview only, with no grain, halation, or glow. Recording stays Apple Log 2; film effects are applied after capture. If a preview LUT is unavailable, the monitor shows Log with a warning.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Picker("Recording Indicator", selection: Binding(
+                get: { RecordingIndicatorStyle.resolved(recordingIndicatorStyle) },
+                set: { recordingIndicatorStyle = $0.rawValue })) {
+                ForEach(RecordingIndicatorStyle.allCases) { style in
+                    Text(style.title).tag(style)
+                }
+            }
+            Text("Top status lamp and elapsed timer only. WAIT means capture is not yet confirmed; REC confirms capture; STOP freezes the timer while finalizing. The physical REC button stays red.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

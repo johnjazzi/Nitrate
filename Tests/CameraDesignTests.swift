@@ -14,7 +14,7 @@ struct CameraDesignTests {
         #expect(!bar.contains(".scaleEffect(isUnclicked ? 0.92 : 1)"))
         #expect(!bar.contains(".scaleEffect(isUnclicked ? 1.3 : 0.88)"))
         #expect(bar.contains("RecordButtonTimingPolicy.unclickDelay"))
-        #expect(bar.contains("recordingTimerBadge(presentation)"))
+        #expect(!bar.contains("recordingTimerBadge(presentation)"))
     }
 
     @Test func recordingActionsAreNotOptimisticallyConfirmed() {
@@ -33,7 +33,11 @@ struct CameraDesignTests {
 
     @Test func topLampReadsCaptureState() throws {
         let screen = try source("App/ContentView.swift")
-        #expect(screen.contains("RecordingStatusLamp("))
+        #expect(screen.contains("RecordingStatusFace("))
+        #expect(screen.contains("RecordingIndicatorStyle.preferenceKey"))
+        let settings = try source("App/Modules/Purchase/PurchaseView.swift")
+        #expect(settings.contains("Recording Indicator"))
+        #expect(settings.contains("RecordingIndicatorStyle.allCases"))
         #expect(screen.contains("isRecording: cameraViewModel.isRecording"))
         #expect(screen.contains("isStarting: cameraViewModel.isStartingRecording"))
         #expect(screen.contains("isStopping: cameraViewModel.isStoppingRecording"))

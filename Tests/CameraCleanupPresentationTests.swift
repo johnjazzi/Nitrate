@@ -12,13 +12,15 @@ struct CameraCleanupPresentationTests {
         return try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
     }
 
-    @Test func timerRotatesCompleteCapsuleWithoutNestedGlyphRotation() throws {
-        let file = try source("App/Modules/CameraCapture/CameraControlBar.swift")
-        let start = try #require(file.range(of: "private func recordingTimerBadge"))
-        let end = try #require(file.range(of: "/// Idle is a white ring", range: start.upperBound..<file.endIndex))
-        let badge = String(file[start.lowerBound..<end.lowerBound])
-        #expect(!badge.contains(".cameraUpright()"))
-        #expect(badge.contains("RecordingTimerBadge("))
+    @Test func timerBelongsOnlyToMeasuredTopPanelAndFreezesAtStop() throws {
+        let bar = try source("App/Modules/CameraCapture/CameraControlBar.swift")
+        let screen = try source("App/ContentView.swift")
+        #expect(!bar.contains("recordingTimerBadge"))
+        #expect(!bar.contains("RecordingTimerBadge("))
+        #expect(screen.contains("CameraTopPanel {"))
+        #expect(screen.contains("RecordingStatusFace("))
+        #expect(screen.contains("if let stoppedAt = cameraViewModel.recordingStoppedAt"))
+        #expect(screen.contains("stoppedAt.timeIntervalSince(origin)"))
     }
 
     @Test func manualPanelIsIndependentOfStationaryChromeAndPreviewIdentity() throws {
