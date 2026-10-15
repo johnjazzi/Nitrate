@@ -65,12 +65,10 @@ private struct CameraPreviewRepresentable: UIViewRepresentable {
         layer.videoGravity = videoGravity
         DispatchQueue.main.async {
             previewLayer = layer
-            if #available(iOS 17.0, *),
-               let connection = layer.connection,
-               connection.isVideoRotationAngleSupported(90) {
-                connection.videoRotationAngle = 90
-                view.setNeedsLayout()
-            }
+            // The layer's connection does not exist until the session is
+            // running, so the per-camera rotation is applied here.
+            view.updatePreviewRotation(for: camera.activeLens)
+            view.setNeedsLayout()
         }
         return view
     }
@@ -101,7 +99,12 @@ private final class CameraPreviewUIView: UIView {
     private var resolvedLUTName: String?
 #if DEBUG
     private var diagnosticGeometry = ""
+    private var reportedPreviewRotation = ""
 #endif
+    private var previewRotationCoordinator: AVCaptureDevice.RotationCoordinator?
+    private var previewRotationObservation: NSKeyValueObservation?
+    private var previewRotationLens: CameraLens?
+    private var previewRotationConnection: AVCaptureConnection?
 
     init(camera: CameraSession) {
         self.camera = camera
@@ -148,6 +151,7 @@ private final class CameraPreviewUIView: UIView {
         wantsLUT = requested
         activeLens = lens
         resolvedLUTName = lutName
+        updatePreviewRotation(for: lens)
         updateRendererGeometry()
         refreshSink()
     }
@@ -166,6 +170,12 @@ private final class CameraPreviewUIView: UIView {
 
     func detach() {
         wantsLUT = false
+        // The coordinator holds a weak layer reference; drop the observation and
+        // the remembered lens so a re-attach rebuilds both.
+        previewRotationObservation = nil
+        previewRotationCoordinator = nil
+        previewRotationLens = nil
+        previewRotationConnection = nil
         renderer?.configure(active: false, geometry: .init(), selectedLUTName: resolvedLUTName)
         camera.removePreviewTap(owner: owner)
         attached = false
@@ -175,17 +185,15 @@ private final class CameraPreviewUIView: UIView {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         setNeedsLayout()
+        if let activeLens { updatePreviewRotation(for: activeLens) }
         updateRendererGeometry()
         refreshSink()
     }
 
     private func updateRendererGeometry() {
         let connection = previewLayer.connection
-        if let connection, connection.isVideoRotationAngleSupported(90), connection.videoRotationAngle != 90 {
-            connection.videoRotationAngle = 90
-        }
         let geometry = CameraPreviewRenderer.Geometry(size: bounds.size,
-            rotationAngle: connection?.videoRotationAngle ?? 90,
+            rotationAngle: connection?.videoRotationAngle ?? CameraPreviewRotationPolicy.fallbackAngle,
             mirrored: connection?.isVideoMirrored ?? false,
             fill: previewLayer.videoGravity == .resizeAspectFill)
         if renderer?.configure(active: wantsLUT && window != nil, geometry: geometry,
@@ -199,6 +207,68 @@ private final class CameraPreviewUIView: UIView {
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
+
+    /// The preview layer's rotation follows the platform's per-camera
+    /// horizon-level angle. A fixed 90° is right for the rear camera and a
+    /// quarter turn out for the front: the front camera's native data-output
+    /// buffer is already portrait-sized, and its coordinator angle is 0° in a
+    /// portrait hold (measured on device: applied 90° against platform 0°).
+    fileprivate func updatePreviewRotation(for lens: CameraLens) {
+        if previewRotationLens != lens {
+            observePreviewRotation(for: lens)
+        }
+        // A lens switch re-creates the layer's connection, so re-apply.
+        guard previewLayer.connection !== previewRotationConnection else { return }
+        applyPreviewRotation()
+    }
+
+    private func observePreviewRotation(for lens: CameraLens) {
+        previewRotationObservation = nil
+        previewRotationCoordinator = nil
+        previewRotationLens = lens
+        guard let device = AVCaptureDevice.default(lens.deviceType, for: .video, position: lens.position) else {
+            return
+        }
+        let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: previewLayer)
+        // Updates arrive on the main queue. Dropping the previous observation
+        // keeps a lens switch from resurrecting the old camera's angle.
+        previewRotationObservation = coordinator.observe(\.videoRotationAngleForHorizonLevelPreview,
+                                                         options: [.initial, .new]) { [weak self] _, change in
+            Task { @MainActor in self?.applyPreviewRotation(change.newValue) }
+        }
+        previewRotationCoordinator = coordinator
+    }
+
+    /// Nil asks the coordinator itself; the fallback is the previous fixed 90°.
+    private func applyPreviewRotation(_ platformAngle: CGFloat? = nil) {
+        guard let connection = previewLayer.connection else { return }
+        let coordinator = previewRotationCoordinator
+        let requested = CameraPreviewRotationPolicy.angle(
+            platformAngle: platformAngle ?? coordinator?.videoRotationAngleForHorizonLevelPreview)
+        guard connection.isVideoRotationAngleSupported(requested) else { return }
+        previewRotationConnection = connection
+        if connection.videoRotationAngle != requested {
+            connection.videoRotationAngle = requested
+            // The stock-LUT preview derives its geometry from this angle.
+            updateRendererGeometry()
+        }
+        logPreviewRotation(connection, requested: requested)
+    }
+
+#if DEBUG
+    /// Reports the applied angle per camera; the platform value is the reference
+    /// that a fixed 90° failed for the front camera.
+    private func logPreviewRotation(_ connection: AVCaptureConnection, requested: CGFloat) {
+        let report = "lens=\(previewRotationLens?.rawValue ?? "none"), applied=\(connection.videoRotationAngle), " +
+            "requested=\(requested), mirrored=\(connection.isVideoMirrored), " +
+            "platform=\(previewRotationCoordinator?.videoRotationAngleForHorizonLevelPreview ?? -1)"
+        guard report != reportedPreviewRotation else { return }
+        reportedPreviewRotation = report
+        print("Camera preview rotation: \(report)")
+    }
+#else
+    private func logPreviewRotation(_ connection: AVCaptureConnection, requested: CGFloat) {}
+#endif
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -217,6 +287,9 @@ private final class CameraPreviewUIView: UIView {
             print("Camera preview surface: \(diagnostic)")
         }
 #endif
+        // A session reconfiguration can replace the layer's connection, which
+        // resets its rotation; re-apply before the geometry is read from it.
+        if let activeLens { updatePreviewRotation(for: activeLens) }
         updateRendererGeometry()
     }
 }

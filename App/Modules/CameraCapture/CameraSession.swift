@@ -427,6 +427,7 @@ final class CameraSession: NSObject {
         let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: nil)
         rotationCoordinator = coordinator
         captureRotationState = CameraCaptureRotationPolicy()
+        logOrientationDiagnostics(for: device, coordinator: coordinator)
         let deviceID = device.uniqueID
         rotationObservation = coordinator.observe(\.videoRotationAngleForHorizonLevelCapture,
                                                   options: [.initial, .new]) { [weak self] _, change in
@@ -445,6 +446,35 @@ final class CameraSession: NSObject {
         captureRotationState.snapshot(for: orientation,
             liveAngle: rotationCoordinator?.videoRotationAngleForHorizonLevelCapture)
     }
+
+#if DEBUG
+    /// Device-only evidence for the per-camera rotation contract. The front
+    /// camera's native sensor orientation differs from the rear's, so every
+    /// hard-coded angle must be checked against the platform's own value.
+    private func logOrientationDiagnostics(for device: AVCaptureDevice,
+                                           coordinator: AVCaptureDevice.RotationCoordinator) {
+        func describe(_ connection: AVCaptureConnection?) -> String {
+            guard let connection else { return "none" }
+            let supported = [0.0, 90.0, 180.0, 270.0].filter { connection.isVideoRotationAngleSupported($0) }
+            return "applied=\(connection.videoRotationAngle), mirrored=\(connection.isVideoMirrored), " +
+                "autoMirror=\(connection.automaticallyAdjustsVideoMirroring), supported=\(supported)"
+        }
+        let portraitAngle: String
+        if #available(iOS 27.0, *) {
+            portraitAngle = "\(coordinator.videoRotationAngleRelative(toDeviceOrientation: .portrait))"
+        } else {
+            portraitAngle = "unavailable"
+        }
+        let format = device.activeFormat.formatDescription
+        let dimensions = CMVideoFormatDescriptionGetDimensions(format)
+        print("Camera orientation diagnostics: position=\(device.position.rawValue), " +
+              "format=\(dimensions.width)x\(dimensions.height), " +
+              "coordinatorCapture=\(coordinator.videoRotationAngleForHorizonLevelCapture), " +
+              "coordinatorPreview=\(coordinator.videoRotationAngleForHorizonLevelPreview), " +
+              "relativeToPortrait=\(portraitAngle), records[\(describe(videoOutput.connection(with: .video)))], " +
+              "previewSource[\(describe(previewOutput.connection(with: .video)))]")
+    }
+#endif
 
     /// Transfer only the Sendable orientation value across the main boundary,
     /// not the queue-confined session object.

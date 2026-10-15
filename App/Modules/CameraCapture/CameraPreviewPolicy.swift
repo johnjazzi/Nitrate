@@ -22,6 +22,27 @@ enum CameraPreviewMode: String, CaseIterable, Sendable {
 }
 
 
+/// Preview-layer display rotation for the active camera.
+///
+/// The preview layer's own rotation is a display transform, and the angle a
+/// camera needs is per-camera: measured on device in a portrait hold, the rear
+/// camera's horizon-level preview angle is 90° while the front camera's is 0°,
+/// because the front camera's native data-output buffer is already
+/// portrait-sized. A fixed 90° therefore renders the front preview a quarter
+/// turn out. `AVCaptureVideoPreviewLayer` rotation angles are only 0/90/180/270.
+enum CameraPreviewRotationPolicy {
+    /// The angle used before the platform angle is known, and the fallback when
+    /// no coordinator can describe the camera. Correct only for the rear camera.
+    static let fallbackAngle: CGFloat = 90
+
+    /// Only quarter turns are settable on a preview connection; anything else
+    /// (including an unavailable coordinator) keeps the previous fixed angle.
+    static func angle(platformAngle: CGFloat?) -> CGFloat {
+        guard let platformAngle, platformAngle.isFinite else { return fallbackAngle }
+        return platformAngle
+    }
+}
+
 /// A filename-only load token: geometry, ISO, and gauge updates do not reload LUTs.
 struct CameraPreviewLUTSelection: Equatable, Sendable {
     private(set) var name: String?
