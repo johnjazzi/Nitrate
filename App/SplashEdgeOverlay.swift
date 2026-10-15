@@ -15,16 +15,16 @@ struct SplashEdgeOverlay: View {
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    corner(details.format)
-                    Spacer(minLength: 8)
-                    corner(details.capture)
-                }
+                cornerPair(details.format, details.capture)
                 Spacer(minLength: 0)
-                HStack(spacing: 0) {
-                    corner(details.stock)
-                    Spacer(minLength: 8)
-                    corner(details.marking)
+                VStack(spacing: 8) {
+                    cornerPair(details.stock, details.marking)
+                    Text(version)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .tracking(2)
+                        .foregroundStyle(.white.opacity(0.42))
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -33,14 +33,6 @@ struct SplashEdgeOverlay: View {
                 Spacer(minLength: 0)
                 vertical(details.frameCounter, flipped: true)
             }
-
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
-                Text(version)
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .tracking(2)
-                    .foregroundStyle(.white.opacity(0.42))
-            }
         }
         .padding(.horizontal, Self.cornerInset)
         .padding(.top, Self.topInset)
@@ -48,12 +40,32 @@ struct SplashEdgeOverlay: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Try both full labels on one line before giving each its own wrapping row.
+    /// Fixed-size candidates prevent truncation from falsely reporting a fit.
+    private func cornerPair(_ leading: String, _ trailing: String) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 0) {
+                corner(leading).fixedSize()
+                Spacer(minLength: 8)
+                corner(trailing).fixedSize()
+            }
+            VStack(spacing: 6) {
+                corner(leading)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                corner(trailing)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private func corner(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 9, weight: .semibold, design: .monospaced))
             .tracking(1.6)
             .foregroundStyle(.white.opacity(0.34))
-            .lineLimit(1)
     }
 
     /// Rotation does not change the reported layout size, so the frame is sized

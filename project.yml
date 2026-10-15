@@ -116,6 +116,7 @@ targets:
       - path: Tests
       - path: App/AppIdentity.swift
       - path: App/SplashEdgeDetails.swift
+      - path: App/SplashEdgeOverlay.swift
       - path: App/StartupSplashTiming.swift
       - path: App/Modules/ProcessingPipeline/
       - path: App/Modules/FilmStockLibrary/
