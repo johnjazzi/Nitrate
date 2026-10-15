@@ -69,6 +69,7 @@ final class CameraSession: NSObject {
     let session = AVCaptureSession()
     fileprivate let sessionQueue = DispatchQueue(label: "camera.session")
     private let sampleBufferQueue = DispatchQueue(label: "camera.sample-buffer-writer")
+    private let audioSampleBufferQueue = DispatchQueue(label: "camera.audio-capture")
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
     // Attached only during initial configuration. Normal/Log switches only gate
@@ -96,6 +97,9 @@ final class CameraSession: NSObject {
     private var isConfigured = false
     private var recordingActive = false
     private var recordingFinishing = false
+    /// Session shutdown must not discard video still delayed by stabilization.
+    /// Cleared if the camera resumes before that recorder reaches its terminal callback.
+    private var stopSessionAfterRecording = false
     /// Fixed white-balance temperature (Kelvin) requested by the selected stock.
     /// Applied on the next configureDevice or immediately via setWhiteBalance.
     private var whiteBalanceTemperature: Float?
@@ -273,7 +277,7 @@ final class CameraSession: NSObject {
         do {
             videoOutput.alwaysDiscardsLateVideoFrames = true
             videoOutput.setSampleBufferDelegate(sampleBufferRecorder, queue: sampleBufferQueue)
-            audioOutput.setSampleBufferDelegate(sampleBufferRecorder, queue: sampleBufferQueue)
+            audioOutput.setSampleBufferDelegate(sampleBufferRecorder, queue: audioSampleBufferQueue)
             addMicrophoneInputLocked()
             try addDevice(device)
             attachPreviewOutput()
@@ -330,7 +334,7 @@ final class CameraSession: NSObject {
         session.addInput(input)
         microphoneInput = input
         microphoneAdded = true
-        audioOutput.setSampleBufferDelegate(sampleBufferRecorder, queue: sampleBufferQueue)
+        audioOutput.setSampleBufferDelegate(sampleBufferRecorder, queue: audioSampleBufferQueue)
         if session.canAddOutput(audioOutput) { session.addOutput(audioOutput) }
     }
 
@@ -1688,6 +1692,10 @@ final class CameraSession: NSObject {
         recordingStartPending = false
         restoreAutomaticApertureAfterRecording()
         refreshPublicRecordingState()
+        if stopSessionAfterRecording {
+            stopSessionAfterRecording = false
+            if session.isRunning { session.stopRunning() }
+        }
         let completion: Result<RecordingCompletion, Error>
         switch result {
         case .success(let outputURL):
@@ -1709,7 +1717,12 @@ final class CameraSession: NSObject {
                 } else if case .failure(let error) = completion {
                     print("HEVC Log2 smoke failed: \(error.localizedDescription)")
                 }
-                try? FileManager.default.removeItem(at: smokeURL)
+                if CommandLine.arguments.contains("--keep-hevc-log2-smoke"),
+                   case .success(let recording) = completion {
+                    print("HEVC Log2 smoke retained: \(recording.url.path)")
+                } else {
+                    try? FileManager.default.removeItem(at: smokeURL)
+                }
             }
             return
         }
@@ -2016,6 +2029,7 @@ final class CameraSession: NSObject {
     func start() {
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured else { return }
+            self.stopSessionAfterRecording = false
             self.beginDeviceOrientationNotificationsIfNeeded()
             if !self.session.isRunning {
                 self.session.startRunning()
@@ -2042,9 +2056,13 @@ final class CameraSession: NSObject {
                     self.sampleBufferRecorder.cancel()
                 }
             } else if self.recordingActive {
+                // Keep the capture connection running until the recorder has
+                // drained video to the frozen audio endpoint.
+                self.stopSessionAfterRecording = true
                 self.recordingFinishing = true
                 self.refreshPublicRecordingState()
                 self.sampleBufferRecorder.stop()
+                return
             }
             guard self.session.isRunning else { return }
             self.session.stopRunning()

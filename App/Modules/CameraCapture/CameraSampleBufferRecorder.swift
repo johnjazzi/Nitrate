@@ -40,6 +40,19 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     private var sessionStartTime: CMTime?
     private var lastVideoTime: CMTime?
     private var lastAudioTime: CMTime?
+    private var lastVideoEndTime: CMTime?
+    private var lastAudioEndTime: CMTime?
+    /// Stabilization can delay video even before begin (exposure settling).
+    /// Retain only recent audio, never idle capture-pool video buffers.
+    private var audioPreroll: [CMSampleBuffer] = []
+    private var stopAudioEndTime: CMTime?
+    /// Audio callbacks must not wait behind HEVC creation/preroll flushing.
+    /// Limit the cross-queue handoff as well as the recorder's five-second ring.
+    private let audioHandoffLock = NSLock()
+    private var pendingAudioHandoffs = 0
+    private var audioHandoffEpoch: UInt64 = 0
+    private var audioOverflowEpoch: UInt64?
+    private let scheduleDrainTimeout: (TimeInterval, @escaping @Sendable () -> Void) -> Void
     private var appendedVideoFrames = 0
     /// Presentation time at which the recording exposure took effect; video
     /// frames older than this are dropped. Invalid means "do not filter".
@@ -53,14 +66,21 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     private var preservationProbeEnabled = false
     private var sourceProbe: CameraYUVProbe?
     private var requiresAudioEvidence = false
+    private var firstAudioTimeForDiagnostics: CMTime?
+    private var audioDurationForDiagnostics: Double = 0
+    private var maximumAudioGapForDiagnostics: Double = 0
 #endif
 
     init(queue: DispatchQueue,
          writerFactory: @escaping CameraSampleBufferWriterFactory = AVCameraSampleBufferWriter.make,
-         outputValidator: @escaping (URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void = CameraSampleBufferRecorder.validateOutput) {
+         outputValidator: @escaping (URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void = CameraSampleBufferRecorder.validateOutput,
+         scheduleDrainTimeout: ((TimeInterval, @escaping @Sendable () -> Void) -> Void)? = nil) {
         self.queue = queue
         self.writerFactory = writerFactory
         self.outputValidator = outputValidator
+        self.scheduleDrainTimeout = scheduleDrainTimeout ?? { delay, action in
+            queue.asyncAfter(deadline: .now() + delay, execute: action)
+        }
     }
 
     func begin(
@@ -85,9 +105,13 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             }
             self.destination = url
             self.clipGeneration &+= 1
+            self.audioHandoffLock.lock()
+            self.audioHandoffEpoch = self.clipGeneration
+            self.audioHandoffLock.unlock()
             self.recentDropTimes.removeAll()
             self.videoSettings = videoSettings
             self.audioSettings = audioSettings
+            if audioSettings == nil { self.audioPreroll.removeAll() }
             self.acceptedPixelFormats = acceptedPixelFormats
             self.metadata = metadata
             self.transform = .identity
@@ -110,7 +134,11 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     }
 
     func cancel() {
-        queue.async { [weak self] in self?.fail(CameraSampleBufferRecorderError.cancelled) }
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.audioPreroll.removeAll()
+            self.fail(CameraSampleBufferRecorderError.cancelled)
+        }
     }
 
     func submitVideoSampleForTesting(_ sampleBuffer: CMSampleBuffer) {
@@ -139,17 +167,90 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         }
     }
 
+    /// Called on the independent, serial audio delegate queue. Copy PCM bytes
+    /// before returning so neither the handoff nor preroll holds capture-pool data.
+    func receiveCapturedAudio(_ sampleBuffer: CMSampleBuffer) {
+        audioHandoffLock.lock()
+        let generation = audioHandoffEpoch
+        guard pendingAudioHandoffs < 64 else {
+            let reportOverflow = audioOverflowEpoch != generation
+            audioOverflowEpoch = generation
+            audioHandoffLock.unlock()
+            if reportOverflow {
+                queue.async { [weak self] in
+                    guard let self else { return }
+                    defer {
+                        self.audioHandoffLock.lock()
+                        if self.audioOverflowEpoch == generation { self.audioOverflowEpoch = nil }
+                        self.audioHandoffLock.unlock()
+                    }
+                    guard self.clipGeneration == generation else { return }
+                    self.fail(CameraSampleBufferRecorderError.backpressure("audio capture handoff"))
+                }
+            }
+            return
+        }
+        pendingAudioHandoffs += 1
+        audioHandoffLock.unlock()
+        do {
+            let ownedSample = try Self.copyCapturedPCM(sampleBuffer)
+            queue.async { [weak self] in
+                guard let self else { return }
+                defer { self.releaseAudioHandoff() }
+                self.appendAudio(ownedSample)
+            }
+        } catch {
+            queue.async { [weak self] in
+                guard let self else { return }
+                defer { self.releaseAudioHandoff() }
+                guard self.clipGeneration == generation else { return }
+                self.fail(error)
+            }
+        }
+    }
+
+    private func releaseAudioHandoff() {
+        audioHandoffLock.lock()
+        pendingAudioHandoffs -= 1
+        audioHandoffLock.unlock()
+    }
+
+    private static func copyCapturedPCM(_ sample: CMSampleBuffer) throws -> CMSampleBuffer {
+        guard let data = CMSampleBufferGetDataBuffer(sample),
+              let description = CMSampleBufferGetFormatDescription(sample),
+              CMFormatDescriptionGetMediaSubType(description) == kAudioFormatLinearPCM else {
+            throw CameraSampleBufferRecorderError.invalidAudioSample("missing PCM data or format")
+        }
+        var ownedData: CMBlockBuffer?
+        let copyStatus = CMBlockBufferCreateContiguous(allocator: kCFAllocatorDefault, sourceBuffer: data,
+            blockAllocator: kCFAllocatorDefault, customBlockSource: nil, offsetToData: 0,
+            dataLength: CMBlockBufferGetDataLength(data), flags: kCMBlockBufferAlwaysCopyDataFlag,
+            blockBufferOut: &ownedData)
+        guard copyStatus == noErr, let ownedData else {
+            throw CameraSampleBufferRecorderError.invalidAudioSample("PCM copy status \(copyStatus)")
+        }
+        var ownedSample: CMSampleBuffer?
+        let sampleStatus = CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: kCFAllocatorDefault,
+            dataBuffer: ownedData, formatDescription: description, sampleCount: CMSampleBufferGetNumSamples(sample),
+            presentationTimeStamp: CMSampleBufferGetPresentationTimeStamp(sample), packetDescriptions: nil,
+            sampleBufferOut: &ownedSample)
+        guard sampleStatus == noErr, let ownedSample else {
+            throw CameraSampleBufferRecorderError.invalidAudioSample("PCM sample status \(sampleStatus)")
+        }
+        return ownedSample
+    }
+
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        guard state == .awaitingVideo || state == .recording else { return }
-        if output is AVCaptureVideoDataOutput {
+        if output is AVCaptureAudioDataOutput {
+            receiveCapturedAudio(sampleBuffer)
+        } else if output is AVCaptureVideoDataOutput {
             appendVideo(sampleBuffer)
-        } else if output is AVCaptureAudioDataOutput {
-            appendAudio(sampleBuffer)
         }
     }
 
     private func appendVideo(_ sampleBuffer: CMSampleBuffer) {
+        guard state == .awaitingVideo || state == .recording else { return }
         guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             fail(CameraSampleBufferRecorderError.invalidVideoSample("missing image buffer"))
             return
@@ -268,15 +369,25 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         }
 #endif
         lastVideoTime = presentationTime
+        lastVideoEndTime = Self.sampleEnd(sampleBuffer, fallbackDuration: CMTime(value: 1, timescale: 24))
         appendedVideoFrames += 1
 #if DEBUG
         if sourceProbe == nil { sourceProbe = firstFrameProbe }
 #endif
         if state == .awaitingVideo {
             _ = move(to: .firstVideoAppend)
+            let preroll = audioPreroll
+            audioPreroll.removeAll()
+            for audio in preroll {
+                appendAudio(audio)
+                guard state == .recording else { return }
+            }
             let callback = started
             started = nil
             callback?(nil)
+        }
+        if let stopAudioEndTime, let lastVideoEndTime, lastVideoEndTime >= stopAudioEndTime {
+            finalizeOnQueue()
         }
     }
 
@@ -298,9 +409,17 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     }
 
     private func appendAudio(_ sampleBuffer: CMSampleBuffer) {
-        guard state == .recording, let writer,
-              let sessionStartTime else { return }
         let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard time.isValid, time.isNumeric else { return }
+        if state == .idle || (state == .awaitingVideo && audioSettings != nil) {
+            audioPreroll.append(sampleBuffer)
+            let cutoff = CMTimeSubtract(time, CMTime(value: 5, timescale: 1))
+            audioPreroll.removeAll { CMSampleBufferGetPresentationTimeStamp($0) < cutoff }
+            if audioPreroll.count > 512 { audioPreroll.removeFirst(audioPreroll.count - 512) }
+            return
+        }
+        guard state == .recording, stopAudioEndTime == nil, audioSettings != nil,
+              let writer, let sessionStartTime else { return }
         guard time.isValid, time.isNumeric,
               CameraSampleValidationPolicy.audioIsAfterSessionStart(
                 sampleTime: time.seconds, sessionStart: sessionStartTime.seconds
@@ -319,17 +438,71 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             fail(writer.error ?? CameraSampleBufferRecorderError.appendFailed("audio"))
             return
         }
+#if DEBUG
+        if firstAudioTimeForDiagnostics == nil { firstAudioTimeForDiagnostics = time }
+        audioDurationForDiagnostics += CMSampleBufferGetDuration(sampleBuffer).seconds
+        if let previousEnd = lastAudioEndTime {
+            let gap = CMTimeSubtract(time, previousEnd).seconds
+            maximumAudioGapForDiagnostics = max(maximumAudioGapForDiagnostics, gap)
+            if gap > 0.01 {
+                print("Capture audio discontinuity: seconds=\(gap), offset=\(CMTimeSubtract(time, sessionStartTime).seconds)")
+            }
+        }
+#endif
         lastAudioTime = time
+        lastAudioEndTime = Self.sampleEnd(sampleBuffer, fallbackDuration: .zero)
         appendedAudioSamples += 1
     }
 
+    /// CMSampleBufferGetDuration already returns the entire PCM packet duration.
+    private static func sampleEnd(_ sample: CMSampleBuffer, fallbackDuration: CMTime) -> CMTime {
+        let duration = CMSampleBufferGetDuration(sample)
+        let validDuration = duration.isValid && duration.isNumeric && duration > .zero
+        return CMTimeAdd(CMSampleBufferGetPresentationTimeStamp(sample), validDuration ? duration : fallbackDuration)
+    }
+
     private func finishOnQueue() {
-        guard state == .awaitingVideo || state == .recording else { return }
+        guard state == .awaitingVideo || state == .recording, stopAudioEndTime == nil else { return }
+        guard state == .recording else {
+            fail(CameraSampleBufferRecorderError.noVideoFrames)
+            return
+        }
+        guard let audioEnd = lastAudioEndTime, let videoEnd = lastVideoEndTime, videoEnd < audioEnd else {
+            finalizeOnQueue()
+            return
+        }
+        // Freeze the accepted audio endpoint once. Continue only source video;
+        // retiming audio or padding silence would hide, not fix, missing content.
+        stopAudioEndTime = audioEnd
+        recentDropTimes.removeAll()
+        let generation = clipGeneration
+        guard let writer else { return }
+        let writerIdentity = ObjectIdentifier(writer)
+        scheduleDrainTimeout(5) { [weak self] in
+            guard let self else { return }
+            self.queue.async {
+                guard self.state == .recording, self.stopAudioEndTime != nil,
+                      self.clipGeneration == generation,
+                      self.writer.map(ObjectIdentifier.init) == writerIdentity else { return }
+                self.fail(CameraSampleBufferRecorderError.stopDrainTimedOut)
+            }
+        }
+    }
+
+    private func finalizeOnQueue() {
         guard state == .recording, appendedVideoFrames > 0,
               let writer, let destination else {
             fail(CameraSampleBufferRecorderError.noVideoFrames)
             return
         }
+#if DEBUG
+        print("Capture source timing: origin=\(sessionStartTime?.seconds ?? -1), " +
+              "videoPTS=\(lastVideoTime?.seconds ?? -1), videoEnd=\(lastVideoEndTime?.seconds ?? -1), " +
+              "audioPTS=\(lastAudioTime?.seconds ?? -1), audioEnd=\(lastAudioEndTime?.seconds ?? -1), " +
+              "target=\(stopAudioEndTime?.seconds ?? -1), frames=\(appendedVideoFrames), " +
+              "audio-first=\(firstAudioTimeForDiagnostics?.seconds ?? -1), audioDuration=\(audioDurationForDiagnostics), " +
+              "maxAudioGap=\(maximumAudioGapForDiagnostics), audioPackets=\(appendedAudioSamples)")
+#endif
         guard move(to: .stop) else { return }
         recentDropTimes.removeAll()
         guard writer.status == .writing else {
@@ -456,6 +629,10 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         sessionStartTime = nil
         lastVideoTime = nil
         lastAudioTime = nil
+        lastVideoEndTime = nil
+        lastAudioEndTime = nil
+        stopAudioEndTime = nil
+        audioPreroll.removeAll()
         appendedVideoFrames = 0
         appendedAudioSamples = 0
         recentDropTimes = []
@@ -463,6 +640,9 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         preservationProbeEnabled = false
         sourceProbe = nil
         requiresAudioEvidence = false
+        firstAudioTimeForDiagnostics = nil
+        audioDurationForDiagnostics = 0
+        maximumAudioGapForDiagnostics = 0
 #endif
     }
 
@@ -536,8 +716,20 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                 "track displays as \(displaySize.0)x\(displaySize.1), " +
                 "expected \(expectedDisplay.0)x\(expectedDisplay.1) for the chosen delivery orientation")
         }
-        if appendedAudioSamples > 0, asset.tracks(withMediaType: .audio).isEmpty {
-            throw CameraSampleBufferRecorderError.invalidFinalMovie("audio samples were appended without an audio track")
+        if appendedAudioSamples > 0 {
+            guard let audioTrack = asset.tracks(withMediaType: .audio).first else {
+                throw CameraSampleBufferRecorderError.invalidFinalMovie("audio samples were appended without an audio track")
+            }
+            let skew = CameraCapturePreservationProbe.audioStartSkew(
+                firstAudioPTS: audioTrack.timeRange.start, firstVideoPTS: track.timeRange.start,
+                segments: audioTrack.segments)
+            let endDifference = abs(CMTimeSubtract(CMTimeRangeGetEnd(track.timeRange),
+                                                   CMTimeRangeGetEnd(audioTrack.timeRange)).seconds)
+            do {
+                try CameraCapturePreservationProbe.validateSynchronization(skew: skew, endDifference: endDifference)
+            } catch {
+                throw CameraSampleBufferRecorderError.invalidFinalMovie(error.localizedDescription)
+            }
         }
         #if DEBUG
         print("HEVC Log2 output validation: codec=hvc1, size=\(expectedDimensions.width)x\(expectedDimensions.height), bits=10, log=\(String(describing: logTransfer)), matrix=\(String(describing: matrix)), display=\(expectedDisplay.0)x\(expectedDisplay.1), audioSamples=\(appendedAudioSamples), transform=\(track.preferredTransform)")
@@ -638,12 +830,14 @@ enum CameraSampleBufferRecorderError: LocalizedError {
     case unsupportedWriterSettings(String)
     case writerStartFailed
     case invalidVideoSample(String)
+    case invalidAudioSample(String)
     case nonMonotonicTimestamp(String)
     case appendFailed(String)
     case backpressure(String)
     case sustainedFrameDrops(Int)
     case noVideoFrames
     case cancelled
+    case stopDrainTimedOut
     case finalizationFailed
     case invalidFinalMovie(String)
 
@@ -654,12 +848,14 @@ enum CameraSampleBufferRecorderError: LocalizedError {
         case .unsupportedWriterSettings(let detail): return "The writer rejected \(detail) settings."
         case .writerStartFailed: return "The HEVC writer could not start."
         case .invalidVideoSample(let detail): return "The camera returned an invalid Apple Log 2 frame: \(detail)."
+        case .invalidAudioSample(let detail): return "The camera returned invalid PCM audio: \(detail)."
         case .nonMonotonicTimestamp(let track): return "The \(track) capture timestamps are not increasing."
         case .appendFailed(let track): return "The \(track) sample could not be encoded."
         case .backpressure(let track): return "The \(track) writer could not keep up with capture."
         case .sustainedFrameDrops(let count): return "Capture dropped \(count) frames within two seconds."
         case .noVideoFrames: return "Recording stopped before a valid video frame was written."
         case .cancelled: return "Recording was cancelled before its first frame was written."
+        case .stopDrainTimedOut: return "Recording timed out waiting for delayed video to reach the audio endpoint."
         case .finalizationFailed: return "The HEVC recording could not be finalized."
         case .invalidFinalMovie(let detail): return "The finalized movie failed Apple Log 2 validation: \(detail)."
         }

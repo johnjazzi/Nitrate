@@ -156,7 +156,7 @@ struct RenderContractTests {
         #expect(shippedGrainStocks.allSatisfy { $0.effectiveRecipe.edgeBoostMultiplier == 3 })
         let template = try #require(app.first { $0.stockId == "kodak5219" })
         #expect(template.grainSize == 1.3)
-        #expect(template.effectiveRecipe.version == "5219-current-v6")
+        #expect(template.effectiveRecipe.version == "5219-current-v9")
         #expect(template.effectiveRecipe.grainAlgorithm == RenderRecipe.edgeAmplitudeAlgorithm)
         #expect(template.effectiveRecipe.edgeBoostMultiplier == 3)
         let low = template.overridingISO(250)
@@ -169,10 +169,33 @@ struct RenderContractTests {
         #expect(!template.effectiveRecipe.colorContractVerified)
     }
 
-    @Test func shippedContrastIsNeutralAndHistoricalExplicitContrastStillDecodes() throws {
+    @Test func shippedGlowReductionsPreserveHalation() throws {
+        for path in ["App/Resources/stocks.json", "Resources/stocks.json"] {
+            let catalog = try stocks(path)
+            let daylight = try #require(catalog.first { $0.stockId == "kodak5207" })
+            let tungsten = try #require(catalog.first { $0.stockId == "kodak5219" })
+            #expect(daylight.glowStrength == 0.155)
+            #expect(tungsten.glowStrength == 0.2325)
+            #expect(daylight.halationStrength == 0.43)
+            #expect(tungsten.halationStrength == 0.43)
+            #expect(daylight.grainSize == 1.15)
+            #expect(tungsten.grainSize == 1.3)
+            #expect(daylight.outputContrast == 0.85)
+            #expect(tungsten.outputContrast == 0.85)
+            #expect(daylight.effectiveRecipe.version == "5207-current-v4")
+            #expect(tungsten.effectiveRecipe.version == "5219-current-v9")
+        }
+    }
+
+    @Test func shippedContrastIsFifteenPercentLowerAndHistoricalExplicitContrastStillDecodes() throws {
         let app = try stocks("App/Resources/stocks.json")
-        #expect(app.allSatisfy { $0.outputContrast == 1.0 })
-        #expect(try stocks("Resources/stocks.json").allSatisfy { $0.outputContrast == 1.0 })
+        for path in ["App/Resources/stocks.json", "Resources/stocks.json"] {
+            let catalog = try stocks(path)
+            let daylight = try #require(catalog.first { $0.stockId == "kodak5207" })
+            let tungsten = try #require(catalog.first { $0.stockId == "kodak5219" })
+            #expect(daylight.outputContrast == 0.85)
+            #expect(tungsten.outputContrast == 0.85)
+        }
 
         let historical = try #require(app.first { $0.stockId == "kodak5219" })
         var historicalJSON = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(historical)) as? [String: Any])
@@ -202,7 +225,7 @@ struct RenderContractTests {
     @Test func recipeRoundTripAndRevisionEvidence() throws {
         var config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak5219" })
         let first = RenderDiagnosticsManifest.RecipeSnapshot(config: config, averageBitRate: RenderEncodingContract.averageBitRate, codec: RenderEncodingContract.codec)
-        config.recipe?.version = "5219-current-v7"
+        config.recipe?.version = "5219-current-v10-test"
         let second = RenderDiagnosticsManifest.RecipeSnapshot(config: config, averageBitRate: RenderEncodingContract.averageBitRate, codec: RenderEncodingContract.codec)
         let data = try JSONEncoder().encode(second)
         let decoded = try JSONDecoder().decode(RenderDiagnosticsManifest.RecipeSnapshot.self, from: data)

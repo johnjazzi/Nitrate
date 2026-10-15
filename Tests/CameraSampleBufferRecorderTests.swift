@@ -187,6 +187,390 @@ struct CameraSampleBufferRecorderTests {
     }
 
     @available(macOS 14.2, iOS 17.2, *)
+    @Test func audioCaptureHandoffReturnsWithoutEnteringBlockedWriterQueue() async throws {
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+        let release = DispatchSemaphore(value: 0)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            rig.queue.async {
+                continuation.resume()
+                _ = release.wait(timeout: .now() + 2)
+            }
+        }
+        defer { release.signal() }
+        let audio = try Self.pcmSample(pts: 10.1)
+        rig.recorder.receiveCapturedAudio(audio)
+        #expect(writer.audioTimings.isEmpty, "The audio delegate must hand off without touching queue-confined writer state")
+        release.signal()
+        await rig.drainSubmittedWork()
+        #expect(writer.audioTimings == [RecordedSampleTiming(audio)])
+        rig.recorder.cancel()
+        await rig.drainSubmittedWork()
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func audioHandoffOwnsPcmBytesBeforeReturningToCapture() async throws {
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+        let release = DispatchSemaphore(value: 0)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            rig.queue.async {
+                continuation.resume()
+                _ = release.wait(timeout: .now() + 2)
+            }
+        }
+        defer { release.signal() }
+        let audio = try Self.pcmSample(pts: 10.1)
+        let original = RecordedSampleTiming(audio)
+        rig.recorder.receiveCapturedAudio(audio)
+        let sourceBytes = try #require(CMSampleBufferGetDataBuffer(audio))
+        #expect(CMBlockBufferFillDataBytes(with: 0, blockBuffer: sourceBytes,
+            offsetIntoDestination: 0, dataLength: CMBlockBufferGetDataLength(sourceBytes)) == noErr)
+        release.signal()
+        await rig.drainSubmittedWork()
+        #expect(writer.audioTimings == [original], "The retained handoff must own PCM data, not alias capture-pool memory")
+        rig.recorder.cancel()
+        await rig.drainSubmittedWork()
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func audioHandoffOverflowFailsInsteadOfGrowingAnUnboundedQueue() async throws {
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+        let release = DispatchSemaphore(value: 0)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            rig.queue.async {
+                continuation.resume()
+                _ = release.wait(timeout: .now() + 2)
+            }
+        }
+        defer { release.signal() }
+        let audio = try Self.pcmSample(pts: 10)
+        for index in 0..<70 {
+            rig.recorder.receiveCapturedAudio(try Self.retimed(audio, pts: 10 + Double(index) * 0.1))
+        }
+        release.signal()
+        await rig.drainSubmittedWork()
+        #expect(writer.appendedAudioCount == 64)
+        try #require(rig.events.finishedCount == 1)
+        #expect(await rig.events.nextFinished()?.contains("audio capture handoff") == true)
+        #expect(!writer.finishWasRequested)
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test(arguments: [false, true])
+    func staleAudioHandoffFailureCannotCancelNextClip(overflow: Bool) async throws {
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let firstURL = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        let video = try Self.log2Sample(pts: 10)
+        rig.recorder.submitVideoSampleForTesting(video)
+        await rig.drainSubmittedWork()
+        let release = DispatchSemaphore(value: 0)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            rig.queue.async {
+                continuation.resume()
+                _ = release.wait(timeout: .now() + 2)
+            }
+        }
+        defer { release.signal() }
+        // These controls are already queued, but an old capture callback can
+        // still run on the separate audio queue before they reach the writer.
+        rig.recorder.cancel()
+        let secondURL = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer {
+            try? FileManager.default.removeItem(at: firstURL)
+            try? FileManager.default.removeItem(at: secondURL)
+        }
+        if overflow {
+            let audio = try Self.pcmSample(pts: 10)
+            for _ in 0..<70 { rig.recorder.receiveCapturedAudio(audio) }
+        } else {
+            // Invalid PCM follows the copy-failure handoff rather than overflow.
+            rig.recorder.receiveCapturedAudio(video)
+        }
+        rig.recorder.submitVideoSampleForTesting(try Self.retimed(video, pts: 20))
+        release.signal()
+        await rig.drainSubmittedWork()
+        #expect(rig.events.startedCount == 2)
+        #expect(rig.events.finishedCount == 1, "Only canceled clip A may fail; its queued audio error must not fail clip B")
+        #expect(rig.control.current?.sessionStart == CMTime(seconds: 20, preferredTimescale: 600))
+        #expect(rig.control.current?.status == .writing)
+        rig.recorder.cancel()
+        await rig.drainSubmittedWork()
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func audioDeliveredBeforeDelayedFirstVideoIsWrittenWithOriginalTiming() async throws {
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        let video = try Self.log2Sample(pts: 10)
+        let firstAudio = try Self.pcmSample(pts: 10.5)
+        let secondAudio = try Self.pcmSample(pts: 10.6)
+
+        // Stabilized video arrives late on the delegate queue despite its older
+        // source PTS. Neither eligible audio packet may be discarded or retimed.
+        rig.recorder.submitAudioSampleForTesting(firstAudio)
+        rig.recorder.submitAudioSampleForTesting(secondAudio)
+        await rig.drainSubmittedWork()
+        #expect(rig.control.current == nil)
+        #expect(rig.events.startedCount == 0)
+        rig.recorder.submitVideoSampleForTesting(video)
+        await rig.drainSubmittedWork()
+
+        let writer = try #require(rig.control.current)
+        #expect(rig.events.startedCount == 1)
+        #expect(rig.events.finishedCount == 0)
+        #expect(writer.sessionStart == CMSampleBufferGetPresentationTimeStamp(video))
+        #expect(writer.videoTimings == [RecordedSampleTiming(video)])
+        #expect(writer.audioTimings == [RecordedSampleTiming(firstAudio), RecordedSampleTiming(secondAudio)],
+                "Audio delivered before delayed video must reach the writer unchanged once video establishes the origin")
+        // Cancellation avoids coupling this startup regression to stop draining.
+        rig.recorder.cancel()
+        await rig.drainSubmittedWork()
+        #expect(rig.events.finishedCount == 1)
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func stopDrainsDelayedVideoToFrozenAudioEndpointWithoutAcceptingLaterAudio() async throws {
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        let video = try Self.log2Sample(pts: 10)
+        let acceptedAudio = try Self.pcmSample(pts: 10.6)
+        rig.recorder.submitVideoSampleForTesting(video)
+        rig.recorder.submitAudioSampleForTesting(acceptedAudio)
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+        #expect(writer.audioTimings == [RecordedSampleTiming(acceptedAudio)])
+        #expect(CMTimeAdd(CMSampleBufferGetPresentationTimeStamp(acceptedAudio),
+                         CMSampleBufferGetDuration(acceptedAudio)) == CMTime(value: 107, timescale: 10))
+
+        rig.recorder.stop()
+        await rig.drainSubmittedWork()
+        #expect(!writer.finishWasRequested, "Stop must wait for delayed video to catch the accepted audio endpoint")
+        #expect(writer.inputsFinishedCount == 0)
+        #expect(rig.events.finishedCount == 0)
+
+        // New audio must not extend the 10.7-second cutoff, and repeated stop
+        // must neither close the tracks early nor move that frozen cutoff.
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 10.8))
+        rig.recorder.stop()
+        let almostCaughtUp = try Self.retimed(video, pts: 10.65)
+        rig.recorder.submitVideoSampleForTesting(almostCaughtUp)
+        await rig.drainSubmittedWork()
+        #expect(writer.audioTimings == [RecordedSampleTiming(acceptedAudio)])
+        #expect(writer.videoTimings == [RecordedSampleTiming(video), RecordedSampleTiming(almostCaughtUp)])
+        #expect(!writer.finishWasRequested, "Passing the last audio PTS is insufficient: its packet ends at 10.7")
+        #expect(writer.inputsFinishedCount == 0)
+
+        let caughtUp = try Self.retimed(video, pts: 10.7)
+        rig.recorder.submitVideoSampleForTesting(caughtUp)
+        await rig.drainSubmittedWork()
+        #expect(writer.videoTimings == [RecordedSampleTiming(video), RecordedSampleTiming(almostCaughtUp),
+                                       RecordedSampleTiming(caughtUp)])
+        #expect(writer.finishWasRequested)
+        #expect(writer.inputsFinishedCount == 1)
+        #expect(writer.finishRequestCount == 1)
+        #expect(rig.events.finishedCount == 0)
+        rig.recorder.stop()
+        await rig.drainSubmittedWork()
+        #expect(writer.finishRequestCount == 1)
+        writer.completeFinalization(success: true)
+        await rig.drainSubmittedWork()
+        try #require(rig.events.finishedCount == 1)
+        #expect(await rig.events.nextFinished() == nil)
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test(arguments: [false, true])
+    func stopWithoutAcceptedAudioRequestsFinishImmediately(audioConfigured: Bool) async throws {
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let url = try begin(rig.recorder, events: rig.events,
+                            audioSettings: audioConfigured ? ["codec": "aac"] : nil)
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+        rig.recorder.stop()
+        await rig.drainSubmittedWork()
+        #expect(writer.audioTimings.isEmpty)
+        #expect(writer.finishWasRequested, "A clip with no accepted audio has no delayed-video tail to drain")
+        #expect(writer.inputsFinishedCount == 1)
+        #expect(writer.finishRequestCount == 1)
+        writer.completeFinalization(success: true)
+        await rig.drainSubmittedWork()
+        try #require(rig.events.finishedCount == 1)
+        #expect(await rig.events.nextFinished() == nil)
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func idleAudioPrerollSurvivesBeginAndDropsPacketsBeforeVideoOrigin() async throws {
+        let rig = makeRig(FakeWriterBehavior())
+        let oldAudio = try Self.pcmSample(pts: 9.9)
+        let eligibleAudio = try Self.pcmSample(pts: 10.1)
+        rig.recorder.submitAudioSampleForTesting(oldAudio)
+        rig.recorder.submitAudioSampleForTesting(eligibleAudio)
+        // Idle video must not create a writer or latch dimensions/timestamps.
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 100))
+        await rig.drainSubmittedWork()
+        #expect(rig.control.current == nil)
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+        #expect(writer.audioTimings == [RecordedSampleTiming(eligibleAudio)])
+        #expect(await rig.events.nextStarted() == nil)
+        rig.recorder.cancel()
+        await rig.drainSubmittedWork()
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test(arguments: [false, true])
+    func audioPrerollIsBoundedBySourceTimeAndPacketCount(densePackets: Bool) async throws {
+        let rig = makeRig(FakeWriterBehavior())
+        let count = densePackets ? 600 : 70
+        var expected: [RecordedSampleTiming] = []
+        for index in 0..<count {
+            let pts = Double(index) * (densePackets ? 0.001 : 0.1)
+            let sample = try Self.pcmSample(pts: pts)
+            rig.recorder.submitAudioSampleForTesting(sample)
+            if densePackets ? index >= count - 512 : index >= count - 51 {
+                expected.append(RecordedSampleTiming(sample))
+            }
+        }
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 0))
+        await rig.drainSubmittedWork()
+        #expect(rig.control.current?.audioTimings == expected)
+        rig.recorder.cancel()
+        await rig.drainSubmittedWork()
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func disabledAudioIgnoresPrerollAndLivePackets() async throws {
+        let rig = makeRig(FakeWriterBehavior(audioReady: false))
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 10.1))
+        let url = try begin(rig.recorder, events: rig.events)
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 10.2))
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 10.3))
+        await rig.drainSubmittedWork()
+        #expect(rig.events.startedCount == 1)
+        #expect(rig.events.finishedCount == 0)
+        #expect(rig.control.current?.audioTimings.isEmpty == true)
+        rig.recorder.cancel()
+        await rig.drainSubmittedWork()
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func idleCancellationClearsRetainedPreroll() async throws {
+        let rig = makeRig(FakeWriterBehavior())
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 10.1))
+        rig.recorder.cancel()
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        await rig.drainSubmittedWork()
+        #expect(rig.control.current?.audioTimings.isEmpty == true)
+        #expect(rig.events.finishedCount == 0)
+        rig.recorder.cancel()
+        await rig.drainSubmittedWork()
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func stopWithVideoAlreadyCoveringAudioEndFinishesImmediately() async throws {
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        let video = try Self.log2Sample(pts: 10)
+        rig.recorder.submitVideoSampleForTesting(video)
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 10))
+        // The packet ends at 10.1; this video's END (not PTS) covers it.
+        rig.recorder.submitVideoSampleForTesting(try Self.retimed(video, pts: 10.075))
+        rig.recorder.stop()
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+        #expect(writer.finishWasRequested)
+        writer.completeFinalization(success: true)
+        await rig.drainSubmittedWork()
+        #expect(rig.events.finishedCount == 1)
+        #expect(await rig.events.nextFinished() == nil)
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func prerollFlushFailureNeverReportsSuccessfulStart() async throws {
+        let rig = makeRig(FakeWriterBehavior(audioReady: false))
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 10.1))
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        await rig.drainSubmittedWork()
+        #expect(rig.events.startedCount == 1)
+        #expect(rig.events.finishedCount == 1)
+        #expect(await rig.events.nextStarted()?.contains("could not keep up") == true)
+        #expect(await rig.events.nextFinished()?.contains("could not keep up") == true)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func drainTimeoutFailsWithoutFinalizingAndCannotAffectNextClip() async throws {
+        let deadlines = RecorderDrainDeadlines()
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true), deadlines: deadlines)
+        let firstURL = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 11))
+        rig.recorder.stop()
+        rig.recorder.stop()
+        await rig.drainSubmittedWork()
+        let oldWriter = try #require(rig.control.current)
+        #expect(deadlines.count == 1)
+        deadlines.fireAll()
+        await rig.drainSubmittedWork()
+        #expect(!oldWriter.finishWasRequested)
+        #expect(oldWriter.status == .cancelled)
+        #expect(rig.events.finishedCount == 1)
+        #expect(await rig.events.nextFinished()?.contains("timed out") == true)
+        #expect(!FileManager.default.fileExists(atPath: firstURL.path))
+
+        let secondURL = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: secondURL) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 20))
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 20.5))
+        rig.recorder.stop()
+        await rig.drainSubmittedWork()
+        // Replay the stale deadline while another clip is also draining.
+        deadlines.fireFirst()
+        await rig.drainSubmittedWork()
+        #expect(rig.events.finishedCount == 1)
+        let newWriter = try #require(rig.control.current)
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 20.6))
+        await rig.drainSubmittedWork()
+        #expect(newWriter.finishWasRequested)
+        newWriter.completeFinalization(success: true)
+        await rig.drainSubmittedWork()
+        #expect(rig.events.finishedCount == 2)
+        #expect(await rig.events.nextFinished() == nil)
+        deadlines.fireAll()
+        await rig.drainSubmittedWork()
+        #expect(rig.events.finishedCount == 2)
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
     @Test func audioPrerollAndNonIncreasingAudioAreHandledByRecorder() async throws {
         let rig = makeRig(FakeWriterBehavior())
         let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
@@ -319,6 +703,52 @@ struct CameraSampleBufferRecorderTests {
         return sample
     }
 
+    private static func retimed(_ sample: CMSampleBuffer, pts: Double) throws -> CMSampleBuffer {
+        var timing = CMSampleTimingInfo(duration: CMSampleBufferGetDuration(sample),
+            presentationTimeStamp: CMTime(seconds: pts, preferredTimescale: 600), decodeTimeStamp: .invalid)
+        var copy: CMSampleBuffer?
+        let status = CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault,
+            sampleBuffer: sample, sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleBufferOut: &copy)
+        guard status == noErr, let copy else { throw RecorderTestError.sampleBuffer(status) }
+        return copy
+    }
+
+    /// A real mono PCM packet containing 4,800 frames (0.1 seconds), rather
+    /// than a video sample passed through the recorder's audio entry point.
+    private static func pcmSample(pts: Double) throws -> CMSampleBuffer {
+        var asbd = AudioStreamBasicDescription(mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 4, mFramesPerPacket: 1, mBytesPerFrame: 4,
+            mChannelsPerFrame: 1, mBitsPerChannel: 32, mReserved: 0)
+        var description: CMAudioFormatDescription?
+        let formatStatus = CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault, asbd: &asbd,
+            layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil,
+            extensions: nil, formatDescriptionOut: &description)
+        guard formatStatus == noErr, let description else { throw RecorderTestError.formatDescription(formatStatus) }
+        let frameCount = 4_800
+        let byteCount = frameCount * MemoryLayout<Float>.size
+        var block: CMBlockBuffer?
+        let blockStatus = CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault,
+            memoryBlock: nil, blockLength: byteCount, blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil, offsetToData: 0, dataLength: byteCount, flags: 0, blockBufferOut: &block)
+        guard blockStatus == kCMBlockBufferNoErr, let block else { throw RecorderTestError.sampleBuffer(blockStatus) }
+        let pcm = [Float](repeating: 0.25, count: frameCount)
+        let replaceStatus = pcm.withUnsafeBytes { bytes in
+            CMBlockBufferReplaceDataBytes(with: bytes.baseAddress!, blockBuffer: block,
+                offsetIntoDestination: 0, dataLength: byteCount)
+        }
+        guard replaceStatus == kCMBlockBufferNoErr else { throw RecorderTestError.sampleBuffer(replaceStatus) }
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 48_000),
+            presentationTimeStamp: CMTime(seconds: pts, preferredTimescale: 48_000), decodeTimeStamp: .invalid)
+        var sample: CMSampleBuffer?
+        let status = CMSampleBufferCreate(allocator: kCFAllocatorDefault, dataBuffer: block, dataReady: true,
+            makeDataReadyCallback: nil, refcon: nil, formatDescription: description, sampleCount: frameCount,
+            sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleSizeEntryCount: 0,
+            sampleSizeArray: nil, sampleBufferOut: &sample)
+        guard status == noErr, let sample else { throw RecorderTestError.sampleBuffer(status) }
+        return sample
+    }
+
     private func begin(_ recorder: CameraSampleBufferRecorder, events: RecorderEventQueue,
                        audioSettings: [String: Any]? = nil,
                        startAfter: CMTime = .invalid,
@@ -339,16 +769,45 @@ struct CameraSampleBufferRecorderTests {
         return url
     }
 
-    private func makeRig(_ behavior: FakeWriterBehavior) -> RecorderRig {
+    private func makeRig(_ behavior: FakeWriterBehavior, deadlines: RecorderDrainDeadlines? = nil) -> RecorderRig {
         let events = RecorderEventQueue()
         let control = FakeWriterControl()
-        let recorder = CameraSampleBufferRecorder(queue: DispatchQueue(label: "test.sample-buffer-recorder"),
+        let queue = DispatchQueue(label: "test.sample-buffer-recorder")
+        let recorder = CameraSampleBufferRecorder(queue: queue,
             writerFactory: { url, settings, _, _, transform in
                 let writer = FakeCameraSampleBufferWriter(url: url, behavior: behavior)
                 control.install(writer, settings: settings, transform: transform)
                 return writer
-            }, outputValidator: { _, _, _, _ in })
-        return RecorderRig(recorder: recorder, events: events, control: control)
+            }, outputValidator: { _, _, _, _ in }, scheduleDrainTimeout: deadlines.map { deadlines in
+                { delay, action in deadlines.schedule(after: delay, action: action) }
+            })
+        return RecorderRig(recorder: recorder, events: events, control: control, queue: queue)
+    }
+}
+
+private final class RecorderDrainDeadlines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var actions: [@Sendable () -> Void] = []
+    var count: Int { lock.lock(); defer { lock.unlock() }; return actions.count }
+
+    func schedule(after delay: TimeInterval, action: @escaping @Sendable () -> Void) {
+        #expect(delay == 5)
+        lock.lock(); defer { lock.unlock() }
+        actions.append(action)
+    }
+
+    func fireFirst() {
+        lock.lock()
+        let action = actions.first
+        lock.unlock()
+        action?()
+    }
+
+    func fireAll() {
+        lock.lock()
+        let pending = actions
+        lock.unlock()
+        pending.forEach { $0() }
     }
 }
 
@@ -356,6 +815,15 @@ private struct RecorderRig {
     let recorder: CameraSampleBufferRecorder
     let events: RecorderEventQueue
     let control: FakeWriterControl
+    let queue: DispatchQueue
+
+    /// FIFO barrier: assertions run only after every preceding submitted sample
+    /// and lifecycle action has been processed, without polling writer counts.
+    func drainSubmittedWork() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            queue.async { continuation.resume() }
+        }
+    }
 
     func waitForFinishToBeRequested(on writer: FakeCameraSampleBufferWriter) async {
         for _ in 0..<200 {
@@ -400,6 +868,31 @@ private final class FakeWriterControl: @unchecked Sendable {
     }
 }
 
+/// Copy scalar evidence only; the fake must not retain capture-pool buffers.
+private struct RecordedSampleTiming: Equatable {
+    let presentationTime: CMTime
+    let duration: CMTime
+    let sampleCount: Int
+    let mediaType: CMMediaType
+    let firstDataWord: UInt32?
+
+    init(_ sample: CMSampleBuffer) {
+        presentationTime = CMSampleBufferGetPresentationTimeStamp(sample)
+        duration = CMSampleBufferGetDuration(sample)
+        sampleCount = CMSampleBufferGetNumSamples(sample)
+        mediaType = CMSampleBufferGetFormatDescription(sample).map(CMFormatDescriptionGetMediaType) ?? 0
+        if let block = CMSampleBufferGetDataBuffer(sample), CMBlockBufferGetDataLength(block) >= 4 {
+            var word: UInt32 = 0
+            let status = withUnsafeMutableBytes(of: &word) { bytes in
+                CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: 4, destination: bytes.baseAddress!)
+            }
+            firstDataWord = status == noErr ? word : nil
+        } else {
+            firstDataWord = nil
+        }
+    }
+}
+
 private final class FakeCameraSampleBufferWriter: CameraSampleBufferWriting, @unchecked Sendable {
     private let lock = NSLock()
     private let url: URL
@@ -409,11 +902,21 @@ private final class FakeCameraSampleBufferWriter: CameraSampleBufferWriting, @un
     private var requestedFinish = false
     private var audioAppendCount = 0
     private var videoAppendCount = 0
+    private var recordedSessionStart: CMTime?
+    private var recordedAudioTimings: [RecordedSampleTiming] = []
+    private var recordedVideoTimings: [RecordedSampleTiming] = []
+    private var markedInputsFinishedCount = 0
+    private var requestedFinishCount = 0
     var status: AVAssetWriter.Status { lock.lock(); defer { lock.unlock() }; return currentStatus }
     var error: Error? { lock.lock(); defer { lock.unlock() }; return currentStatus == .failed ? RecorderTestError.injected : nil }
     var finishWasRequested: Bool { lock.lock(); defer { lock.unlock() }; return requestedFinish }
     var appendedAudioCount: Int { lock.lock(); defer { lock.unlock() }; return audioAppendCount }
     var appendedVideoCount: Int { lock.lock(); defer { lock.unlock() }; return videoAppendCount }
+    var sessionStart: CMTime? { lock.lock(); defer { lock.unlock() }; return recordedSessionStart }
+    var audioTimings: [RecordedSampleTiming] { lock.lock(); defer { lock.unlock() }; return recordedAudioTimings }
+    var videoTimings: [RecordedSampleTiming] { lock.lock(); defer { lock.unlock() }; return recordedVideoTimings }
+    var inputsFinishedCount: Int { lock.lock(); defer { lock.unlock() }; return markedInputsFinishedCount }
+    var finishRequestCount: Int { lock.lock(); defer { lock.unlock() }; return requestedFinishCount }
 
     init(url: URL, behavior: FakeWriterBehavior) {
         self.url = url
@@ -424,6 +927,7 @@ private final class FakeCameraSampleBufferWriter: CameraSampleBufferWriting, @un
         FileManager.default.createFile(atPath: url.path, contents: Data([1]))
         lock.lock(); defer { lock.unlock() }
         currentStatus = behavior.startSucceeds ? .writing : .failed
+        recordedSessionStart = time
         return behavior.startSucceeds
     }
 
@@ -434,16 +938,22 @@ private final class FakeCameraSampleBufferWriter: CameraSampleBufferWriting, @un
     func append(_ sampleBuffer: CMSampleBuffer, for mediaType: AVMediaType) -> Bool {
         lock.lock(); defer { lock.unlock() }
         if mediaType == .audio { audioAppendCount += 1 } else { videoAppendCount += 1 }
+        let timing = RecordedSampleTiming(sampleBuffer)
+        if mediaType == .audio { recordedAudioTimings.append(timing) } else { recordedVideoTimings.append(timing) }
         let succeeds = mediaType == .audio ? behavior.audioAppendSucceeds : behavior.appendSucceeds
         if !succeeds { currentStatus = .failed }
         return succeeds
     }
 
-    func markInputsAsFinished() {}
+    func markInputsAsFinished() {
+        lock.lock(); defer { lock.unlock() }
+        markedInputsFinishedCount += 1
+    }
 
     func finishWriting(completion: @escaping () -> Void) {
         lock.lock()
         requestedFinish = true
+        requestedFinishCount += 1
         finishHandler = completion
         let immediate = !behavior.delayedFinish
         lock.unlock()
