@@ -37,6 +37,9 @@ final class CameraViewModel {
     }
     var recordingWarning: String?
     private(set) var lastRecordedURL: URL?
+    /// Set when a take finished with a readable original that failed validation.
+    /// The screen saves it to Photos unchanged; it is never rendered.
+    private(set) var retainedOriginal: RetainedOriginal?
 
     // Exposure (live from the device, polled every 0.5s)
     var liveISO: Float = 0
@@ -291,7 +294,12 @@ final class CameraViewModel {
             let outputURL = try originalStorage.makeDestination()
             session.startRecording(to: outputURL) { [weak self] error in
                 guard let self else { return }
-                guard self.captureGeneration == generation, self.lifecycleGate.isActive else {
+                // A stale callback must not touch the session: captureGeneration
+                // advances both when the user cancels a pending start and when a
+                // new take begins, so calling stopRecording() here would stop
+                // whichever take is now live.
+                guard self.captureGeneration == generation else { return }
+                guard self.lifecycleGate.isActive else {
                     if error == nil { self.session.stopRecording() }
                     return
                 }
@@ -672,16 +680,33 @@ final class CameraViewModel {
         invalidateRecordingTimers()
         switch result {
         case .success(let completion):
-            lastRecordedURL = completion.url
-            if let warning = completion.warning {
-                let warningMessage = warning.localizedDescription
-                recordingWarning = warningMessage
-                errorMessage = "Recording saved, but ended with a warning: \(warningMessage)"
+            switch RecordingFinishPresentationPolicy.plan(for: completion) {
+            case .render(let url):
+                lastRecordedURL = url
+                if let warning = completion.warning {
+                    let warningMessage = warning.localizedDescription
+                    recordingWarning = warningMessage
+                    errorMessage = "Recording saved, but ended with a warning: \(warningMessage)"
+                }
+
+            case .saveOriginalUnchanged(let url, let reason):
+                // Deliberately not assigned to lastRecordedURL: that assignment is
+                // what triggers the auto-render. The kept file goes to Photos
+                // unchanged, and the take is never reported as a clean success.
+                retainedOriginal = RetainedOriginal(url: url, reason: reason)
+                recordingWarning = reason
+                errorMessage = "Recording kept, but it did not pass validation: \(reason). "
+                    + "Saving the original to Photos unchanged."
             }
 
         case .failure(let error):
             errorMessage = "Recording failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Clears the pending retained original once it has been handed off.
+    func clearRetainedOriginal() {
+        retainedOriginal = nil
     }
 
     private func startRecordingTimer() {

@@ -288,6 +288,30 @@ final class RenderQueueViewModel {
 
     private func job(_ id: UUID) -> RenderJob? { jobs.first { $0.id == id } }
 
+    /// Deliver a kept original to Photos unchanged.
+    ///
+    /// A take that failed validation is never rendered and never becomes a queue
+    /// entry, but the readable file is still the user's footage, so it is saved
+    /// verbatim. Runs off the render worker so it can neither disturb nor be
+    /// blocked by the render queue.
+    func saveOriginal(sourceURL: URL, reason: String) {
+        guard Self.isUsableFile(sourceURL) else {
+            externalErrorMessage = "The kept recording is no longer available to save "
+                + "(\(reason))."
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await saveOperation(sourceURL)
+            } catch {
+                externalErrorMessage = "Recording did not pass validation (\(reason)). "
+                    + "Saving the original to Photos failed: \(error.localizedDescription). "
+                    + "It remains in the app."
+            }
+        }
+    }
+
     private func update(_ id: UUID, _ change: (inout RenderJob) -> Void) {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
         change(&jobs[index])

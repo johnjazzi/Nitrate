@@ -1745,7 +1745,17 @@ final class CameraSession: NSObject {
         case .success(let outputURL):
             completion = .success(RecordingCompletion(url: outputURL, warning: nil))
         case .failure(let error):
-            completion = .failure(error)
+            // The recorder throws the retained error only when the writer
+            // produced a readable, non-empty file, so that URL is exactly the
+            // "the movie finished playable" signal the policy wants.
+            let retainedURL = CameraRetainedRecordingError.retainedURL(from: error)
+            if RecordingCompletionPolicy.shouldPublish(errorExists: true, finishedPlayable: retainedURL != nil),
+               let retainedURL {
+                completion = .success(RecordingCompletion(url: retainedURL, warning: error,
+                                                          retainedOriginal: true))
+            } else {
+                completion = .failure(error)
+            }
         }
         let handler = onRecordingFinished
 #if DEBUG
@@ -2223,9 +2233,4 @@ enum CameraError: LocalizedError {
             return "Camera switch failed (\(original.localizedDescription)); restoring the previous camera also failed (\(rollback.localizedDescription))."
         }
     }
-}
-
-struct RecordingCompletion: @unchecked Sendable {
-    let url: URL
-    let warning: Error?
 }

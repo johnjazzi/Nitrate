@@ -125,6 +125,13 @@ struct ContentView: View {
                 showStockSheet = true
             }
         }
+        .onChange(of: cameraViewModel.retainedOriginal) { _, newValue in
+            // A take that failed validation is never rendered and never becomes a
+            // recorded clip; the readable original is saved to Photos unchanged.
+            guard let newValue else { return }
+            renderQueueViewModel.saveOriginal(sourceURL: newValue.url, reason: newValue.reason)
+            cameraViewModel.clearRetainedOriginal()
+        }
         .onAppear {
             availableLenses = cameraViewModel.session.availableLenses
             if !availableLenses.contains(selectedLens) {

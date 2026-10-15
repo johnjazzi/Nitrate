@@ -619,6 +619,83 @@ struct CameraMeteringGeneration {
     }
 }
 
+/// A finalized, readable original that failed a quality check.
+///
+/// The recording stays on disk: the writer produced a playable file, so the
+/// media is still worth delivering even though the take cannot be reported as a
+/// clean success. `originalURL` is the retained file and `reason` is the check
+/// that failed.
+///
+/// `@unchecked Sendable` follows the existing recorder callbacks, which already
+/// hand `any Error` across the recorder/session queues in `@unchecked Sendable`
+/// boxes; the payload is a value type created on the recorder queue.
+struct CameraRetainedRecordingError: LocalizedError, @unchecked Sendable {
+    let originalURL: URL
+    let reason: Error
+
+    var errorDescription: String? {
+        "Recording kept, but it did not pass validation: \(reason.localizedDescription)"
+    }
+
+    /// The retained original carried by an error, if it is one of ours.
+    static func retainedURL(from error: Error) -> URL? {
+        (error as? CameraRetainedRecordingError)?.originalURL
+    }
+}
+
+/// A readable original kept back because the take failed a quality check.
+///
+/// It is deliberately not a recorded clip: the camera screen saves it to Photos
+/// unchanged instead of handing it to the render queue.
+struct RetainedOriginal: Equatable, Sendable {
+    let url: URL
+    let reason: String
+}
+
+/// The recorder's terminal result for one take, published to the view model.
+struct RecordingCompletion: @unchecked Sendable {
+    let url: URL
+    let warning: Error?
+    /// True when `url` is a readable original that failed validation. Such a
+    /// take must not be rendered and must not be reported as a clean success.
+    let retainedOriginal: Bool
+
+    init(url: URL, warning: Error?, retainedOriginal: Bool = false) {
+        self.url = url
+        self.warning = warning
+        self.retainedOriginal = retainedOriginal
+    }
+}
+
+/// What the camera screen does with a finished take.
+enum RecordingFinishPresentation: Equatable, Sendable {
+    /// A normal take: publish it and let the screen auto-render it.
+    case render(URL)
+    /// A kept original: save it to Photos unchanged, never render it.
+    case saveOriginalUnchanged(URL, reason: String)
+}
+
+/// Decides that split in one place, so "a retained original is never rendered"
+/// is a testable rule rather than an accident of the view's wiring.
+enum RecordingFinishPresentationPolicy {
+    static func plan(for completion: RecordingCompletion) -> RecordingFinishPresentation {
+        guard !completion.retainedOriginal else {
+            return .saveOriginalUnchanged(completion.url, reason: reasonText(for: completion))
+        }
+        return .render(completion.url)
+    }
+
+    /// The underlying failing check, not the wrapper's own description: the
+    /// session hands up the `CameraRetainedRecordingError` itself, and callers
+    /// (messages, logs) want to know what actually failed.
+    static func reasonText(for completion: RecordingCompletion) -> String {
+        if let retained = completion.warning as? CameraRetainedRecordingError {
+            return retained.reason.localizedDescription
+        }
+        return completion.warning?.localizedDescription ?? "the recording did not pass validation"
+    }
+}
+
 /// The AVFoundation completion flag determines whether an errored movie is
 /// still a valid finalized recording that must be published to the queue.
 enum RecordingCompletionPolicy {
