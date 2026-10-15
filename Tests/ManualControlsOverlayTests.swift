@@ -7,6 +7,16 @@ import Testing
 import UniformTypeIdentifiers
 
 struct ManualControlsOverlayTests {
+    @Test func manualPanelBouncesOnlyWhenContentActuallyOverflows() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent(
+            "App/Modules/CameraCapture/ManualControlsOverlay.swift"), encoding: .utf8)
+        #expect(source.contains("ScrollView([.horizontal, .vertical])"),
+                "Overflow still needs to be reachable on short and narrow viewports.")
+        #expect(source.contains(".scrollBounceBehavior(.basedOnSize, axes: [.horizontal, .vertical])"),
+                "Fitting controls should not rubber-band in either axis.")
+    }
+
     @Test func compactFootprintIsNotAvailableViewportSlab() {
         let rect = ManualControlsOverlayGeometry.rect(viewport: CGSize(width: 390, height: 763),
                                                       toolbarBottom: 60, controlsTop: 580)

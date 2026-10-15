@@ -58,6 +58,7 @@ struct ManualControlsOverlay<Content: View>: View {
                 .frame(width: max(face.width, landscape ? 360 : 280))
                 .fixedSize(horizontal: false, vertical: true)
         }
+        .scrollBounceBehavior(.basedOnSize, axes: [.horizontal, .vertical])
         .frame(width: face.width, height: face.height, alignment: .topLeading)
         .background(.black.opacity(0.55))
         .clipShape(RoundedRectangle(cornerRadius: 18))
