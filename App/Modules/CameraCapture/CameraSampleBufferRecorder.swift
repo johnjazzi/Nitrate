@@ -49,7 +49,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     /// Audio callbacks must not wait behind HEVC creation/preroll flushing.
     /// Limit the cross-queue handoff as well as the recorder's five-second ring.
     private let audioHandoffLock = NSLock()
-    private var pendingAudioHandoffs = 0
+    private(set) var pendingAudioHandoffs = 0
     private var audioHandoffEpoch: UInt64 = 0
     private var audioOverflowEpoch: UInt64?
     private let scheduleDrainTimeout: (TimeInterval, @escaping @Sendable () -> Void) -> Void
