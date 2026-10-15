@@ -49,7 +49,25 @@ schemes:
       targets:
         - RenderCLITests
 
+  CameraDesign:
+    build:
+      targets:
+        CameraDesignTests: all
+    test:
+      targets:
+        - CameraDesignTests
+
 targets:
+  CameraDesignTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests/CameraDesignTests.swift
+      - path: App/Modules/CameraCapture/RecordButtonPresentation.swift
+    settings:
+      SWIFT_VERSION: "6.0"
+
   Nitrate:
     type: application
     platform: iOS
