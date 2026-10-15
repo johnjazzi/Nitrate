@@ -77,7 +77,10 @@ final class CameraViewModel {
     private var exposurePollingTimer: Timer?
     private var shutterPriorityTimer: Timer?
     private var recordingTimerGeneration = RecordingTimerGeneration()
-    private var isStartingRecording = false
+    /// True from the record tap until the session reports the take started (or
+    /// the start fails). Drives the button's immediate pressed affordance, so
+    /// the control does not look dead while capture spins up.
+    private(set) var isStartingRecording = false
     private var captureGeneration: UInt64 = 0
     private var exposureCommandGeneration: UInt64 = 0
     private var apertureSnapshotRequestGeneration: UInt64 = 0

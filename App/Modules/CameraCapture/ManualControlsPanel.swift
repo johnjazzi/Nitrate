@@ -102,8 +102,9 @@ struct ManualControlsPanel: View {
             }
             Text(snapshot.statusText)
                 .foregroundStyle(.white.opacity(0.8))
-            Text("Recording only; preview is independent. Stronger modes may crop more and add latency. " +
-                 "Extreme uses Apple extended cinematic stabilization.")
+            Text("Recording only; preview is independent. Stronger modes crop more and delay the " +
+                 "first recorded frame: about 0.3 s (Off/Standard), 0.9 s (Cinematic) and 2.2 s " +
+                 "(Extreme), measured on device. Extreme uses Apple extended cinematic stabilization.")
                 .foregroundStyle(.white.opacity(0.6))
         }
         .font(.caption2)

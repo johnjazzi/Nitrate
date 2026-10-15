@@ -157,6 +157,27 @@ final class CameraSession: NSObject {
 #if DEBUG
     private var debugSmokeURL: URL?
     private var debugSmokeTimedOut = false
+    /// Phase timestamps for the current start request, so the request-to-running
+    /// latency can be attributed to a specific stage instead of guessed at.
+    private struct StartPhases {
+        var requestedAt: Date?
+        var queuedAt: Date?
+        var exposureAppliedAt: Date?
+        var recorderBeganAt: Date?
+
+        /// One line attributing the request-to-running latency to each stage.
+        func printLatency(error: Error?) {
+            guard let requestedAt else { return }
+            func offset(_ date: Date?) -> String {
+                guard let date else { return "-" }
+                return String(format: "%.0f", date.timeIntervalSince(requestedAt) * 1000)
+            }
+            print("Recording start latency: total=\(offset(Date()))ms queue=\(offset(queuedAt))ms " +
+                  "exposure=\(offset(exposureAppliedAt))ms recorderBegin=\(offset(recorderBeganAt))ms " +
+                  "error=\(error == nil ? "none" : "present")")
+        }
+    }
+    private var startPhases = StartPhases()
 #endif
 
     // MARK: - Preview-only read-only sink
@@ -524,6 +545,11 @@ final class CameraSession: NSObject {
     private func applyRecordingStabilization() {
         guard let connection = videoOutput.connection(with: .video) else { return }
         let mode = stabilizationCapability().effectiveMode(for: preferredStabilization)
+#if DEBUG
+        // Cinematic and extended-cinematic keep the pipeline ~0.7-1.0 s behind
+        // the capture clock, so the first frames of a take are already stale.
+        print("Stabilization apply: mode=\(mode.rawValue) activeBefore=\(connection.activeVideoStabilizationMode.rawValue) preferredBefore=\(connection.preferredVideoStabilizationMode.rawValue) supported=\(connection.isVideoStabilizationSupported)")
+#endif
         if connection.isVideoStabilizationSupported {
             connection.preferredVideoStabilizationMode = Self.avStabilizationMode(mode)
         }
@@ -1511,6 +1537,11 @@ final class CameraSession: NSObject {
     private func startRecording(to url: URL,
                                 deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation,
                                 completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+#if DEBUG
+        // Measured on device to size the button's optimistic "starting" state:
+        // this is the gap between the user's request and the take really running.
+        startPhases = StartPhases(requestedAt: Date())
+#endif
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.invalidateMetering()
@@ -1549,6 +1580,9 @@ final class CameraSession: NSObject {
             self.pendingStartCompletion = completion
             self.recordingGeneration &+= 1
             let generation = self.recordingGeneration
+#if DEBUG
+            startPhases.queuedAt = Date()
+#endif
             do {
                 let iso = min(max(device.iso, device.activeFormat.minISO), device.activeFormat.maxISO)
                 let shutter = min(max(Self.filmShutterDuration, device.activeFormat.minExposureDuration),
@@ -1557,6 +1591,9 @@ final class CameraSession: NSObject {
                 // actually takes effect; frames before it still carry the old
                 // exposure, so the recorder drops them.
                 let completionHandler: (CMTime) -> Void = { [weak self] syncTime in
+#if DEBUG
+                    self?.startPhases.exposureAppliedAt = Date()
+#endif
                     self?.sessionQueue.async {
                         guard let self, self.recordingGeneration == generation,
                               self.recordingStartPending else { return }
@@ -1614,6 +1651,9 @@ final class CameraSession: NSObject {
                                             startAfter: CMTime = .invalid,
                                             deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation = .unknown,
                                             captureRotationAngle: CGFloat? = nil) {
+#if DEBUG
+        startPhases.recorderBeganAt = Date()
+#endif
         guard let device = activeDevice,
               #available(iOS 26.0, *),
               device.activeColorSpace == .appleLog2,
@@ -1674,6 +1714,10 @@ final class CameraSession: NSObject {
         guard recordingGeneration == generation, recordingStartPending,
               recorderCompletionBridge.acceptsStarted(epoch: generation) else { return }
         recordingStartPending = false
+#if DEBUG
+        startPhases.printLatency(error: error)
+        startPhases = StartPhases()
+#endif
         let completion = pendingStartCompletion
         pendingStartCompletion = nil
         recordingActive = error == nil
@@ -1733,6 +1777,9 @@ final class CameraSession: NSObject {
 
     private func failPendingStart(_ error: Error) {
         recordingStartPending = false
+#if DEBUG
+        startPhases = StartPhases()
+#endif
         restoreAutomaticApertureAfterRecording()
         let completion = pendingStartCompletion
         pendingStartCompletion = nil

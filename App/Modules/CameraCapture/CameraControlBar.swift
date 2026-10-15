@@ -10,6 +10,10 @@ struct CameraControlBar: View {
     private let selectorRowHeight: CGFloat = 54
     private let recordFaceSize: CGFloat = 84
     private let statusSlotSize: CGFloat = 84
+    /// Drives `.sensoryFeedback`; bumped on every REC tap so the press is felt
+    /// immediately instead of when capture reports it started.
+    @State private var recordFeedbackTrigger = 0
+    @State private var recordFeedback: RecordFeedback = .start
     let cameraViewModel: CameraViewModel
     let renderQueueViewModel: RenderQueueViewModel
     let selectedStock: FilmStockConfig?
@@ -243,57 +247,51 @@ struct CameraControlBar: View {
         )
     }
 
+    /// Immediate acknowledgement for a REC tap.
+    ///
+    /// Capture cannot confirm a take started until the session queue, the
+    /// custom-exposure settle and the asset writer have all run, so waiting for
+    /// that round trip made the button feel unresponsive. The press is
+    /// acknowledged here, on the tap itself.
+    private enum RecordFeedback: Equatable {
+        case start
+        case stop
+
+        var sensory: SensoryFeedback {
+            switch self {
+            case .start: .impact(weight: .medium, intensity: 1)
+            case .stop: .impact(weight: .heavy, intensity: 1)
+            }
+        }
+    }
+
+    private var recordPresentation: RecordButtonPresentation {
+        RecordButtonPresentationPolicy.presentation(
+            isRecording: cameraViewModel.isRecording,
+            isStarting: cameraViewModel.isStartingRecording
+        )
+    }
+
     private var recordButton: some View {
-        Button {
-            if cameraViewModel.isRecording {
-                cameraViewModel.stopRecording()
-            } else {
-                cameraViewModel.startRecording()
+        let presentation = recordPresentation
+        let action = RecordButtonPresentationPolicy.action(for: presentation)
+        return Button {
+            recordFeedback = action == .start ? .start : .stop
+            recordFeedbackTrigger &+= 1
+            switch action {
+            case .start: cameraViewModel.startRecording()
+            case .stop: cameraViewModel.stopRecording()
             }
         } label: {
-            ZStack {
-                // A circular translucent cap, deliberately not a rectangular
-                // frame: the reference camera's REC is its own round recess.
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .overlay { Circle().fill(Color.black.opacity(0.18)) }
-
-                if cameraViewModel.isRecording {
-                    Circle()
-                        .fill(.red)
-                        .frame(width: 46, height: 46)
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(.white)
-                        .frame(width: 18, height: 18)
-                } else {
-                    Circle()
-                        .stroke(.white, lineWidth: 3)
-                        .frame(width: 58, height: 58)
-                    Circle()
-                        .fill(.white)
-                        .frame(width: 46, height: 46)
-                }
-            }
-            .frame(width: recordFaceSize, height: recordFaceSize)
-            .overlay {
-                Circle()
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [.white.opacity(0.42), .white.opacity(0.05), .black.opacity(0.42)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 1
-                    )
-                    .allowsHitTesting(false)
-            }
-            .shadow(color: .black.opacity(0.38), radius: 6, x: 0, y: 3)
+            recordFace(presentation)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(cameraViewModel.isRecording ? "Stop recording" : "Start recording")
-        .disabled(cameraViewModel.isSpaceCritical && !cameraViewModel.isRecording)
+        .disabled(!RecordButtonPresentationPolicy.isEnabled(isSpaceCritical: cameraViewModel.isSpaceCritical,
+                                                           presentation: presentation))
+        .sensoryFeedback(trigger: recordFeedbackTrigger) { _, _ in recordFeedback.sensory }
+        .accessibilityLabel(RecordButtonPresentationPolicy.accessibilityLabel(for: presentation))
         .overlay(alignment: .top) {
-            if cameraViewModel.isRecording {
+            if presentation == .recording {
                 Text(formatDuration(cameraViewModel.recordingDuration))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.white)
@@ -305,6 +303,58 @@ struct CameraControlBar: View {
                     .offset(y: -18)
             }
         }
+    }
+
+    /// Idle is a white ring with a white dot; the press turns that dot red
+    /// immediately, so the control responds on the tap rather than when the
+    /// writer comes up. A running take is the filled red disc with a stop square.
+    private func recordFace(_ presentation: RecordButtonPresentation) -> some View {
+        ZStack {
+            // A circular translucent cap, deliberately not a rectangular
+            // frame: the reference camera's REC is its own round recess.
+            Circle()
+                .fill(.ultraThinMaterial)
+                .overlay { Circle().fill(Color.black.opacity(0.18)) }
+
+            switch presentation {
+            case .recording:
+                Circle()
+                    .fill(.red)
+                    .frame(width: 46, height: 46)
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(.white)
+                    .frame(width: 18, height: 18)
+            case .starting:
+                Circle()
+                    .stroke(.white, lineWidth: 3)
+                    .frame(width: 58, height: 58)
+                Circle()
+                    .fill(.red)
+                    .frame(width: 46, height: 46)
+            case .idle:
+                Circle()
+                    .stroke(.white, lineWidth: 3)
+                    .frame(width: 58, height: 58)
+                Circle()
+                    .fill(.white)
+                    .frame(width: 46, height: 46)
+            }
+        }
+        .frame(width: recordFaceSize, height: recordFaceSize)
+        .overlay {
+            Circle()
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.42), .white.opacity(0.05), .black.opacity(0.42)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+                .allowsHitTesting(false)
+        }
+        .shadow(color: .black.opacity(0.38), radius: 6, x: 0, y: 3)
+        .animation(.easeInOut(duration: 0.12), value: presentation)
     }
 
     private var queueStatus: CameraStatusPresentation {

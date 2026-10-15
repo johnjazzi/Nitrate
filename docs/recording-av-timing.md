@@ -117,3 +117,42 @@ Debug smoke recordings normally delete their temporary output. Use
 `--keep-hevc-log2-smoke` with `--smoke-hevc-log2-capture` to retain a successful
 recording for source-versus-render inspection. The debug smoke keeps the display
 awake during an automated matrix; a normal launch does not enable that behavior.
+
+## Capture start latency
+
+The record button cannot confirm a take until capture reports it, and that report
+waits on the whole start path: the session-queue hop, the custom-exposure settle,
+and the first eligible frame reaching the writer. Measured on the physical iPhone
+18 Pro (Debug smoke, one take per mode, two or three repeats per row; the clock
+starts when `startRecording` is requested and stops when the recorder appends its
+first frame and signals started):
+
+| Stabilization | Request → running | First video callback after writer begin | Frames dropped as pre-exposure |
+|---|---:|---:|---:|
+| Off | 0.27–0.30 s | 4–6 ms | 1 |
+| Standard | 0.28–0.32 s | 8 ms | 2 |
+| Cinematic | 0.93–0.94 s | 9 ms | 17 |
+| Extreme | 2.19–2.23 s | 890–935 ms | 25 |
+
+Stage split at Extreme: session-queue hop ≈0 ms, custom-exposure settle ≈0.18 s,
+then ≈2.0 s inside the recorder before the first frame is appended.
+
+Cinematic and extended-cinematic run the pipeline behind the capture clock (~0.7 s
+and ~1.0 s), so the frames delivered when a take begins already predate the
+exposure change and are correctly discarded — 17 and 25 frames at 24 fps match
+those offsets. Extreme additionally stalls frame delivery for about 0.9 s at take
+start. Re-writing the same `preferredVideoStabilizationMode` was tested as the
+cause and is not it: the mode is already active before the take
+(`activeVideoStabilizationMode` reports it at configure, at session start and at
+record start), and skipping the redundant write changed nothing.
+
+Because of that delay, the control acknowledges the tap itself rather than the
+take. The REC dot turns red immediately, a haptic fires, and the timer starts only
+when the recorder confirms. A second tap during the pending window cancels the
+start. `CameraViewModel.isStartingRecording` is the flag behind that state, and
+`RecordButtonPresentationPolicy` decides the label, enablement and tap action.
+
+Limits: measured on a warm session with the debug smoke. Cold starts, longer
+recordings, and the exact cause of the Extreme stall inside AVFoundation are not
+characterized here. The per-mode offsets above are what make a take start late, so
+the head of the action is not recorded at Cinematic or Extreme.
