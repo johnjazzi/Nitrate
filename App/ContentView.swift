@@ -500,7 +500,7 @@ struct ContentView: View {
                 .cameraUpright()
             Spacer()
             Button {
-                renderQueueViewModel.rendererErrorMessage = nil
+                renderQueueViewModel.dismissRendererError()
             } label: {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.7))
                     .cameraUpright()
@@ -661,7 +661,7 @@ private struct StockSheetView: View {
     private func renderButton(sourceURL: URL) -> some View {
         Button {
             guard let stock = localSelection else {
-                renderQueueViewModel.rendererErrorMessage = "Select a film stock first."
+                renderQueueViewModel.reportRenderError("Select a film stock first.")
                 return
             }
             renderQueueViewModel.enqueue(

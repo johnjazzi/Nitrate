@@ -372,9 +372,7 @@ struct RenderQueueReliabilityTests {
         let failure = try #require(model.rendererErrorMessage)
         #expect(model.jobs.first?.status == .failed)
 
-        // This is the current banner's dismissal path; the implementation will
-        // replace it with an explicit acknowledgement action.
-        model.rendererErrorMessage = nil
+        model.dismissRendererError()
         model.enqueue(sourceURL: files.source, stockId: "B", iso: 400,
                       deliveryPreferences: RenderDeliveryPreferences())
         try await waitUntil { !model.isProcessing }
@@ -398,7 +396,7 @@ struct RenderQueueReliabilityTests {
                       deliveryPreferences: RenderDeliveryPreferences())
         try await waitUntil { !model.isProcessing }
         let firstMessage = try #require(model.rendererErrorMessage)
-        model.rendererErrorMessage = nil
+        model.dismissRendererError()
         model.enqueue(sourceURL: files.source, stockId: "C", iso: 400,
                       deliveryPreferences: RenderDeliveryPreferences())
         try await waitUntil { !model.isProcessing }
@@ -422,7 +420,7 @@ struct RenderQueueReliabilityTests {
         try await waitUntil { !model.isProcessing }
         let failedID = try #require(model.jobs.first?.id)
         #expect(model.rendererErrorMessage != nil)
-        model.rendererErrorMessage = nil
+        model.dismissRendererError()
         model.retry(jobId: failedID)
         try await waitUntil { !model.isProcessing }
         #expect(attempts == 2)
@@ -464,6 +462,24 @@ struct RenderQueueReliabilityTests {
         #expect(model.rendererErrorMessage?.contains("Queue state could not be saved") == true)
         #expect(try Data(contentsOf: files.source) == originalSource)
         #expect(try Data(contentsOf: files.output) == originalOutput)
+    }
+
+    @Test func dismissingAQueueFailureDoesNotSuppressIndependentAlerts() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in throw QueueTestError.render },
+                                         save: { _ in }, postDelivery: { _, _ in })
+        model.enqueue(sourceURL: files.source, stockId: "A", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { !model.isProcessing }
+        model.dismissRendererError()
+        #expect(model.rendererErrorMessage == nil)
+        model.externalErrorMessage = "Stock library failed"
+        #expect(model.rendererErrorMessage == "Stock library failed")
+        model.dismissRendererError()
+        model.externalErrorMessage = "Stock library failed"
+        #expect(model.rendererErrorMessage == "Stock library failed")
     }
 
     @Test func corruptQueueLoadReportsErrorWithoutOverwritingFile() async throws {

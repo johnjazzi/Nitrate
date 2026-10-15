@@ -23,6 +23,11 @@ final class RenderQueueViewModel {
     private var loadErrorMessage: String?
     private var canPersist = true
     private let sessionId: String
+    // A failure is a new alert on each failed transition, including a retry of
+    // the same job. The retained job list remains independent of acknowledgement.
+    private var failureAlert: (jobId: UUID, eventId: UUID, message: String)?
+    private var acknowledgedFailureEventId: UUID?
+    private var presentedFailureEventId: UUID?
 
     var library: FilmStockLibrary?
     var jobs: [RenderJob] = []
@@ -47,6 +52,19 @@ final class RenderQueueViewModel {
             .sorted { $0.createdAt > $1.createdAt }
     }
     var completedJobs: [RenderJob] { jobs.filter { $0.status == .completed } }
+
+    func dismissRendererError() {
+        if let presentedFailureEventId {
+            acknowledgedFailureEventId = presentedFailureEventId
+        }
+        presentedFailureEventId = nil
+        rendererErrorMessage = nil
+    }
+
+    func reportRenderError(_ message: String) {
+        presentedFailureEventId = nil
+        rendererErrorMessage = message
+    }
 
     init(persistenceURL: URL? = nil, render: RenderOperation? = nil, save: SaveOperation? = nil,
          postDelivery: PostDeliveryOperation? = nil,
@@ -84,7 +102,7 @@ final class RenderQueueViewModel {
     func enqueue(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge? = nil,
                  deliveryPreferences: RenderDeliveryPreferences? = nil) {
         guard Self.isUsableFile(sourceURL) else {
-            rendererErrorMessage = "Source video not ready. Try again."
+            reportRenderError("Source video not ready. Try again.")
             return
         }
         rendererErrorMessage = nil
@@ -97,6 +115,10 @@ final class RenderQueueViewModel {
 
     func retry(jobId: UUID) {
         guard let index = jobs.firstIndex(where: { $0.id == jobId }), jobs[index].status == .failed else { return }
+        if failureAlert?.jobId == jobId {
+            failureAlert = nil
+            presentedFailureEventId = nil
+        }
         jobs[index].status = .pending
         jobs[index].errorMessage = nil
         jobs[index].sessionId = sessionId
@@ -106,6 +128,10 @@ final class RenderQueueViewModel {
 
     func remove(jobId: UUID) {
         guard jobs.first(where: { $0.id == jobId })?.status != .processing else { return }
+        if failureAlert?.jobId == jobId {
+            failureAlert = nil
+            presentedFailureEventId = nil
+        }
         jobs.removeAll { $0.id == jobId }
         persistJobs()
     }
@@ -134,14 +160,18 @@ final class RenderQueueViewModel {
     }
 
     private func publishQueueMessage() {
+        presentedFailureEventId = nil
         if let loadErrorMessage {
             rendererErrorMessage = loadErrorMessage
         } else if let persistenceErrorMessage {
             rendererErrorMessage = persistenceErrorMessage
         } else if let externalErrorMessage {
             rendererErrorMessage = externalErrorMessage
-        } else if let failedMessage = currentSessionFailures.first?.errorMessage {
-            rendererErrorMessage = failedMessage
+        } else if let failureAlert,
+                  acknowledgedFailureEventId != failureAlert.eventId,
+                  jobs.contains(where: { $0.id == failureAlert.jobId && $0.status == .failed && $0.sessionId == sessionId }) {
+            rendererErrorMessage = failureAlert.message
+            presentedFailureEventId = failureAlert.eventId
         } else {
             rendererErrorMessage = nil
         }
@@ -314,7 +344,12 @@ final class RenderQueueViewModel {
 
     private func update(_ id: UUID, _ change: (inout RenderJob) -> Void) {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        let previousStatus = jobs[index].status
         change(&jobs[index])
+        if previousStatus != .failed, jobs[index].status == .failed,
+           let message = jobs[index].errorMessage {
+            failureAlert = (id, UUID(), message)
+        }
     }
 
     private nonisolated static func isUsableFile(_ url: URL) -> Bool {
