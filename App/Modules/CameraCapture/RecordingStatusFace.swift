@@ -82,6 +82,7 @@ struct RecordingStatusFace: View {
 /// Primary keys and status use separate measured rows. DEBUG/FAULT have their
 /// own left rail, never squeezed into the lens/status touch bounds on small phones.
 struct CameraTopPanel<Settings: View, Manual: View, Lens: View, Status: View, Diagnostics: View>: View {
+    var statusInToolbar = true
     @ViewBuilder var settings: () -> Settings
     @ViewBuilder var manual: () -> Manual
     @ViewBuilder var lens: () -> Lens
@@ -93,10 +94,49 @@ struct CameraTopPanel<Settings: View, Manual: View, Lens: View, Status: View, Di
             settings()
             manual()
             lens()
-            status()
+            Group {
+                if statusInToolbar { status() } else { Color.clear.frame(width: 0, height: 0) }
+            }
             diagnostics()
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
+    }
+}
+
+/// Geometry uses the portrait-locked SAFE-AREA viewport. The physical top edge
+/// is the inverse of the existing whole-face rotation: +90 => right, -90 => left.
+/// Stationary chrome bounds exclude settings/lens/debug and shooting controls;
+/// fixed face bounds make placement independent of timer text and capture state.
+enum RecordingStatusOverlayGeometry {
+    static func rect(viewport: CGSize, toolbarBottom: CGFloat, controlsTop: CGFloat,
+                     rotationDegrees: Double) -> CGRect? {
+        guard abs(rotationDegrees) == 90 else { return nil }
+        let size = CGSize(width: 40, height: 112)
+        let top = max(8, toolbarBottom + 8)
+        let bottom = min(viewport.height - 8, controlsTop - 8)
+        guard viewport.width >= size.width + 16, bottom - top >= size.height else { return nil }
+        let centerY = min(max(viewport.height / 2, top + size.height / 2), bottom - size.height / 2)
+        let x = rotationDegrees > 0 ? viewport.width - 8 - size.width : 8
+        return CGRect(x: x, y: centerY - size.height / 2, width: size.width, height: size.height)
+    }
+}
+
+/// A non-sizing sibling overlay: never participates in preview/framing bounds.
+struct RecordingStatusOverlay<Content: View>: View {
+    let viewport: CGSize
+    let toolbarBottom: CGFloat
+    let controlsTop: CGFloat
+    let rotationDegrees: Double
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        if let rect = RecordingStatusOverlayGeometry.rect(viewport: viewport, toolbarBottom: toolbarBottom,
+                                                          controlsTop: controlsTop, rotationDegrees: rotationDegrees) {
+            content()
+                .position(x: rect.midX, y: rect.midY)
+                .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
+                .allowsHitTesting(false)
+        }
     }
 }

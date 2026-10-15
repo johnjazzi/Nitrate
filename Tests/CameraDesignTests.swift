@@ -34,6 +34,10 @@ struct CameraDesignTests {
     @Test func topLampReadsCaptureState() throws {
         let screen = try source("App/ContentView.swift")
         #expect(screen.contains("RecordingStatusFace("))
+        #expect(screen.contains("RecordingStatusOverlay(viewport: geometry.size"))
+        #expect(screen.contains("CameraTopPanel(statusInToolbar: abs(statusRotationDegrees) != 90)"))
+        #expect(screen.contains("CameraTopPanelGeometry.framingBottom(toolbarBottom: top.maxY"))
+        #expect(screen.contains("excluding: RecordingStatusOverlayGeometry.rect("))
         #expect(screen.contains("RecordingIndicatorStyle.preferenceKey"))
         let settings = try source("App/Modules/Purchase/PurchaseView.swift")
         #expect(settings.contains("Recording Indicator"))

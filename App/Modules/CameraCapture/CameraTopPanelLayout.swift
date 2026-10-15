@@ -8,13 +8,24 @@ struct CameraTopPanelGeometry {
     let diagnostics: CGRect
     let height: CGFloat
 
+    /// Keep the shipped framed-viewfinder input unchanged when the status leaves
+    /// the toolbar. Its old quarter-turn row was 112pt, below 8pt + 50pt chrome.
+    /// Actual toolbar bounds still govern the floating/manual overlays.
+    static func framingBottom(toolbarBottom: CGFloat, rotationDegrees: Double) -> CGFloat {
+        abs(rotationDegrees) == 90 ? max(toolbarBottom, 8 + 50 + 112) : toolbarBottom
+    }
+
     init(width: CGFloat, statusSize: CGSize, diagnosticsHeight: CGFloat) {
-        let rowHeight = max(statusSize.height, diagnosticsHeight)
+        // A quarter-turned face lives in a non-sizing physical-edge overlay.
+        // Never reserve its old tall toolbar slot (or let timer ticks size chrome).
+        let toolbarStatusSize = statusSize.height > statusSize.width ? .zero : statusSize
+        let rowHeight = max(toolbarStatusSize.height, diagnosticsHeight)
         settings = CGRect(x: 0, y: 0, width: 44, height: 44)
         manual = CGRect(x: 56, y: 0, width: 44, height: 44)
         lens = CGRect(x: width - 84, y: 0, width: 84, height: 44)
-        status = CGRect(x: (width - statusSize.width) / 2, y: 50 + (rowHeight - statusSize.height) / 2,
-                        width: statusSize.width, height: statusSize.height)
+        status = CGRect(x: (width - toolbarStatusSize.width) / 2,
+                        y: 50 + (rowHeight - toolbarStatusSize.height) / 2,
+                        width: toolbarStatusSize.width, height: toolbarStatusSize.height)
         diagnostics = CGRect(x: 0, y: 50 + (rowHeight - diagnosticsHeight) / 2,
                              width: 64, height: diagnosticsHeight)
         height = 50 + rowHeight

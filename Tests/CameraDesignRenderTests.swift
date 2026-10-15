@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -63,6 +64,122 @@ struct CameraDesignRenderTests {
         }
     }
 
+    @Test func relocatingStatusPreservesExistingFramedPreviewRectangle() {
+        for width: CGFloat in [320, 390, 430] {
+            for degrees in [0.0, 90.0, -90.0] {
+                for diagnosticsHeight: CGFloat in [0, 44, 92, 140] {
+                    let statusSize = degrees == 0 ? CGSize(width: 112, height: 40) : .zero
+                    let toolbar = CameraTopPanelGeometry(width: width - 32, statusSize: statusSize,
+                                                         diagnosticsHeight: diagnosticsHeight)
+                    let legacyBottom = 8 + 50 + max(degrees == 0 ? 40 : 112, diagnosticsHeight)
+                    let frameBottom = CameraTopPanelGeometry.framingBottom(toolbarBottom: toolbar.height + 8,
+                                                                           rotationDegrees: degrees)
+                    #expect(frameBottom == legacyBottom,
+                            "Moving status must not enlarge, move or refocus the existing framed preview.")
+                    let viewport = CGRect(x: 0, y: 0, width: width, height: 750)
+                    #expect(FramedPreviewLayout.previewRect(in: viewport, topControlsBottom: frameBottom,
+                                                            bottomControlsTop: 560) ==
+                            FramedPreviewLayout.previewRect(in: viewport, topControlsBottom: legacyBottom,
+                                                            bottomControlsTop: 560))
+                }
+            }
+        }
+    }
+
+    @Test func physicalUpperEdgeIsInverseOfWholeFaceRotation() throws {
+        for size in [CGSize(width: 320, height: 480), CGSize(width: 390, height: 750), CGSize(width: 430, height: 850)] {
+            for degrees in [90.0, -90.0] {
+                let rect = try #require(RecordingStatusOverlayGeometry.rect(
+                    viewport: size, toolbarBottom: 150, controlsTop: size.height - 180,
+                    rotationDegrees: degrees))
+                #expect(CGRect(origin: .zero, size: size).contains(rect))
+                #expect(rect.size == CGSize(width: 40, height: 112))
+                #expect(rect.minY >= 158 && rect.maxY <= size.height - 188)
+                // A +90 text rotation cancels a -90 physical hold: portrait RIGHT
+                // becomes physical TOP. -90 text/ +90 hold selects portrait LEFT.
+                let physicalTurn = CGAffineTransform(rotationAngle: -degrees * .pi / 180)
+                let edgeVector = CGPoint(x: rect.midX - size.width / 2, y: 0).applying(physicalTurn)
+                #expect(edgeVector.y < 0)
+                #expect(abs(edgeVector.x) < 0.001)
+                #expect(degrees > 0 ? rect.maxX == size.width - 8 : rect.minX == 8)
+                let manual = ManualControlsOverlayGeometry.rect(viewport: size, toolbarBottom: 150,
+                                                                controlsTop: size.height - 180,
+                                                                excluding: rect)
+                #expect(CGRect(origin: .zero, size: size).contains(manual))
+                #expect(!manual.intersects(rect))
+                #expect(manual.width >= size.width - 80)
+            }
+        }
+        #expect(RecordingStatusOverlayGeometry.rect(viewport: CGSize(width: 390, height: 750),
+                                                    toolbarBottom: 90, controlsTop: 560,
+                                                    rotationDegrees: 0) == nil)
+    }
+
+    @MainActor @Test func actualLandscapeStatusRendersAtPhysicalTopWithManualClearance() throws {
+        for size in [CGSize(width: 320, height: 480), CGSize(width: 390, height: 750), CGSize(width: 430, height: 850)] {
+            for degrees in [90.0, -90.0] {
+                let statusRect = try #require(RecordingStatusOverlayGeometry.rect(
+                    viewport: size, toolbarBottom: 150, controlsTop: size.height - 180,
+                    rotationDegrees: degrees))
+                let view = ZStack(alignment: .topLeading) {
+                    Color.black
+                    Color.gray.opacity(0.25).frame(width: size.width, height: 150)
+                    Color.gray.opacity(0.25).frame(width: size.width, height: 180)
+                        .offset(y: size.height - 180)
+                    ManualControlsOverlay(viewport: size, toolbarBottom: 150, controlsTop: size.height - 180,
+                                          excluding: statusRect) {
+                        VStack(spacing: 8) {
+                            Text("MANUAL CONTROLS").font(.system(size: 10))
+                            ForEach(0..<30) { _ in Color.green.opacity(0.7).frame(height: 28) }
+                        }
+                        .foregroundStyle(.white)
+                    }
+                    RecordingStatusOverlay(viewport: size, toolbarBottom: 150, controlsTop: size.height - 180,
+                                           rotationDegrees: degrees) {
+                        RecordingStatusFace(presentation: .recording, text: "99:59.99", rotationDegrees: degrees)
+                    }
+                }
+                .frame(width: size.width, height: size.height)
+                let image = try render(view, name: "edge-status-\(Int(size.width))-\(degrees)", hostedSize: size)
+                let scale = CGFloat(image.width) / size.width
+                let data = try pixels(image)
+                let green = stride(from: 0, to: data.count, by: 4).filter { index in
+                    Int(data[index + 1]) > Int(data[index]) + 40 && data[index + 1] > 60
+                }
+                #expect(green.count > 1_000, "The native manual scroll surface must render, not a blank placeholder.")
+                let red = stride(from: 0, to: data.count, by: 4).filter { index in
+                    Int(data[index]) > Int(data[index + 1]) + 60 && data[index] > 160
+                }
+                #expect(red.count > 150)
+                let columns = red.map { CGFloat(($0 / 4) % image.width) / scale }
+                let rows = red.map { CGFloat(($0 / 4) / image.width) / scale }
+                let manualRect = ManualControlsOverlayGeometry.rect(viewport: size, toolbarBottom: 150,
+                                                                    controlsTop: size.height - 180,
+                                                                    excluding: statusRect)
+                #expect(green.allSatisfy { index in
+                    manualRect.contains(CGPoint(x: CGFloat((index / 4) % image.width) / scale,
+                                                y: CGFloat((index / 4) / image.width) / scale))
+                }, "All expanded manual/help ink must remain in its bounded non-overlapping scroll viewport.")
+                #expect(try #require(columns.min()) >= statusRect.minX)
+                #expect(try #require(columns.max()) <= statusRect.maxX)
+                #expect(try #require(rows.min()) >= statusRect.minY)
+                #expect(try #require(rows.max()) <= statusRect.maxY)
+                // Fixture is also saved as it is seen in the physical hold.
+                let physical = view.rotationEffect(.degrees(-degrees))
+                    .frame(width: size.height, height: size.width)
+                let physicalSize = CGSize(width: size.height, height: size.width)
+                let upright = try render(physical, name: "physical-top-\(Int(size.width))-\(degrees)", hostedSize: physicalSize)
+                let physicalData = try pixels(upright)
+                let physicalRed = stride(from: 0, to: physicalData.count, by: 4).filter { index in
+                    Int(physicalData[index]) > Int(physicalData[index + 1]) + 60 && physicalData[index] > 160
+                }
+                #expect(physicalRed.count > 150)
+                #expect(physicalRed.allSatisfy { ($0 / 4) / upright.width < 100 },
+                        "Both physical holds must put upright red timer ink on the upper edge, not the side or bottom.")
+            }
+        }
+    }
+
     @MainActor @Test func statusDistinguishesPendingConfirmedAndStoppingWithoutColor() throws {
         #expect(RecordingIndicatorStyle.resolved("missing") == .red)
         let suite = "CameraDesignTests.indicator"
@@ -88,7 +205,7 @@ struct CameraDesignRenderTests {
     @MainActor @Test func actualTopPanelReservesStatusAndDiagnosticBoundsAtPhoneWidths() throws {
         for width: CGFloat in [320, 390, 430] {
             for degrees in [0.0, 90.0, -90.0] {
-                let view = CameraTopPanel {
+                let view = CameraTopPanel(statusInToolbar: degrees == 0) {
                     Image(systemName: "gearshape.fill").frame(width: 44, height: 44)
                         .buttonStyle(CameraRaisedButtonStyle())
                 } manual: {
@@ -108,7 +225,7 @@ struct CameraDesignRenderTests {
                 .padding(8)
                 let image = try render(view, name: "top-\(Int(width))-\(degrees)")
                 #expect(image.width == Int((width + 16) * 2))
-                #expect(image.height == (degrees == 0 ? 332 : 372))
+                #expect(image.height == 332, "Landscape status has no duplicate/ghost slot in the toolbar.")
                 let face = RecordingStatusFace(presentation: .recording, text: "999:59.99", rotationDegrees: degrees)
                 let faceImage = try render(face.padding(8), name: "status-rotation-\(degrees)")
                 #expect(faceImage.width == (degrees == 0 ? 256 : 112))
@@ -237,10 +354,21 @@ struct CameraDesignRenderTests {
     }
 
     @MainActor
-    private func render(_ view: some View, name: String) throws -> CGImage {
-        let renderer = ImageRenderer(content: view)
-        renderer.scale = 2
-        let image = try #require(renderer.cgImage)
+    private func render(_ view: some View, name: String, hostedSize: CGSize? = nil) throws -> CGImage {
+        let image: CGImage
+        if let hostedSize {
+            // ImageRenderer omits native ScrollView content; host that fixture.
+            let host = NSHostingView(rootView: view)
+            host.frame = CGRect(origin: .zero, size: hostedSize)
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            image = try #require(bitmap.cgImage)
+        } else {
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 2
+            image = try #require(renderer.cgImage)
+        }
         let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("build/camera-design-renders")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

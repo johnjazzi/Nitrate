@@ -12,12 +12,13 @@ struct CameraCleanupPresentationTests {
         return try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
     }
 
-    @Test func timerBelongsOnlyToMeasuredTopPanelAndFreezesAtStop() throws {
+    @Test func timerUsesPortraitPanelOrLandscapeEdgeAndFreezesAtStop() throws {
         let bar = try source("App/Modules/CameraCapture/CameraControlBar.swift")
         let screen = try source("App/ContentView.swift")
         #expect(!bar.contains("recordingTimerBadge"))
         #expect(!bar.contains("RecordingTimerBadge("))
-        #expect(screen.contains("CameraTopPanel {"))
+        #expect(screen.contains("CameraTopPanel(statusInToolbar: abs(statusRotationDegrees) != 90)"))
+        #expect(screen.contains("RecordingStatusOverlay(viewport: geometry.size"))
         #expect(screen.contains("RecordingStatusFace("))
         #expect(screen.contains("if let stoppedAt = cameraViewModel.recordingStoppedAt"))
         #expect(screen.contains("stoppedAt.timeIntervalSince(origin)"))
@@ -26,7 +27,8 @@ struct CameraCleanupPresentationTests {
     @Test func manualPanelIsIndependentOfStationaryChromeAndPreviewIdentity() throws {
         let file = try source("App/ContentView.swift")
         #expect(file.contains(".background(controlMeasurement(\"top\"))"))
-        #expect(file.contains("ManualControlsOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY)"))
+        #expect(file.contains("ManualControlsOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,"))
+        #expect(file.contains("excluding: RecordingStatusOverlayGeometry.rect("))
         #expect(file.components(separatedBy: "CameraView(viewModel:").count == 2)
     }
 

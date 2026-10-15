@@ -97,8 +97,18 @@ struct ContentView: View {
                         .background(controlMeasurement("bottom"))
                 }
 
+                if let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
+                    RecordingStatusOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
+                                           rotationDegrees: statusRotationDegrees) {
+                        recordingStatus
+                    }
+                }
+
                 if showManualControls, let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
-                    ManualControlsOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY) {
+                    ManualControlsOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
+                                          excluding: RecordingStatusOverlayGeometry.rect(
+                                            viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
+                                            rotationDegrees: statusRotationDegrees)) {
                         ManualControlsPanel(
                             cameraViewModel: cameraViewModel,
                             zoomFactor: $zoomFactor,
@@ -220,7 +230,8 @@ struct ContentView: View {
             }
             return FramedPreviewLayout.previewRect(
                 in: CGRect(origin: .zero, size: geometry.size),
-                topControlsBottom: top.maxY,
+                topControlsBottom: CameraTopPanelGeometry.framingBottom(toolbarBottom: top.maxY,
+                                                                         rotationDegrees: statusRotationDegrees),
                 bottomControlsTop: bottom.minY
             )
         }
@@ -265,7 +276,7 @@ struct ContentView: View {
     /// Active stock lives in the control bar's selector row; the top toolbar
     /// owns app settings, manual controls and the active lens menu.
     private var topBar: some View {
-        CameraTopPanel {
+        CameraTopPanel(statusInToolbar: abs(statusRotationDegrees) != 90) {
             settingsButton
         } manual: {
             manualButton
@@ -368,6 +379,10 @@ struct ContentView: View {
         } else {
             statusFace(text: recordPresentation == .idle ? "--:--.--" : "00:00.00")
         }
+    }
+
+    private var statusRotationDegrees: Double {
+        CameraGlyphRotation.degrees(for: orientation.deviceOrientation)
     }
 
     private func statusFace(text: String) -> some View {
