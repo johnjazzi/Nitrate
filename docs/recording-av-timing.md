@@ -180,3 +180,38 @@ Limits: measured on a warm session with the debug smoke. Cold starts, longer
 recordings, and the exact cause of the Extreme stall inside AVFoundation are not
 characterized here. The per-mode delays are how long the take takes to register,
 not how much content it loses: that is the ~0.2 s head loss, in every mode.
+
+## Recorder hardening
+
+The recorder validates the audio it is handed rather than trusting it: finite
+numeric PTS, a positive finite complete packet duration consistent with its sample
+count and sample rate, a finite usable PCM format description, and a bounded
+overflow-checked byte allocation computed from the format before anything is
+copied. Interior source-audio continuity is checked against the same 0.12-second
+bound as the output, so a gap or overlap inside a take cannot hide behind
+synchronized endpoints. A configured microphone that delivers no audio is reported
+as a retained failure rather than a clean take; deliberately video-only capture is
+unchanged.
+
+Two review findings are fixed. An audio handoff error arriving after stop could
+drive a finalising take to `.failed` and delete a file whose writer had already
+completed — both handoff error paths are now gated on the clip still being live
+rather than on generation alone. And the successful handoff path was not
+generation-fenced, so a stale sample from the previous take could enter the next
+one's preroll and evict valid early audio; it is fenced now, with the handoff
+bookkeeping reset per clip.
+
+Finalisation is bounded: a generation- and writer-identity-fenced `finishWriting`
+timeout sits alongside the stop-drain timeout, and completion stays exactly-once.
+A quality or validation failure after the writer produced a readable file throws
+`CameraRetainedRecordingError` and keeps the file. Only failures with nothing
+readable — no video at all, an awaiting-start failure, a user cancel, or a writer
+that never reached `.completed` — still delete.
+
+Evidence: the ten new cases were run against the tests-only commit first and all
+ten failed there; with the implementation the recorder suite is 41 tests and the
+full suite 310, all passing. Device smoke on Extreme and Standard still passes
+with audio present (skew 0.009/0.018 s, end delta 0.029/0.035 s), so the stricter
+validation does not reject real microphone packets. Not covered: the real
+`AVAssetWriter` path (the tests drive a fake writer), the preservation-probe path,
+and `requiresAudioEvidence`, which is DEBUG-only.
