@@ -66,6 +66,8 @@ targets:
       - path: Tests/CameraDesignTests.swift
       - path: Tests/CameraDesignRenderTests.swift
       - path: Tests/ManualControlsOverlayTests.swift
+      - path: Tests/CameraZoomPolicyTests.swift
+      - path: App/Modules/CameraCapture/CameraZoomPolicy.swift
       - path: App/Modules/ProcessingPipeline/GrainModel.swift
       - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
       - path: Tests/CameraCleanupPresentationTests.swift
@@ -162,6 +164,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraPreviewPolicy.swift
       - path: App/Modules/CameraCapture/CameraPreviewTap.swift
       - path: App/Modules/CameraCapture/CameraPolicies.swift
+      - path: App/Modules/CameraCapture/CameraZoomPolicy.swift
       - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
       - path: App/Modules/CameraCapture/FramedPreviewLayout.swift

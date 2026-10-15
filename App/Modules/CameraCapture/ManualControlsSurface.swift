@@ -9,12 +9,18 @@ struct ManualControlsSurface<Aperture: View>: View {
     @Binding var expanded: Bool
     let landscape: Bool
     let zoomRange: ClosedRange<Double>
+    var zoomIsPerLens = false
+    var zoomAvailable = true
+    var zoomRevision: UInt64 = 0
     let exposure: String
     let apertureReadout: String
     let stabilization: CameraStabilizationSnapshot
     let canChangeStabilization: Bool
     let selectStabilization: (CameraStabilizationMode) -> Void
     let dismiss: () -> Void
+    var beginZoom: (CameraZoomDirection) -> Void = { _ in }
+    var endZoom: (UInt64) -> Void = { _ in }
+    var stepZoom: (CameraZoomDirection) -> Void = { _ in }
     @ViewBuilder var aperture: () -> Aperture
     @State private var showingHelp = false
     @AppStorage("camera.manualControlsLastEnabledStabilization")
@@ -48,8 +54,9 @@ struct ManualControlsSurface<Aperture: View>: View {
                 .accessibilityLabel("Close manual controls")
             }
             HStack(alignment: .top, spacing: expanded ? 10 : 4) {
-                column("ZOOM", readout: String(format: "%.1fx", zoom)) {
+                column("ZOOM", readout: zoomAvailable ? String(format: "%.1fx", zoom) : "—") {
                     track(value: $zoom, range: zoomRange, step: 0.1, label: "Zoom")
+                        .disabled(!zoomAvailable || zoomRange.lowerBound == zoomRange.upperBound)
                 }
                 VStack(spacing: 0) {
                     title("FOCUS")
@@ -67,6 +74,14 @@ struct ManualControlsSurface<Aperture: View>: View {
                 stabilizationColumn
                     .frame(width: landscape ? 86 : 72)
             }
+            HStack(spacing: 8) {
+                Text(zoomIsPerLens ? "LENS ZOOM" : "ZOOM")
+                    .font(.system(size: 10, weight: .bold))
+                Spacer(minLength: 0)
+                zoomHold(.out, symbol: "minus", label: "Zoom Out")
+                zoomHold(.in, symbol: "plus", label: "Zoom In")
+            }
+            .frame(height: 44)
         }
         .font(.caption2.weight(.semibold))
         .foregroundStyle(.white)
@@ -156,6 +171,12 @@ struct ManualControlsSurface<Aperture: View>: View {
         .accessibilityLabel("Stabilization help and actual status")
     }
 
+    private func zoomHold(_ direction: CameraZoomDirection, symbol: String, label: String) -> some View {
+        ZoomHoldControl(symbol: symbol, label: label, enabled: zoomAvailable,
+                        revision: zoomRevision, begin: { beginZoom(direction) },
+                        end: endZoom, step: { stepZoom(direction) })
+    }
+
     // Named actions are shared by the live controls and focused binding tests.
     func toggleExpanded() { expanded.toggle() }
     func toggleFocus() { manualFocus.toggle() }
@@ -175,6 +196,64 @@ struct ManualControlsSurface<Aperture: View>: View {
 
     private func rememberEnabledMode(_ mode: CameraStabilizationMode) {
         if mode != .off { lastEnabledModeRaw = mode.rawValue }
+    }
+}
+
+/// A touch begins one hardware ramp; finger-up or drag-off cancels it.
+/// VoiceOver activation requests one bounded step, never an endless hold.
+private struct ZoomHoldControl: View {
+    let symbol: String
+    let label: String
+    let enabled: Bool
+    let revision: UInt64
+    let begin: () -> Void
+    let end: (UInt64) -> Void
+    let step: () -> Void
+    @State private var heldRevision: UInt64?
+    @State private var cancelledUntilRelease = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            Image(systemName: symbol)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard enabled else { return }
+                        let inside = CGRect(origin: .zero, size: geometry.size).contains(value.location)
+                        if inside, heldRevision == nil, !cancelledUntilRelease {
+                            heldRevision = revision
+                            begin()
+                        } else if !inside, let heldRevision {
+                            end(heldRevision)
+                            self.heldRevision = nil
+                            cancelledUntilRelease = true
+                        }
+                    }
+                    .onEnded { _ in
+                        if let heldRevision { end(heldRevision) }
+                        heldRevision = nil
+                        cancelledUntilRelease = false
+                    })
+        }
+        .frame(width: 44, height: 44)
+        .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+        .disabled(!enabled)
+        .accessibilityElement()
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(label)
+        .accessibilityHint("Press and hold to zoom slowly")
+        .accessibilityAction { step() }
+        .onChange(of: revision) { _, _ in
+            if let heldRevision { end(heldRevision) }
+            heldRevision = nil
+            cancelledUntilRelease = false
+        }
+        .onDisappear {
+            if let heldRevision { end(heldRevision) }
+            heldRevision = nil
+            cancelledUntilRelease = false
+        }
     }
 }
 

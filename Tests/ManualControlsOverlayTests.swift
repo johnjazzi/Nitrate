@@ -11,13 +11,14 @@ struct ManualControlsOverlayTests {
         let rect = ManualControlsOverlayGeometry.rect(viewport: CGSize(width: 390, height: 763),
                                                       toolbarBottom: 60, controlsTop: 580)
         #expect(rect.width <= 304)
-        #expect(rect.height <= 210)
+        #expect(rect.height <= 214)
     }
 
     @MainActor @Test func compactFaceAndActualTextRowsSaveVerticalSpace() throws {
         for degrees in [0.0, 90.0, -90.0] {
             let face = ManualControlsOverlayGeometry.faceSize(expanded: false, rotationDegrees: degrees)
-            #expect(face.height <= 170, "Compact face must not retain the old 210pt viewport.")
+            #expect(face.height >= 208 && face.height <= 214,
+                    "The 44pt zoom buttons must be visible without vertical scrolling at normal width.")
         }
         let snapshot = CameraStabilizationSnapshot(preferred: .standard,
                                                    capability: .init(connectionSupported: true, formatModes: [.standard]),
@@ -29,7 +30,7 @@ struct ManualControlsOverlayTests {
                                             stabilization: snapshot, canChangeStabilization: true,
                                             selectStabilization: { _ in }, dismiss: {}) { Text("IRIS") }
         let host = NSHostingView(rootView: compact.frame(width: 304))
-        #expect(host.fittingSize.height <= 170, "Native compact content must fit without scrolling at its normal width.")
+        #expect(host.fittingSize.height <= 214, "Native compact content must fit without scrolling at its normal width.")
 
         // Inspect the actual label/readout declarations, not only a smaller clipping viewport.
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -72,7 +73,10 @@ struct ManualControlsOverlayTests {
         let surface = try source("App/Modules/CameraCapture/ManualControlsSurface.swift")
         let overlay = try source("App/Modules/CameraCapture/ManualControlsOverlay.swift")
         let screen = try source("App/ContentView.swift")
-        #expect(panel.contains("cameraViewModel.session.setZoom(CGFloat(value))"))
+        #expect(panel.contains("cameraViewModel.setDisplayZoom($0)"))
+        #expect(panel.contains("beginZoom: cameraViewModel.beginSlowZoom"))
+        #expect(panel.contains("endZoom: cameraViewModel.endSlowZoom(revision:)"))
+        #expect(surface.contains("zoomHold(.out") && surface.contains("zoomHold(.in"))
         #expect(panel.contains("guard isManualFocus else { return }"))
         #expect(panel.contains("cameraViewModel.session.setManualFocusPosition(Float(manualFocusPosition))"))
         #expect(panel.contains("cameraViewModel.session.resetAutoFocus()"))

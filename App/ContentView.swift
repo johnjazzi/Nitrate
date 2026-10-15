@@ -40,12 +40,12 @@ struct ContentView: View {
     }
 
     /// Camera controls state
-    @State private var zoomFactor: Double = 1.0
     @State private var selectedLens: CameraLens
     @State private var availableLenses: [CameraLens] = []
 
     /// Pinch-zoom baseline (ISO/EV controls live in `CameraControlBar`).
     @State private var pinchBaseZoom: Double = 1.0
+    @State private var pinchIsActive = false
 
     /// Physical orientation source for the `.cameraUpright()` chrome modifier.
     /// Every icon/text glyph in the camera UI rotates to stay readable in
@@ -114,12 +114,14 @@ struct ContentView: View {
                                           rotationDegrees: statusRotationDegrees) {
                         ManualControlsPanel(
                             cameraViewModel: cameraViewModel,
-                            zoomFactor: $zoomFactor,
                             manualFocusPosition: $manualFocusPosition,
                             isManualFocus: $isManualFocus,
                             expanded: $manualControlsExpanded,
                             landscape: abs(statusRotationDegrees) == 90,
-                            onDismiss: { withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false } }
+                            onDismiss: {
+                                cameraViewModel.endSlowZoom()
+                                withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false }
+                            }
                         )
                     }
                     .transition(.opacity)
@@ -170,6 +172,16 @@ struct ContentView: View {
             if let stock = newStock {
                 applyStockWhiteBalance(stock)
             }
+        }
+        .onChange(of: showManualControls) { _, shown in
+            if !shown { cameraViewModel.endSlowZoom() }
+        }
+        .onChange(of: showSettings || showQueueSheet || showStockSheet) { _, shown in
+            if shown { cameraViewModel.endSlowZoom() }
+        }
+        .onChange(of: cameraViewModel.zoomSnapshot?.cameraRevision) { _, _ in
+            pinchIsActive = false
+            pinchBaseZoom = cameraViewModel.zoomSnapshot?.displayFactor ?? 1
         }
     }
 
@@ -264,14 +276,19 @@ struct ContentView: View {
             .simultaneousGesture(
                 MagnificationGesture()
                     .onChanged { value in
+                        guard let snapshot = cameraViewModel.zoomSnapshot else { return }
+                        if !pinchIsActive {
+                            pinchBaseZoom = snapshot.displayFactor
+                            pinchIsActive = true
+                        }
                         // Damped (0.45) so a small pinch doesn't jump the zoom.
                         let damped = 1.0 + (value - 1.0) * 0.45
-                        let target = min(max(pinchBaseZoom * damped, 1.0),
-                                          Double(cameraViewModel.session.maxZoomFactor))
-                        zoomFactor = target
-                        cameraViewModel.session.setZoom(CGFloat(target))
+                        cameraViewModel.setDisplayZoom(pinchBaseZoom * damped)
                     }
-                    .onEnded { _ in pinchBaseZoom = zoomFactor }
+                    .onEnded { _ in
+                        pinchIsActive = false
+                        pinchBaseZoom = cameraViewModel.zoomSnapshot?.displayFactor ?? pinchBaseZoom
+                    }
             )
             .position(x: rect.midX, y: rect.midY)
     }
@@ -412,8 +429,6 @@ struct ContentView: View {
             selectedLens = cameraViewModel.activeLens
             if let error {
                 cameraViewModel.errorMessage = "Camera switch failed: \(error.localizedDescription)"
-            } else {
-                zoomFactor = 1.0
             }
         }
     }

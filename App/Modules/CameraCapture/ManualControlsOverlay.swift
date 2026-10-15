@@ -15,7 +15,7 @@ enum ManualControlsOverlayGeometry {
     static func faceSize(expanded: Bool, rotationDegrees: Double) -> CGSize {
         let landscape = abs(rotationDegrees) == 90
         return CGSize(width: landscape ? (expanded ? 500 : 400) : (expanded ? 360 : 304),
-                      height: expanded ? 286 : 164)
+                      height: expanded ? 330 : 210)
     }
 
     static func rect(viewport: CGSize, toolbarBottom: CGFloat, controlsTop: CGFloat,

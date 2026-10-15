@@ -3,7 +3,7 @@ import SwiftUI
 /// Hardware bindings stay here; shared presentation never owns capture state.
 struct ManualControlsPanel: View {
     let cameraViewModel: CameraViewModel
-    @Binding var zoomFactor: Double
+
     @Binding var manualFocusPosition: Double
     @Binding var isManualFocus: Bool
     @Binding var expanded: Bool
@@ -12,19 +12,32 @@ struct ManualControlsPanel: View {
 
     var body: some View {
         ManualControlsSurface(
-            zoom: $zoomFactor, focus: $manualFocusPosition, manualFocus: $isManualFocus,
+            zoom: Binding(get: { cameraViewModel.zoomSnapshot?.displayFactor ?? 1 },
+                          set: { cameraViewModel.setDisplayZoom($0) }),
+            focus: $manualFocusPosition, manualFocus: $isManualFocus,
             expanded: $expanded, landscape: landscape,
-            zoomRange: 1...Double(max(cameraViewModel.session.maxZoomFactor, 1)),
+            zoomRange: zoomRange,
+            zoomIsPerLens: cameraViewModel.zoomSnapshot?.isPerLens ?? true,
+            zoomAvailable: cameraViewModel.zoomSnapshot != nil,
+            zoomRevision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
             exposure: "ISO \(Int(cameraViewModel.liveISO)) · \(shutterText)",
             apertureReadout: cameraViewModel.liveAperture.map { String(format: "f/%.1f", $0) } ?? "N/A",
             stabilization: cameraViewModel.recordingStabilization,
             canChangeStabilization: cameraViewModel.canSetRecordingStabilization,
             selectStabilization: cameraViewModel.setRecordingStabilization,
-            dismiss: onDismiss
+            dismiss: onDismiss,
+            beginZoom: cameraViewModel.beginSlowZoom,
+            endZoom: cameraViewModel.endSlowZoom(revision:),
+            stepZoom: { direction in
+                guard let snapshot = cameraViewModel.zoomSnapshot else { return }
+                let delta = direction == .in ? 0.1 : -0.1
+                cameraViewModel.setDisplayZoom(min(max(snapshot.displayFactor + delta,
+                                                        snapshot.minimumDisplayFactor), snapshot.maximumDisplayFactor))
+            }
         ) {
             apertureControl
         }
-        .onChange(of: zoomFactor) { _, value in cameraViewModel.session.setZoom(CGFloat(value)) }
+        .onDisappear { cameraViewModel.endSlowZoom() }
         .onChange(of: manualFocusPosition) { _, value in
             guard isManualFocus else { return }
             cameraViewModel.session.setManualFocusPosition(Float(value))
@@ -36,6 +49,12 @@ struct ManualControlsPanel: View {
                 cameraViewModel.session.resetAutoFocus()
             }
         }
+    }
+
+    private var zoomRange: ClosedRange<Double> {
+        let minimum = cameraViewModel.zoomSnapshot?.minimumDisplayFactor ?? 1
+        let maximum = cameraViewModel.zoomSnapshot?.maximumDisplayFactor ?? 1
+        return minimum...maximum
     }
 
     private var shutterText: String {
