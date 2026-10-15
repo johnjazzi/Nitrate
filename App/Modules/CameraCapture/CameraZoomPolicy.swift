@@ -17,7 +17,8 @@ struct CameraZoomSnapshot: Equatable, Sendable {
 enum CameraZoomDirection: Sendable { case out, `in` }
 
 enum CameraZoomPolicy {
-    static let ceiling = 5.0
+    static let defaultDisplayCeiling = 5.0
+    static let telephotoDisplayCeiling = 16.0
     static let rampRate: Float = 0.25
 
     struct Bounds: Equatable, Sendable {
@@ -33,12 +34,14 @@ enum CameraZoomPolicy {
     }
 
     static func bounds(multiplier: Double, effectiveMinimum: Double,
-                       effectiveMaximum: Double, formatMaximum: Double) -> Bounds? {
-        guard [multiplier, effectiveMinimum, effectiveMaximum, formatMaximum].allSatisfy({ $0.isFinite && $0 > 0 }) else {
+                       effectiveMaximum: Double, formatMaximum: Double,
+                       displayCeiling: Double = defaultDisplayCeiling) -> Bounds? {
+        guard [multiplier, effectiveMinimum, effectiveMaximum, formatMaximum, displayCeiling]
+            .allSatisfy({ $0.isFinite && $0 > 0 }) else {
             return nil
         }
         let lower = max(1, effectiveMinimum)
-        let upper = min(effectiveMaximum, formatMaximum, ceiling / multiplier)
+        let upper = min(effectiveMaximum, formatMaximum, displayCeiling / multiplier)
         guard lower <= upper else { return nil }
         return Bounds(multiplier: multiplier, minimumDevice: lower, maximumDevice: upper)
     }

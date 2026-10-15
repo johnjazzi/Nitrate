@@ -973,10 +973,15 @@ final class CameraSession: NSObject {
         } else {
             multiplier = 1 // iOS 17: explicitly per-lens, never a fabricated global ratio.
         }
+        // Use the installed physical capture device, not a lens selection that
+        // may still be pending while the session reconfigures or rolls back.
+        let displayCeiling = device.deviceType == .builtInTelephotoCamera && device.position == .back
+            ? CameraZoomPolicy.telephotoDisplayCeiling : CameraZoomPolicy.defaultDisplayCeiling
         return CameraZoomPolicy.bounds(multiplier: multiplier,
                                        effectiveMinimum: Double(device.minAvailableVideoZoomFactor),
                                        effectiveMaximum: Double(device.maxAvailableVideoZoomFactor),
-                                       formatMaximum: Double(device.activeFormat.videoMaxZoomFactor))
+                                       formatMaximum: Double(device.activeFormat.videoMaxZoomFactor),
+                                       displayCeiling: displayCeiling)
     }
 
     func observeZoom(_ observer: @escaping @MainActor @Sendable (CameraZoomSnapshot?) -> Void) {
