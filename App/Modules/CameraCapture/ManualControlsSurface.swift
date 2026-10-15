@@ -25,13 +25,17 @@ struct ManualControlsSurface<Aperture: View>: View {
     }
 
     var body: some View {
-        VStack(spacing: expanded ? 12 : 4) {
+        VStack(spacing: expanded ? 12 : 2) {
             HStack(spacing: 4) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("MANUAL").font(.caption.weight(.bold))
                     Text(exposure).font(.caption2.monospacedDigit()).lineLimit(1)
                 }
                 Spacer(minLength: 0)
+                if !expanded {
+                    Text("STAB").font(.system(size: 10, weight: .bold))
+                    stabilizationHelp
+                }
                 Button(action: toggleExpanded) {
                     Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                         .frame(width: 44, height: 44)
@@ -67,7 +71,7 @@ struct ManualControlsSurface<Aperture: View>: View {
         .font(.caption2.weight(.semibold))
         .foregroundStyle(.white)
         .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 6))
-        .padding(8)
+        .padding(expanded ? 8 : 4)
         .onAppear { rememberEnabledMode(stabilization.preferred) }
         .onChange(of: stabilization.preferred) { _, mode in rememberEnabledMode(mode) }
         .popover(isPresented: $showingHelp) {
@@ -89,11 +93,12 @@ struct ManualControlsSurface<Aperture: View>: View {
         }
     }
 
-    private var trackHeight: CGFloat { landscape ? (expanded ? 100 : 56) : (expanded ? 110 : 56) }
+    private var trackHeight: CGFloat { landscape ? (expanded ? 100 : 44) : (expanded ? 110 : 44) }
+    private var compactTextRowHeight: CGFloat { 18 }
 
     private func title(_ text: String) -> some View {
         Text(text).font(.system(size: 10, weight: .bold)).lineLimit(1)
-            .frame(maxWidth: .infinity, minHeight: 44)
+            .frame(height: expanded ? 44 : compactTextRowHeight).frame(maxWidth: .infinity)
     }
 
     private func column<Control: View>(_ name: String, readout: String,
@@ -101,26 +106,25 @@ struct ManualControlsSurface<Aperture: View>: View {
         VStack(spacing: 0) {
             title(name)
             control()
-            Text(readout).monospacedDigit().lineLimit(1).frame(maxWidth: .infinity, minHeight: 44)
+            Text(readout).monospacedDigit().lineLimit(1)
+                .frame(height: expanded ? 44 : compactTextRowHeight).frame(maxWidth: .infinity)
         }.frame(maxWidth: .infinity)
     }
 
     private func track(value: Binding<Double>, range: ClosedRange<Double>, step: Double,
                        label: String) -> some View {
         ManualControlTrack(value: value, range: range, step: step, landscape: landscape,
-                           length: expanded ? 110 : 56, label: label)
+                           length: expanded ? 110 : 44, label: label)
             .frame(height: trackHeight)
     }
 
     private var stabilizationColumn: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                Text("STAB").font(.system(size: 10, weight: .bold))
-                Button { showingHelp = true } label: {
-                    Image(systemName: "questionmark.circle").frame(width: 44, height: 44)
+            if expanded {
+                HStack(spacing: 0) {
+                    Text("STAB").font(.system(size: 10, weight: .bold))
+                    stabilizationHelp
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Stabilization help and actual status")
             }
             Toggle("Recording stabilization", isOn: Binding(
                 get: { stabilization.preferred != .off },
@@ -142,6 +146,14 @@ struct ManualControlsSurface<Aperture: View>: View {
             .accessibilityValue(stabilization.statusText)
             .disabled(!canChangeStabilization || stabilization.capability.availableModes.count < 2)
         }
+    }
+
+    private var stabilizationHelp: some View {
+        Button { showingHelp = true } label: {
+            Image(systemName: "questionmark.circle").frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Stabilization help and actual status")
     }
 
     // Named actions are shared by the live controls and focused binding tests.

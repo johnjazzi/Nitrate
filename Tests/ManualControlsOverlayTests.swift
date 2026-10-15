@@ -14,6 +14,34 @@ struct ManualControlsOverlayTests {
         #expect(rect.height <= 210)
     }
 
+    @MainActor @Test func compactFaceAndActualTextRowsSaveVerticalSpace() throws {
+        for degrees in [0.0, 90.0, -90.0] {
+            let face = ManualControlsOverlayGeometry.faceSize(expanded: false, rotationDegrees: degrees)
+            #expect(face.height <= 170, "Compact face must not retain the old 210pt viewport.")
+        }
+        let snapshot = CameraStabilizationSnapshot(preferred: .standard,
+                                                   capability: .init(connectionSupported: true, formatModes: [.standard]),
+                                                   activeRawValue: 1, cameraRevision: 1, changesAllowed: true)
+        let compact = ManualControlsSurface(zoom: .constant(2), focus: .constant(0.5),
+                                            manualFocus: .constant(true), expanded: .constant(false),
+                                            landscape: false, zoomRange: 1...8,
+                                            exposure: "ISO 800 · 1/48", apertureReadout: "f/1.8",
+                                            stabilization: snapshot, canChangeStabilization: true,
+                                            selectStabilization: { _ in }, dismiss: {}) { Text("IRIS") }
+        let host = NSHostingView(rootView: compact.frame(width: 304))
+        #expect(host.fittingSize.height <= 170, "Native compact content must fit without scrolling at its normal width.")
+
+        // Inspect the actual label/readout declarations, not only a smaller clipping viewport.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent(
+            "App/Modules/CameraCapture/ManualControlsSurface.swift"), encoding: .utf8)
+        #expect(source.contains("private var compactTextRowHeight: CGFloat { 18 }"))
+        #expect(source.components(separatedBy: ".frame(height: expanded ? 44 : compactTextRowHeight)").count == 3,
+                "Labels and readouts need genuinely smaller rows, not only a shorter face.")
+        #expect(source.contains(".frame(maxWidth: .infinity, minHeight: 44)"),
+                "Interactive AF/MF and mode rows must retain 44pt targets.")
+    }
+
     @MainActor @Test func defaultOverlayDoesNotStretchIntoAvailableSlab() throws {
         let view = ManualControlsOverlay(viewport: CGSize(width: 390, height: 763),
                                          toolbarBottom: 60, controlsTop: 580) {
