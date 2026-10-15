@@ -21,7 +21,7 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     var sizeMultiplier: Float {
         switch self {
         case .eightMillimetre: return 4.0
-        case .sixteenMillimetre: return 3.0
+        case .sixteenMillimetre: return 2.7
         case .thirtyFiveMillimetre: return 1.8
         case .seventyFiveMillimetre: return 1.0
         }
@@ -33,8 +33,8 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     var amplitudeMultiplier: Float {
         switch self {
         case .eightMillimetre: return 0.50
-        case .sixteenMillimetre: return 0.40
-        case .thirtyFiveMillimetre: return 0.30
+        case .sixteenMillimetre: return 0.36
+        case .thirtyFiveMillimetre: return 0.27
         case .seventyFiveMillimetre: return 0.15
         }
     }

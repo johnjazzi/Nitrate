@@ -156,7 +156,7 @@ struct RenderContractTests {
         #expect(shippedGrainStocks.allSatisfy { $0.effectiveRecipe.edgeBoostMultiplier == 3 })
         let template = try #require(app.first { $0.stockId == "kodak5219" })
         #expect(template.grainSize == 1.3)
-        #expect(template.effectiveRecipe.version == "5219-current-v8")
+        #expect(template.effectiveRecipe.version == "5219-current-v9")
         #expect(template.effectiveRecipe.grainAlgorithm == RenderRecipe.edgeAmplitudeAlgorithm)
         #expect(template.effectiveRecipe.edgeBoostMultiplier == 3)
         let low = template.overridingISO(250)
@@ -178,8 +178,12 @@ struct RenderContractTests {
             #expect(tungsten.glowStrength == 0.2325)
             #expect(daylight.halationStrength == 0.43)
             #expect(tungsten.halationStrength == 0.43)
-            #expect(daylight.effectiveRecipe.version == "5207-current-v3")
-            #expect(tungsten.effectiveRecipe.version == "5219-current-v8")
+            #expect(daylight.grainSize == 1.15)
+            #expect(tungsten.grainSize == 1.3)
+            #expect(daylight.outputContrast == 0.85)
+            #expect(tungsten.outputContrast == 0.85)
+            #expect(daylight.effectiveRecipe.version == "5207-current-v4")
+            #expect(tungsten.effectiveRecipe.version == "5219-current-v9")
         }
     }
 
@@ -221,7 +225,7 @@ struct RenderContractTests {
     @Test func recipeRoundTripAndRevisionEvidence() throws {
         var config = try #require(stocks("App/Resources/stocks.json").first { $0.stockId == "kodak5219" })
         let first = RenderDiagnosticsManifest.RecipeSnapshot(config: config, averageBitRate: RenderEncodingContract.averageBitRate, codec: RenderEncodingContract.codec)
-        config.recipe?.version = "5219-current-v9-test"
+        config.recipe?.version = "5219-current-v10-test"
         let second = RenderDiagnosticsManifest.RecipeSnapshot(config: config, averageBitRate: RenderEncodingContract.averageBitRate, codec: RenderEncodingContract.codec)
         let data = try JSONEncoder().encode(second)
         let decoded = try JSONDecoder().decode(RenderDiagnosticsManifest.RecipeSnapshot.self, from: data)
