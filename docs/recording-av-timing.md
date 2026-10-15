@@ -127,7 +127,7 @@ and the first eligible frame reaching the writer. Measured on the physical iPhon
 starts when `startRecording` is requested and stops when the recorder appends its
 first frame and signals started):
 
-| Stabilization | Request → running | First video callback after writer begin | Frames dropped as pre-exposure |
+| Stabilization | Request → confirmed | First video callback after writer begin | Frames dropped as pre-exposure |
 |---|---:|---:|---:|
 | Off | 0.27–0.30 s | 4–6 ms | 1 |
 | Standard | 0.28–0.32 s | 8 ms | 2 |
@@ -136,6 +136,20 @@ first frame and signals started):
 
 Stage split at Extreme: session-queue hop ≈0 ms, custom-exposure settle ≈0.18 s,
 then ≈2.0 s inside the recorder before the first frame is appended.
+
+**Confirmation is not capture.** Sampling the session's synchronization clock at
+the request and comparing it with the recorder's first written frame PTS — both on
+the capture clock — gives how much real time a take actually loses at the head:
+
+| Stabilization | Request → confirmed | Real head loss |
+|---|---:|---:|
+| Extreme | 2.20 s | 0.19–0.22 s |
+| Off | 0.29 s | 0.21–0.22 s |
+
+The take's content therefore begins about 0.2 s after the tap in every mode: the
+first kept frame is the first one at or after the recording exposure taking
+effect, which is what the recorder uses as its start-after point. Stabilization
+only changes how long the writer takes to confirm.
 
 Cinematic and extended-cinematic run the pipeline behind the capture clock (~0.7 s
 and ~1.0 s), so the frames delivered when a take begins already predate the
@@ -146,11 +160,14 @@ cause and is not it: the mode is already active before the take
 (`activeVideoStabilizationMode` reports it at configure, at session start and at
 record start), and skipping the redundant write changed nothing.
 
-Because of that delay, the control acknowledges the tap itself rather than the
-take. The REC dot turns red immediately, a haptic fires, and the timer starts only
-when the recorder confirms. A second tap during the pending window cancels the
-start. `CameraViewModel.isStartingRecording` is the flag behind that state, and
-`RecordButtonPresentationPolicy` decides the label, enablement and tap action.
+Because confirmation lags capture, the control acknowledges the tap itself rather
+than the take. The REC dot turns red immediately, a haptic fires, and the timer is
+back-dated by the head offset above (`CameraSession.recordingHeadOffset()`) so it
+reports recorded content rather than time since confirmation — a stopwatch
+compared against the file is what exposed that difference. A second tap during the
+pending window cancels the start. `CameraViewModel.isStartingRecording` is the
+flag behind that state, and `RecordButtonPresentationPolicy` decides the label,
+enablement and tap action.
 
 Stop is acknowledged the same way, for the same reason: finalising is not
 instant. The face dims, the badge greys and the timer freezes at the stop request
@@ -161,5 +178,5 @@ hundredth that has not elapsed.
 
 Limits: measured on a warm session with the debug smoke. Cold starts, longer
 recordings, and the exact cause of the Extreme stall inside AVFoundation are not
-characterized here. The per-mode offsets above are what make a take start late, so
-the head of the action is not recorded at Cinematic or Extreme.
+characterized here. The per-mode delays are how long the take takes to register,
+not how much content it loses: that is the ~0.2 s head loss, in every mode.

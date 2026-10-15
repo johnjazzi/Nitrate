@@ -313,7 +313,14 @@ final class CameraViewModel {
                 }
                 self.isRecording = true
                 self.recordingDuration = 0
-                self.recordingStartedAt = Date()
+                // Back-date the timer to when the take's first frame landed
+                // (the exposure switch), not to this confirmation, which can be
+                // seconds later on strong stabilization.
+                self.recordingStartedAt = Date().addingTimeInterval(-self.session.recordingHeadOffset())
+#if DEBUG
+                print("Recording timer origin: back-dated by " +
+                      "\(Int(self.session.recordingHeadOffset() * 1000))ms")
+#endif
                 self.recordingStoppedAt = nil
                 self.isStoppingRecording = false
                 self.startRecordingTimer()

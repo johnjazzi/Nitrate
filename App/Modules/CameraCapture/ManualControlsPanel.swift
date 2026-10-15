@@ -102,9 +102,10 @@ struct ManualControlsPanel: View {
             }
             Text(snapshot.statusText)
                 .foregroundStyle(.white.opacity(0.8))
-            Text("Recording only; preview is independent. Stronger modes crop more and delay the " +
-                 "first recorded frame: about 0.3 s (Off/Standard), 0.9 s (Cinematic) and 2.2 s " +
-                 "(Extreme), measured on device. Extreme uses Apple extended cinematic stabilization.")
+            Text("Recording only; preview is independent. Stronger modes crop more and take longer " +
+                 "to register: about 0.3 s (Off/Standard), 0.9 s (Cinematic) and 2.2 s (Extreme) " +
+                 "before the take is confirmed, measured on device. Recording itself begins about " +
+                 "0.2 s after the tap in every mode. Extreme uses Apple extended cinematic stabilization.")
                 .foregroundStyle(.white.opacity(0.6))
         }
         .font(.caption2)

@@ -154,6 +154,18 @@ final class CameraSession: NSObject {
     private var pendingStartCompletion: (@MainActor @Sendable (Error?) -> Void)?
     private let recordingStateLock = NSLock()
     private var publicRecordingState = false
+    /// Wall-clock delay from the take request to the moment the recording
+    /// exposure took effect. The take's first frame lands at that instant, so the
+    /// REC timer is back-dated by this: the writer can confirm seconds later, and
+    /// a timer started at confirmation understates the recorded content.
+    private var recordedStartHeadOffset: TimeInterval = 0
+
+    /// Head offset for the take that most recently started.
+    func recordingHeadOffset() -> TimeInterval {
+        recordingStateLock.lock()
+        defer { recordingStateLock.unlock() }
+        return recordedStartHeadOffset
+    }
 #if DEBUG
     private var debugSmokeURL: URL?
     private var debugSmokeTimedOut = false
@@ -164,6 +176,11 @@ final class CameraSession: NSObject {
         var queuedAt: Date?
         var exposureAppliedAt: Date?
         var recorderBeganAt: Date?
+        /// Capture-clock time when the take was requested. Sample-buffer PTS use
+        /// the same clock, so subtracting this from the recorder's first written
+        /// frame gives how much real time the take actually loses at the head —
+        /// which is not the same thing as how long the writer takes to confirm.
+        var captureClockAtRequest: CMTime?
 
         /// One line attributing the request-to-running latency to each stage.
         func printLatency(error: Error?) {
@@ -172,9 +189,10 @@ final class CameraSession: NSObject {
                 guard let date else { return "-" }
                 return String(format: "%.0f", date.timeIntervalSince(requestedAt) * 1000)
             }
+            let clock = captureClockAtRequest.map { String(format: "%.6f", $0.seconds) } ?? "-"
             print("Recording start latency: total=\(offset(Date()))ms queue=\(offset(queuedAt))ms " +
                   "exposure=\(offset(exposureAppliedAt))ms recorderBegin=\(offset(recorderBeganAt))ms " +
-                  "error=\(error == nil ? "none" : "present")")
+                  "requestClock=\(clock) error=\(error == nil ? "none" : "present")")
         }
     }
     private var startPhases = StartPhases()
@@ -1537,10 +1555,13 @@ final class CameraSession: NSObject {
     private func startRecording(to url: URL,
                                 deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation,
                                 completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+        // The take's content begins when the recording exposure takes effect, not
+        // when the writer finally confirms it.
+        let startRequestedAt = Date()
 #if DEBUG
         // Measured on device to size the button's optimistic "starting" state:
         // this is the gap between the user's request and the take really running.
-        startPhases = StartPhases(requestedAt: Date())
+        startPhases = StartPhases(requestedAt: startRequestedAt)
 #endif
         sessionQueue.async { [weak self] in
             guard let self else { return }
@@ -1582,6 +1603,7 @@ final class CameraSession: NSObject {
             let generation = self.recordingGeneration
 #if DEBUG
             startPhases.queuedAt = Date()
+            startPhases.captureClockAtRequest = self.session.synchronizationClock.map { CMClockGetTime($0) }
 #endif
             do {
                 let iso = min(max(device.iso, device.activeFormat.minISO), device.activeFormat.maxISO)
@@ -1591,12 +1613,16 @@ final class CameraSession: NSObject {
                 // actually takes effect; frames before it still carry the old
                 // exposure, so the recorder drops them.
                 let completionHandler: (CMTime) -> Void = { [weak self] syncTime in
+                    let headOffset = Date().timeIntervalSince(startRequestedAt)
 #if DEBUG
                     self?.startPhases.exposureAppliedAt = Date()
 #endif
                     self?.sessionQueue.async {
                         guard let self, self.recordingGeneration == generation,
                               self.recordingStartPending else { return }
+                        self.recordingStateLock.lock()
+                        self.recordedStartHeadOffset = headOffset
+                        self.recordingStateLock.unlock()
                         self.beginSampleBufferRecording(to: url, generation: generation,
                                                         startAfter: syncTime,
                                                         deliveryOrientation: deliveryOrientation,
@@ -1716,6 +1742,9 @@ final class CameraSession: NSObject {
         recordingStartPending = false
 #if DEBUG
         startPhases.printLatency(error: error)
+        // Same value the REC timer is back-dated by: proving it is populated is
+        // what ties the measured head loss to what the timer uses.
+        print("Recording head offset: \(Int(recordedStartHeadOffset * 1000))ms")
         startPhases = StartPhases()
 #endif
         let completion = pendingStartCompletion
