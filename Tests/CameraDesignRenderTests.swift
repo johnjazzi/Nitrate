@@ -115,6 +115,34 @@ struct CameraDesignRenderTests {
         }
     }
 
+    @MainActor @Test func gaugeStripUsesOrderedRealWidthsAndLegibleLettering() throws {
+        #expect(PrintGauge.neutral == .thirtyFiveMillimetre)
+        for degrees in [0.0, 90.0, -90.0] {
+            var widths: [Int] = []
+            for gauge in PrintGauge.allCases {
+                let image = try render(CameraGaugeLabel(text: gauge.displayName, rotationDegrees: degrees)
+                    .padding(4), name: "gauge-\(gauge.rawValue)-\(degrees)")
+                let data = try pixels(image)
+                let sepia = stride(from: 0, to: data.count, by: 4).filter { index in
+                    let red = Int(data[index])
+                    let green = Int(data[index + 1])
+                    let blue = Int(data[index + 2])
+                    return red > green + 15 && green > blue + 8 && data[index + 3] > 80
+                }
+                let white = stride(from: 0, to: data.count, by: 4).filter {
+                    data[$0] > 180 && abs(Int(data[$0]) - Int(data[$0 + 2])) < 12
+                }
+                #expect(sepia.count > 120, "Real gauge needs a subtle, nonblank sepia strip behind its label.")
+                #expect(white.count > 35, "Gauge lettering remains bright and legible.")
+                let across = sepia.map { degrees == 0 ? ($0 / 4) % image.width : ($0 / 4) / image.width }
+                widths.append((across.max() ?? 0) - (across.min() ?? 0))
+                #expect(image.width == 72 && image.height == 72, "Gauge cannot enlarge its existing stock-row slot.")
+            }
+            #expect(zip(widths, widths.dropFirst()).allSatisfy { $0 < $1 },
+                    "8, 16, 35 and 75mm must become progressively wider, not follow grain coarseness.")
+        }
+    }
+
     @MainActor @Test func plungerStaysMutedRedAndMovesWithoutScaling() throws {
         for state in states {
             for pressed in [false, true] {
