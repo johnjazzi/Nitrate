@@ -374,10 +374,10 @@ launch splash renders them through `AppVersion` (`App/AppIdentity.swift`).
 - **Not yet built:** any editing surface. Trim, re-render and rearrange is the
   next planned area. The hardware capture button on supported iPhones, flash
   control, and realistic gate jitter and weave are also open.
-- **Open bugs:** tracked in `docs/camera-feedback-todo.md`. The headline item is
-  a device capture smoke that measured a 0.650 s audio/video end-time difference
-  against a 0.12 s bound. It is unresolved, and the bound has not been relaxed
-  to hide it.
+- **Recording timing:** delayed-stabilization startup and stop-boundary defects
+  are fixed. All eight preview/stabilization combinations passed the unchanged
+  0.12-second device checks. See [the investigation](docs/recording-av-timing.md)
+  for the measurements and remaining validation limits.
 - **Unverified aesthetic:** the home-built 5207 and 5219 tables pass structural,
   smoothness and GPU-sampling checks, but nobody but the author has judged how
   they look on real footage.

@@ -1,9 +1,46 @@
+import AVFoundation
 import CoreVideo
 import Foundation
 import Testing
 
 @Suite(.serialized)
 struct CameraCapturePreservationProbeTests {
+    @Test func synchronizationLimitRemainsOneHundredTwentyMilliseconds() throws {
+        try CameraCapturePreservationProbe.validateSynchronization(skew: 0.12, endDifference: 0.12)
+        #expect(throws: (any Error).self) {
+            try CameraCapturePreservationProbe.validateSynchronization(skew: 0.121, endDifference: 0)
+        }
+        #expect(throws: (any Error).self) {
+            try CameraCapturePreservationProbe.validateSynchronization(skew: 0, endDifference: 0.121)
+        }
+        #expect(throws: (any Error).self) {
+            try CameraCapturePreservationProbe.validateSynchronization(skew: .nan, endDifference: 0)
+        }
+    }
+
+    @Test func emptyAudioEditCannotMasqueradeAsZeroStartSkew() {
+        let delay = CMTime(seconds: 0.65, preferredTimescale: 48_000)
+        let duration = CMTime(seconds: 3, preferredTimescale: 48_000)
+        let empty = AVCompositionTrackSegment(timeRange: CMTimeRange(start: .zero, duration: delay))
+        let content = AVCompositionTrackSegment(url: URL(fileURLWithPath: "/unused-audio-fixture.mov"),
+            trackID: 1, sourceTimeRange: CMTimeRange(start: .zero, duration: duration),
+            targetTimeRange: CMTimeRange(start: delay, duration: duration))
+        // A compressed reader can return PTS zero for the empty edit. There is
+        // no recorded sound until the first nonempty segment begins.
+        let skew = CameraCapturePreservationProbe.audioStartSkew(
+            firstAudioPTS: .zero, firstVideoPTS: .zero, segments: [empty, content])
+        #expect(abs(skew - 0.65) < 0.000001)
+    }
+
+    @Test func audioWithoutEmptyEditsKeepsItsOriginalStartOffset() {
+        let start = CMTime(seconds: 0.02, preferredTimescale: 48_000)
+        let content = AVCompositionTrackSegment(url: URL(fileURLWithPath: "/unused-audio-fixture.mov"),
+            trackID: 1, sourceTimeRange: CMTimeRange(start: .zero, duration: CMTime(seconds: 3, preferredTimescale: 48_000)),
+            targetTimeRange: CMTimeRange(start: start, duration: CMTime(seconds: 3, preferredTimescale: 48_000)))
+        #expect(abs(CameraCapturePreservationProbe.audioStartSkew(
+            firstAudioPTS: start, firstVideoPTS: .zero, segments: [content]) - 0.02) < 0.000001)
+    }
+
     @Test func samplesDistinctPatchesFromTenBit420WithStableSelfComparison() throws {
         let buffer = try makeBuffer(format: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
         fill(buffer, luma: { x, y in 360 + ((x / 16 + y / 16) % 3) * 70 },

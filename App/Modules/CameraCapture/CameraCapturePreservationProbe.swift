@@ -164,6 +164,23 @@ enum CameraCapturePreservationProbe {
     private static let chromaTolerance: Float = 0.03
     private static let synchronizationTolerance: Double = 0.12
 
+    /// Compressed readers may report PTS zero for an empty audio edit. Measure
+    /// the first segment containing recorded audio, not that silent placeholder.
+    static func audioStartSkew(firstAudioPTS: CMTime, firstVideoPTS: CMTime,
+                               segments: [AVAssetTrackSegment]) -> Double {
+        let contentStart = segments.filter { !$0.isEmpty }.map { $0.timeMapping.target.start }.min()
+        if !segments.isEmpty, contentStart == nil { return .nan }
+        let actualStart = contentStart.map { max(firstAudioPTS, $0) } ?? firstAudioPTS
+        return CMTimeSubtract(actualStart, firstVideoPTS).seconds
+    }
+
+    static func validateSynchronization(skew: Double, endDifference: Double) throws {
+        guard skew.isFinite, endDifference.isFinite,
+              abs(skew) <= synchronizationTolerance, endDifference <= synchronizationTolerance else {
+            throw PreservationError.audioOutOfSync(skew: skew, endDifference: endDifference)
+        }
+    }
+
     static func inspect(url: URL, source: CameraYUVProbe,
                         expectedDimensions: CameraSampleValidationPolicy.CodedDimensions,
                         expectedTransform: CGAffineTransform,
@@ -261,15 +278,16 @@ enum CameraCapturePreservationProbe {
             }
             let audioPTS = CMSampleBufferGetPresentationTimeStamp(firstAudioSample)
             guard audioPTS.isValid, audioPTS.isNumeric else { throw PreservationError.invalidTimestamps }
-            audioSkew = CMTimeGetSeconds(CMTimeSubtract(audioPTS, videoPTS))
+            let audioSegments = try await audioTrack.load(.segments)
+            audioSkew = audioStartSkew(firstAudioPTS: audioPTS, firstVideoPTS: videoPTS, segments: audioSegments)
             let videoEnd = CMTimeGetSeconds(CMTimeAdd(videoRange.start, videoRange.duration))
             let audioEnd = CMTimeGetSeconds(CMTimeAdd(audioRange.start, audioRange.duration))
             endDifference = abs(videoEnd - audioEnd)
-            guard audioSkew.isFinite, endDifference.isFinite,
-                  abs(audioSkew) <= synchronizationTolerance,
-                  endDifference <= synchronizationTolerance else {
-                throw PreservationError.audioOutOfSync(skew: audioSkew, endDifference: endDifference)
-            }
+#if DEBUG
+            print("Capture A/V timing: content-start-skew=\(audioSkew), end-delta=\(endDifference), " +
+                  "video-end=\(videoEnd), audio-end=\(audioEnd)")
+#endif
+            try validateSynchronization(skew: audioSkew, endDifference: endDifference)
         }
 
         let audioEvidence = audioTrack == nil

@@ -1,5 +1,6 @@
 import AVFoundation
 import Observation
+import UIKit
 
 /// AD-1: @Observable ViewModel for the camera screen.
 /// Manages exposure mode, record control, free space display, and clip limits.
@@ -226,6 +227,9 @@ final class CameraViewModel {
         if !didStartDebugSmokeCapture,
            CommandLine.arguments.contains("--smoke-hevc-log2-capture") {
             didStartDebugSmokeCapture = true
+            // Automated capture matrices must not become lock-screen failures
+            // while the console connection is still collecting evidence.
+            UIApplication.shared.isIdleTimerDisabled = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
                 self?.session.startDebugSmokeCapture()
             }
