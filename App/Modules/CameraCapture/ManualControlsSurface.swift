@@ -33,13 +33,18 @@ struct ManualControlsSurface<Aperture: View>: View {
     var body: some View {
         VStack(spacing: expanded ? 12 : 2) {
             HStack(spacing: 4) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("MANUAL").font(.caption.weight(.bold))
-                    Text(exposure).font(.caption2.monospacedDigit()).lineLimit(1)
+                if expanded {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("MANUAL").font(.caption.weight(.bold))
+                        Text(exposure).font(.caption2.monospacedDigit()).lineLimit(1)
+                    }
+                } else {
+                    Text("MANUAL").font(.system(size: 10, weight: .bold)).lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 if !expanded {
-                    Text("STAB").font(.system(size: 10, weight: .bold))
+                    zoomHold(.out, symbol: "minus", label: "Zoom Out")
+                    zoomHold(.in, symbol: "plus", label: "Zoom In")
                     stabilizationHelp
                 }
                 Button(action: toggleExpanded) {
@@ -54,7 +59,7 @@ struct ManualControlsSurface<Aperture: View>: View {
                 .accessibilityLabel("Close manual controls")
             }
             HStack(alignment: .top, spacing: expanded ? 10 : 4) {
-                column("ZOOM", readout: zoomAvailable ? String(format: "%.1fx", zoom) : "—") {
+                column(zoomIsPerLens ? "LENS" : "ZOOM", readout: zoomAvailable ? String(format: "%.1fx", zoom) : "—") {
                     track(value: $zoom, range: zoomRange, step: 0.1, label: "Zoom")
                         .disabled(!zoomAvailable || zoomRange.lowerBound == zoomRange.upperBound)
                 }
@@ -74,14 +79,16 @@ struct ManualControlsSurface<Aperture: View>: View {
                 stabilizationColumn
                     .frame(width: landscape ? 86 : 72)
             }
-            HStack(spacing: 8) {
-                Text(zoomIsPerLens ? "LENS ZOOM" : "ZOOM")
-                    .font(.system(size: 10, weight: .bold))
-                Spacer(minLength: 0)
-                zoomHold(.out, symbol: "minus", label: "Zoom Out")
-                zoomHold(.in, symbol: "plus", label: "Zoom In")
+            if expanded {
+                HStack(spacing: 8) {
+                    Text(zoomIsPerLens ? "LENS ZOOM" : "ZOOM")
+                        .font(.system(size: 10, weight: .bold))
+                    Spacer(minLength: 0)
+                    zoomHold(.out, symbol: "minus", label: "Zoom Out")
+                    zoomHold(.in, symbol: "plus", label: "Zoom In")
+                }
+                .frame(height: 44)
             }
-            .frame(height: 44)
         }
         .font(.caption2.weight(.semibold))
         .foregroundStyle(.white)

@@ -17,8 +17,8 @@ struct ManualControlsOverlayTests {
     @MainActor @Test func compactFaceAndActualTextRowsSaveVerticalSpace() throws {
         for degrees in [0.0, 90.0, -90.0] {
             let face = ManualControlsOverlayGeometry.faceSize(expanded: false, rotationDegrees: degrees)
-            #expect(face.height >= 208 && face.height <= 214,
-                    "The 44pt zoom buttons must be visible without vertical scrolling at normal width.")
+            #expect(face.height <= 170,
+                    "Slow-zoom controls must fit inside the dense compact face.")
         }
         let snapshot = CameraStabilizationSnapshot(preferred: .standard,
                                                    capability: .init(connectionSupported: true, formatModes: [.standard]),
@@ -30,7 +30,7 @@ struct ManualControlsOverlayTests {
                                             stabilization: snapshot, canChangeStabilization: true,
                                             selectStabilization: { _ in }, dismiss: {}) { Text("IRIS") }
         let host = NSHostingView(rootView: compact.frame(width: 304))
-        #expect(host.fittingSize.height <= 214, "Native compact content must fit without scrolling at its normal width.")
+        #expect(host.fittingSize.height <= 170, "Native compact content must fit without scrolling at its normal width.")
 
         // Inspect the actual label/readout declarations, not only a smaller clipping viewport.
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
