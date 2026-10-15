@@ -86,24 +86,27 @@ struct ContentView: View {
                 cameraLayer(in: previewRect(in: geometry))
 
                 VStack(spacing: 0) {
-                    VStack(spacing: 0) {
-                        topBar
-
-                        if showManualControls {
-                            ManualControlsPanel(
-                                cameraViewModel: cameraViewModel,
-                                zoomFactor: $zoomFactor,
-                                manualFocusPosition: $manualFocusPosition,
-                                isManualFocus: $isManualFocus,
-                                onDismiss: { withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false } }
-                            )
-                            .frame(maxWidth: .infinity)
-                            .padding(.leading, 76)
-                            .padding(.trailing, 16)
-                            .transition(.move(edge: .top).combined(with: .opacity))
+                    topBar
+                        .background(controlMeasurement("top"))
+                        .overlay(alignment: .bottom) {
+                            // The panel floats below the toolbar without changing
+                            // measured chrome or the camera's framing/focus bounds.
+                            if showManualControls {
+                                ManualControlsPanel(
+                                    cameraViewModel: cameraViewModel,
+                                    zoomFactor: $zoomFactor,
+                                    manualFocusPosition: $manualFocusPosition,
+                                    isManualFocus: $isManualFocus,
+                                    onDismiss: { withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false } }
+                                )
+                                .frame(maxWidth: .infinity)
+                                .padding(.leading, 76)
+                                .padding(.trailing, 16)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .alignmentGuide(.bottom) { $0[.top] }
+                                .transition(.opacity)
+                            }
                         }
-                    }
-                    .background(controlMeasurement("top"))
 
                     Spacer()
 

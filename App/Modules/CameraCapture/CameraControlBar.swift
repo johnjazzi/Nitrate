@@ -6,6 +6,7 @@ import SwiftUI
 /// The top toolbar owns settings and the manual-controls popover; this bar
 /// owns the shooting controls and remaining-recording-time readout.
 struct CameraControlBar: View {
+    @Environment(\.cameraDeviceOrientation) private var orientation
     private let controlFaceSize: CGFloat = 44
     private let selectorRowHeight: CGFloat = 54
     private let recordFaceSize: CGFloat = 84
@@ -314,21 +315,23 @@ struct CameraControlBar: View {
         if let origin = cameraViewModel.recordingTimerOrigin {
             Group {
                 if let stoppedAt = cameraViewModel.recordingStoppedAt {
-                    Text(RecordingDurationText.format(seconds: stoppedAt.timeIntervalSince(origin)))
+                    RecordingTimerBadge(
+                        text: RecordingDurationText.format(seconds: stoppedAt.timeIntervalSince(origin)),
+                        isStopping: presentation == .stopping,
+                        rotationDegrees: CameraGlyphRotation.degrees(for: orientation)
+                    )
                 } else {
                     TimelineView(.animation) { context in
-                        Text(RecordingDurationText.format(seconds: context.date.timeIntervalSince(origin)))
+                        RecordingTimerBadge(
+                            text: RecordingDurationText.format(seconds: context.date.timeIntervalSince(origin)),
+                            isStopping: presentation == .stopping,
+                            rotationDegrees: CameraGlyphRotation.degrees(for: orientation)
+                        )
                     }
                 }
             }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.white)
-            .cameraUpright()
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(presentation == .stopping ? Color.gray.opacity(0.85) : Color.red.opacity(0.8))
-            .clipShape(Capsule())
-            .offset(y: -18)
+            .alignmentGuide(.top) { $0[.bottom] + 2 }
+            .allowsHitTesting(false)
         }
     }
 

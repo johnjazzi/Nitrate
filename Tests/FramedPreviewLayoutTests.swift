@@ -25,7 +25,7 @@ struct FramedPreviewLayoutTests {
         }
     }
 
-    @Test func expandedManualPanelShrinksPreviewWithoutOverlappingEitherBar() {
+    @Test func lowerToolbarEdgeReducesPreviewWithoutOverlappingEitherBar() {
         let canvas = CGRect(x: 0, y: 0, width: 390, height: 760)
         let compact = FramedPreviewLayout.previewRect(
             in: canvas, topControlsBottom: 52, bottomControlsTop: 580
