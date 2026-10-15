@@ -15,6 +15,9 @@ struct ContentView: View {
     @AppStorage("showFramedPreview") private var showFramedPreview = false
     @State private var controlBounds: [String: CGRect] = [:]
     @State private var currentSourceURL: URL?
+    /// Shown briefly when a take never started.
+    @State private var showsRecordingFailure = false
+    @State private var failureFlashGeneration = 0
 
     /// Persisted stock selection — survives across recordings.
     @State private var selectedStock: FilmStockConfig?
@@ -131,6 +134,10 @@ struct ContentView: View {
             guard let newValue else { return }
             renderQueueViewModel.saveOriginal(sourceURL: newValue.url, reason: newValue.reason)
             cameraViewModel.clearRetainedOriginal()
+        }
+        .onChange(of: cameraViewModel.recordingFailureToken) { _, token in
+            guard token > 0 else { return }
+            flashRecordingFailure()
         }
         .onAppear {
             availableLenses = cameraViewModel.session.availableLenses
@@ -358,6 +365,10 @@ struct ContentView: View {
                         .padding(.bottom, 140)
                 }
             }
+            if showsRecordingFailure {
+                RecordingFailureOverlay(detail: cameraViewModel.recordingFailureDetail)
+                    .transition(.opacity)
+            }
         }
     }
 
@@ -423,6 +434,18 @@ struct ContentView: View {
 
     // MARK: - Helpers
 
+    /// Flash the failure treatment, then take it away: it is an attention grab,
+    /// not something the user has to dismiss.
+    private func flashRecordingFailure() {
+        failureFlashGeneration &+= 1
+        let generation = failureFlashGeneration
+        withAnimation(.easeIn(duration: 0.08)) { showsRecordingFailure = true }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.6))
+            guard generation == failureFlashGeneration else { return }
+            withAnimation(.easeOut(duration: 0.25)) { showsRecordingFailure = false }
+        }
+    }
 }
 
 private struct CameraControlBoundsPreference: PreferenceKey {

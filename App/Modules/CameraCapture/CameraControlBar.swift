@@ -14,6 +14,11 @@ struct CameraControlBar: View {
     /// immediately instead of when capture reports it started.
     @State private var recordFeedbackTrigger = 0
     @State private var recordFeedback: RecordFeedback = .start
+    /// The pressed face springs back a beat after the finger lands, so the press
+    /// reads as a physical button rather than a state that appeared on its own.
+    /// Generation-guarded so rapid taps cannot cross-wire the animation.
+    @State private var isUnclicked = false
+    @State private var pressGeneration = 0
     let cameraViewModel: CameraViewModel
     let renderQueueViewModel: RenderQueueViewModel
     let selectedStock: FilmStockConfig?
@@ -279,6 +284,7 @@ struct CameraControlBar: View {
             guard action != .none else { return }
             recordFeedback = action == .start ? .start : .stop
             recordFeedbackTrigger &+= 1
+            animateUnclick()
             if action == .start {
                 cameraViewModel.startRecording()
             } else {
@@ -297,19 +303,21 @@ struct CameraControlBar: View {
         }
     }
 
-    /// The elapsed-time badge, to hundredths, driven off wall clock rather than
-    /// the ticked duration so it can show hundredths. It freezes at the stop
-    /// request: the recorder may drain for another second, and a still-ticking
+    /// The elapsed-time badge, to hundredths, counted from the modelled capture
+    /// start rather than from the ticked duration or from confirmation. It is
+    /// visible from the press — holding 00:00.00 through the 0.2 s before capture
+    /// begins — so the display is continuous, and it freezes at the stop request
+    /// because the recorder may drain for another second and a still-ticking
     /// clock would read as "still recording".
     @ViewBuilder
     private func recordingTimerBadge(_ presentation: RecordButtonPresentation) -> some View {
-        if let startedAt = cameraViewModel.recordingStartedAt {
+        if let origin = cameraViewModel.recordingTimerOrigin {
             Group {
                 if let stoppedAt = cameraViewModel.recordingStoppedAt {
-                    Text(RecordingDurationText.format(seconds: stoppedAt.timeIntervalSince(startedAt)))
+                    Text(RecordingDurationText.format(seconds: stoppedAt.timeIntervalSince(origin)))
                 } else {
                     TimelineView(.animation) { context in
-                        Text(RecordingDurationText.format(seconds: context.date.timeIntervalSince(startedAt)))
+                        Text(RecordingDurationText.format(seconds: context.date.timeIntervalSince(origin)))
                     }
                 }
             }
@@ -385,6 +393,30 @@ struct CameraControlBar: View {
         }
         .shadow(color: .black.opacity(0.38), radius: 6, x: 0, y: 3)
         .animation(.easeInOut(duration: 0.12), value: presentation)
+        // The unclick: the plunger settles a beat after the finger lands, with a
+        // ring springing off it, so the press reads as mechanical.
+        .scaleEffect(isUnclicked ? 0.92 : 1)
+        .overlay {
+            Circle()
+                .stroke(.white, lineWidth: 2)
+                .opacity(isUnclicked ? 0 : 0.55)
+                .scaleEffect(isUnclicked ? 1.3 : 0.88)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// Spring the face back shortly after the press, before the counter moves.
+    private func animateUnclick() {
+        pressGeneration &+= 1
+        let generation = pressGeneration
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(RecordButtonTimingPolicy.unclickDelay))
+            guard generation == pressGeneration else { return }
+            withAnimation(.spring(response: 0.16, dampingFraction: 0.5)) { isUnclicked = true }
+            try? await Task.sleep(for: .seconds(0.2))
+            guard generation == pressGeneration else { return }
+            withAnimation(.easeOut(duration: 0.14)) { isUnclicked = false }
+        }
     }
 
     private var queueStatus: CameraStatusPresentation {

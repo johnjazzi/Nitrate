@@ -87,12 +87,17 @@ final class CameraViewModel {
     /// True from the stop tap until the recorder finishes finalising. Stopping a
     /// take is not instant, so the control has to acknowledge the press itself.
     private(set) var isStoppingRecording = false
-    /// Wall clock when the take actually started, and when stop was requested.
-    /// The REC timer is rendered from these rather than the ticked duration so
-    /// it can show hundredths, and it freezes at the stop request instead of
-    /// appearing to still be recording while the recorder drains.
-    private(set) var recordingStartedAt: Date?
+    /// When the counter counts from, and when stop was requested. The origin is
+    /// set at the tap plus the modelled capture delay, so the display is
+    /// continuous from the press and matches the file, instead of appearing only
+    /// once capture confirms — which can be two seconds later.
+    private(set) var recordingTimerOrigin: Date?
     private(set) var recordingStoppedAt: Date?
+    /// Bumped when a take never started, so the screen can flash its failure
+    /// treatment once per failure.
+    private(set) var recordingFailureToken = 0
+    /// Concrete reason for the most recent failure, shown under the headline.
+    private(set) var recordingFailureDetail: String?
     private var captureGeneration: UInt64 = 0
     private var exposureCommandGeneration: UInt64 = 0
     private var apertureSnapshotRequestGeneration: UInt64 = 0
@@ -290,6 +295,10 @@ final class CameraViewModel {
         recordingWarning = nil
         captureGeneration &+= 1
         let generation = captureGeneration
+        // The counter starts at the tap: capture begins about 0.2 s later, and the
+        // writer may not confirm that for another two seconds.
+        recordingTimerOrigin = RecordButtonTimingPolicy.timerOrigin(tapAt: Date())
+        recordingStoppedAt = nil
         do {
             let outputURL = try originalStorage.makeDestination()
             session.startRecording(to: outputURL) { [weak self] error in
@@ -309,18 +318,11 @@ final class CameraViewModel {
                     self.isRecording = false
                     self.invalidateRecordingTimers()
                     self.errorMessage = "Failed to start recording: \(error.localizedDescription)"
+                    self.failRecordingProminently(error)
                     return
                 }
                 self.isRecording = true
                 self.recordingDuration = 0
-                // Back-date the timer to when the take's first frame landed
-                // (the exposure switch), not to this confirmation, which can be
-                // seconds later on strong stabilization.
-                self.recordingStartedAt = Date().addingTimeInterval(-self.session.recordingHeadOffset())
-#if DEBUG
-                print("Recording timer origin: back-dated by " +
-                      "\(Int(self.session.recordingHeadOffset() * 1000))ms")
-#endif
                 self.recordingStoppedAt = nil
                 self.isStoppingRecording = false
                 self.startRecordingTimer()
@@ -681,8 +683,6 @@ final class CameraViewModel {
     private func handleRecordingFinished(_ result: Result<RecordingCompletion, Error>) async {
         isRecording = false
         isStoppingRecording = false
-        recordingStartedAt = nil
-        recordingStoppedAt = nil
         refreshRecordingStabilization()
         invalidateRecordingTimers()
         switch result {
@@ -695,6 +695,7 @@ final class CameraViewModel {
                     recordingWarning = warningMessage
                     errorMessage = "Recording saved, but ended with a warning: \(warningMessage)"
                 }
+                await checkRecordedDuration(of: url)
 
             case .saveOriginalUnchanged(let url, let reason):
                 // Deliberately not assigned to lastRecordedURL: that assignment is
@@ -708,7 +709,44 @@ final class CameraViewModel {
 
         case .failure(let error):
             errorMessage = "Recording failed: \(error.localizedDescription)"
+            failRecordingProminently(error)
         }
+        recordingTimerOrigin = nil
+        recordingStoppedAt = nil
+    }
+
+    /// A take that never started is not a normal error banner: the user pressed
+    /// record and got nothing, so it gets the loud treatment.
+    private func failRecordingProminently(_ error: Error) {
+        recordingTimerOrigin = nil
+        recordingStoppedAt = nil
+        recordingFailureDetail = error.localizedDescription
+        recordingFailureToken &+= 1
+    }
+
+    /// The counter is a model of when the take started, so compare it with the
+    /// file that was actually written. A mismatch past the log threshold means
+    /// the model is wrong; only a large shortfall is surfaced, because that is
+    /// what changes what the user expects to have recorded.
+    private func checkRecordedDuration(of url: URL) async {
+        guard let origin = recordingTimerOrigin else { return }
+        let displayed = (recordingStoppedAt ?? Date()).timeIntervalSince(origin)
+        guard let duration = try? await AVURLAsset(url: url).load(.duration),
+              duration.isNumeric else { return }
+        let verdict = RecordingDurationDiscrepancyPolicy.verdict(displayed: displayed,
+                                                                actual: duration.seconds)
+#if DEBUG
+        if verdict != .withinTolerance {
+            print("Recording duration check: counter=\(String(format: "%.3f", displayed))s "
+                  + "file=\(String(format: "%.3f", duration.seconds))s "
+                  + "measuredStartOffset=\(String(format: "%.3f", session.recordingHeadOffset()))s "
+                  + "verdict=\(verdict)")
+        }
+#endif
+        guard case .contentMissing(let shortfall) = verdict else { return }
+        recordingWarning = "The recording is shorter than the counter showed."
+        errorMessage = "Recording ended early: the file is "
+            + "\(String(format: "%.2f", shortfall)) s shorter than the counter showed."
     }
 
     /// Clears the pending retained original once it has been handed off.
