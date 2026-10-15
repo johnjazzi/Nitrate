@@ -43,7 +43,7 @@ struct CameraControlBar: View {
             stockControl(faceSize: controlFaceSize)
                 .frame(width: 52, height: 52)
             if selectedStock != nil {
-                CameraGaugeLabel(text: selectedGauge.displayName,
+                CameraGaugeLabel(gauge: selectedGauge,
                                  rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
             }
         }

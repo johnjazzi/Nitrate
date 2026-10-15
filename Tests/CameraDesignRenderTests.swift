@@ -120,7 +120,7 @@ struct CameraDesignRenderTests {
         for degrees in [0.0, 90.0, -90.0] {
             var widths: [Int] = []
             for gauge in PrintGauge.allCases {
-                let image = try render(CameraGaugeLabel(text: gauge.displayName, rotationDegrees: degrees)
+                let image = try render(CameraGaugeLabel(gauge: gauge, rotationDegrees: degrees)
                     .padding(4), name: "gauge-\(gauge.rawValue)-\(degrees)")
                 let data = try pixels(image)
                 let sepia = stride(from: 0, to: data.count, by: 4).filter { index in
@@ -198,7 +198,7 @@ struct CameraDesignRenderTests {
                         HStack(spacing: 6) {
                             CameraFilmStockFace(primary: .yellow, secondary: .orange, isoLight: "500T")
                                 .rotationEffect(.degrees(degrees)).frame(width: 52, height: 52)
-                            CameraGaugeLabel(text: "75mm", rotationDegrees: degrees)
+                            CameraGaugeLabel(gauge: .seventyFiveMillimetre, rotationDegrees: degrees)
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                         CameraRotatingSlot(rotationDegrees: degrees) {

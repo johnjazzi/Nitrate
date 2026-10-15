@@ -55,7 +55,7 @@ struct CameraDesignTests {
         let bar = try source("App/Modules/CameraCapture/CameraControlBar.swift")
         let screen = try source("App/ContentView.swift")
         #expect(bar.contains("CameraShootingLayout()"))
-        #expect(bar.contains("selectedGauge.displayName"))
+        #expect(bar.contains("CameraGaugeLabel(gauge: selectedGauge,"))
         #expect(screen.contains("selectedGauge: selectedStock.flatMap { library.lastGauge(for: $0.stockId) } ?? .neutral"))
         #expect(bar.components(separatedBy: "length: 120").count == 3)
         #expect(bar.contains("onShowQueueSheet"))

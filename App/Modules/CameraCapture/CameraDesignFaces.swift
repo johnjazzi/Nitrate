@@ -52,19 +52,43 @@ struct RecordPlungerFace: View {
     }
 }
 
-/// Minimal gauge engraving beside the stock; no invented film-format icon.
+/// A small vertical strip, not a literal perforation diagram. Width follows the
+/// selected film gauge, not its inverse grain-size multiplier. Neutral is 35mm.
 struct CameraGaugeLabel: View {
-    let text: String
+    let gauge: PrintGauge
     var rotationDegrees: Double = 0
 
+    private var stripWidth: CGFloat {
+        switch gauge {
+        case .eightMillimetre: 12
+        case .sixteenMillimetre: 16
+        case .thirtyFiveMillimetre: 21
+        case .seventyFiveMillimetre: 26
+        }
+    }
+
     var body: some View {
-        Text(text)
+        Text(gauge.displayName)
             .font(.system(size: 10, weight: .medium, design: .rounded))
-            .foregroundStyle(.white.opacity(0.85))
+            .foregroundStyle(.white.opacity(0.95))
             .fixedSize()
+            .frame(width: 28, height: 28)
+            .background {
+                Path { path in
+                    let left = (28 - stripWidth) / 2
+                    path.addRoundedRect(in: CGRect(x: left, y: 0, width: stripWidth, height: 28),
+                                        cornerSize: CGSize(width: 1, height: 1))
+                    for y: CGFloat in [4, 21] {
+                        path.addRect(CGRect(x: left, y: y, width: 1.5, height: 3))
+                        path.addRect(CGRect(x: left + stripWidth - 1.5, y: y, width: 1.5, height: 3))
+                    }
+                }
+                .fill(Color(red: 0.58, green: 0.34, blue: 0.16).opacity(0.75),
+                      style: FillStyle(eoFill: true))
+            }
             .rotationEffect(.degrees(rotationDegrees))
             .frame(width: 28, height: 28)
-            .accessibilityLabel("Print gauge, \(text)")
+            .accessibilityLabel("Print gauge, \(gauge.displayName)")
     }
 }
 
