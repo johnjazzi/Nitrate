@@ -42,7 +42,7 @@ kernel void pass1_lut_halation_glow(
     float3 lutCoordinates = (color.rgb * (lutSize - 1.0f) + 0.5f) / lutSize;
     float3 lutSample = lut.sample(linear_sampler, lutCoordinates).rgb;
 
-    // Optional post-LUT contrast; shipped presets use neutral 1.0.
+    // Optional post-LUT contrast; shipped presets use 0.85.
     lutSample = (lutSample - 0.5f) * outputContrast + 0.5f;
 
     // Halation and glow are added by the spatial stage that follows.

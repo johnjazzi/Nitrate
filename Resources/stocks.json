@@ -10,14 +10,14 @@
       "grainSize": 1.15,
       "halationRadiusFraction": 0.011,
       "halationTint": [1.0, 0.28, 0.10],
-      "outputContrast": 1.0,
+      "outputContrast": 0.85,
       "colorTemperature": 5600,
       "defaultISO": 250,
       "primaryTint": "#D4A843",
       "secondaryTint": "#A67C2E",
       "recipe": {
         "schemaVersion": 1,
-        "version": "5207-current-v2",
+        "version": "5207-current-v3",
         "input": {
           "gamut": "Rec.2020",
           "transfer": "Apple Log 2",
@@ -57,14 +57,14 @@
       "grainSize": 1.3,
       "halationRadiusFraction": 0.014,
       "halationTint": [1.0, 0.32, 0.10],
-      "outputContrast": 1.0,
+      "outputContrast": 0.85,
       "colorTemperature": 3200,
       "defaultISO": 500,
       "primaryTint": "#3D7D93",
       "secondaryTint": "#153A4A",
       "recipe": {
         "schemaVersion": 1,
-        "version": "5219-current-v7",
+        "version": "5219-current-v8",
         "input": {
           "gamut": "Rec.2020",
           "transfer": "Apple Log 2",
