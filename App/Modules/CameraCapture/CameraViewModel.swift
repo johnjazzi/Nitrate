@@ -37,6 +37,9 @@ final class CameraViewModel {
     }
     var recordingWarning: String?
     private(set) var lastRecordedURL: URL?
+    /// Set when a take finished with a readable original that failed validation.
+    /// The screen saves it to Photos unchanged; it is never rendered.
+    private(set) var retainedOriginal: RetainedOriginal?
 
     // Exposure (live from the device, polled every 0.5s)
     var liveISO: Float = 0
@@ -77,7 +80,24 @@ final class CameraViewModel {
     private var exposurePollingTimer: Timer?
     private var shutterPriorityTimer: Timer?
     private var recordingTimerGeneration = RecordingTimerGeneration()
-    private var isStartingRecording = false
+    /// True from the record tap until the session reports the take started (or
+    /// the start fails). Drives the button's immediate pressed affordance, so
+    /// the control does not look dead while capture spins up.
+    private(set) var isStartingRecording = false
+    /// True from the stop tap until the recorder finishes finalising. Stopping a
+    /// take is not instant, so the control has to acknowledge the press itself.
+    private(set) var isStoppingRecording = false
+    /// When the counter counts from, and when stop was requested. The origin is
+    /// set at the tap plus the modelled capture delay, so the display is
+    /// continuous from the press and matches the file, instead of appearing only
+    /// once capture confirms — which can be two seconds later.
+    private(set) var recordingTimerOrigin: Date?
+    private(set) var recordingStoppedAt: Date?
+    /// Bumped when a take never started, so the screen can flash its failure
+    /// treatment once per failure.
+    private(set) var recordingFailureToken = 0
+    /// Concrete reason for the most recent failure, shown under the headline.
+    private(set) var recordingFailureDetail: String?
     private var captureGeneration: UInt64 = 0
     private var exposureCommandGeneration: UInt64 = 0
     private var apertureSnapshotRequestGeneration: UInt64 = 0
@@ -275,11 +295,20 @@ final class CameraViewModel {
         recordingWarning = nil
         captureGeneration &+= 1
         let generation = captureGeneration
+        // The counter starts at the tap: capture begins about 0.2 s later, and the
+        // writer may not confirm that for another two seconds.
+        recordingTimerOrigin = RecordButtonTimingPolicy.timerOrigin(tapAt: Date())
+        recordingStoppedAt = nil
         do {
             let outputURL = try originalStorage.makeDestination()
             session.startRecording(to: outputURL) { [weak self] error in
                 guard let self else { return }
-                guard self.captureGeneration == generation, self.lifecycleGate.isActive else {
+                // A stale callback must not touch the session: captureGeneration
+                // advances both when the user cancels a pending start and when a
+                // new take begins, so calling stopRecording() here would stop
+                // whichever take is now live.
+                guard self.captureGeneration == generation else { return }
+                guard self.lifecycleGate.isActive else {
                     if error == nil { self.session.stopRecording() }
                     return
                 }
@@ -289,10 +318,13 @@ final class CameraViewModel {
                     self.isRecording = false
                     self.invalidateRecordingTimers()
                     self.errorMessage = "Failed to start recording: \(error.localizedDescription)"
+                    self.failRecordingProminently(error)
                     return
                 }
                 self.isRecording = true
                 self.recordingDuration = 0
+                self.recordingStoppedAt = nil
+                self.isStoppingRecording = false
                 self.startRecordingTimer()
                 self.startSpacePolling()
             }
@@ -303,8 +335,24 @@ final class CameraViewModel {
     }
 
     func stopRecording() {
-        if isStartingRecording { captureGeneration &+= 1 }
+        let wasStarting = isStartingRecording
+        if wasStarting { captureGeneration &+= 1 }
         isStartingRecording = false
+        if wasStarting, !isRecording {
+            // Cancelling a pending start. The take never began, so the recorder
+            // produces no file and never reports a finish — this is the only place
+            // that can clear the counter, and without it the counter would keep
+            // running with nothing behind it.
+            recordingTimerOrigin = nil
+            recordingStoppedAt = nil
+            isStoppingRecording = false
+        } else if isRecording {
+            // Acknowledge the stop on the tap. The recorder still has to drain and
+            // finalise, which can take seconds; without this the control keeps its
+            // running look and the press appears to have been ignored.
+            isStoppingRecording = true
+            recordingStoppedAt = Date()
+        }
         invalidateStabilizationUIState()
         session.stopRecording()
         refreshRecordingStabilization()
@@ -643,20 +691,76 @@ final class CameraViewModel {
 
     private func handleRecordingFinished(_ result: Result<RecordingCompletion, Error>) async {
         isRecording = false
+        isStoppingRecording = false
         refreshRecordingStabilization()
         invalidateRecordingTimers()
         switch result {
         case .success(let completion):
-            lastRecordedURL = completion.url
-            if let warning = completion.warning {
-                let warningMessage = warning.localizedDescription
-                recordingWarning = warningMessage
-                errorMessage = "Recording saved, but ended with a warning: \(warningMessage)"
+            switch RecordingFinishPresentationPolicy.plan(for: completion) {
+            case .render(let url):
+                lastRecordedURL = url
+                if let warning = completion.warning {
+                    let warningMessage = warning.localizedDescription
+                    recordingWarning = warningMessage
+                    errorMessage = "Recording saved, but ended with a warning: \(warningMessage)"
+                }
+                await checkRecordedDuration(of: url)
+
+            case .saveOriginalUnchanged(let url, let reason):
+                // Deliberately not assigned to lastRecordedURL: that assignment is
+                // what triggers the auto-render. The kept file goes to Photos
+                // unchanged, and the take is never reported as a clean success.
+                retainedOriginal = RetainedOriginal(url: url, reason: reason)
+                recordingWarning = reason
+                errorMessage = "Recording kept, but it did not pass validation: \(reason). "
+                    + "Saving the original to Photos unchanged."
             }
 
         case .failure(let error):
             errorMessage = "Recording failed: \(error.localizedDescription)"
+            failRecordingProminently(error)
         }
+        recordingTimerOrigin = nil
+        recordingStoppedAt = nil
+    }
+
+    /// A take that never started is not a normal error banner: the user pressed
+    /// record and got nothing, so it gets the loud treatment.
+    private func failRecordingProminently(_ error: Error) {
+        recordingTimerOrigin = nil
+        recordingStoppedAt = nil
+        recordingFailureDetail = error.localizedDescription
+        recordingFailureToken &+= 1
+    }
+
+    /// The counter is a model of when the take started, so compare it with the
+    /// file that was actually written. A mismatch past the log threshold means
+    /// the model is wrong; only a large shortfall is surfaced, because that is
+    /// what changes what the user expects to have recorded.
+    private func checkRecordedDuration(of url: URL) async {
+        guard let origin = recordingTimerOrigin else { return }
+        let displayed = (recordingStoppedAt ?? Date()).timeIntervalSince(origin)
+        guard let duration = try? await AVURLAsset(url: url).load(.duration),
+              duration.isNumeric else { return }
+        let verdict = RecordingDurationDiscrepancyPolicy.verdict(displayed: displayed,
+                                                                actual: duration.seconds)
+#if DEBUG
+        if verdict != .withinTolerance {
+            print("Recording duration check: counter=\(String(format: "%.3f", displayed))s "
+                  + "file=\(String(format: "%.3f", duration.seconds))s "
+                  + "measuredStartOffset=\(String(format: "%.3f", session.recordingHeadOffset()))s "
+                  + "verdict=\(verdict)")
+        }
+#endif
+        guard case .contentMissing(let shortfall) = verdict else { return }
+        recordingWarning = "The recording is shorter than the counter showed."
+        errorMessage = "Recording ended early: the file is "
+            + "\(String(format: "%.2f", shortfall)) s shorter than the counter showed."
+    }
+
+    /// Clears the pending retained original once it has been handed off.
+    func clearRetainedOriginal() {
+        retainedOriginal = nil
     }
 
     private func startRecordingTimer() {
@@ -671,7 +775,10 @@ final class CameraViewModel {
 
     private func recordingTimerTick(generation: UInt64) {
         guard recordingTimerGeneration.accepts(generation), isRecording else { return }
-        recordingDuration += 0.1
+        // Count the clock the counter shows, so the five-minute limit and the
+        // displayed time cannot disagree about how long the take has run.
+        recordingDuration = recordingTimerOrigin.map { Date().timeIntervalSince($0) }
+            ?? (recordingDuration + 0.1)
         // AD-8: auto-stop at 5 minutes
         if recordingDuration >= Self.maxClipDuration {
             stopRecording()

@@ -22,6 +22,58 @@ struct RenderQueueReliabilityTests {
         Issue.record("Timed out waiting for queue state")
     }
 
+    @Test func keptOriginalIsSavedUnchangedAndNeverRendered() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        var rendered = 0
+        var saves: [URL] = []
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { _ in
+            rendered += 1
+            return files.output
+        }, save: { url in
+            saves.append(url)
+        })
+
+        model.saveOriginal(sourceURL: files.source, reason: "1.30 s audio gap")
+
+        try await waitUntil { !saves.isEmpty }
+        #expect(rendered == 0)
+        #expect(saves == [files.source])
+        // A kept original is not a queue entry and not a reported failure.
+        #expect(model.jobs.isEmpty)
+        #expect(model.externalErrorMessage == nil)
+    }
+
+    @Test func keptOriginalSaveFailureIsReportedWithoutInventingAJob() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in files.output },
+                                         save: { _ in throw QueueTestError.save })
+
+        model.saveOriginal(sourceURL: files.source, reason: "1.30 s audio gap")
+
+        try await waitUntil { model.externalErrorMessage != nil }
+        #expect(model.externalErrorMessage?.contains("1.30 s audio gap") == true)
+        #expect(model.externalErrorMessage?.contains("Photos unavailable") == true)
+        #expect(model.jobs.isEmpty)
+    }
+
+    @Test func keptOriginalThatIsGoneIsReportedWithoutSaving() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        var saves: [URL] = []
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in files.output },
+                                         save: { url in saves.append(url) })
+
+        model.saveOriginal(sourceURL: files.directory.appendingPathComponent("missing.mov"),
+                           reason: "1.30 s audio gap")
+
+        #expect(saves.isEmpty)
+        #expect(model.externalErrorMessage?.contains("no longer available") == true)
+    }
+
     @Test func suspendedWorkSerializesJobsAndRemovalUsesIdentity() async throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }

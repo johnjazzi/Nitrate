@@ -117,3 +117,101 @@ Debug smoke recordings normally delete their temporary output. Use
 `--keep-hevc-log2-smoke` with `--smoke-hevc-log2-capture` to retain a successful
 recording for source-versus-render inspection. The debug smoke keeps the display
 awake during an automated matrix; a normal launch does not enable that behavior.
+
+## Capture start latency
+
+The record button cannot confirm a take until capture reports it, and that report
+waits on the whole start path: the session-queue hop, the custom-exposure settle,
+and the first eligible frame reaching the writer. Measured on the physical iPhone
+18 Pro (Debug smoke, one take per mode, two or three repeats per row; the clock
+starts when `startRecording` is requested and stops when the recorder appends its
+first frame and signals started):
+
+| Stabilization | Request → confirmed | First video callback after writer begin | Frames dropped as pre-exposure |
+|---|---:|---:|---:|
+| Off | 0.27–0.30 s | 4–6 ms | 1 |
+| Standard | 0.28–0.32 s | 8 ms | 2 |
+| Cinematic | 0.93–0.94 s | 9 ms | 17 |
+| Extreme | 2.19–2.23 s | 890–935 ms | 25 |
+
+Stage split at Extreme: session-queue hop ≈0 ms, custom-exposure settle ≈0.18 s,
+then ≈2.0 s inside the recorder before the first frame is appended.
+
+**Confirmation is not capture.** Sampling the session's synchronization clock at
+the request and comparing it with the recorder's first written frame PTS — both on
+the capture clock — gives how much real time a take actually loses at the head:
+
+| Stabilization | Request → confirmed | Real head loss |
+|---|---:|---:|
+| Extreme | 2.20 s | 0.19–0.22 s |
+| Off | 0.29 s | 0.21–0.22 s |
+
+The take's content therefore begins about 0.2 s after the tap in every mode: the
+first kept frame is the first one at or after the recording exposure taking
+effect, which is what the recorder uses as its start-after point. Stabilization
+only changes how long the writer takes to confirm.
+
+Cinematic and extended-cinematic run the pipeline behind the capture clock (~0.7 s
+and ~1.0 s), so the frames delivered when a take begins already predate the
+exposure change and are correctly discarded — 17 and 25 frames at 24 fps match
+those offsets. Extreme additionally stalls frame delivery for about 0.9 s at take
+start. Re-writing the same `preferredVideoStabilizationMode` was tested as the
+cause and is not it: the mode is already active before the take
+(`activeVideoStabilizationMode` reports it at configure, at session start and at
+record start), and skipping the redundant write changed nothing.
+
+Because confirmation lags capture, the control acknowledges the tap itself rather
+than the take. The REC dot turns red immediately, a haptic fires, and the timer is
+back-dated by the head offset above (`CameraSession.recordingHeadOffset()`) so it
+reports recorded content rather than time since confirmation — a stopwatch
+compared against the file is what exposed that difference. A second tap during the
+pending window cancels the start. `CameraViewModel.isStartingRecording` is the
+flag behind that state, and `RecordButtonPresentationPolicy` decides the label,
+enablement and tap action.
+
+Stop is acknowledged the same way, for the same reason: finalising is not
+instant. The face dims, the badge greys and the timer freezes at the stop request
+while the recorder drains (`isStoppingRecording`, `recordingStoppedAt`), and a
+further tap is ignored rather than queued. The timer renders hundredths
+(`mm:ss.cc`) from wall clock, truncated rather than rounded, so it never shows a
+hundredth that has not elapsed.
+
+Limits: measured on a warm session with the debug smoke. Cold starts, longer
+recordings, and the exact cause of the Extreme stall inside AVFoundation are not
+characterized here. The per-mode delays are how long the take takes to register,
+not how much content it loses: that is the ~0.2 s head loss, in every mode.
+
+## Recorder hardening
+
+The recorder validates the audio it is handed rather than trusting it: finite
+numeric PTS, a positive finite complete packet duration consistent with its sample
+count and sample rate, a finite usable PCM format description, and a bounded
+overflow-checked byte allocation computed from the format before anything is
+copied. Interior source-audio continuity is checked against the same 0.12-second
+bound as the output, so a gap or overlap inside a take cannot hide behind
+synchronized endpoints. A configured microphone that delivers no audio is reported
+as a retained failure rather than a clean take; deliberately video-only capture is
+unchanged.
+
+Two review findings are fixed. An audio handoff error arriving after stop could
+drive a finalising take to `.failed` and delete a file whose writer had already
+completed — both handoff error paths are now gated on the clip still being live
+rather than on generation alone. And the successful handoff path was not
+generation-fenced, so a stale sample from the previous take could enter the next
+one's preroll and evict valid early audio; it is fenced now, with the handoff
+bookkeeping reset per clip.
+
+Finalisation is bounded: a generation- and writer-identity-fenced `finishWriting`
+timeout sits alongside the stop-drain timeout, and completion stays exactly-once.
+A quality or validation failure after the writer produced a readable file throws
+`CameraRetainedRecordingError` and keeps the file. Only failures with nothing
+readable — no video at all, an awaiting-start failure, a user cancel, or a writer
+that never reached `.completed` — still delete.
+
+Evidence: the ten new cases were run against the tests-only commit first and all
+ten failed there; with the implementation the recorder suite is 41 tests and the
+full suite 310, all passing. Device smoke on Extreme and Standard still passes
+with audio present (skew 0.009/0.018 s, end delta 0.029/0.035 s), so the stricter
+validation does not reject real microphone packets. Not covered: the real
+`AVAssetWriter` path (the tests drive a fake writer), the preservation-probe path,
+and `requiresAudioEvidence`, which is DEBUG-only.

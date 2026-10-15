@@ -15,6 +15,10 @@ struct ContentView: View {
     @AppStorage("showFramedPreview") private var showFramedPreview = false
     @State private var controlBounds: [String: CGRect] = [:]
     @State private var currentSourceURL: URL?
+    /// Shown briefly when a take never started.
+    @State private var showsRecordingFailure = false
+    @State private var failureFlashGeneration = 0
+    @State private var failureDetail: String?
 
     /// Persisted stock selection — survives across recordings.
     @State private var selectedStock: FilmStockConfig?
@@ -55,6 +59,11 @@ struct ContentView: View {
 #if DEBUG
     /// Frozen frame + live tuning sheet (DEBUG builds only).
     @State private var debugFrameViewModel: DebugFrameViewModel?
+    /// Whether the debug affordances are on the screen. Mirrored in the debug
+    /// sheet and in Settings, so hiding the DEBUG button cannot strand the menu
+    /// that turns it back on.
+    @AppStorage(DebugControlPreferences.showsDebugButtonKey) private var showsDebugButton = true
+    @AppStorage(DebugControlPreferences.showsFaultButtonKey) private var showsFaultButton = true
 #endif
 
     var body: some View {
@@ -124,6 +133,18 @@ struct ContentView: View {
             } else {
                 showStockSheet = true
             }
+        }
+        .onChange(of: cameraViewModel.retainedOriginal) { _, newValue in
+            // A take that failed validation is never rendered and never becomes a
+            // recorded clip; the readable original is saved to Photos unchanged.
+            guard let newValue else { return }
+            renderQueueViewModel.saveOriginal(sourceURL: newValue.url, reason: newValue.reason)
+            cameraViewModel.clearRetainedOriginal()
+        }
+        .onChange(of: cameraViewModel.recordingFailureToken) { _, token in
+            guard token > 0 else { return }
+            failureDetail = cameraViewModel.recordingFailureDetail
+            flashRecordingFailure()
         }
         .onAppear {
             availableLenses = cameraViewModel.session.availableLenses
@@ -274,18 +295,41 @@ struct ContentView: View {
 #if DEBUG
             // Debug single-frame tuning (grain / halation / glow). Debug
             // builds only; opens a sheet over a frozen live frame.
-            Button {
-                openDebugFrame()
-            } label: {
-                Text("DEBUG")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.black)
-                    .fixedSize()
-                    .cameraUpright(in: CGSize(width: 43, height: 27))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(.yellow)
-                    .clipShape(Capsule())
+            if showsDebugButton {
+                Button {
+                    openDebugFrame()
+                } label: {
+                    Text("DEBUG")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.black)
+                        .fixedSize()
+                        .cameraUpright(in: CGSize(width: 43, height: 27))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(.yellow)
+                        .clipShape(Capsule())
+                }
+            }
+
+            // Preview the "recording never started" treatment without provoking a
+            // real failure. It lives here rather than inside the debug sheet
+            // because the overlay renders on the camera screen, which a presented
+            // sheet would cover.
+            if showsFaultButton {
+                Button {
+                    failureDetail = "Debug preview — no recording was attempted."
+                    flashRecordingFailure()
+                } label: {
+                    Text("FAULT")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .fixedSize()
+                        .cameraUpright(in: CGSize(width: 43, height: 27))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(.red)
+                        .clipShape(Capsule())
+                }
             }
 #endif
 
@@ -330,8 +374,7 @@ struct ContentView: View {
             selectedStock: selectedStock,
             currentISO: currentISO,
             onShowQueueSheet: { showQueueSheet = true },
-            onShowStockSheet: { showStockSheet = true },
-            formatDuration: { formatDuration($0) }
+            onShowStockSheet: { showStockSheet = true }
         )
     }
 
@@ -351,6 +394,10 @@ struct ContentView: View {
                     renderErrorBanner(renderError)
                         .padding(.bottom, 140)
                 }
+            }
+            if showsRecordingFailure {
+                RecordingFailureOverlay(detail: failureDetail)
+                    .transition(.opacity)
             }
         }
     }
@@ -417,10 +464,19 @@ struct ContentView: View {
 
     // MARK: - Helpers
 
-    private func formatDuration(_ seconds: TimeInterval) -> String {
-        let min = Int(seconds) / 60
-        let sec = Int(seconds) % 60
-        return String(format: "%d:%02d", min, sec)
+    /// Flash the failure treatment, then take it away: it is an attention grab,
+    /// not something the user has to dismiss.
+    private func flashRecordingFailure() {
+        failureFlashGeneration &+= 1
+        let generation = failureFlashGeneration
+        withAnimation(.easeIn(duration: 0.08)) { showsRecordingFailure = true }
+        Task { @MainActor in
+            // Hold for the whole animation: cutting it short mid-cycle is what made
+            // the first version look like a fast strobe.
+            try? await Task.sleep(for: .seconds(RecordingFailureOverlay.flashDuration + 0.4))
+            guard generation == failureFlashGeneration else { return }
+            withAnimation(.easeOut(duration: 0.25)) { showsRecordingFailure = false }
+        }
     }
 }
 

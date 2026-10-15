@@ -133,6 +133,9 @@ targets:
       - path: App/Modules/CameraCapture/RulerScale.swift
       - path: App/Modules/CameraCapture/CameraSampleBufferRecorder.swift
       - path: App/Modules/CameraCapture/CameraCapturePreservationProbe.swift
+      - path: App/Modules/CameraCapture/RecordButtonPresentation.swift
+      - path: App/Modules/CameraCapture/RecordingDurationText.swift
+      - path: App/Modules/CameraCapture/RecordingFeedbackPolicy.swift
       - path: Resources/Shaders/
         type: metal
       - path: Resources/Grain

@@ -10,13 +10,21 @@ struct CameraControlBar: View {
     private let selectorRowHeight: CGFloat = 54
     private let recordFaceSize: CGFloat = 84
     private let statusSlotSize: CGFloat = 84
+    /// Drives `.sensoryFeedback`; bumped on every REC tap so the press is felt
+    /// immediately instead of when capture reports it started.
+    @State private var recordFeedbackTrigger = 0
+    @State private var recordFeedback: RecordFeedback = .start
+    /// The pressed face springs back a beat after the finger lands, so the press
+    /// reads as a physical button rather than a state that appeared on its own.
+    /// Generation-guarded so rapid taps cannot cross-wire the animation.
+    @State private var isUnclicked = false
+    @State private var pressGeneration = 0
     let cameraViewModel: CameraViewModel
     let renderQueueViewModel: RenderQueueViewModel
     let selectedStock: FilmStockConfig?
     let currentISO: Float
     let onShowQueueSheet: () -> Void
     let onShowStockSheet: () -> Void
-    let formatDuration: (TimeInterval) -> String
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -243,67 +251,171 @@ struct CameraControlBar: View {
         )
     }
 
+    /// Immediate acknowledgement for a REC tap.
+    ///
+    /// Capture cannot confirm a take started until the session queue, the
+    /// custom-exposure settle and the asset writer have all run, so waiting for
+    /// that round trip made the button feel unresponsive. The press is
+    /// acknowledged here, on the tap itself.
+    private enum RecordFeedback: Equatable {
+        case start
+        case stop
+
+        var sensory: SensoryFeedback {
+            switch self {
+            case .start: .impact(weight: .medium, intensity: 1)
+            case .stop: .impact(weight: .heavy, intensity: 1)
+            }
+        }
+    }
+
+    private var recordPresentation: RecordButtonPresentation {
+        RecordButtonPresentationPolicy.presentation(
+            isRecording: cameraViewModel.isRecording,
+            isStarting: cameraViewModel.isStartingRecording,
+            isStopping: cameraViewModel.isStoppingRecording
+        )
+    }
+
     private var recordButton: some View {
-        Button {
-            if cameraViewModel.isRecording {
-                cameraViewModel.stopRecording()
-            } else {
+        let presentation = recordPresentation
+        let action = RecordButtonPresentationPolicy.action(for: presentation)
+        return Button {
+            guard action != .none else { return }
+            recordFeedback = action == .start ? .start : .stop
+            recordFeedbackTrigger &+= 1
+            animateUnclick()
+            if action == .start {
                 cameraViewModel.startRecording()
+            } else {
+                cameraViewModel.stopRecording()
             }
         } label: {
-            ZStack {
-                // A circular translucent cap, deliberately not a rectangular
-                // frame: the reference camera's REC is its own round recess.
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .overlay { Circle().fill(Color.black.opacity(0.18)) }
-
-                if cameraViewModel.isRecording {
-                    Circle()
-                        .fill(.red)
-                        .frame(width: 46, height: 46)
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(.white)
-                        .frame(width: 18, height: 18)
-                } else {
-                    Circle()
-                        .stroke(.white, lineWidth: 3)
-                        .frame(width: 58, height: 58)
-                    Circle()
-                        .fill(.white)
-                        .frame(width: 46, height: 46)
-                }
-            }
-            .frame(width: recordFaceSize, height: recordFaceSize)
-            .overlay {
-                Circle()
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [.white.opacity(0.42), .white.opacity(0.05), .black.opacity(0.42)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 1
-                    )
-                    .allowsHitTesting(false)
-            }
-            .shadow(color: .black.opacity(0.38), radius: 6, x: 0, y: 3)
+            recordFace(presentation)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(cameraViewModel.isRecording ? "Stop recording" : "Start recording")
-        .disabled(cameraViewModel.isSpaceCritical && !cameraViewModel.isRecording)
+        .disabled(!RecordButtonPresentationPolicy.isEnabled(isSpaceCritical: cameraViewModel.isSpaceCritical,
+                                                           presentation: presentation))
+        .sensoryFeedback(trigger: recordFeedbackTrigger) { _, _ in recordFeedback.sensory }
+        .accessibilityLabel(RecordButtonPresentationPolicy.accessibilityLabel(for: presentation))
         .overlay(alignment: .top) {
-            if cameraViewModel.isRecording {
-                Text(formatDuration(cameraViewModel.recordingDuration))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.white)
-                    .cameraUpright()
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(.red.opacity(0.8))
-                    .clipShape(Capsule())
-                    .offset(y: -18)
+            recordingTimerBadge(presentation)
+        }
+    }
+
+    /// The elapsed-time badge, to hundredths, counted from the modelled capture
+    /// start rather than from the ticked duration or from confirmation. It is
+    /// visible from the press — holding 00:00.00 through the 0.2 s before capture
+    /// begins — so the display is continuous, and it freezes at the stop request
+    /// because the recorder may drain for another second and a still-ticking
+    /// clock would read as "still recording".
+    @ViewBuilder
+    private func recordingTimerBadge(_ presentation: RecordButtonPresentation) -> some View {
+        if let origin = cameraViewModel.recordingTimerOrigin {
+            Group {
+                if let stoppedAt = cameraViewModel.recordingStoppedAt {
+                    Text(RecordingDurationText.format(seconds: stoppedAt.timeIntervalSince(origin)))
+                } else {
+                    TimelineView(.animation) { context in
+                        Text(RecordingDurationText.format(seconds: context.date.timeIntervalSince(origin)))
+                    }
+                }
             }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.white)
+            .cameraUpright()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(presentation == .stopping ? Color.gray.opacity(0.85) : Color.red.opacity(0.8))
+            .clipShape(Capsule())
+            .offset(y: -18)
+        }
+    }
+
+    /// Idle is a white ring with a white dot; the press turns that dot red
+    /// immediately, so the control responds on the tap rather than when the
+    /// writer comes up. A running take is the filled red disc with a stop square.
+    private func recordFace(_ presentation: RecordButtonPresentation) -> some View {
+        ZStack {
+            // A circular translucent cap, deliberately not a rectangular
+            // frame: the reference camera's REC is its own round recess.
+            Circle()
+                .fill(.ultraThinMaterial)
+                .overlay { Circle().fill(Color.black.opacity(0.18)) }
+
+            switch presentation {
+            case .recording:
+                Circle()
+                    .fill(.red)
+                    .frame(width: 46, height: 46)
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(.white)
+                    .frame(width: 18, height: 18)
+            case .stopping:
+                // Dimmed and grey-badged: unmistakably different from a running
+                // take the instant stop is pressed, while the recorder finalises.
+                Circle()
+                    .fill(.red)
+                    .opacity(0.45)
+                    .frame(width: 46, height: 46)
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(.white)
+                    .opacity(0.85)
+                    .frame(width: 18, height: 18)
+            case .starting:
+                Circle()
+                    .stroke(.white, lineWidth: 3)
+                    .frame(width: 58, height: 58)
+                Circle()
+                    .fill(.red)
+                    .frame(width: 46, height: 46)
+            case .idle:
+                Circle()
+                    .stroke(.white, lineWidth: 3)
+                    .frame(width: 58, height: 58)
+                Circle()
+                    .fill(.white)
+                    .frame(width: 46, height: 46)
+            }
+        }
+        .frame(width: recordFaceSize, height: recordFaceSize)
+        .overlay {
+            Circle()
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.42), .white.opacity(0.05), .black.opacity(0.42)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+                .allowsHitTesting(false)
+        }
+        .shadow(color: .black.opacity(0.38), radius: 6, x: 0, y: 3)
+        .animation(.easeInOut(duration: 0.12), value: presentation)
+        // The unclick: the plunger settles a beat after the finger lands, with a
+        // ring springing off it, so the press reads as mechanical.
+        .scaleEffect(isUnclicked ? 0.92 : 1)
+        .overlay {
+            Circle()
+                .stroke(.white, lineWidth: 2)
+                .opacity(isUnclicked ? 0 : 0.55)
+                .scaleEffect(isUnclicked ? 1.3 : 0.88)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// Spring the face back shortly after the press, before the counter moves.
+    private func animateUnclick() {
+        pressGeneration &+= 1
+        let generation = pressGeneration
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(RecordButtonTimingPolicy.unclickDelay))
+            guard generation == pressGeneration else { return }
+            withAnimation(.spring(response: 0.16, dampingFraction: 0.5)) { isUnclicked = true }
+            try? await Task.sleep(for: .seconds(0.2))
+            guard generation == pressGeneration else { return }
+            withAnimation(.easeOut(duration: 0.14)) { isUnclicked = false }
         }
     }
 

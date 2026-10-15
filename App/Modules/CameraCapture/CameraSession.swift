@@ -154,9 +154,48 @@ final class CameraSession: NSObject {
     private var pendingStartCompletion: (@MainActor @Sendable (Error?) -> Void)?
     private let recordingStateLock = NSLock()
     private var publicRecordingState = false
+    /// Wall-clock delay from the take request to the moment the recording
+    /// exposure took effect. The take's first frame lands at that instant, so the
+    /// REC timer is back-dated by this: the writer can confirm seconds later, and
+    /// a timer started at confirmation understates the recorded content.
+    private var recordedStartHeadOffset: TimeInterval = 0
+
+    /// Head offset for the take that most recently started.
+    func recordingHeadOffset() -> TimeInterval {
+        recordingStateLock.lock()
+        defer { recordingStateLock.unlock() }
+        return recordedStartHeadOffset
+    }
 #if DEBUG
     private var debugSmokeURL: URL?
     private var debugSmokeTimedOut = false
+    /// Phase timestamps for the current start request, so the request-to-running
+    /// latency can be attributed to a specific stage instead of guessed at.
+    private struct StartPhases {
+        var requestedAt: Date?
+        var queuedAt: Date?
+        var exposureAppliedAt: Date?
+        var recorderBeganAt: Date?
+        /// Capture-clock time when the take was requested. Sample-buffer PTS use
+        /// the same clock, so subtracting this from the recorder's first written
+        /// frame gives how much real time the take actually loses at the head —
+        /// which is not the same thing as how long the writer takes to confirm.
+        var captureClockAtRequest: CMTime?
+
+        /// One line attributing the request-to-running latency to each stage.
+        func printLatency(error: Error?) {
+            guard let requestedAt else { return }
+            func offset(_ date: Date?) -> String {
+                guard let date else { return "-" }
+                return String(format: "%.0f", date.timeIntervalSince(requestedAt) * 1000)
+            }
+            let clock = captureClockAtRequest.map { String(format: "%.6f", $0.seconds) } ?? "-"
+            print("Recording start latency: total=\(offset(Date()))ms queue=\(offset(queuedAt))ms " +
+                  "exposure=\(offset(exposureAppliedAt))ms recorderBegin=\(offset(recorderBeganAt))ms " +
+                  "requestClock=\(clock) error=\(error == nil ? "none" : "present")")
+        }
+    }
+    private var startPhases = StartPhases()
 #endif
 
     // MARK: - Preview-only read-only sink
@@ -388,6 +427,7 @@ final class CameraSession: NSObject {
         let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: nil)
         rotationCoordinator = coordinator
         captureRotationState = CameraCaptureRotationPolicy()
+        logOrientationDiagnostics(for: device, coordinator: coordinator)
         let deviceID = device.uniqueID
         rotationObservation = coordinator.observe(\.videoRotationAngleForHorizonLevelCapture,
                                                   options: [.initial, .new]) { [weak self] _, change in
@@ -406,6 +446,35 @@ final class CameraSession: NSObject {
         captureRotationState.snapshot(for: orientation,
             liveAngle: rotationCoordinator?.videoRotationAngleForHorizonLevelCapture)
     }
+
+#if DEBUG
+    /// Device-only evidence for the per-camera rotation contract. The front
+    /// camera's native sensor orientation differs from the rear's, so every
+    /// hard-coded angle must be checked against the platform's own value.
+    private func logOrientationDiagnostics(for device: AVCaptureDevice,
+                                           coordinator: AVCaptureDevice.RotationCoordinator) {
+        func describe(_ connection: AVCaptureConnection?) -> String {
+            guard let connection else { return "none" }
+            let supported = [0.0, 90.0, 180.0, 270.0].filter { connection.isVideoRotationAngleSupported($0) }
+            return "applied=\(connection.videoRotationAngle), mirrored=\(connection.isVideoMirrored), " +
+                "autoMirror=\(connection.automaticallyAdjustsVideoMirroring), supported=\(supported)"
+        }
+        let portraitAngle: String
+        if #available(iOS 27.0, *) {
+            portraitAngle = "\(coordinator.videoRotationAngleRelative(toDeviceOrientation: .portrait))"
+        } else {
+            portraitAngle = "unavailable"
+        }
+        let format = device.activeFormat.formatDescription
+        let dimensions = CMVideoFormatDescriptionGetDimensions(format)
+        print("Camera orientation diagnostics: position=\(device.position.rawValue), " +
+              "format=\(dimensions.width)x\(dimensions.height), " +
+              "coordinatorCapture=\(coordinator.videoRotationAngleForHorizonLevelCapture), " +
+              "coordinatorPreview=\(coordinator.videoRotationAngleForHorizonLevelPreview), " +
+              "relativeToPortrait=\(portraitAngle), records[\(describe(videoOutput.connection(with: .video)))], " +
+              "previewSource[\(describe(previewOutput.connection(with: .video)))]")
+    }
+#endif
 
     /// Transfer only the Sendable orientation value across the main boundary,
     /// not the queue-confined session object.
@@ -524,6 +593,11 @@ final class CameraSession: NSObject {
     private func applyRecordingStabilization() {
         guard let connection = videoOutput.connection(with: .video) else { return }
         let mode = stabilizationCapability().effectiveMode(for: preferredStabilization)
+#if DEBUG
+        // Cinematic and extended-cinematic keep the pipeline ~0.7-1.0 s behind
+        // the capture clock, so the first frames of a take are already stale.
+        print("Stabilization apply: mode=\(mode.rawValue) activeBefore=\(connection.activeVideoStabilizationMode.rawValue) preferredBefore=\(connection.preferredVideoStabilizationMode.rawValue) supported=\(connection.isVideoStabilizationSupported)")
+#endif
         if connection.isVideoStabilizationSupported {
             connection.preferredVideoStabilizationMode = Self.avStabilizationMode(mode)
         }
@@ -1511,6 +1585,14 @@ final class CameraSession: NSObject {
     private func startRecording(to url: URL,
                                 deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation,
                                 completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+        // The take's content begins when the recording exposure takes effect, not
+        // when the writer finally confirms it.
+        let startRequestedAt = Date()
+#if DEBUG
+        // Measured on device to size the button's optimistic "starting" state:
+        // this is the gap between the user's request and the take really running.
+        startPhases = StartPhases(requestedAt: startRequestedAt)
+#endif
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.invalidateMetering()
@@ -1549,6 +1631,10 @@ final class CameraSession: NSObject {
             self.pendingStartCompletion = completion
             self.recordingGeneration &+= 1
             let generation = self.recordingGeneration
+#if DEBUG
+            startPhases.queuedAt = Date()
+            startPhases.captureClockAtRequest = self.session.synchronizationClock.map { CMClockGetTime($0) }
+#endif
             do {
                 let iso = min(max(device.iso, device.activeFormat.minISO), device.activeFormat.maxISO)
                 let shutter = min(max(Self.filmShutterDuration, device.activeFormat.minExposureDuration),
@@ -1557,9 +1643,16 @@ final class CameraSession: NSObject {
                 // actually takes effect; frames before it still carry the old
                 // exposure, so the recorder drops them.
                 let completionHandler: (CMTime) -> Void = { [weak self] syncTime in
+                    let headOffset = Date().timeIntervalSince(startRequestedAt)
+#if DEBUG
+                    self?.startPhases.exposureAppliedAt = Date()
+#endif
                     self?.sessionQueue.async {
                         guard let self, self.recordingGeneration == generation,
                               self.recordingStartPending else { return }
+                        self.recordingStateLock.lock()
+                        self.recordedStartHeadOffset = headOffset
+                        self.recordingStateLock.unlock()
                         self.beginSampleBufferRecording(to: url, generation: generation,
                                                         startAfter: syncTime,
                                                         deliveryOrientation: deliveryOrientation,
@@ -1614,6 +1707,9 @@ final class CameraSession: NSObject {
                                             startAfter: CMTime = .invalid,
                                             deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation = .unknown,
                                             captureRotationAngle: CGFloat? = nil) {
+#if DEBUG
+        startPhases.recorderBeganAt = Date()
+#endif
         guard let device = activeDevice,
               #available(iOS 26.0, *),
               device.activeColorSpace == .appleLog2,
@@ -1674,6 +1770,13 @@ final class CameraSession: NSObject {
         guard recordingGeneration == generation, recordingStartPending,
               recorderCompletionBridge.acceptsStarted(epoch: generation) else { return }
         recordingStartPending = false
+#if DEBUG
+        startPhases.printLatency(error: error)
+        // Same value the REC timer is back-dated by: proving it is populated is
+        // what ties the measured head loss to what the timer uses.
+        print("Recording head offset: \(Int(recordedStartHeadOffset * 1000))ms")
+        startPhases = StartPhases()
+#endif
         let completion = pendingStartCompletion
         pendingStartCompletion = nil
         recordingActive = error == nil
@@ -1701,7 +1804,17 @@ final class CameraSession: NSObject {
         case .success(let outputURL):
             completion = .success(RecordingCompletion(url: outputURL, warning: nil))
         case .failure(let error):
-            completion = .failure(error)
+            // The recorder throws the retained error only when the writer
+            // produced a readable, non-empty file, so that URL is exactly the
+            // "the movie finished playable" signal the policy wants.
+            let retainedURL = CameraRetainedRecordingError.retainedURL(from: error)
+            if RecordingCompletionPolicy.shouldPublish(errorExists: true, finishedPlayable: retainedURL != nil),
+               let retainedURL {
+                completion = .success(RecordingCompletion(url: retainedURL, warning: error,
+                                                          retainedOriginal: true))
+            } else {
+                completion = .failure(error)
+            }
         }
         let handler = onRecordingFinished
 #if DEBUG
@@ -1733,6 +1846,9 @@ final class CameraSession: NSObject {
 
     private func failPendingStart(_ error: Error) {
         recordingStartPending = false
+#if DEBUG
+        startPhases = StartPhases()
+#endif
         restoreAutomaticApertureAfterRecording()
         let completion = pendingStartCompletion
         pendingStartCompletion = nil
@@ -2176,9 +2292,4 @@ enum CameraError: LocalizedError {
             return "Camera switch failed (\(original.localizedDescription)); restoring the previous camera also failed (\(rollback.localizedDescription))."
         }
     }
-}
-
-struct RecordingCompletion: @unchecked Sendable {
-    let url: URL
-    let warning: Error?
 }

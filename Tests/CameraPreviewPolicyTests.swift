@@ -3,6 +3,20 @@ import CoreGraphics
 import Testing
 
 struct CameraPreviewPolicyTests {
+    @Test func previewRotationUsesThePlatformAnglePerCamera() {
+        // The front camera's native buffer is portrait-sized, so its preview
+        // angle is 0 while the rear camera needs 90 in a portrait hold. A fixed
+        // 90 rendered the front preview a quarter turn out.
+        #expect(CameraPreviewRotationPolicy.angle(platformAngle: 0) == 0)
+        #expect(CameraPreviewRotationPolicy.angle(platformAngle: 90) == 90)
+        #expect(CameraPreviewRotationPolicy.angle(platformAngle: 180) == 180)
+        #expect(CameraPreviewRotationPolicy.angle(platformAngle: 270) == 270)
+        // An unavailable coordinator keeps the pre-existing fixed angle.
+        #expect(CameraPreviewRotationPolicy.angle(platformAngle: nil) == 90)
+        #expect(CameraPreviewRotationPolicy.angle(platformAngle: .nan) == 90)
+        #expect(CameraPreviewRotationPolicy.fallbackAngle == 90)
+    }
+
     @Test func persistedModeDefaultsAndKey() {
         #expect(CameraPreviewMode.preferenceKey == "camera.previewMode")
         #expect(CameraPreviewMode.allCases == [.neutral, .stock, .log])

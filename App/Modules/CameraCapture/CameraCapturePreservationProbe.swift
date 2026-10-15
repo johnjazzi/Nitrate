@@ -162,7 +162,9 @@ enum CameraHEVCProfilePolicy {
 enum CameraCapturePreservationProbe {
     private static let lumaTolerance: Float = 0.03
     private static let chromaTolerance: Float = 0.03
-    private static let synchronizationTolerance: Double = 0.12
+    /// The single 0.12-second A/V timing bound. Shared with the recorder's
+    /// interior source-audio continuity gate so both use one number.
+    static let synchronizationTolerance: Double = 0.12
 
     /// Compressed readers may report PTS zero for an empty audio edit. Measure
     /// the first segment containing recorded audio, not that silent placeholder.
