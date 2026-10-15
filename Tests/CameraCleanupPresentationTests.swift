@@ -82,8 +82,15 @@ struct CameraCleanupPresentationTests {
     }
 
     @Test func detailedStabilizationExplanationIsBehindPanelHelp() throws {
-        let file = try source("App/Modules/CameraCapture/ManualControlsPanel.swift")
-        #expect(file.contains("DisclosureGroup(\"Stabilization help\")"))
-        #expect(file.contains("Recording only · may crop and delay confirmation."))
+        let file = try source("App/Modules/CameraCapture/ManualControlsSurface.swift")
+        let helpStart = try #require(file.range(of: ".popover(isPresented: $showingHelp)"))
+        let helpEnd = try #require(file.range(of: "private var trackHeight"))
+        let help = String(file[helpStart.lowerBound..<helpEnd.lowerBound])
+        #expect(help.contains("Recording only. Preview is independent."))
+        #expect(help.contains("Stronger modes crop more"))
+        #expect(help.contains("Changes are locked during recording and transitions."))
+        #expect(!file[..<helpStart.lowerBound].contains("Recording only."))
+        #expect(file.contains("Image(systemName: \"questionmark.circle\")"))
+        #expect(!file.contains(".cameraUpright()"))
     }
 }

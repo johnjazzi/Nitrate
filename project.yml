@@ -71,6 +71,8 @@ targets:
       - path: Tests/CameraCleanupPresentationTests.swift
       - path: App/Modules/CameraCapture/RecordingTimerBadge.swift
       - path: App/Modules/CameraCapture/ManualControlsOverlay.swift
+      - path: App/Modules/CameraCapture/ManualControlsSurface.swift
+      - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
       - path: App/Modules/CameraCapture/RecordButtonPresentation.swift
       - path: App/Modules/CameraCapture/RecordingStatusFace.swift
       - path: App/Modules/CameraCapture/CameraTopPanelLayout.swift
@@ -164,6 +166,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
       - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
       - path: App/Modules/CameraCapture/ManualControlsOverlay.swift
+      - path: App/Modules/CameraCapture/ManualControlsSurface.swift
       - path: App/Modules/CameraCapture/RulerScale.swift
       - path: App/Modules/CameraCapture/CameraSampleBufferRecorder.swift
       - path: App/Modules/CameraCapture/CameraCapturePreservationProbe.swift

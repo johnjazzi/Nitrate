@@ -104,10 +104,11 @@ struct CameraDesignRenderTests {
                 #expect(degrees > 0 ? rect.maxX == size.width - 8 : rect.minX == 8)
                 let manual = ManualControlsOverlayGeometry.rect(viewport: size, toolbarBottom: 150,
                                                                 controlsTop: size.height - 180,
-                                                                excluding: rect)
+                                                                excluding: rect, rotationDegrees: degrees)
                 #expect(CGRect(origin: .zero, size: size).contains(manual))
                 #expect(!manual.intersects(rect))
-                #expect(manual.width >= size.width - 80)
+                #expect(manual.width <= 210)
+                #expect(manual.height <= 400)
             }
         }
         #expect(RecordingStatusOverlayGeometry.rect(viewport: CGSize(width: 390, height: 750),

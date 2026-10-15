@@ -54,6 +54,7 @@ struct ContentView: View {
 
     /// Manual zoom/focus pop-over with a live exposure readout.
     @State private var showManualControls = false
+    @AppStorage("camera.manualControlsExpanded") private var manualControlsExpanded = false
     @State private var manualFocusPosition: Double = 0.5
     @State private var isManualFocus = false
 
@@ -108,12 +109,16 @@ struct ContentView: View {
                     ManualControlsOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
                                           excluding: RecordingStatusOverlayGeometry.rect(
                                             viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
-                                            rotationDegrees: statusRotationDegrees)) {
+                                            rotationDegrees: statusRotationDegrees),
+                                          expanded: manualControlsExpanded,
+                                          rotationDegrees: statusRotationDegrees) {
                         ManualControlsPanel(
                             cameraViewModel: cameraViewModel,
                             zoomFactor: $zoomFactor,
                             manualFocusPosition: $manualFocusPosition,
                             isManualFocus: $isManualFocus,
+                            expanded: $manualControlsExpanded,
+                            landscape: abs(statusRotationDegrees) == 90,
                             onDismiss: { withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false } }
                         )
                     }
