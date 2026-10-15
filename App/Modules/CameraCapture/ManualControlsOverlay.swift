@@ -27,7 +27,11 @@ enum ManualControlsOverlayGeometry {
         let landscape = abs(rotationDegrees) == 90
         let width = min(available.width, landscape ? face.height : face.width)
         let height = min(available.height, landscape ? face.width : face.height)
-        return CGRect(x: available.maxX - width, y: available.minY, width: width, height: height)
+        // In a portrait-locked canvas +90° maps portrait right to the
+        // physical top. Put the panel on the opposite edge in that hold;
+        // -90° already maps the portrait right edge to physical bottom.
+        let x = landscape && rotationDegrees > 0 ? available.minX : available.maxX - width
+        return CGRect(x: x, y: available.minY, width: width, height: height)
     }
 }
 

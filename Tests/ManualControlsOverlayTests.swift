@@ -151,6 +151,38 @@ struct ManualControlsOverlayTests {
         #expect(ManualStabilizationSelection.toggleTarget(enabled: true, snapshot: locked, remembered: .cinematic) == nil)
     }
 
+    @Test func landscapeManualPanelPinsToPhysicalBottomOppositeTimer() throws {
+        for size in [CGSize(width: 320, height: 480), CGSize(width: 390, height: 763),
+                     CGSize(width: 430, height: 850)] {
+            for degrees in [90.0, -90.0] {
+                for expanded in [false, true] {
+                    let timer = try #require(RecordingStatusOverlayGeometry.rect(
+                        viewport: size, toolbarBottom: 110, controlsTop: size.height - 180,
+                        rotationDegrees: degrees))
+                    let available = ManualControlsOverlayGeometry.availableRect(
+                        viewport: size, toolbarBottom: 110, controlsTop: size.height - 180,
+                        excluding: timer)
+                    let panel = ManualControlsOverlayGeometry.rect(
+                        viewport: size, toolbarBottom: 110, controlsTop: size.height - 180,
+                        excluding: timer, expanded: expanded, rotationDegrees: degrees)
+                    #expect(!panel.intersects(timer))
+                    if degrees > 0 {
+                        #expect(panel.minX == available.minX,
+                                "A +90° face belongs on portrait left, the physical bottom.")
+                    } else {
+                        #expect(panel.maxX == available.maxX,
+                                "A -90° face belongs on portrait right, the physical bottom.")
+                    }
+                    let physicalTurn = CGAffineTransform(rotationAngle: -degrees * .pi / 180)
+                    let panelEdge = CGPoint(x: panel.midX - size.width / 2, y: 0).applying(physicalTurn)
+                    let timerEdge = CGPoint(x: timer.midX - size.width / 2, y: 0).applying(physicalTurn)
+                    #expect(panelEdge.y > timerEdge.y,
+                            "In both physical holds the manual panel must sit below the timer.")
+                }
+            }
+        }
+    }
+
     @Test func wholeFaceReservesTurnedBoundsAndStatusRail() {
         for size in [CGSize(width: 320, height: 430), CGSize(width: 390, height: 763), CGSize(width: 430, height: 820)] {
             for expanded in [false, true] {
