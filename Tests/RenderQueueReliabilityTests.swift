@@ -357,6 +357,80 @@ struct RenderQueueReliabilityTests {
         #expect(model.currentSessionFailures.isEmpty)
     }
 
+    @Test func dismissedFailureDoesNotReturnWhenLaterJobsPersistSuccessfully() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { job in
+            if job.stockId == "A" { throw QueueTestError.render }
+            return files.output
+        }, save: { _ in }, postDelivery: { _, _ in })
+        model.enqueue(sourceURL: files.source, stockId: "A", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { !model.isProcessing }
+        let failedID = try #require(model.jobs.first?.id)
+        let failure = try #require(model.rendererErrorMessage)
+        #expect(model.jobs.first?.status == .failed)
+
+        // This is the current banner's dismissal path; the implementation will
+        // replace it with an explicit acknowledgement action.
+        model.rendererErrorMessage = nil
+        model.enqueue(sourceURL: files.source, stockId: "B", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { !model.isProcessing }
+        #expect(model.rendererErrorMessage == nil)
+        model.enqueue(sourceURL: files.source, stockId: "B", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { !model.isProcessing }
+        #expect(model.rendererErrorMessage == nil)
+        #expect(model.jobs.first { $0.id == failedID }?.errorMessage == failure)
+        #expect(model.currentSessionFailures.map(\.id) == [failedID])
+        #expect(model.historyJobs.count == 3)
+    }
+
+    @Test func differentJobFailureWithIdenticalTextIsANewAlert() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in throw QueueTestError.render },
+                                         save: { _ in }, postDelivery: { _, _ in })
+        model.enqueue(sourceURL: files.source, stockId: "A", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { !model.isProcessing }
+        let firstMessage = try #require(model.rendererErrorMessage)
+        model.rendererErrorMessage = nil
+        model.enqueue(sourceURL: files.source, stockId: "C", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { !model.isProcessing }
+        #expect(model.jobs.count == 2)
+        #expect(model.jobs[0].id != model.jobs[1].id)
+        #expect(model.jobs.allSatisfy { $0.status == .failed })
+        #expect(model.jobs[0].errorMessage == model.jobs[1].errorMessage)
+        #expect(model.rendererErrorMessage == firstMessage)
+    }
+
+    @Test func retryFailureAnnouncesAgainAndKeepsTheFailedJob() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        var attempts = 0
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { _ in
+            attempts += 1
+            throw QueueTestError.render
+        }, save: { _ in }, postDelivery: { _, _ in })
+        model.enqueue(sourceURL: files.source, stockId: "A", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { !model.isProcessing }
+        let failedID = try #require(model.jobs.first?.id)
+        #expect(model.rendererErrorMessage != nil)
+        model.rendererErrorMessage = nil
+        model.retry(jobId: failedID)
+        try await waitUntil { !model.isProcessing }
+        #expect(attempts == 2)
+        #expect(model.rendererErrorMessage == model.jobs.first?.errorMessage)
+        #expect(model.currentSessionFailures.map(\.id) == [failedID])
+        #expect(model.historyJobs.map(\.id) == [failedID])
+    }
+
     @Test func oldQueueJsonWithoutDeliveryFieldsStillDecodes() throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }
