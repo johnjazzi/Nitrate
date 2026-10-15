@@ -64,6 +64,8 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Tests/CameraDesignTests.swift
+      - path: Tests/ManualControlsOverlayTests.swift
+      - path: App/Modules/CameraCapture/ManualControlsOverlay.swift
       - path: App/Modules/CameraCapture/RecordButtonPresentation.swift
     settings:
       SWIFT_VERSION: "6.0"
@@ -148,6 +150,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
       - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
+      - path: App/Modules/CameraCapture/ManualControlsOverlay.swift
       - path: App/Modules/CameraCapture/RulerScale.swift
       - path: App/Modules/CameraCapture/CameraSampleBufferRecorder.swift
       - path: App/Modules/CameraCapture/CameraCapturePreservationProbe.swift

@@ -21,12 +21,10 @@ struct CameraCleanupPresentationTests {
         #expect(badge.contains("RecordingTimerBadge("))
     }
 
-    @Test func manualPanelDoesNotParticipateInMeasuredTopBar() throws {
+    @Test func manualPanelIsIndependentOfStationaryChromeAndPreviewIdentity() throws {
         let file = try source("App/ContentView.swift")
-        // The measurement must belong to topBar, before its non-sizing overlay.
-        #expect(file.contains("topBar\n                        .background(controlMeasurement(\"top\"))\n                        .overlay(alignment: .bottom)"))
-        #expect(file.contains(".alignmentGuide(.bottom) { $0[.top] }"))
-        #expect(file.contains(".fixedSize(horizontal: false, vertical: true)"))
+        #expect(file.contains(".background(controlMeasurement(\"top\"))"))
+        #expect(file.contains("ManualControlsOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY)"))
         #expect(file.components(separatedBy: "CameraView(viewModel:").count == 2)
     }
 

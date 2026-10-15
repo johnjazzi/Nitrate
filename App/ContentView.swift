@@ -88,31 +88,25 @@ struct ContentView: View {
                 VStack(spacing: 0) {
                     topBar
                         .background(controlMeasurement("top"))
-                        .overlay(alignment: .bottom) {
-                            // The panel floats below the toolbar without changing
-                            // measured chrome or the camera's framing/focus bounds.
-                            if showManualControls {
-                                ManualControlsPanel(
-                                    cameraViewModel: cameraViewModel,
-                                    zoomFactor: $zoomFactor,
-                                    manualFocusPosition: $manualFocusPosition,
-                                    isManualFocus: $isManualFocus,
-                                    onDismiss: { withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false } }
-                                )
-                                .frame(maxWidth: .infinity)
-                                .padding(.leading, 76)
-                                .padding(.trailing, 16)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .alignmentGuide(.bottom) { $0[.top] }
-                                .transition(.opacity)
-                            }
-                        }
 
                     Spacer()
 
                     controlBar
                         .padding(.bottom, 8)
                         .background(controlMeasurement("bottom"))
+                }
+
+                if showManualControls, let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
+                    ManualControlsOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY) {
+                        ManualControlsPanel(
+                            cameraViewModel: cameraViewModel,
+                            zoomFactor: $zoomFactor,
+                            manualFocusPosition: $manualFocusPosition,
+                            isManualFocus: $isManualFocus,
+                            onDismiss: { withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false } }
+                        )
+                    }
+                    .transition(.opacity)
                 }
 
                 errorOverlays
