@@ -206,9 +206,14 @@ the stock's D/T light tag.
 
 ### Settings and purchase
 
-Seven-day trial, then a StoreKit-managed yearly subscription or a lifetime
-unlock (`com.filmemulation.subscription.yearly`, `com.filmemulation.lifetime`).
-Prices come from StoreKit.
+A seven-day evaluation of the render, then a StoreKit-managed yearly
+subscription or a lifetime unlock (`com.filmemulation.subscription.yearly`,
+`com.filmemulation.lifetime`). Prices come from StoreKit.
+
+Recording is never gated: after the evaluation ends you can keep shooting Apple
+Log, and the takes queue until the render is unlocked. This is an in-app
+evaluation, not an Apple-managed introductory offer — do not describe it as a
+free trial in store copy.
 
 ## How the film LUTs are made
 
