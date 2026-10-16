@@ -56,13 +56,17 @@ struct ManualControlsOverlayTests {
     @MainActor @Test func defaultOverlayDoesNotStretchIntoAvailableSlab() throws {
         let view = ManualControlsOverlay(viewport: CGSize(width: 390, height: 763),
                                          toolbarBottom: 60, controlsTop: 580) {
-            Text("MANUAL").frame(maxWidth: .infinity).frame(height: 100).background(.red)
+            // Use literal RGB: the semantic system red varies with appearance
+            // and can exceed this test's deliberately strict green threshold.
+            Text("MANUAL").frame(maxWidth: .infinity).frame(height: 100)
+                .background(Color(.sRGB, red: 1, green: 0, blue: 0, opacity: 1))
         }
         let host = NSHostingView(rootView: view)
         host.frame = CGRect(x: 0, y: 0, width: 390, height: 763)
         host.layoutSubtreeIfNeeded()
         let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
         host.cacheDisplay(in: host.bounds, to: rep)
+        try save(#require(rep.cgImage), name: "compact-marker-host")
         let redColumns = (0..<rep.pixelsWide).filter { x in
             (0..<rep.pixelsHigh).contains { y in
                 guard let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return false }
