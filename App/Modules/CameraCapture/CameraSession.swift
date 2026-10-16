@@ -449,7 +449,9 @@ final class CameraSession: NSObject {
         let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: nil)
         rotationCoordinator = coordinator
         captureRotationState = CameraCaptureRotationPolicy()
+#if DEBUG
         logOrientationDiagnostics(for: device, coordinator: coordinator)
+#endif
         let deviceID = device.uniqueID
         rotationObservation = coordinator.observe(\.videoRotationAngleForHorizonLevelCapture,
                                                   options: [.initial, .new]) { [weak self] _, change in
