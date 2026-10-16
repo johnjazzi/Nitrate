@@ -61,15 +61,15 @@ When you upload, App Store Connect asks about encryption. Answer truthfully for 
 
 ## Step 6 — Products (only if you are selling)
 
-Lifetime unlock — **Monetization → In-App Purchases → + → Non-Consumable**, product ID `com.filmemulation.lifetime`.[21]
+Lifetime unlock — **Monetization → In-App Purchases → + → Non-Consumable**, product ID `com.nitrate.lifetime`.[21]
 
-Yearly subscription — **Monetization → Subscriptions → create a subscription group → Create**, product ID `com.filmemulation.subscription.yearly`, duration **1 year**.[20]
+Yearly subscription — **Monetization → Subscriptions → create a subscription group → Create**, product ID `com.nitrate.subscription.yearly`, duration **1 year**.[20]
 
 For each: reference name, localized display name and description, price, availability, and review information. Note that **your first auto-renewable subscription must be submitted with a new app version**, and the price/duration cannot be changed after submission.[20]
 
 Test the products with a sandbox account before relying on them; sandbox purchases do not incur charges.[15]
 
-**Decide the product identifiers before you create them.** App Store Connect will not let you change or delete a product identifier once the product exists — you can only stop selling it. The source currently uses `com.filmemulation.lifetime` and `com.filmemulation.subscription.yearly` from the pre-rename namespace. Nothing is registered yet, so either keep them (they work fine and are never shown to users) or rename them to `app.nitrate.*` now, which also means updating `PaidProduct` in `App/Modules/Purchase/AppAccessPolicy.swift` and its test.
+**Create these identifiers exactly as written.** App Store Connect will not let you change or delete a product identifier once the product exists — you can only stop selling it. The IDs above are the single source of truth in `PaidProduct` (`App/Modules/Purchase/AppAccessPolicy.swift`), pinned by a test; if you register something different, change the code and that test in the same commit.
 
 ## Step 7 — Build and upload
 

@@ -207,8 +207,8 @@ the stock's D/T light tag.
 ### Settings and purchase
 
 A seven-day evaluation of the render, then a StoreKit-managed yearly
-subscription or a lifetime unlock (`com.filmemulation.subscription.yearly`,
-`com.filmemulation.lifetime`). Prices come from StoreKit.
+subscription or a lifetime unlock (`com.nitrate.subscription.yearly`,
+`com.nitrate.lifetime`). Prices come from StoreKit.
 
 Recording is never gated: after the evaluation ends you can keep shooting Apple
 Log, and the takes queue until the render is unlocked. This is an in-app
@@ -344,12 +344,9 @@ schemes, and the generated `*.xcodeproj` is gitignored. The Xcode project, app
 target and scheme are named `Nitrate`, and the bundle identifier is
 `com.nitrate.app`, matching the App Store Connect record.
 
-Two identifiers still carry the older `com.filmemulation` namespace on purpose.
-The `com.filmemulation.*` movie metadata keys are written into recorded and
+One identifier still carries the older `com.filmemulation` namespace on purpose:
+the `com.filmemulation.*` movie metadata keys. They are written into recorded and
 rendered files, so renaming them changes the file contract rather than a label.
-The StoreKit product identifiers (`com.filmemulation.subscription.yearly`,
-`com.filmemulation.lifetime`) are registered in App Store Connect, where a
-product identifier cannot be changed once created.
 
 The iOS app target and the macOS `RenderCLI`/`RenderCLITests` targets share the
 processing pipeline and film-stock sources, so the renderer is testable at 4K on

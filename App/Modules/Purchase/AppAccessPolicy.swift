@@ -32,8 +32,8 @@ enum AccessDistribution: String, Sendable, CaseIterable {
 /// The two paid products the app can grant. Raw values are the shipped App Store
 /// product identifiers and must stay in sync with the App Store Connect record.
 enum PaidProduct: String, Sendable, CaseIterable {
-    case yearlySubscription = "com.filmemulation.subscription.yearly"
-    case lifetime = "com.filmemulation.lifetime"
+    case yearlySubscription = "com.nitrate.subscription.yearly"
+    case lifetime = "com.nitrate.lifetime"
 
     /// The product a StoreKit transaction corresponds to, or `nil` for an
     /// unexpected identifier that must not grant access.

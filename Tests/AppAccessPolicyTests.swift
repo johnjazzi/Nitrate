@@ -20,8 +20,8 @@ struct AppAccessPolicyTests {
 
     @Test func shippedProductIdentifiersMatchStoreManager() {
         // Guard: the policy's product table is the same contract StoreManager buys.
-        #expect(PaidProduct.yearlySubscription.rawValue == "com.filmemulation.subscription.yearly")
-        #expect(PaidProduct.lifetime.rawValue == "com.filmemulation.lifetime")
+        #expect(PaidProduct.yearlySubscription.rawValue == "com.nitrate.subscription.yearly")
+        #expect(PaidProduct.lifetime.rawValue == "com.nitrate.lifetime")
         #expect(PaidProduct.allCases.count == 2)
     }
 

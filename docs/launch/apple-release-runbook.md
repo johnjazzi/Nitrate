@@ -9,7 +9,7 @@ Prepared October 15, 2026. This is a submission runbook, not evidence that an up
 - Local Xcode reports 27.0. A signed development build is not a distribution archive or successful App Store validation.
 - Required capture format is checked at runtime; additionally `CameraSession.swift:784–786` refuses writer setup below **iOS 27**, despite the install target of 17 and current README's capture claim of 26. Resolve minimum OS or a tested backport before recruiting testers; runtime format detection alone does not clear this mismatch.
 - No tracked `PrivacyInfo.xcprivacy`, general project LICENSE, distribution export configuration, or release automation was found in the initial file inventory. Separate audit reports determine remediation; absence of a file alone is not a completed compliance assessment.
-- StoreKit source identifiers: `com.filmemulation.subscription.yearly`, `com.filmemulation.lifetime`. Product availability, prices, agreements and review status in App Store Connect are unknown.
+- StoreKit source identifiers: `com.nitrate.subscription.yearly`, `com.nitrate.lifetime`. These are **not yet registered** in App Store Connect; availability, prices, agreements and review status are unknown.
 - Disk at initial prelaunch inspection: 191 MiB free. Do not archive or upload until space has been recovered and verified.
 
 ## Gate 0 — owner decisions and access
