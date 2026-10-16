@@ -1,126 +1,183 @@
+import Foundation
 import StoreKit
 
-/// CAP-9: StoreKit 2 purchase manager with 7-day free trial.
-/// $5/year subscription or $10 lifetime purchase.
+/// CAP-9 / L08: StoreKit 2 purchase and verified-entitlement source.
+///
+/// This type owns every StoreKit call and reduces the results to the pure
+/// `AppAccessPolicy` inputs (`AccessDistribution` + `[VerifiedEntitlement]`).
+/// It never derives access from a user-editable flag: the distribution channel
+/// comes from the App Store-signed `AppTransaction`, and purchases only count
+/// when the transaction verifies against a known product.
 @MainActor
-final class StoreManager: Observable {
-    private let subscriptionID = "com.filmemulation.subscription.yearly"
-    private let lifetimeID = "com.filmemulation.lifetime"
+final class StoreManager {
+    static let yearlySubscriptionID = PaidProduct.yearlySubscription.rawValue
+    static let lifetimeID = PaidProduct.lifetime.rawValue
+
+    /// Legacy persistence key; the local 7-day evaluation window is anchored to
+    /// it and kept for compatibility with installs that already recorded it.
+    static let installDateKey = "install_date"
 
     private(set) var products: [Product] = []
-    private(set) var isTrialActive = false
-    private(set) var isPurchased = false
+    /// Non-nil when the last product load failed; surfaced so the UI can show an
+    /// unavailable state instead of hardcoded prices.
+    private(set) var productLoadError: String?
 
     private var updatesTask: Task<Void, Never>?
+    private var transactionHandler: (@MainActor () async -> Void)?
 
-    // MARK: - Trial Management
+    // MARK: - Observation
 
-    /// Check if the 7-day trial is active or the user has purchased.
-    func checkStatus() async {
-        // Restore purchases
-        for await result in Transaction.currentEntitlements {
-            guard case .verified(let transaction) = result else { continue }
-            await handleVerifiedTransaction(transaction)
+    /// Start the app-lifetime transaction listener. Idempotent: a second call is
+    /// ignored so the listener cannot be duplicated or torn down by a view.
+    func startTransactionListener(_ handler: @escaping @MainActor () async -> Void) {
+        guard updatesTask == nil else {
+            transactionHandler = handler
+            return
         }
-
-        // Start trial tracking if not purchased
-        if !isPurchased {
-            checkTrialStatus()
-        }
-    }
-
-    /// Start observing transaction updates.
-    func observeTransactions() {
-        updatesTask = Task {
+        transactionHandler = handler
+        updatesTask = Task { [weak self] in
             for await update in Transaction.updates {
                 guard case .verified(let transaction) = update else { continue }
-                await handleVerifiedTransaction(transaction)
                 await transaction.finish()
+                await self?.transactionHandler?()
             }
         }
     }
 
-    /// Load StoreKit products.
-    func loadProducts() async {
-        do {
-            let ids: [String] = [subscriptionID, lifetimeID]
-            products = try await Product.products(for: ids)
-        } catch {
-            // Product loading failure — retry can be triggered by user
-        }
-    }
-
-    /// Purchase the yearly subscription.
-    func purchaseSubscription() async throws {
-        guard let product = products.first(where: { $0.id == subscriptionID }) else {
-            throw PurchaseError.productNotFound
-        }
-        let result = try await product.purchase()
-        switch result {
-        case .success(let verification):
-            guard case .verified(let transaction) = verification else { return }
-            isPurchased = true
-            await transaction.finish()
-        case .userCancelled, .pending:
-            break
-        @unknown default:
-            break
-        }
-    }
-
-    /// Purchase lifetime unlock.
-    func purchaseLifetime() async throws {
-        guard let product = products.first(where: { $0.id == lifetimeID }) else {
-            throw PurchaseError.productNotFound
-        }
-        let result = try await product.purchase()
-        switch result {
-        case .success(let verification):
-            guard case .verified(let transaction) = verification else { return }
-            isPurchased = true
-            await transaction.finish()
-        case .userCancelled, .pending:
-            break
-        @unknown default:
-            break
-        }
-    }
-
-    func stopObserving() {
+    /// Explicit teardown for app termination only. Deliberately not called when
+    /// the settings screen disappears — entitlement updates are app-lifetime.
+    func stopTransactionListener() {
         updatesTask?.cancel()
         updatesTask = nil
+        transactionHandler = nil
     }
 
-    // MARK: - Private
+    // MARK: - Entitlement snapshot
 
-    private func handleVerifiedTransaction(_ transaction: Transaction) async {
-        isPurchased = true
-        UserDefaults.standard.set(transaction.purchaseDate, forKey: "purchase_date")
+    /// The distribution channel resolved from the App Store-signed app
+    /// transaction. Debug builds are unrestricted by compile-time guard and never
+    /// reach StoreKit here.
+    func resolveDistribution() async -> AccessDistribution {
+        #if DEBUG
+        return .debug
+        #else
+        do {
+            switch try await AppTransaction.shared {
+            case .verified(let appTransaction):
+                let environment = appTransaction.environment
+                if environment == .production { return .appStore }
+                if environment == .sandbox { return .testFlight }
+                return .unknown
+            case .unverified:
+                return .unknown
+            }
+        } catch {
+            // App Transaction needs the App Store to answer; an offline or
+            // unauthenticated launch is "unknown", not a free grant.
+            return .unknown
+        }
+        #endif
     }
 
-    private func checkTrialStatus() {
-        let installDate = installDateKey
-        let trialDuration: TimeInterval = 7 * 24 * 60 * 60 // 7 days
-        isTrialActive = Date().timeIntervalSince(installDate) < trialDuration
+    /// Verified, current entitlements reduced to the policy input. Unverified
+    /// results are dropped; expiry and revocation are carried through so the
+    /// pure policy can reject them.
+    func verifiedEntitlements() async -> [VerifiedEntitlement] {
+        var entitlements: [VerifiedEntitlement] = []
+        for await result in Transaction.currentEntitlements {
+            guard case .verified(let transaction) = result else { continue }
+            entitlements.append(VerifiedEntitlement(
+                productID: transaction.productID,
+                expirationDate: transaction.expirationDate,
+                revocationDate: transaction.revocationDate))
+        }
+        return entitlements
     }
 
-    /// First-launch tracking for trial start.
-    private var installDateKey: Date {
-        if let stored = UserDefaults.standard.object(forKey: "install_date") as? Date {
+    /// First-launch anchor for the local trial evaluation. Recorded once and
+    /// reused; the policy treats a missing value as "no trial".
+    var firstLaunchDate: Date? {
+        if let stored = UserDefaults.standard.object(forKey: Self.installDateKey) as? Date {
             return stored
         }
         let now = Date()
-        UserDefaults.standard.set(now, forKey: "install_date")
+        UserDefaults.standard.set(now, forKey: Self.installDateKey)
         return now
     }
+
+    // MARK: - Products
+
+    /// Load the shipped products. A failure clears the cache and records the
+    /// error so the purchase screen can offer a retry.
+    func loadProducts() async {
+        do {
+            products = try await Product.products(for: [Self.yearlySubscriptionID, Self.lifetimeID])
+            productLoadError = nil
+        } catch {
+            products = []
+            productLoadError = error.localizedDescription
+        }
+    }
+
+    /// Localized `Product.displayPrice`, or `nil` until the product has loaded.
+    func displayPrice(for product: PaidProduct) -> String? {
+        products.first { $0.id == product.rawValue }?.displayPrice
+    }
+
+    // MARK: - Purchase
+
+    /// Purchase a product. Returns a real outcome; an unverified transaction
+    /// throws rather than reporting success.
+    func purchase(_ product: PaidProduct) async throws -> PurchaseOutcome {
+        guard let storeProduct = products.first(where: { $0.id == product.rawValue }) else {
+            throw PurchaseError.productNotFound
+        }
+        let result = try await storeProduct.purchase()
+        switch result {
+        case .success(.verified(let transaction)):
+            await transaction.finish()
+            return .purchased
+        case .success(.unverified):
+            throw PurchaseError.verificationFailed
+        case .pending:
+            return .pending
+        case .userCancelled:
+            return .cancelled
+        @unknown default:
+            throw PurchaseError.verificationFailed
+        }
+    }
+
+    /// `AppStore.sync()` is called only for an explicit user-initiated Restore.
+    func restore() async throws {
+        do {
+            try await AppStore.sync()
+        } catch {
+            throw PurchaseError.restoreFailed(error.localizedDescription)
+        }
+    }
+}
+
+/// The outcome of a purchase attempt. `purchased` is the only success.
+enum PurchaseOutcome: Equatable {
+    case purchased
+    case cancelled
+    case pending
 }
 
 enum PurchaseError: LocalizedError {
     case productNotFound
+    case verificationFailed
+    case restoreFailed(String)
 
     var errorDescription: String? {
         switch self {
-        case .productNotFound: return "Product not found in App Store."
+        case .productNotFound:
+            return "That product is not available right now."
+        case .verificationFailed:
+            return "The App Store could not verify this purchase."
+        case .restoreFailed(let message):
+            return "Restore failed: \(message)"
         }
     }
 }
