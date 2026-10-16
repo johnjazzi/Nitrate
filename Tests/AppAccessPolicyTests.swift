@@ -106,6 +106,22 @@ struct AppAccessPolicyTests {
         #expect(state.trialDaysRemaining == AppAccessPolicy.trialDayCount)
     }
 
+    @Test func offlineLaunchKeepsTheLastVerifiedChannel() {
+        // A TestFlight tester offline at launch must not be locked out of capture.
+        #expect(AppAccessPolicy.resolvedChannel(current: .unknown, cached: .testFlight) == .testFlight)
+        #expect(AppAccessPolicy.resolvedChannel(current: .unknown, cached: .appStore) == .appStore)
+        // Nothing is invented when no channel was ever verified.
+        #expect(AppAccessPolicy.resolvedChannel(current: .unknown, cached: nil) == .unknown)
+        // A fresh verified answer always wins over the cache.
+        #expect(AppAccessPolicy.resolvedChannel(current: .appStore, cached: .testFlight) == .appStore)
+        #expect(AppAccessPolicy.resolvedChannel(current: .testFlight, cached: .appStore) == .testFlight)
+        // Only genuine channels are worth remembering.
+        #expect(AccessDistribution.testFlight.isCacheable)
+        #expect(AccessDistribution.appStore.isCacheable)
+        #expect(!AccessDistribution.unknown.isCacheable)
+        #expect(!AccessDistribution.debug.isCacheable)
+    }
+
     @Test func missingFirstLaunchIsNotATrial() {
         let state = AppAccessPolicy.evaluate(
             distribution: .appStore,

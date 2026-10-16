@@ -17,6 +17,10 @@ enum AccessDistribution: String, Sendable, CaseIterable {
     case testFlight
     case appStore
     case unknown
+
+    /// Only a genuinely verified install channel is worth remembering. `unknown`
+    /// means the App Store could not answer, not that the app is production.
+    var isCacheable: Bool { self == .testFlight || self == .appStore }
 }
 
 // MARK: - Products
@@ -82,6 +86,15 @@ struct AppAccessState: Equatable, Sendable {
 enum AppAccessPolicy {
     static let trialDuration: TimeInterval = 7 * 24 * 60 * 60
     static let trialDayCount = 7
+
+    /// A channel that could not be resolved this launch keeps the last verified
+    /// channel. Without this, an offline TestFlight tester is locked out of
+    /// capture because the App Store could not answer; a production user is
+    /// unaffected because `.appStore` still requires trial or a verified buy.
+    static func resolvedChannel(current: AccessDistribution,
+                               cached: AccessDistribution?) -> AccessDistribution {
+        current == .unknown ? (cached ?? .unknown) : current
+    }
 
     static func evaluate(distribution: AccessDistribution,
                          firstLaunch: Date?,

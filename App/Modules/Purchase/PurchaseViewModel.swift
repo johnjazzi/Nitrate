@@ -13,10 +13,16 @@ import Observation
 final class PurchaseViewModel {
     private let storeManager = StoreManager()
     private var didStart = false
-    private var distribution: AccessDistribution = .unknown
+    /// Seeded from the last verified channel so a cold, offline launch does not
+    /// briefly lock a beta tester out of capture while StoreKit answers.
+    private var distribution: AccessDistribution
     private var firstLaunch: Date?
     private var verifiedPurchases: [VerifiedEntitlement] = []
     private var refreshGeneration: UInt64 = 0
+
+    init() {
+        distribution = storeManager.cachedDistribution ?? .unknown
+    }
 
     // MARK: - Observable state (existing settings UI)
 

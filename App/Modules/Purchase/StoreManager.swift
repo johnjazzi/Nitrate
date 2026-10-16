@@ -17,6 +17,11 @@ final class StoreManager {
     /// it and kept for compatibility with installs that already recorded it.
     static let installDateKey = "install_date"
 
+    /// The last verified install channel. Used only when this launch cannot reach
+    /// the App Store, so an offline TestFlight tester is not locked out of
+    /// capture. It records a StoreKit-verified fact, not a user-set preference.
+    static let distributionCacheKey = "resolved_access_distribution"
+
     private(set) var products: [Product] = []
     /// Non-nil when the last product load failed; surfaced so the UI can show an
     /// unavailable state instead of hardcoded prices.
@@ -55,12 +60,27 @@ final class StoreManager {
     // MARK: - Entitlement snapshot
 
     /// The distribution channel resolved from the App Store-signed app
-    /// transaction. Debug builds are unrestricted by compile-time guard and never
-    /// reach StoreKit here.
+    /// transaction, falling back to the last verified channel when the store
+    /// cannot answer (offline launch). Debug builds never reach StoreKit here.
     func resolveDistribution() async -> AccessDistribution {
         #if DEBUG
         return .debug
         #else
+        let current = await verifiedDistribution()
+        let resolved = AppAccessPolicy.resolvedChannel(current: current, cached: cachedDistribution)
+        if resolved.isCacheable {
+            UserDefaults.standard.set(resolved.rawValue, forKey: Self.distributionCacheKey)
+        }
+        return resolved
+        #endif
+    }
+
+    var cachedDistribution: AccessDistribution? {
+        UserDefaults.standard.string(forKey: Self.distributionCacheKey)
+            .flatMap(AccessDistribution.init(rawValue:))
+    }
+
+    private func verifiedDistribution() async -> AccessDistribution {
         do {
             switch try await AppTransaction.shared {
             case .verified(let appTransaction):
@@ -76,7 +96,6 @@ final class StoreManager {
             // unauthenticated launch is "unknown", not a free grant.
             return .unknown
         }
-        #endif
     }
 
     /// Verified, current entitlements reduced to the policy input. Unverified
