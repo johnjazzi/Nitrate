@@ -1031,3 +1031,118 @@ enum CameraSampleBufferRecorderError: LocalizedError {
         }
     }
 }
+
+// MARK: - Prelaunch camera state policies
+//
+// Pure decision seams for the prelaunch camera fixes (L02, L09, L10, L11). They
+// live here — rather than inline in the session/view model — so the contracts can
+// be exercised by the RenderCLI test target without constructing an
+// AVCaptureSession or a running camera.
+
+/// Production (not debug-only) audio-evidence contract for a finished take.
+///
+/// A take whose microphone was configured but which appended zero audio packets
+/// is not a clean success: the readable video-only original is still retained,
+/// but the take is reported as a failure. A deliberately video-only take (no
+/// audio settings at all) stays a success.
+enum CameraAudioEvidencePolicy {
+    static func missingConfiguredAudio(requiresAudioEvidence: Bool,
+                                       hasAudioSettings: Bool,
+                                       appendedAudioSamples: Int) -> Bool {
+        // STUB (tests-first): real implementation lands in the fix commit.
+        false
+    }
+}
+
+/// Audio is only reported as configured when its data output actually attaches
+/// to the session.
+///
+/// Attaching the microphone input without the audio output would let the
+/// recorder demand audio evidence for a take that can never deliver PCM,
+/// turning a healthy video-only capture into a false "configured microphone
+/// produced no audio" failure. When the output cannot attach, the input is
+/// rolled back so the session is left cleanly video-only.
+enum CameraMicrophoneAttachmentPolicy {
+    enum Plan: Equatable, Sendable {
+        /// Keep the input and attach the output; audio is configured.
+        case configureAudio
+        /// Roll the input back and leave audio unconfigured.
+        case rollbackInput
+    }
+
+    static func plan(audioOutputCanAttach: Bool) -> Plan {
+        // STUB (tests-first): real implementation lands in the fix commit.
+        .configureAudio
+    }
+}
+
+/// Manual-focus hardware/UI reconciliation (L09).
+enum CameraManualFocusPolicy {
+    /// A preview tap may switch the device to autofocus only when no manual
+    /// focus is committed; otherwise the MF selection would stay lit while the
+    /// lens silently auto-focused.
+    static func allowsAutofocusOnTap(committedLensPosition: Float?) -> Bool {
+        // STUB (tests-first): real implementation lands in the fix commit.
+        true
+    }
+
+    /// After a committed lens switch, reapply the locked focus to the new device
+    /// when it supports custom lens positions; otherwise drop it so the readback
+    /// can reset the UI to autofocus.
+    static func lensPositionAfterLensChange(committed: Float?,
+                                            newDeviceSupportsLock: Bool) -> Float? {
+        // STUB (tests-first): real implementation lands in the fix commit.
+        committed
+    }
+}
+
+/// Manual ISO may not move ahead of the hardware while the session refuses
+/// exposure changes during a recording transition (L10).
+enum CameraManualExposureSelectionPolicy {
+    static func canChangeISO(isStartingRecording: Bool, isRecording: Bool,
+                             isStoppingRecording: Bool) -> Bool {
+        // STUB (tests-first): real implementation lands in the fix commit.
+        true
+    }
+
+    static func reconciledISO(previous: Float, requested: Float, accepted: Bool) -> Float {
+        // STUB (tests-first): real implementation lands in the fix commit.
+        requested
+    }
+}
+
+/// Fences an async per-take result (the recorded-duration check) against a later
+/// take that began while it was suspended (L11).
+enum CameraRecordingTakeFence {
+    struct Snapshot: Equatable, Sendable {
+        let generation: UInt64
+        let origin: Date
+        let stoppedAt: Date?
+    }
+
+    /// Snapshot and clear the finishing take's shared timer state before an
+    /// await, so a later take cannot lose its own timer origin when the old load
+    /// resolves. Returns nil when the take never set an origin.
+    static func snapshotAndClear(origin: inout Date?, stoppedAt: inout Date?,
+                                 generation: UInt64) -> Snapshot? {
+        // STUB (tests-first): real implementation lands in the fix commit.
+        nil
+    }
+
+    /// A verdict may only touch shared state while the same take still owns the
+    /// capture generation and no newer take is starting or running.
+    static func accepts(snapshot: Snapshot, currentGeneration: UInt64,
+                        isRecording: Bool, isStartingRecording: Bool) -> Bool {
+        // STUB (tests-first): real implementation lands in the fix commit.
+        true
+    }
+}
+
+/// Manual-focus hardware state for the view. `lensPosition` is the committed
+/// locked position (nil = autofocus); `isSupported` reflects the active device.
+/// The revision lets the UI discard snapshots queued before a lens change.
+struct CameraManualFocusSnapshot: Sendable, Equatable {
+    let lensPosition: Float?
+    let isSupported: Bool
+    let cameraRevision: UInt64
+}
