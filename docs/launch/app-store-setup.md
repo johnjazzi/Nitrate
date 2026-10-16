@@ -4,14 +4,13 @@ October 15, 2026. Ordered so each step only needs the previous one. Nothing here
 
 Official sources for every Apple step are listed at the end.
 
-## Step 0 — Check what already exists
+## Step 0 — The record already exists
 
-The bundle identifier is `app.nitrate`; the StoreKit product IDs are still `com.filmemulation.*` (see the note in Step 6). Nothing is shipped yet — an App Store lookup for the previous identifier returns no app — so this is the moment to register the identifier you want to keep.
+The App Store Connect record is **nitrate.camera**, bundle ID **`com.nitrate.app`**, so the code must use exactly that identifier — an upload whose bundle ID differs from the record is rejected. `project.yml` has been set to `com.nitrate.app` and the built `Info.plist` verified.
 
-- **If it exists:** use it. Do not create a second record and do not change the bundle ID — an identifier that has shipped cannot be reused for a different app.
-- **If it does not:** create it in Step 2.
+An earlier identifier, `com.filmemulation.app`, appears throughout the history and is still used by the `com.filmemulation.*` movie metadata keys and the StoreKit product IDs. It is not published: an App Store lookup for it returns no app. If an unused App ID for it sits in the developer portal, deleting it is optional housekeeping.
 
-This check is not optional: creating a duplicate wastes the identifier permanently.
+Do not create a second app record. An identifier that has shipped can never be reused for a different app.
 
 ## Step 1 — Account and agreements (Account Holder only)
 
@@ -30,9 +29,9 @@ In App Store Connect → **Apps** → **+** → **New App**:[3]
 | Field | Value |
 |---|---|
 | Platform | iOS |
-| Name | Your chosen App Store name (must be unique on the store) |
+| Name | `nitrate.camera` (already registered) |
 | Primary language | Your language |
-| Bundle ID | `app.nitrate` |
+| Bundle ID | `com.nitrate.app` |
 | SKU | Any internal ID, e.g. `nitrate-ios-001`. Never shown to users |
 | User access | Full access |
 

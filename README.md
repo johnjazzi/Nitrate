@@ -337,7 +337,7 @@ crush blacks or clip highlights by construction.
 XcodeGen is the source of truth: `project.yml` defines the project, targets and
 schemes, and the generated `*.xcodeproj` is gitignored. The Xcode project, app
 target and scheme are named `Nitrate`, and the bundle identifier is
-`app.nitrate`.
+`com.nitrate.app`, matching the App Store Connect record.
 
 Two identifiers still carry the older `com.filmemulation` namespace on purpose.
 The `com.filmemulation.*` movie metadata keys are written into recorded and

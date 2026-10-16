@@ -109,12 +109,12 @@ targets:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UILaunchStoryboardName: LaunchScreen
-        # Renamed to the Nitrate identifier before the first release. Nothing was
-        # ever shipped under the previous identifier: an App Store lookup for
-        # com.filmemulation.app returns no app. The com.filmemulation.* movie
-        # metadata keys are deliberately unchanged — they are written into
-        # recorded files, so renaming them would change the file contract.
-        PRODUCT_BUNDLE_IDENTIFIER: app.nitrate
+        # Must match the App Store Connect app record exactly, or the upload is
+        # rejected. The record (nitrate.camera) uses com.nitrate.app. The
+        # com.filmemulation.* movie metadata keys are deliberately unchanged:
+        # they are written into recorded files, so renaming them would change
+        # the file contract.
+        PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: "U43C6BCZFS"
         CODE_SIGN_IDENTITY: "Apple Development"

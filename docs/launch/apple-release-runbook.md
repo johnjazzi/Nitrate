@@ -5,7 +5,7 @@ Prepared October 15, 2026. This is a submission runbook, not evidence that an up
 ## Current repository evidence
 
 - Reviewed base: `150ca6f` on `dev`.
-- `project.yml`: bundle `app.nitrate`; development team `U43C6BCZFS`; version `0.1.0`; build `1`; deployment target **iOS 27**; archive configuration Release.
+- `project.yml`: bundle `com.nitrate.app`; development team `U43C6BCZFS`; version `0.1.0`; build `1`; deployment target **iOS 27**; archive configuration Release.
 - Local Xcode reports 27.0. A signed development build is not a distribution archive or successful App Store validation.
 - Required capture format is checked at runtime; additionally `CameraSession.swift:784–786` refuses writer setup below **iOS 27**, despite the install target of 17 and current README's capture claim of 26. Resolve minimum OS or a tested backport before recruiting testers; runtime format detection alone does not clear this mismatch.
 - No tracked `PrivacyInfo.xcprivacy`, general project LICENSE, distribution export configuration, or release automation was found in the initial file inventory. Separate audit reports determine remediation; absence of a file alone is not a completed compliance assessment.
