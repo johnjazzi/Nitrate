@@ -14,6 +14,10 @@ import Foundation
 ///                   as a paid or beta customer)
 enum AccessDistribution: String, Sendable, CaseIterable {
     case debug
+    /// A locally signed build with no App Store receipt: a development install.
+    /// App Store installs always carry a receipt, so this cannot unlock a real
+    /// customer.
+    case development
     case testFlight
     case appStore
     case unknown
@@ -101,9 +105,10 @@ enum AppAccessPolicy {
                          now: Date,
                          verifiedEntitlements: [VerifiedEntitlement]) -> AppAccessState {
         let isBeta = distribution == .testFlight
-        // Debug builds and genuine TestFlight betas are unrestricted. Production
-        // and unresolved channels must earn access via trial or a verified buy.
-        let isUnrestricted = distribution == .debug || isBeta
+        // Debug builds, genuine TestFlight betas and local development installs
+        // are unrestricted. Production and unresolved channels must earn access
+        // via trial or a verified buy.
+        let isUnrestricted = distribution == .debug || distribution == .development || isBeta
 
         let hasVerifiedPurchase = verifiedEntitlements.contains { entitlement in
             guard let product = PaidProduct.expected(for: entitlement.productID),

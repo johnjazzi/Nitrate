@@ -81,6 +81,15 @@ final class StoreManager {
     }
 
     private func verifiedDistribution() async -> AccessDistribution {
+        // A build with no App Store receipt did not come from the App Store: a
+        // development install or a locally signed Release build. App Store
+        // installs always carry a receipt, so this cannot unlock a real
+        // customer. It is also what keeps the developer unblocked without a
+        // personal subscription.
+        guard let receiptURL = Bundle.main.appStoreReceiptURL,
+              FileManager.default.fileExists(atPath: receiptURL.path) else {
+            return .development
+        }
         do {
             switch try await AppTransaction.shared {
             case .verified(let appTransaction):

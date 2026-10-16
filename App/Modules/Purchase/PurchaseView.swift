@@ -20,7 +20,7 @@ struct PurchaseView: View {
                     // Trial status
                     trialStatusSection
 
-                    if viewModel.isBetaAccess {
+                    if viewModel.isBetaAccess || viewModel.isDevelopmentAccess {
                         betaBanner
                     } else if !viewModel.isPurchased {
                         // Purchase options
@@ -61,7 +61,17 @@ struct PurchaseView: View {
 
     private var trialStatusSection: some View {
         VStack(spacing: 8) {
-            if viewModel.isBetaAccess {
+            if viewModel.isDevelopmentAccess {
+                Image(systemName: "hammer.fill")
+                    .font(.largeTitle)
+                    .foregroundStyle(.tint)
+                Text("Development Build")
+                    .font(.title2.bold())
+                Text("This build did not come from the App Store, so every feature is unlocked. "
+                     + "Customers installing from the App Store are unaffected.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            } else if viewModel.isBetaAccess {
                 Image(systemName: "testtube.2")
                     .font(.largeTitle)
                     .foregroundStyle(.tint)

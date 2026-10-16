@@ -57,6 +57,9 @@ final class PurchaseViewModel {
 
     var trialDaysRemaining: Int { access.trialDaysRemaining }
 
+    /// A locally signed build that did not come from the App Store.
+    var isDevelopmentAccess: Bool { distribution == .development }
+
     /// Products have not loaded, so prices must render as unavailable.
     var pricesUnavailable: Bool {
         subscriptionPrice == nil && lifetimePrice == nil
@@ -164,6 +167,12 @@ final class PurchaseViewModel {
         isTrialActive = access.trialActive
         isPurchased = access.hasVerifiedPurchase
         daysRemaining = access.trialDaysRemaining
+
+        // One line per resolution: the app has no log file, so this is how the
+        // access decision is diagnosed on a device.
+        print("[access] channel=\(resolved.rawValue) unrestricted=\(access.isUnrestricted) "
+              + "trialActive=\(access.trialActive) trialDaysRemaining=\(access.trialDaysRemaining) "
+              + "verifiedPurchases=\(entitlements.count) canUsePaidFeatures=\(access.canUsePaidFeatures)")
 
         subscriptionPrice = PurchasePriceText.resolved(storeManager.displayPrice(for: .yearlySubscription))
         lifetimePrice = PurchasePriceText.resolved(storeManager.displayPrice(for: .lifetime))

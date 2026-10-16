@@ -106,6 +106,25 @@ struct AppAccessPolicyTests {
         #expect(state.trialDaysRemaining == AppAccessPolicy.trialDayCount)
     }
 
+    @Test func developmentBuildIsUnrestrictedWithoutASubscription() {
+        // A locally signed build has no App Store receipt; the developer must
+        // never be locked out of their own app.
+        let state = AppAccessPolicy.evaluate(
+            distribution: .development,
+            firstLaunch: reference.addingTimeInterval(-300 * day),
+            now: reference,
+            verifiedEntitlements: [])
+        #expect(state.canUsePaidFeatures)
+        #expect(state.isUnrestricted)
+        #expect(!state.isBetaAccess)
+        #expect(!state.hasVerifiedPurchase)
+    }
+
+    @Test func developmentChannelIsNeverCachedForOtherInstalls() {
+        // A cached development channel must not leak into an App Store install.
+        #expect(!AccessDistribution.development.isCacheable)
+    }
+
     @Test func offlineLaunchKeepsTheLastVerifiedChannel() {
         // A TestFlight tester offline at launch must not be locked out of capture.
         #expect(AppAccessPolicy.resolvedChannel(current: .unknown, cached: .testFlight) == .testFlight)
