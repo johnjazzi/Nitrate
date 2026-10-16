@@ -59,6 +59,7 @@ struct ContentView: View {
     @AppStorage("camera.manualControlsExpanded") private var manualControlsExpanded = false
     @State private var manualFocusPosition: Double = 0.5
     @State private var isManualFocus = false
+    @State private var focusReadGeneration: UInt64 = 0
 
 #if DEBUG
     /// Frozen frame + live tuning sheet (DEBUG builds only).
@@ -431,12 +432,22 @@ struct ContentView: View {
 
     private func selectLens(_ lens: CameraLens) {
         guard lens != selectedLens else { return }
+        focusReadGeneration &+= 1
+        let focusRequest = focusReadGeneration
         cameraViewModel.selectLens(lens) { error in
             // The view model follows committed session changes, including a
             // successful earlier switch followed by a later request failure.
             selectedLens = cameraViewModel.activeLens
             if let error {
                 cameraViewModel.errorMessage = "Camera switch failed: \(error.localizedDescription)"
+            }
+            cameraViewModel.session.readManualFocusSnapshot { snapshot in
+                guard focusRequest == focusReadGeneration, !cameraViewModel.isSwitchingCameraLens else { return }
+                if !snapshot.isSupported {
+                    isManualFocus = false
+                } else if isManualFocus, let position = snapshot.lensPosition {
+                    manualFocusPosition = Double(position)
+                }
             }
         }
     }

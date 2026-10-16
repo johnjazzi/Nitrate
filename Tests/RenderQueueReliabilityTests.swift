@@ -496,7 +496,7 @@ struct RenderQueueReliabilityTests {
         #expect(model.rendererErrorMessage == "Stock library failed")
     }
 
-    @Test func corruptQueueLoadReportsErrorWithoutOverwritingFile() async throws {
+    @Test func corruptQueueIsPreservedAsideAndDoesNotBlockNewWork() async throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }
         let corruptData = Data("{ definitely not queue JSON".utf8)
@@ -512,12 +512,18 @@ struct RenderQueueReliabilityTests {
         model.onAppear()
         #expect(model.jobs.isEmpty)
         #expect(model.rendererErrorMessage?.contains("Queue state could not be loaded") == true)
-        #expect(try Data(contentsOf: files.persistence) == corruptData)
+        // The unreadable file is kept aside rather than overwritten in place.
+        let quarantined = try FileManager.default.contentsOfDirectory(atPath: files.directory.path)
+            .first { $0.contains("corrupt") }
+        let keptPath = try #require(quarantined)
+        #expect(try Data(contentsOf: files.directory.appendingPathComponent(keptPath)) == corruptData)
+
+        // Persistence is re-enabled, so the app is not bricked by the bad file.
         model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
                       deliveryPreferences: RenderDeliveryPreferences())
         try await waitUntil { model.jobs.first?.status == .completed }
-        #expect(try Data(contentsOf: files.persistence) == corruptData)
-        #expect(model.rendererErrorMessage?.contains("Queue state could not be loaded") == true)
+        #expect(!model.isPersistenceBlocked)
+        #expect(try Data(contentsOf: files.directory.appendingPathComponent(keptPath)) == corruptData)
     }
 
     @Test(arguments: [false, true])

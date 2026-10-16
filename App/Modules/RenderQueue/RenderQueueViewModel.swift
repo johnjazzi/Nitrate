@@ -11,6 +11,7 @@ final class RenderQueueViewModel {
     typealias PostDeliveryOperation = @MainActor (URL, UUID) async -> Void
 
     private let persister: QueuePersister
+    private let journal: CaptureJournal
     private let persistOverride: (([RenderJob]) throws -> Void)?
     private let loadOverride: (() throws -> [RenderJob])?
     private let injectedRender: RenderOperation?
@@ -21,7 +22,6 @@ final class RenderQueueViewModel {
     private var didInitialize = false
     private var persistenceErrorMessage: String?
     private var loadErrorMessage: String?
-    private var canPersist = true
     /// True while the queue is paused because a durable write failed. Rendering
     /// and Photos side effects do not resume until `resume()` records the write.
     private(set) var isPersistenceBlocked = false
@@ -75,8 +75,10 @@ final class RenderQueueViewModel {
          postDelivery: PostDeliveryOperation? = nil,
          persist: (([RenderJob]) throws -> Void)? = nil,
          load: (() throws -> [RenderJob])? = nil,
+         journal: CaptureJournal = CaptureJournal(),
          sessionId: String = RenderJob.currentSessionId) {
         persister = QueuePersister(storageURL: persistenceURL)
+        self.journal = journal
         persistOverride = persist
         loadOverride = load
         injectedRender = render
@@ -100,18 +102,46 @@ final class RenderQueueViewModel {
                 return recovered
             }
         } catch {
-            canPersist = false
-            loadErrorMessage = "Queue state could not be loaded: \(error.localizedDescription)"
+            // An unreadable queue file must not brick recording, rendering and
+            // rescue forever. Keep the bytes for inspection, then start a fresh
+            // queue so the app still works and new takes can be delivered.
+            let quarantined = persister.quarantine()
+            let suffix = quarantined.map { " The unreadable file was kept as \($0.lastPathComponent)." } ?? ""
+            loadErrorMessage = "Queue state could not be loaded: \(error.localizedDescription)" + suffix
+            jobs = []
             publishQueueMessage()
-            return
         }
+        reconcileOrphanedCaptures()
         processNext()
+    }
+
+    /// Rescue captures that were marked before recording but never accepted by
+    /// the queue — the app died (or the queue was unreadable) in between.
+    ///
+    /// They are queued original-only: the take's validation outcome is unknown,
+    /// so it is delivered verbatim and never rendered.
+    func reconcileOrphanedCaptures() {
+        let known = Set(jobs.map { $0.sourceURL.standardizedFileURL.path })
+        for source in journal.pendingCaptures() {
+            if known.contains(source.standardizedFileURL.path) {
+                journal.acknowledge(source)
+                continue
+            }
+            if enqueueOriginalOnly(sourceURL: source, reason: "recovered after an interrupted session") {
+                journal.acknowledge(source)
+            }
+        }
     }
 
     func enqueue(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge? = nil,
                  deliveryPreferences: RenderDeliveryPreferences? = nil) {
         guard Self.isUsableFile(sourceURL) else {
             reportRenderError("Source video not ready. Try again.")
+            return
+        }
+        if let awaiting = awaitingStockJobs.first(where: { $0.sourceURL == sourceURL }) {
+            assignStock(jobId: awaiting.id, stockId: stockId, iso: iso, gauge: gauge,
+                        deliveryPreferences: deliveryPreferences)
             return
         }
         rendererErrorMessage = nil
@@ -124,6 +154,7 @@ final class RenderQueueViewModel {
             publishQueueMessage()
             return
         }
+        journal.acknowledge(sourceURL)
         processNext()
     }
 
@@ -134,19 +165,21 @@ final class RenderQueueViewModel {
     /// discoverable in the queue and resumable with `assignStock` or
     /// `exportOriginal`. It is never rendered until a stock is assigned.
     @discardableResult
-    func enqueueAwaitingStock(sourceURL: URL) -> UUID? {
+    func enqueueAwaitingStock(sourceURL: URL, deliveryPreferences: RenderDeliveryPreferences? = nil) -> UUID? {
         guard Self.isUsableFile(sourceURL) else {
             reportRenderError("Source video not ready. Try again.")
             return nil
         }
         rendererErrorMessage = nil
-        let job = RenderJob(awaitingStockSourceURL: sourceURL, sessionId: sessionId)
+        var job = RenderJob(awaitingStockSourceURL: sourceURL, sessionId: sessionId)
+        job.deliveryPreferences = deliveryPreferences ?? DeliverySettings.renderPreferences()
         jobs.append(job)
         guard persistJobs() else {
             isPersistenceBlocked = true
             publishQueueMessage()
             return job.id
         }
+        journal.acknowledge(sourceURL)
         publishQueueMessage()
         return job.id
     }
@@ -200,9 +233,14 @@ final class RenderQueueViewModel {
             return false
         }
         rendererErrorMessage = nil
-        jobs.append(RenderJob(originalOnlySourceURL: sourceURL, reason: reason, sessionId: sessionId))
+        // The camera keeps its handoff until persistence succeeds. A repeated
+        // acceptance attempt must reuse that source's original-only job.
+        if !jobs.contains(where: { $0.sourceURL == sourceURL && $0.originalOnly == true }) {
+            jobs.append(RenderJob(originalOnlySourceURL: sourceURL, reason: reason, sessionId: sessionId))
+        }
         let accepted = persistJobs()
         if !accepted { isPersistenceBlocked = true }
+        if accepted { journal.acknowledge(sourceURL) }
         publishQueueMessage()
         processNext()
         return accepted
@@ -229,7 +267,7 @@ final class RenderQueueViewModel {
     /// touched; only the transition that failed to persist is re-attempted.
     func resume() {
         guard isPersistenceBlocked else { return }
-        guard persistJobs() else { return }
+        guard persistJobs(allowWhileBlocked: true) else { return }
         isPersistenceBlocked = false
         publishQueueMessage()
         processNext()
@@ -256,11 +294,8 @@ final class RenderQueueViewModel {
     /// Persist the queue. Returns false when a durable write failed, so callers
     /// can pause further side effects rather than acting on unrecorded state.
     @discardableResult
-    private func persistJobs() -> Bool {
-        guard canPersist else {
-            publishQueueMessage()
-            return true
-        }
+    private func persistJobs(allowWhileBlocked: Bool = false) -> Bool {
+        guard allowWhileBlocked || !isPersistenceBlocked else { return false }
         do {
             if let persistOverride { try persistOverride(jobs) } else { try persister.save(jobs) }
             persistenceErrorMessage = nil

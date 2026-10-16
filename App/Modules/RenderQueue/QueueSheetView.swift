@@ -36,7 +36,7 @@ struct QueueSheetView: View {
                             Label("Resume queue", systemImage: "arrow.clockwise")
                                 .frame(minHeight: 44)
                         }
-                        Text("The queue is paused because a change could not be saved. Nothing is lost; resume to retry the write.")
+                        Text("The queue is paused because a change could not be saved. Existing media is kept in the app; free space if needed, then resume to retry.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -93,13 +93,19 @@ struct QueueSheetView: View {
                         Section("History (\(visibleHistory.count))") {
                             ForEach(visibleHistory) { job in
                                 if job.status == .completed {
-                                    Button { playbackJob = job } label: { JobRow(job: job) }
-                                        .buttonStyle(.plain)
-                                        .swipeActions(edge: .leading) {
-                                            Button { shareVideo(job) } label: {
-                                                Label("Share", systemImage: "square.and.arrow.up")
-                                            }.tint(.blue)
-                                        }
+                                    // A rescue entry has no rendered output; making
+                                    // its row tappable would open a blank player.
+                                    if job.outputURL != nil {
+                                        Button { playbackJob = job } label: { JobRow(job: job) }
+                                            .buttonStyle(.plain)
+                                            .swipeActions(edge: .leading) {
+                                                Button { shareVideo(job) } label: {
+                                                    Label("Share", systemImage: "square.and.arrow.up")
+                                                }.tint(.blue)
+                                            }
+                                    } else {
+                                        JobRow(job: job)
+                                    }
                                 } else {
                                     VStack(alignment: .leading, spacing: 4) {
                                         JobRow(job: job)
@@ -252,8 +258,14 @@ private struct JobRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
-                Text(job.stockId).font(.caption.weight(.semibold))
-                Text("ISO \(Int(job.iso))").font(.caption2).foregroundStyle(.secondary)
+                Text(job.originalOnly == true ? "Original recording" : (job.stockId.isEmpty ? "Unassigned recording" : job.stockId))
+                    .font(.caption.weight(.semibold))
+                if !job.stockId.isEmpty {
+                    Text("ISO \(Int(job.iso))").font(.caption2).foregroundStyle(.secondary)
+                }
+                if let reason = job.retainedReason {
+                    Text("Kept original: \(reason)").font(.caption2).foregroundStyle(.secondary)
+                }
                 if job.outputSavedToPhotos == true {
                     Text(job.sourceSavedToPhotos == true ? "Rendered + original saved to Photos" : "Rendered saved to Photos")
                         .font(.caption2)
@@ -294,7 +306,7 @@ private struct JobRow: View {
             case .processing:
                 HStack {
                     ProgressView().scaleEffect(0.8)
-                    Text(job.outputSavedToPhotos == true ? "Saving original" : "Rendering / saving")
+                    Text(job.originalOnly == true || job.outputSavedToPhotos == true ? "Saving original" : "Rendering / saving")
                         .font(.caption2).foregroundStyle(.orange)
                 }
             case .completed: Label("Done", systemImage: "checkmark.circle.fill").font(.caption2).foregroundStyle(.green)

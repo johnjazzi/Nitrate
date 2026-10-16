@@ -4,7 +4,9 @@ import AVFoundation
 /// Persisted to disk to survive app backgrounding.
 struct RenderJob: Codable, Identifiable, Equatable {
     let id: UUID
-    let sourceURL: URL
+    /// Re-rooted onto the current app container when a persisted queue is read:
+    /// iOS assigns a new container directory on install/update.
+    var sourceURL: URL
     /// Empty for a capture that has not been assigned a stock yet
     /// (`status == .awaitingStock`) and for an original-only rescue entry.
     var stockId: String

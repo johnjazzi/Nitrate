@@ -38,6 +38,167 @@ struct RenderQueueRecoveryTests {
 
     // MARK: - L03 durable transitions
 
+    @Test func corruptQueueIsQuarantinedAndTheAppKeepsWorking() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let corrupt = Data("not queue json".utf8)
+        try corrupt.write(to: files.persistence)
+        try Data([4, 5, 6]).write(to: files.output)
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in files.output },
+                                         save: { _ in })
+        model.onAppear()
+        #expect(model.jobs.isEmpty)
+        #expect(model.rendererErrorMessage?.contains("Queue state could not be loaded") == true)
+
+        // The unreadable bytes are kept, and the original path is free to use.
+        let quarantined = try FileManager.default.contentsOfDirectory(atPath: files.directory.path)
+            .filter { $0.contains("corrupt") }
+        #expect(quarantined.count == 1)
+        let kept = try Data(contentsOf: files.directory.appendingPathComponent(try #require(quarantined.first)))
+        #expect(kept == corrupt)
+        #expect(!FileManager.default.fileExists(atPath: files.persistence.path))
+
+        // A fresh queue must still render and deliver: a bad file cannot brick the app.
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { model.jobs.first?.status == .completed }
+        #expect(!model.isPersistenceBlocked)
+        let persisted = try QueuePersister(storageURL: files.persistence).load()
+        #expect(persisted.first?.status == .completed)
+    }
+
+    // MARK: - Capture journal (orphaned originals)
+
+    @Test func captureMarkedBeforeRecordingIsRescuedAsOriginalOnlyAtLaunch() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let journal = CaptureJournal(root: files.directory.appendingPathComponent("journal"))
+        // The take landed on disk, then the app died before any queue entry.
+        journal.markPending(files.source)
+
+        var renders = 0
+        var saves: [URL] = []
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in renders += 1; return files.output },
+                                         save: { url in saves.append(url) },
+                                         journal: journal, sessionId: launchSession)
+        model.onAppear()
+
+        try await waitUntil { model.jobs.first?.status == .completed }
+        #expect(renders == 0, "An unvalidated recovered take must never be rendered.")
+        #expect(saves == [files.source])
+        #expect(model.jobs.first?.originalOnly == true)
+        #expect(journal.pendingCaptures().isEmpty, "The rescue acknowledges its marker.")
+    }
+
+    @Test func acknowledgedCaptureIsNotRescuedAgain() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let journal = CaptureJournal(root: files.directory.appendingPathComponent("journal"))
+        journal.markPending(files.source)
+        journal.acknowledge(files.source)
+        #expect(journal.pendingCaptures().isEmpty)
+
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in files.output }, save: { _ in },
+                                         journal: journal, sessionId: launchSession)
+        model.onAppear()
+        #expect(model.jobs.isEmpty)
+    }
+
+    @Test func acceptedTakeAcknowledgesItsJournalMarker() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        let journal = CaptureJournal(root: files.directory.appendingPathComponent("journal"))
+        journal.markPending(files.source)
+        #expect(journal.pendingCaptures().count == 1)
+
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in files.output }, save: { _ in },
+                                         journal: journal, sessionId: launchSession)
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { model.jobs.first?.status == .completed }
+        #expect(journal.pendingCaptures().isEmpty)
+    }
+
+    @Test func persistedJobsAreRebasedOntoTheCurrentContainer() throws {
+        let oldRoot = URL(fileURLWithPath: "/var/mobile/Containers/Data/Application/OLD-UUID", isDirectory: true)
+        let newRoot = URL(fileURLWithPath: "/var/mobile/Containers/Data/Application/NEW-UUID", isDirectory: true)
+        let oldSource = oldRoot.appendingPathComponent("Library/Application Support/Originals/clip.mov")
+        let oldOutput = oldRoot.appendingPathComponent("Documents/rendered.mov")
+        let job = RenderJob(sourceURL: oldSource, stockId: "test", iso: 400)
+        var withOutput = job
+        withOutput.outputURL = oldOutput
+
+        let rebased = withOutput.rebasedOntoCurrentContainer(root: newRoot)
+        #expect(rebased.sourceURL == newRoot.appendingPathComponent("Library/Application Support/Originals/clip.mov"))
+        #expect(rebased.outputURL == newRoot.appendingPathComponent("Documents/rendered.mov"))
+        #expect(rebased.id == withOutput.id)
+        #expect(rebased.stockId == "test")
+
+        // A path outside any container is left alone.
+        let outside = URL(fileURLWithPath: "/tmp/elsewhere/clip.mov")
+        #expect(PersistedPathRemap.rebased(outside, containerRoot: newRoot) == outside)
+    }
+
+    @Test func journalRetiresMarkersWhoseFileNeverLanded() throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let journal = CaptureJournal(root: files.directory.appendingPathComponent("journal"))
+        let missing = files.directory.appendingPathComponent("never-written.mov")
+        journal.markPending(missing)
+        #expect(journal.pendingCaptures().isEmpty)
+    }
+
+    @Test func enqueueWriteFailurePausesAnAlreadyRunningJobBeforePhotos() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        var renderContinuation: CheckedContinuation<URL, Never>?
+        var failNextWrite = false
+        var saves = 0
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in
+                                             await withCheckedContinuation { renderContinuation = $0 }
+                                         }, save: { _ in saves += 1 },
+                                         persist: { _ in
+                                             if failNextWrite {
+                                                 failNextWrite = false
+                                                 throw RecoveryTestError.write
+                                             }
+                                         })
+        model.enqueue(sourceURL: files.source, stockId: "first", iso: 400)
+        try await waitUntil { renderContinuation != nil }
+        failNextWrite = true
+        model.enqueue(sourceURL: files.source, stockId: "second", iso: 400)
+        #expect(model.isPersistenceBlocked)
+        renderContinuation?.resume(returning: files.output)
+        renderContinuation = nil
+        try await waitUntil { !model.isProcessing }
+        #expect(saves == 0, "An in-flight render may finish, but delivery must wait for explicit resume.")
+        #expect(model.jobs.first?.outputURL == files.output)
+    }
+
+    @Test func retryingOriginalHandoffDoesNotDuplicateRescueJobs() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        var canWrite = false
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in throw RecoveryTestError.render }, save: { _ in },
+                                         persist: { _ in if !canWrite { throw RecoveryTestError.write } })
+        let firstAccepted = model.enqueueOriginalOnly(sourceURL: files.source, reason: "audio mismatch")
+        #expect(!firstAccepted)
+        canWrite = true
+        model.resume()
+        try await waitUntil { !model.isProcessing }
+        let secondAccepted = model.enqueueOriginalOnly(sourceURL: files.source, reason: "audio mismatch")
+        #expect(secondAccepted)
+        #expect(model.jobs.count == 1)
+    }
+
     @Test func enqueuePersistenceFailurePausesBeforeRenderAndPhotos() async throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }
@@ -132,6 +293,37 @@ struct RenderQueueRecoveryTests {
     }
 
     // MARK: - L04 awaiting-stock capture
+
+    @Test func renderingAnAwaitingSourceReusesItsDurableEntry() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in files.output }, save: { _ in })
+        let id = try #require(model.enqueueAwaitingStock(sourceURL: files.source))
+        // Reopening the ordinary stock picker uses enqueue, not assignStock.
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400)
+        try await waitUntil { !model.isProcessing }
+        #expect(model.jobs.count == 1)
+        #expect(model.jobs.first?.id == id)
+        #expect(model.jobs.first?.status == .completed)
+    }
+
+    @Test func awaitingTakeKeepsItsDeliveryPreferencesWhenStockIsChosen() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in files.output }, save: { _ in })
+        let preferences = RenderDeliveryPreferences(saveOriginalLog: true, quality: .smaller)
+        let id = try #require(model.enqueueAwaitingStock(sourceURL: files.source,
+                                                         deliveryPreferences: preferences))
+        #expect(model.jobs.first?.deliveryPreferences == preferences)
+        model.assignStock(jobId: id, stockId: "test", iso: 400)
+        try await waitUntil { !model.isProcessing }
+        #expect(model.jobs.first?.deliveryPreferences == preferences)
+        #expect(model.jobs.first?.sourceSavedToPhotos == true)
+    }
 
     @Test func takeWithoutStockIsDurablyQueuedAwaitingStock() async throws {
         let files = try scratch()

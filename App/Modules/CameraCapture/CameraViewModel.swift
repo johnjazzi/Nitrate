@@ -119,6 +119,10 @@ final class CameraViewModel {
     private var pendingLensSwitchCount = 0
     private var apertureCommandGeneration: UInt64 = 0
     private let originalStorage = CameraOriginalStorage()
+    /// Marks a take before capture and is acknowledged once the render queue has
+    /// durably accepted it. If the app dies in between, the file is reconciled at
+    /// next launch as an original-only rescue rather than being lost.
+    private let captureJournal = CaptureJournal()
     private var lifecycleGate = CameraLifecycleGate()
     private var configurationInFlight = false
     private var cameraConfigured = false
@@ -175,8 +179,10 @@ final class CameraViewModel {
     private func requestMicrophoneAccess() {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
-            // configure() already adds the mic via addMicrophoneInputLocked().
-            break
+            // Idempotent. This also covers a mic that was denied at launch and
+            // then enabled in Settings: without re-attaching, the session would
+            // record silent video and report it as a clean success.
+            session.addMicrophoneInput()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 guard let self, granted else { return }
@@ -333,6 +339,7 @@ final class CameraViewModel {
         recordingStoppedAt = nil
         do {
             let outputURL = try originalStorage.makeDestination()
+            captureJournal.markPending(outputURL)
             session.startRecording(to: outputURL) { [weak self] error in
                 guard let self else { return }
                 // A stale callback must not touch the session: captureGeneration
