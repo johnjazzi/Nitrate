@@ -336,11 +336,15 @@ crush blacks or clip highlights by construction.
 
 XcodeGen is the source of truth: `project.yml` defines the project, targets and
 schemes, and the generated `*.xcodeproj` is gitignored. The Xcode project, app
-target and scheme are named `Nitrate`, but the bundle identifier
-(`com.filmemulation.app`), the `com.filmemulation.*` movie metadata keys and the
-StoreKit product identifiers keep the original name on purpose — they are
-already shipped, and changing them would orphan existing installs, renders and
-purchases.
+target and scheme are named `Nitrate`, and the bundle identifier is
+`app.nitrate`.
+
+Two identifiers still carry the older `com.filmemulation` namespace on purpose.
+The `com.filmemulation.*` movie metadata keys are written into recorded and
+rendered files, so renaming them changes the file contract rather than a label.
+The StoreKit product identifiers (`com.filmemulation.subscription.yearly`,
+`com.filmemulation.lifetime`) are registered in App Store Connect, where a
+product identifier cannot be changed once created.
 
 The iOS app target and the macOS `RenderCLI`/`RenderCLITests` targets share the
 processing pipeline and film-stock sources, so the renderer is testable at 4K on

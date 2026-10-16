@@ -22,7 +22,7 @@ You do not need a company/team just to understand this workflow; use the seller/
 
 1. In App Store Connect, open **Business** and review/sign the **Paid Apps Agreement** as Account Holder. Do not have an agent accept legal terms on your behalf.[8]
 2. Enter your payout bank details and the tax information Apple requests. Banking and tax submission require the paid agreement; Apple verifies the submitted account information. Enter confidential values directly in Apple's authenticated UI, not chat.[16][17]
-3. Open the existing Nitrate app record for `com.filmemulation.app`. These identifiers below come from source; their presence/availability in the store account is unverified.
+3. Create or open the Nitrate app record for `app.nitrate`. No record exists yet. The product identifiers below come from source and are **not** registered in App Store Connect.
 4. If retaining lifetime access: **Monetization → In-App Purchases → + → Non-Consumable**, with product ID **`com.filmemulation.lifetime`**. Set approved localizations, actual price/availability and review information. A non-consumable is the appropriate one-time non-expiring purchase type.[21]
 5. If retaining the yearly option: **Monetization → Subscriptions**, create the subscription group, then product **`com.filmemulation.subscription.yearly`**, duration **1 year**. Configure price, availability, localized terms and review information. Do not create a subscription solely because a source comment names a dollar price.[20]
 6. Test the actual products with StoreKit sandbox: purchase, cancel/pending, restoration, expiry and refund/revocation. A UI “Restore Purchases” must make an explicit restore request and report errors; don't infer working commerce from a successful build.[15]

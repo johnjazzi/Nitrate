@@ -6,7 +6,7 @@ Official sources for every Apple step are listed at the end.
 
 ## Step 0 — Check what already exists
 
-The bundle identifier is `com.filmemulation.app` and the StoreKit product IDs are `com.filmemulation.*`. Before creating anything, sign in to App Store Connect and look for an app with that bundle ID.
+The bundle identifier is `app.nitrate`; the StoreKit product IDs are still `com.filmemulation.*` (see the note in Step 6). Nothing is shipped yet — an App Store lookup for the previous identifier returns no app — so this is the moment to register the identifier you want to keep.
 
 - **If it exists:** use it. Do not create a second record and do not change the bundle ID — an identifier that has shipped cannot be reused for a different app.
 - **If it does not:** create it in Step 2.
@@ -32,7 +32,7 @@ In App Store Connect → **Apps** → **+** → **New App**:[3]
 | Platform | iOS |
 | Name | Your chosen App Store name (must be unique on the store) |
 | Primary language | Your language |
-| Bundle ID | `com.filmemulation.app` |
+| Bundle ID | `app.nitrate` |
 | SKU | Any internal ID, e.g. `nitrate-ios-001`. Never shown to users |
 | User access | Full access |
 
@@ -69,6 +69,8 @@ Yearly subscription — **Monetization → Subscriptions → create a subscripti
 For each: reference name, localized display name and description, price, availability, and review information. Note that **your first auto-renewable subscription must be submitted with a new app version**, and the price/duration cannot be changed after submission.[20]
 
 Test the products with a sandbox account before relying on them; sandbox purchases do not incur charges.[15]
+
+**Decide the product identifiers before you create them.** App Store Connect will not let you change or delete a product identifier once the product exists — you can only stop selling it. The source currently uses `com.filmemulation.lifetime` and `com.filmemulation.subscription.yearly` from the pre-rename namespace. Nothing is registered yet, so either keep them (they work fine and are never shown to users) or rename them to `app.nitrate.*` now, which also means updating `PaidProduct` in `App/Modules/Purchase/AppAccessPolicy.swift` and its test.
 
 ## Step 7 — Build and upload
 

@@ -1,6 +1,6 @@
 # Physical-device smoke test
 
-October 15, 2026. Installed build: **Release**, `0.1.0 (1)`, signed Apple Development, bundle `com.filmemulation.app`, minimum iOS 27.
+October 15, 2026. Installed build: **Release**, `0.1.0 (1)`, signed Apple Development, bundle `app.nitrate`, minimum iOS 27.
 
 ## Why this cannot be done anywhere but the phone
 
@@ -26,7 +26,7 @@ The build on your phone is **Release**, so what you see is what a tester gets â€
 
 ```sh
 xcrun devicectl device process launch --console --terminate-existing \
-  --device 00008160-000648E83460000A com.filmemulation.app
+  --device 00008160-000648E83460000A app.nitrate
 ```
 
 `--console` never exits on its own. Press Ctrl-C when you are done. If you skip it, note the on-screen message instead.
