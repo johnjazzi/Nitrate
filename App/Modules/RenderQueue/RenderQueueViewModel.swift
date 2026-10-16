@@ -25,6 +25,17 @@ final class RenderQueueViewModel {
     /// True while the queue is paused because a durable write failed. Rendering
     /// and Photos side effects do not resume until `resume()` records the write.
     private(set) var isPersistenceBlocked = false
+    /// True while render jobs are held because the paid render feature is not
+    /// available (an expired evaluation with no verified purchase). Recording is
+    /// never gated: the take is captured and stays queued, so nothing is lost and
+    /// it renders as soon as access returns.
+    private(set) var isRenderPausedForAccess = false
+    /// Injected by the app root. Rendering the film look is the paid feature.
+    /// Defaults to allowed so tests and any unwired context behave as before.
+    @ObservationIgnored var renderAllowed: @MainActor () -> Bool = { true }
+    private static let renderPausedMessage =
+        "Rendering the film look needs an active subscription. Your recordings are safe in the queue "
+        + "and will render once you subscribe."
     private let sessionId: String
     // A failure is a new alert on each failed transition, including a retry of
     // the same job. The retained job list remains independent of acknowledgement.
@@ -273,6 +284,19 @@ final class RenderQueueViewModel {
         processNext()
     }
 
+    /// Access to the paid render feature changed (a purchase, a restore, or an
+    /// evaluation that ended). Release anything held for access and re-evaluate.
+    func renderAccessDidChange() {
+        if renderAllowed() {
+            isRenderPausedForAccess = false
+            publishQueueMessage()
+            processNext()
+        } else {
+            isRenderPausedForAccess = jobs.contains { $0.status == .pending && $0.originalOnly != true }
+            publishQueueMessage()
+        }
+    }
+
     func remove(jobId: UUID) {
         guard jobs.first(where: { $0.id == jobId })?.status != .processing else { return }
         if failureAlert?.jobId == jobId {
@@ -316,6 +340,8 @@ final class RenderQueueViewModel {
             rendererErrorMessage = persistenceErrorMessage
         } else if let externalErrorMessage {
             rendererErrorMessage = externalErrorMessage
+        } else if isRenderPausedForAccess {
+            rendererErrorMessage = Self.renderPausedMessage
         } else if let failureAlert,
                   acknowledgedFailureEventId != failureAlert.eventId,
                   jobs.contains(where: { $0.id == failureAlert.jobId && $0.status == .failed && $0.sessionId == sessionId }) {
@@ -346,7 +372,18 @@ final class RenderQueueViewModel {
 
     private func processNext() {
         guard !isPersistenceBlocked else { return }
-        guard worker == nil, let job = jobs.first(where: { $0.status == .pending }) else { return }
+        guard worker == nil, let job = jobs.first(where: { $0.status == .pending }) else {
+            isRenderPausedForAccess = false
+            return
+        }
+        // Delivering a kept original is not the paid feature, so a rescue job
+        // always runs. Only rendering the film look is gated.
+        if job.originalOnly != true, !renderAllowed() {
+            isRenderPausedForAccess = true
+            publishQueueMessage()
+            return
+        }
+        isRenderPausedForAccess = false
         update(job.id) { $0.status = .processing; $0.errorMessage = nil; $0.sessionId = sessionId }
         guard persistJobs() else {
             update(job.id) { $0.status = .pending }

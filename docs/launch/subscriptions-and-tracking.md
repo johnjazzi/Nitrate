@@ -30,6 +30,8 @@ Access is decided from the verified install channel, never from a user-editable 
 | App Store | Verified environment is `.production` | 7-day local evaluation, then a verified, non-revoked, non-expired purchase |
 | Unknown | Store cannot answer and nothing was ever verified | Falls back to the trial; never a free grant |
 
+**Recording is never gated.** When the evaluation ends without a purchase, capture keeps working and only *rendering the film look* is held: the take is written, durably queued, and renders as soon as access returns. Nothing the user shot is ever trapped behind a paywall.
+
 Two properties make the development exemption safe:
 
 1. An App Store install **always** has a receipt, so a real customer cannot land in the development channel.
@@ -46,4 +48,5 @@ Settings shows a **Development Build** banner when this applies, and the app pri
 - **The 7-day evaluation is local.** It is anchored to the first launch and can be reset by reinstalling. A device-side trial cannot be made tamper-proof; a real time-limited offer would need an Apple-managed introductory offer on the subscription instead.
 - **Nothing here proves a real purchase works.** Purchase, renewal, expiry, refund and restore still need sandbox transactions on a device.
 - **TestFlight access is not a free production licence.** A beta tester's install expires with the build; production access is separate.
-- **Do not gate recovery or export of already-captured footage behind payment.** Only starting new capture or render is gated, so a lapsed user can always retrieve what they shot.
+- **Do not gate recovery or export of already-captured footage behind payment.** A kept-original rescue job bypasses the render gate entirely, so a lapsed user can always retrieve what they shot.
+- **The trial is resettable by design.** That is the chosen trade-off for a try-before-you-subscribe model; an Apple-managed introductory offer would be tamper-proof but would require subscribing before the app could be used at all.

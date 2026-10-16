@@ -51,8 +51,9 @@ struct NitrateApp: App {
                 }
             }
             .onAppear {
-                cameraViewModel.recordingAccessAllowed = { [purchaseViewModel] in
-                    purchaseViewModel.canUsePaidFeatures
+                // Rendering the film look is the paid feature; recording never is.
+                renderQueueViewModel.renderAllowed = { [purchaseViewModel] in
+                    purchaseViewModel.canRender
                 }
                 purchaseViewModel.onAppLaunch()
                 renderQueueViewModel.library = library
@@ -60,7 +61,10 @@ struct NitrateApp: App {
                 renderQueueViewModel.onAppear()
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active { purchaseViewModel.onSceneActive() }
+                if phase == .active {
+                    purchaseViewModel.onSceneActive()
+                    renderQueueViewModel.renderAccessDidChange()
+                }
             }
         }
     }

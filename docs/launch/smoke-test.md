@@ -95,7 +95,13 @@ A missing take here means a capture was stranded.
 2. Record, render, then check Photos.
 3. Expect: **both** the rendered clip and the original Log are present, and the original is unchanged.
 
-### 9. General capture sanity
+### 9. Trial expiry → records but does not render
+
+Only reachable after the 7-day evaluation ends, so normally not testable by hand. If you want to force it, reinstall to reset the anchor and the check is inverted: with access, a take renders.
+
+Expected behaviour once access has lapsed: recording still works, the take is durably queued, **Storage & Queue** shows "Rendering is paused", and the film look renders automatically after a purchase or restore. No footage is lost.
+
+### 10. General capture sanity
 
 - Front and rear lenses, both landscape holds, and portrait.
 - Playback orientation and audio sync on a clip longer than a minute.

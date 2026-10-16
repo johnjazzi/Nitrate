@@ -28,6 +28,16 @@ struct QueueSheetView: View {
     var body: some View {
         NavigationStack {
             List {
+                if viewModel.isRenderPausedForAccess {
+                    Section {
+                        Label("Rendering is paused", systemImage: "lock.fill")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Rendering the film look needs an active subscription. "
+                             + "Your recordings are kept here and render once you subscribe.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 if viewModel.isPersistenceBlocked {
                     Section {
                         Button {

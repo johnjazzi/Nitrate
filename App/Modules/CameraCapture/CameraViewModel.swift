@@ -9,9 +9,6 @@ import UIKit
 final class CameraViewModel {
     let session = CameraSession()
     let exposure = ExposureManager()
-    /// Injected by the app root. Fail closed until distribution/entitlement
-    /// state is ready; existing queued footage and recovery are not gated.
-    @ObservationIgnored var recordingAccessAllowed: @MainActor () -> Bool = { false }
 
     init() {
         activeLens = session.activeLens
@@ -313,10 +310,6 @@ final class CameraViewModel {
     }
 
     func startRecording() {
-        guard recordingAccessAllowed() else {
-            errorMessage = "Recording access is unavailable. Open Settings to check your trial or restore a purchase."
-            return
-        }
         guard !isStartingRecording, !isRecording else { return }
         guard lifecycleGate.isActive, cameraConfigured else {
             errorMessage = "Camera is not ready to record."

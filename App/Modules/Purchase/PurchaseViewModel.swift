@@ -39,13 +39,16 @@ final class PurchaseViewModel {
 
     private(set) var access = AppAccessState.locked
 
-    /// The single gate the app uses to admit paid features (capture/render).
-    var canUsePaidFeatures: Bool {
-        // Enforce expiry at the next capture attempt even if no StoreKit
+    /// The gate for the paid feature. Rendering the film look is what a
+    /// subscription buys; recording Apple Log is always free.
+    var canRender: Bool {
+        // Enforce expiry at the next render attempt even if no StoreKit
         // transaction event or settings presentation occurred at the deadline.
         AppAccessPolicy.evaluate(distribution: distribution, firstLaunch: firstLaunch,
                                  now: Date(), verifiedEntitlements: verifiedPurchases).canUsePaidFeatures
     }
+
+    var canUsePaidFeatures: Bool { canRender }
 
     func onSceneActive() {
         Task { await refreshEntitlements() }

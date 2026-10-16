@@ -68,6 +68,76 @@ struct RenderQueueRecoveryTests {
         #expect(persisted.first?.status == .completed)
     }
 
+    // MARK: - Paid render gate
+
+    @Test func expiredEvaluationHoldsRenderingButKeepsTheTake() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        var renders = 0
+        var allowed = false
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in renders += 1; return files.output },
+                                         save: { _ in }, sessionId: launchSession)
+        model.renderAllowed = { allowed }
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(model.isRenderPausedForAccess)
+        #expect(renders == 0)
+        #expect(model.jobs.first?.status == .pending)
+        #expect(model.rendererErrorMessage?.contains("needs an active subscription") == true)
+        #expect(FileManager.default.fileExists(atPath: files.source.path))
+
+        // Subscribing releases the held work without losing it.
+        allowed = true
+        model.renderAccessDidChange()
+        try await waitUntil { model.jobs.first?.status == .completed }
+        #expect(renders == 1)
+        #expect(!model.isRenderPausedForAccess)
+    }
+
+    @Test func rescueDeliveryIsNeverGatedByThePaidRenderFeature() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        var saves: [URL] = []
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in throw RecoveryTestError.render },
+                                         save: { url in saves.append(url) }, sessionId: launchSession)
+        model.renderAllowed = { false }
+        _ = model.enqueueOriginalOnly(sourceURL: files.source, reason: "audio mismatch")
+
+        try await waitUntil { model.jobs.first?.status == .completed }
+        #expect(saves == [files.source], "A lapsed user must still get their own footage back.")
+        #expect(!model.isRenderPausedForAccess)
+    }
+
+    @Test func relaunchWhileUnsubscribedKeepsHeldJobsPending() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        var renders = 0
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in renders += 1; return files.output },
+                                         save: { _ in }, sessionId: launchSession)
+        model.renderAllowed = { false }
+        model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(model.jobs.first?.status == .pending)
+
+        let relaunched = RenderQueueViewModel(persistenceURL: files.persistence,
+                                              render: { _ in renders += 1; return files.output },
+                                              save: { _ in }, sessionId: launchSession)
+        relaunched.renderAllowed = { false }
+        relaunched.onAppear()
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(relaunched.jobs.count == 1)
+        #expect(relaunched.isRenderPausedForAccess)
+        #expect(renders == 0)
+    }
+
     // MARK: - Capture journal (orphaned originals)
 
     @Test func captureMarkedBeforeRecordingIsRescuedAsOriginalOnlyAtLaunch() async throws {
