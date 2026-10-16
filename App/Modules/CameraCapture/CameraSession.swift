@@ -113,6 +113,11 @@ final class CameraSession: NSObject {
     /// CameraViewModel after each aperture operation.
     private var selectedLensAperture: Float?
     private var manualExposureISO: Float = 400
+    /// The committed manual-focus lens position (0–1) while MF is selected, or
+    /// nil when the device auto-focuses. Queue-confined. A preview tap re-meters
+    /// exposure but must not silently autofocus while this is set, and a committed
+    /// lens switch reapplies or drops it (L09).
+    private var committedManualFocusLensPosition: Float?
     private var recordingAperturePin: CameraAperturePolicy.RecordingPin?
     private var apertureCameraRevision: UInt64 = 0
     private var zoomLifecycle = CameraZoomRampLifecycle()
@@ -367,6 +372,13 @@ final class CameraSession: NSObject {
     }
 
     /// Add the microphone input within an active session configuration.
+    ///
+    /// Audio is only reported as configured when the audio *output* actually
+    /// attaches: a take with `microphoneAdded == true` but no audio output could
+    /// never deliver PCM, and the recorder would then fail a healthy video-only
+    /// capture as a "configured microphone produced no audio" defect. When the
+    /// output cannot attach, the input is rolled back so the session is left
+    /// cleanly video-only.
     private func addMicrophoneInputLocked() {
         guard !microphoneAdded,
               AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
@@ -374,10 +386,17 @@ final class CameraSession: NSObject {
               let input = try? AVCaptureDeviceInput(device: mic),
               session.canAddInput(input) else { return }
         session.addInput(input)
-        microphoneInput = input
-        microphoneAdded = true
-        audioOutput.setSampleBufferDelegate(sampleBufferRecorder, queue: audioSampleBufferQueue)
-        if session.canAddOutput(audioOutput) { session.addOutput(audioOutput) }
+        switch CameraMicrophoneAttachmentPolicy.plan(audioOutputCanAttach: session.canAddOutput(audioOutput)) {
+        case .rollbackInput:
+            // Leave the session video-only rather than half-configured. Audio
+            // will be re-attempted by the next addMicrophoneInput() call.
+            session.removeInput(input)
+        case .configureAudio:
+            audioOutput.setSampleBufferDelegate(sampleBufferRecorder, queue: audioSampleBufferQueue)
+            session.addOutput(audioOutput)
+            microphoneInput = input
+            microphoneAdded = true
+        }
     }
 
     private func addDevice(_ device: AVCaptureDevice) throws {
@@ -912,6 +931,16 @@ final class CameraSession: NSObject {
                 self.activeLens = lens
                 self.isConfigured = true
                 self.logApertureCapability(for: device, lens: lens)
+                // A committed manual focus must either be re-applied to the new
+                // device or dropped so the UI can reset to AF through the
+                // readback — the panel must never keep saying MF while the new
+                // lens auto-focuses (L09).
+                self.committedManualFocusLensPosition = CameraManualFocusPolicy.lensPositionAfterLensChange(
+                    committed: self.committedManualFocusLensPosition,
+                    newDeviceSupportsLock: device.isLockingFocusWithCustomLensPositionSupported)
+                if let position = self.committedManualFocusLensPosition {
+                    self.applyLockedFocus(position, on: device)
+                }
             } catch {
                 let originalError = error
                 switchError = originalError
@@ -1085,7 +1114,10 @@ final class CameraSession: NSObject {
             do {
                 try device.lockForConfiguration()
                 defer { device.unlockForConfiguration() }
-                if device.isFocusPointOfInterestSupported, device.isFocusModeSupported(.autoFocus) {
+                if device.isFocusPointOfInterestSupported,
+                   device.isFocusModeSupported(.autoFocus),
+                   CameraManualFocusPolicy.allowsAutofocusOnTap(
+                       committedLensPosition: self.committedManualFocusLensPosition) {
                     device.focusPointOfInterest = point
                     device.focusMode = .autoFocus
                 }
@@ -1121,22 +1153,35 @@ final class CameraSession: NSObject {
     }
 
     /// Manual focus: lock the lens at a specific raw lens position (0–1).
+    /// Commits the position so a preview tap re-meters exposure without silently
+    /// autofocusing and a lens switch can reapply it (L09).
     func setManualFocusPosition(_ lensPosition: Float) {
         sessionQueue.async { [weak self] in
             guard let self, let device = self.activeDevice,
                   device.isLockingFocusWithCustomLensPositionSupported else { return }
-            do {
-                try device.lockForConfiguration()
-                defer { device.unlockForConfiguration() }
-                device.setFocusModeLocked(lensPosition: min(max(lensPosition, 0), 1), completionHandler: nil)
-            } catch { self.reportCameraError(error) }
+            let clamped = min(max(lensPosition, 0), 1)
+            self.committedManualFocusLensPosition = clamped
+            self.applyLockedFocus(clamped, on: device)
         }
     }
 
-    /// Return the lens to continuous auto-focus.
+    /// Lock focus at a raw lens position on the active device. MUST be called on
+    /// `sessionQueue`.
+    private func applyLockedFocus(_ lensPosition: Float, on device: AVCaptureDevice) {
+        guard device.isLockingFocusWithCustomLensPositionSupported else { return }
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            device.setFocusModeLocked(lensPosition: min(max(lensPosition, 0), 1), completionHandler: nil)
+        } catch { reportCameraError(error) }
+    }
+
+    /// Return the lens to continuous auto-focus and drop the committed MF state.
     func resetAutoFocus() {
         sessionQueue.async { [weak self] in
-            guard let self, let device = self.activeDevice,
+            guard let self else { return }
+            self.committedManualFocusLensPosition = nil
+            guard let device = self.activeDevice,
                   device.isFocusModeSupported(.continuousAutoFocus) else { return }
             do {
                 try device.lockForConfiguration()
@@ -1148,6 +1193,23 @@ final class CameraSession: NSObject {
 
     var isManualFocusSupported: Bool {
         activeDevice?.isLockingFocusWithCustomLensPositionSupported ?? false
+    }
+
+    /// Read the committed manual-focus state for the UI. The revision lets the
+    /// view discard a snapshot queued before a lens/config change, so the MF
+    /// selection can be reset to AF through the readback when a new lens cannot
+    /// lock focus (L09). The view model owns the binding integration.
+    func readManualFocusSnapshot(
+        completion: @escaping @MainActor @Sendable (CameraManualFocusSnapshot) -> Void
+    ) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            let snapshot = CameraManualFocusSnapshot(
+                lensPosition: self.committedManualFocusLensPosition,
+                isSupported: self.activeDevice?.isLockingFocusWithCustomLensPositionSupported ?? false,
+                cameraRevision: self.apertureCameraRevision)
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(snapshot) } }
+        }
     }
 
 

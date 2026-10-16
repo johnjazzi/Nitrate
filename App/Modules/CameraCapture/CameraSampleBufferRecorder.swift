@@ -66,10 +66,14 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     private var clipGeneration: UInt64 = 0
     private let writerFactory: CameraSampleBufferWriterFactory
     private let outputValidator: (URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void
+    /// Production: true when the microphone was actually configured for this
+    /// take, so a zero-audio result must be reported as a failure rather than a
+    /// clean success. Not debug-only — a Release build that configured a
+    /// microphone owes the user the same audio-integrity evidence.
+    private var requiresAudioEvidence = false
 #if DEBUG
     private var preservationProbeEnabled = false
     private var sourceProbe: CameraYUVProbe?
-    private var requiresAudioEvidence = false
     private var firstAudioTimeForDiagnostics: CMTime?
     private var audioDurationForDiagnostics: Double = 0
     private var maximumAudioGapForDiagnostics: Double = 0
@@ -129,10 +133,10 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             self.captureRotationAngle = captureRotationAngle
             self.codedDimensions = nil
             self.startAfter = startAfter
+            self.requiresAudioEvidence = requiresAudioEvidence
 #if DEBUG
             self.preservationProbeEnabled = preservationProbeEnabled
             self.sourceProbe = nil
-            self.requiresAudioEvidence = requiresAudioEvidence
 #endif
             self.started = onStarted
             self.finished = onFinished
@@ -672,15 +676,21 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                     self.complete(.failure(CameraRetainedRecordingError(originalURL: destination, reason: latched)))
                     return
                 }
-#if DEBUG
                 // A configured microphone that produced no audio is not a clean
-                // success, but the video-only original is still retained.
-                if self.requiresAudioEvidence, self.audioSettings != nil, self.appendedAudioSamples == 0 {
+                // success, but the video-only original is still retained. This is
+                // production behaviour, not a debug-only guard: a Release build
+                // that configured a microphone must not hand a silent take back
+                // as a clean success.
+                if CameraAudioEvidencePolicy.missingConfiguredAudio(
+                    requiresAudioEvidence: self.requiresAudioEvidence,
+                    hasAudioSettings: self.audioSettings != nil,
+                    appendedAudioSamples: self.appendedAudioSamples) {
                     self.complete(.failure(CameraRetainedRecordingError(
                         originalURL: destination,
                         reason: CameraSampleBufferRecorderError.configuredMicrophoneProducedNoAudio)))
                     return
                 }
+#if DEBUG
                 if self.preservationProbeEnabled {
                     guard let source = self.sourceProbe else {
                         self.complete(.failure(CameraSampleBufferRecorderError.invalidFinalMovie("missing captured YUV smoke probe")))
@@ -799,10 +809,10 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         appendedVideoFrames = 0
         appendedAudioSamples = 0
         recentDropTimes = []
+        requiresAudioEvidence = false
 #if DEBUG
         preservationProbeEnabled = false
         sourceProbe = nil
-        requiresAudioEvidence = false
         firstAudioTimeForDiagnostics = nil
         audioDurationForDiagnostics = 0
         maximumAudioGapForDiagnostics = 0
@@ -1049,8 +1059,7 @@ enum CameraAudioEvidencePolicy {
     static func missingConfiguredAudio(requiresAudioEvidence: Bool,
                                        hasAudioSettings: Bool,
                                        appendedAudioSamples: Int) -> Bool {
-        // STUB (tests-first): real implementation lands in the fix commit.
-        false
+        requiresAudioEvidence && hasAudioSettings && appendedAudioSamples == 0
     }
 }
 
@@ -1071,8 +1080,7 @@ enum CameraMicrophoneAttachmentPolicy {
     }
 
     static func plan(audioOutputCanAttach: Bool) -> Plan {
-        // STUB (tests-first): real implementation lands in the fix commit.
-        .configureAudio
+        audioOutputCanAttach ? .configureAudio : .rollbackInput
     }
 }
 
@@ -1082,8 +1090,7 @@ enum CameraManualFocusPolicy {
     /// focus is committed; otherwise the MF selection would stay lit while the
     /// lens silently auto-focused.
     static func allowsAutofocusOnTap(committedLensPosition: Float?) -> Bool {
-        // STUB (tests-first): real implementation lands in the fix commit.
-        true
+        committedLensPosition == nil
     }
 
     /// After a committed lens switch, reapply the locked focus to the new device
@@ -1091,8 +1098,8 @@ enum CameraManualFocusPolicy {
     /// can reset the UI to autofocus.
     static func lensPositionAfterLensChange(committed: Float?,
                                             newDeviceSupportsLock: Bool) -> Float? {
-        // STUB (tests-first): real implementation lands in the fix commit.
-        committed
+        guard let committed, newDeviceSupportsLock else { return nil }
+        return min(max(committed, 0), 1)
     }
 }
 
@@ -1101,13 +1108,11 @@ enum CameraManualFocusPolicy {
 enum CameraManualExposureSelectionPolicy {
     static func canChangeISO(isStartingRecording: Bool, isRecording: Bool,
                              isStoppingRecording: Bool) -> Bool {
-        // STUB (tests-first): real implementation lands in the fix commit.
-        true
+        !isStartingRecording && !isRecording && !isStoppingRecording
     }
 
     static func reconciledISO(previous: Float, requested: Float, accepted: Bool) -> Float {
-        // STUB (tests-first): real implementation lands in the fix commit.
-        requested
+        accepted ? requested : previous
     }
 }
 
@@ -1125,16 +1130,18 @@ enum CameraRecordingTakeFence {
     /// resolves. Returns nil when the take never set an origin.
     static func snapshotAndClear(origin: inout Date?, stoppedAt: inout Date?,
                                  generation: UInt64) -> Snapshot? {
-        // STUB (tests-first): real implementation lands in the fix commit.
-        nil
+        guard let currentOrigin = origin else { return nil }
+        let snapshot = Snapshot(generation: generation, origin: currentOrigin, stoppedAt: stoppedAt)
+        origin = nil
+        stoppedAt = nil
+        return snapshot
     }
 
     /// A verdict may only touch shared state while the same take still owns the
     /// capture generation and no newer take is starting or running.
     static func accepts(snapshot: Snapshot, currentGeneration: UInt64,
                         isRecording: Bool, isStartingRecording: Bool) -> Bool {
-        // STUB (tests-first): real implementation lands in the fix commit.
-        true
+        snapshot.generation == currentGeneration && !isRecording && !isStartingRecording
     }
 }
 

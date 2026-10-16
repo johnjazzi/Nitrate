@@ -2,7 +2,7 @@ name: Nitrate
 options:
   bundleIdPrefix: com.nitrate
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "27.0"
   xcodeVersion: "16.0"
   generateEmptyDirectories: true
   defaultConfig: Debug
