@@ -13,6 +13,8 @@ final class RenderQueueViewModel {
     typealias PostDeliveryOperation = @MainActor (URL, UUID) async -> Void
 
     private let persister: QueuePersister
+    private let persistOverride: (([RenderJob]) throws -> Void)?
+    private let loadOverride: (() throws -> [RenderJob])?
     private let injectedRender: RenderOperation?
     private let saveOperation: SaveOperation
     private let postDeliveryOperation: PostDeliveryOperation?
@@ -68,13 +70,43 @@ final class RenderQueueViewModel {
 
     init(persistenceURL: URL? = nil, render: RenderOperation? = nil, save: SaveOperation? = nil,
          postDelivery: PostDeliveryOperation? = nil,
+         persist: (([RenderJob]) throws -> Void)? = nil,
+         load: (() throws -> [RenderJob])? = nil,
          sessionId: String = RenderJob.currentSessionId) {
         persister = QueuePersister(storageURL: persistenceURL)
+        persistOverride = persist
+        loadOverride = load
         injectedRender = render
         saveOperation = save ?? Self.saveToPhotoLibrary
         postDeliveryOperation = postDelivery
         self.sessionId = sessionId
     }
+
+    // MARK: - Recovery surface (stub)
+
+    /// True while the queue is paused because a durable write failed.
+    private(set) var isPersistenceBlocked = false
+
+    /// Captures waiting for a stock to be chosen.
+    var awaitingStockJobs: [RenderJob] { [] }
+
+    /// Retry the durable write and continue processing.
+    func resume() {}
+
+    /// Durably queue a take captured before a stock was chosen.
+    @discardableResult
+    func enqueueAwaitingStock(sourceURL: URL) -> UUID? { nil }
+
+    /// Assign a stock to an awaiting entry and let it render.
+    func assignStock(jobId: UUID, stockId: String, iso: Float, gauge: PrintGauge? = nil,
+                     deliveryPreferences: RenderDeliveryPreferences? = nil) {}
+
+    /// Deliver an awaiting entry's kept original to Photos without rendering.
+    func exportOriginal(jobId: UUID) {}
+
+    /// Durably queue a kept original for verbatim delivery; never rendered.
+    @discardableResult
+    func enqueueOriginalOnly(sourceURL: URL, reason: String) -> Bool { false }
 
     func onAppear() {
         guard !didInitialize else { return }

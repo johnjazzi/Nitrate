@@ -5,13 +5,15 @@ import AVFoundation
 struct RenderJob: Codable, Identifiable, Equatable {
     let id: UUID
     let sourceURL: URL
-    let stockId: String
-    let iso: Float
+    /// Empty for a capture that has not been assigned a stock yet
+    /// (`status == .awaitingStock`) and for an original-only rescue entry.
+    var stockId: String
+    var iso: Float
     /// Print gauge for this render. Optional so older queue JSON stays readable;
     /// nil means the stock's own gauge (or the neutral 35mm reference).
-    let printGauge: PrintGauge?
+    var printGauge: PrintGauge?
     /// Immutable enqueue-time preferences; nil preserves legacy delivery behavior.
-    let deliveryPreferences: RenderDeliveryPreferences?
+    var deliveryPreferences: RenderDeliveryPreferences?
     let trimStartSeconds: Double?
     let trimEndSeconds: Double?
     let createdAt: Date
@@ -23,6 +25,13 @@ struct RenderJob: Codable, Identifiable, Equatable {
     /// Delivery outcomes are optional so older queue JSON remains readable.
     var sourceSavedToPhotos: Bool? = nil
     var outputSavedToPhotos: Bool? = nil
+    /// True for a kept original queued for verbatim Photos delivery. Such a job
+    /// is never rendered, even after a relaunch. Optional so older queue JSON
+    /// (and every ordinary render job) stays readable as `nil`.
+    var originalOnly: Bool? = nil
+    /// Why a kept original was retained (a validation failure), kept for the
+    /// queue row. Never used to decide rendering.
+    var retainedReason: String? = nil
 
     init(sourceURL: URL, stockId: String, iso: Float, printGauge: PrintGauge? = nil,
          trimStart: CMTime? = nil, trimEnd: CMTime? = nil,
@@ -40,6 +49,25 @@ struct RenderJob: Codable, Identifiable, Equatable {
         self.sessionId = sessionId ?? RenderJob.currentSessionId
         self.sourceSavedToPhotos = nil
         self.outputSavedToPhotos = nil
+    }
+
+    /// A take captured before a stock was chosen. It must not render until a
+    /// stock is assigned, and it is durable so Done/swipe/relaunch cannot strand
+    /// the capture.
+    init(awaitingStockSourceURL: URL, sessionId: String? = nil, createdAt: Date = Date()) {
+        self.init(sourceURL: awaitingStockSourceURL, stockId: "", iso: 0,
+                  sessionId: sessionId, createdAt: createdAt)
+        self.status = .awaitingStock
+    }
+
+    /// A kept original that failed validation: delivered to Photos verbatim and
+    /// never rendered.
+    init(originalOnlySourceURL: URL, reason: String, sessionId: String? = nil,
+         createdAt: Date = Date()) {
+        self.init(sourceURL: originalOnlySourceURL, stockId: "", iso: 0,
+                  sessionId: sessionId, createdAt: createdAt)
+        self.originalOnly = true
+        self.retainedReason = reason
     }
 
     var trimStart: CMTime? {
@@ -60,6 +88,9 @@ struct RenderJob: Codable, Identifiable, Equatable {
         case processing
         case completed
         case failed
+        /// Captured with no stock selected; discoverable and resumable, never
+        /// rendered until a stock is assigned.
+        case awaitingStock
     }
 
     /// Stable for this process, independent of persisted queue state and view lifecycle.

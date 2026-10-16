@@ -242,6 +242,7 @@ private struct JobRow: View {
                 }
             case .completed: Label("Done", systemImage: "checkmark.circle.fill").font(.caption2).foregroundStyle(.green)
             case .failed: Label("Failed", systemImage: "xmark.circle.fill").font(.caption2).foregroundStyle(.red)
+            case .awaitingStock: Label("Awaiting stock", systemImage: "film").font(.caption2).foregroundStyle(.secondary)
             }
         }
         .id(job.status)
