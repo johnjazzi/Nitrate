@@ -6,15 +6,14 @@ Official sources for every Apple step are listed at the end.
 
 ## Blocker — there is no distribution certificate
 
-A Release archive was produced and inspected. It is **not submittable**, for one reason:
+A Release archive was produced and inspected. The blocker is outside the repository:
 
-- The archive is signed with **Apple Development** and carries `get-task-allow = true` under an `iOS Team Provisioning Profile: *` wildcard. App Store Connect rejects any build carrying `get-task-allow`.
+- This machine holds two code-signing identities, `Developer ID Application` and `Apple Development`, and **no Apple Distribution certificate**. An App Store upload requires one.
+- `xcodebuild archive` therefore produced an archive signed with **Apple Development**, carrying `get-task-allow = true` under an `iOS Team Provisioning Profile: *`.
 
-`project.yml` forced `CODE_SIGN_IDENTITY: "Apple Development"` in every configuration, so Release archived with a development profile. That is fixed: the identity is now per-configuration, `Apple Development` for Debug and `Apple Distribution` for Release.
+That archive is not uploadable as it stands, but the reason is the missing certificate, not a build-setting mistake. A development-signed archive is the normal result of archiving locally without a distribution certificate, and the **App Store export re-signs it** — `xcodebuild -exportArchive` with the App Store Connect method, or Xcode Organizer → Distribute App. Do not hand the archive to Transporter directly.
 
-What remains is outside the repository. This machine holds two code-signing identities — `Developer ID Application` and `Apple Development` — and **no Apple Distribution certificate**, which an App Store upload requires. Xcode creates one the first time you archive with automatic signing, or you can create it in the developer portal under Certificates, Identifiers & Profiles.
-
-Creating a certificate is an account-level change, so it has not been done. Once it exists, re-run the archive and re-check that `get-task-allow` is absent before uploading.
+Creating a distribution certificate is an account-level change, so it has not been done. Xcode offers to create one the first time you distribute, or you can create it in the developer portal under Certificates, Identifiers & Profiles. Once it exists, export and re-check that `get-task-allow` is gone from the exported build.
 
 Everything else about the archive inspected clean: bundle `com.nitrate.app`, version `0.1.0` build `1`, minimum iOS `27.0`, arm64 only, `PrivacyInfo.xcprivacy` present, LUTs, grain and `stocks.json` bundled, and no debug-only entry points in the binary.
 
