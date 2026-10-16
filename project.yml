@@ -160,6 +160,7 @@ targets:
       - path: App/Modules/RenderQueue/RenderJob.swift
       - path: App/Modules/RenderQueue/QueuePersister.swift
       - path: App/Modules/RenderQueue/RenderQueueViewModel.swift
+      - path: App/Modules/Purchase/AppAccessPolicy.swift
       - path: App/Modules/CameraCapture/CameraOriginalStorage.swift
       - path: App/Modules/CameraCapture/CameraPreviewPolicy.swift
       - path: App/Modules/CameraCapture/CameraPreviewTap.swift

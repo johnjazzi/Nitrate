@@ -13,6 +13,10 @@ import Observation
 final class PurchaseViewModel {
     private let storeManager = StoreManager()
     private var didStart = false
+    private var distribution: AccessDistribution = .unknown
+    private var firstLaunch: Date?
+    private var verifiedPurchases: [VerifiedEntitlement] = []
+    private var refreshGeneration: UInt64 = 0
 
     // MARK: - Observable state (existing settings UI)
 
@@ -30,7 +34,16 @@ final class PurchaseViewModel {
     private(set) var access = AppAccessState.locked
 
     /// The single gate the app uses to admit paid features (capture/render).
-    var canUsePaidFeatures: Bool { access.canUsePaidFeatures }
+    var canUsePaidFeatures: Bool {
+        // Enforce expiry at the next capture attempt even if no StoreKit
+        // transaction event or settings presentation occurred at the deadline.
+        AppAccessPolicy.evaluate(distribution: distribution, firstLaunch: firstLaunch,
+                                 now: Date(), verifiedEntitlements: verifiedPurchases).canUsePaidFeatures
+    }
+
+    func onSceneActive() {
+        Task { await refreshEntitlements() }
+    }
 
     /// True only for a genuine TestFlight/sandbox beta install. Drives the
     /// "unrestricted beta" banner and hides the live monetization CTA.
@@ -114,17 +127,30 @@ final class PurchaseViewModel {
     }
 
     private func loadState() async {
-        await storeManager.loadProducts()
-        productLoadError = storeManager.productLoadError
+        // Resolve beta access before product loading. Unconfigured products or
+        // a product-server failure must not put a TestFlight tester at checkout.
         await refreshEntitlements()
+        if !isBetaAccess {
+            await storeManager.loadProducts()
+            productLoadError = storeManager.productLoadError
+            subscriptionPrice = PurchasePriceText.resolved(storeManager.displayPrice(for: .yearlySubscription))
+            lifetimePrice = PurchasePriceText.resolved(storeManager.displayPrice(for: .lifetime))
+        }
     }
 
     private func refreshEntitlements() async {
-        let distribution = await storeManager.resolveDistribution()
-        let entitlements = await storeManager.verifiedEntitlements()
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        let resolved = await storeManager.resolveDistribution()
+        let entitlements = resolved == .testFlight || resolved == .debug
+            ? [] : await storeManager.verifiedEntitlements()
+        guard generation == refreshGeneration else { return }
+        distribution = resolved
+        firstLaunch = storeManager.firstLaunchDate
+        verifiedPurchases = entitlements
         access = AppAccessPolicy.evaluate(
-            distribution: distribution,
-            firstLaunch: storeManager.firstLaunchDate,
+            distribution: resolved,
+            firstLaunch: firstLaunch,
             now: Date(),
             verifiedEntitlements: entitlements)
 

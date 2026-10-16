@@ -67,7 +67,7 @@ look already baked into the camera it would be guesswork on top of a guess.
 
 | | |
 |---|---|
-| OS | **iOS 26 or later.** The app installs on iOS 17 and later, but the camera needs 26. Below that it reports the capture path as unsupported rather than recording something else |
+| OS | **iOS 27 or later.** The camera's Apple Log 2 HEVC writer requires iOS 27; the install target matches that requirement |
 | Aperture | **iOS 27 or later.** The variable-aperture API the app uses is not available before that, and the app reports aperture as unavailable |
 | Hardware | Any device whose camera advertises an **Apple Log 2** capture format. Apple Log 2 arrived with the iPhone 17 Pro; the reference device here is an iPhone 18 Pro |
 | Anything else | No Apple Log 2 format means no recording. The app fails with an explicit unsupported error instead of falling back to a baked-in look |

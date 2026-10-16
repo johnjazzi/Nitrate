@@ -137,6 +137,16 @@ struct AppAccessPolicyTests {
         #expect(state.canUsePaidFeatures)
     }
 
+    @Test func subscriptionWithoutAnExpirationCannotGrantLifetimeAccess() {
+        let state = AppAccessPolicy.evaluate(
+            distribution: .appStore,
+            firstLaunch: reference.addingTimeInterval(-30 * day),
+            now: reference,
+            verifiedEntitlements: [entitlement(.yearlySubscription)])
+        #expect(!state.hasVerifiedPurchase)
+        #expect(!state.canUsePaidFeatures)
+    }
+
     @Test func expiredSubscriptionIsRejected() {
         let state = AppAccessPolicy.evaluate(
             distribution: .appStore,

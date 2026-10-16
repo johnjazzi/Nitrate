@@ -93,9 +93,13 @@ enum AppAccessPolicy {
         let isUnrestricted = distribution == .debug || isBeta
 
         let hasVerifiedPurchase = verifiedEntitlements.contains { entitlement in
-            guard PaidProduct.expected(for: entitlement.productID) != nil else { return false }
-            guard entitlement.revocationDate == nil else { return false }
-            if let expiration = entitlement.expirationDate, expiration <= now { return false }
+            guard let product = PaidProduct.expected(for: entitlement.productID),
+                  entitlement.revocationDate == nil else { return false }
+            if product == .yearlySubscription {
+                guard let expiration = entitlement.expirationDate, expiration > now else { return false }
+            } else if let expiration = entitlement.expirationDate, expiration <= now {
+                return false
+            }
             return true
         }
 

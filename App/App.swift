@@ -8,6 +8,7 @@ struct NitrateApp: App {
     @State private var library: FilmStockLibrary
     private let stockLibraryError: String?
     @State private var showsStartupSplash = true
+    @Environment(\.scenePhase) private var scenePhase
 
     private var brandingPreview: Bool {
         #if DEBUG
@@ -50,9 +51,16 @@ struct NitrateApp: App {
                 }
             }
             .onAppear {
+                cameraViewModel.recordingAccessAllowed = { [purchaseViewModel] in
+                    purchaseViewModel.canUsePaidFeatures
+                }
+                purchaseViewModel.onAppLaunch()
                 renderQueueViewModel.library = library
                 renderQueueViewModel.externalErrorMessage = stockLibraryError
                 renderQueueViewModel.onAppear()
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { purchaseViewModel.onSceneActive() }
             }
         }
     }
