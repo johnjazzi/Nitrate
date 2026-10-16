@@ -15,14 +15,32 @@ struct QueueSheetView: View {
     private var visibleQueuedJobs: [RenderJob] {
         viewModel.outstandingJobs
     }
+    private var visibleAwaitingStock: [RenderJob] {
+        viewModel.awaitingStockJobs
+    }
     private var visibleHistory: [RenderJob] {
         showAll ? viewModel.historyJobs : viewModel.currentSessionResults
     }
-    private var isEmpty: Bool { visibleQueuedJobs.isEmpty && visibleHistory.isEmpty }
+    private var isEmpty: Bool {
+        visibleQueuedJobs.isEmpty && visibleAwaitingStock.isEmpty && visibleHistory.isEmpty
+    }
 
     var body: some View {
         NavigationStack {
             List {
+                if viewModel.isPersistenceBlocked {
+                    Section {
+                        Button {
+                            viewModel.resume()
+                        } label: {
+                            Label("Resume queue", systemImage: "arrow.clockwise")
+                                .frame(minHeight: 44)
+                        }
+                        Text("The queue is paused because a change could not be saved. Nothing is lost; resume to retry the write.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Section("Storage") {
                     CameraStorageSummary(
                         freeSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.freeSpaceBytes : nil,
@@ -39,6 +57,22 @@ struct QueueSheetView: View {
                         )
                     }
                 } else {
+                    if !visibleAwaitingStock.isEmpty {
+                        Section("Awaiting stock (\(visibleAwaitingStock.count))") {
+                            ForEach(visibleAwaitingStock) { job in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    JobRow(job: job)
+                                    chooseStockMenu(for: job)
+                                    Button {
+                                        viewModel.exportOriginal(jobId: job.id)
+                                    } label: {
+                                        Text("Save original").frame(minHeight: 44)
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                        }
+                    }
                     if let current = visibleQueuedJobs.first(where: { $0.status == .processing }) {
                         Section("Processing") { JobRow(job: current, isCurrent: true) }
                     }
@@ -121,6 +155,29 @@ struct QueueSheetView: View {
             videoBitRate: DeliverySettings.averageBitRate,
             audioBitRate: DeliverySettings.aacAverageBitRate
         )
+    }
+
+    private func chooseStockMenu(for job: RenderJob) -> some View {
+        Menu {
+            if let stocks = viewModel.library?.videoStocks(), !stocks.isEmpty {
+                ForEach(stocks, id: \.stockId) { stock in
+                    Button(stock.displayName) {
+                        viewModel.assignStock(
+                            jobId: job.id,
+                            stockId: stock.stockId,
+                            iso: stock.defaultISO,
+                            gauge: viewModel.library?.lastGauge(for: stock.stockId)
+                        )
+                    }
+                }
+            } else {
+                Text("No stocks available")
+            }
+        } label: {
+            Label("Choose stock", systemImage: "film")
+                .frame(minHeight: 44)
+        }
+        .buttonStyle(.bordered)
     }
 
     private func shareVideo(_ job: RenderJob) {

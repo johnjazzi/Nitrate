@@ -1,8 +1,6 @@
 import Observation
 import Photos
 import AVFoundation
-import ImageIO
-import CoreGraphics
 
 /// Owns one serial chain of rendering and Photos delivery work.
 @MainActor
@@ -24,6 +22,9 @@ final class RenderQueueViewModel {
     private var persistenceErrorMessage: String?
     private var loadErrorMessage: String?
     private var canPersist = true
+    /// True while the queue is paused because a durable write failed. Rendering
+    /// and Photos side effects do not resume until `resume()` records the write.
+    private(set) var isPersistenceBlocked = false
     private let sessionId: String
     // A failure is a new alert on each failed transition, including a retry of
     // the same job. The retained job list remains independent of acknowledgement.
@@ -44,6 +45,8 @@ final class RenderQueueViewModel {
     var currentJob: RenderJob? { jobs.first { $0.status == .processing } }
     var currentSessionJobs: [RenderJob] { jobs.filter { $0.sessionId == sessionId } }
     var outstandingJobs: [RenderJob] { jobs.filter { $0.status == .pending || $0.status == .processing } }
+    /// Captures waiting for a stock to be chosen. Not rendering work.
+    var awaitingStockJobs: [RenderJob] { jobs.filter { $0.status == .awaitingStock } }
     var currentSessionResults: [RenderJob] {
         currentSessionJobs.filter { $0.status == .completed || $0.status == .failed }
             .sorted { $0.createdAt > $1.createdAt }
@@ -82,38 +85,12 @@ final class RenderQueueViewModel {
         self.sessionId = sessionId
     }
 
-    // MARK: - Recovery surface (stub)
-
-    /// True while the queue is paused because a durable write failed.
-    private(set) var isPersistenceBlocked = false
-
-    /// Captures waiting for a stock to be chosen.
-    var awaitingStockJobs: [RenderJob] { [] }
-
-    /// Retry the durable write and continue processing.
-    func resume() {}
-
-    /// Durably queue a take captured before a stock was chosen.
-    @discardableResult
-    func enqueueAwaitingStock(sourceURL: URL) -> UUID? { nil }
-
-    /// Assign a stock to an awaiting entry and let it render.
-    func assignStock(jobId: UUID, stockId: String, iso: Float, gauge: PrintGauge? = nil,
-                     deliveryPreferences: RenderDeliveryPreferences? = nil) {}
-
-    /// Deliver an awaiting entry's kept original to Photos without rendering.
-    func exportOriginal(jobId: UUID) {}
-
-    /// Durably queue a kept original for verbatim delivery; never rendered.
-    @discardableResult
-    func enqueueOriginalOnly(sourceURL: URL, reason: String) -> Bool { false }
-
     func onAppear() {
         guard !didInitialize else { return }
         didInitialize = true
         initializeRenderer()
         do {
-            let persisted = try persister.load()
+            let persisted = try (loadOverride ?? { try self.persister.load() })()
             jobs = persisted.map { job in
                 var recovered = job
                 if recovered.status == .processing {
@@ -141,8 +118,94 @@ final class RenderQueueViewModel {
         jobs.append(RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso,
                               printGauge: gauge, sessionId: sessionId,
                               deliveryPreferences: deliveryPreferences ?? DeliverySettings.renderPreferences()))
-        persistJobs()
+        // The enqueue must be durable before any render or Photos side effect.
+        guard persistJobs() else {
+            isPersistenceBlocked = true
+            publishQueueMessage()
+            return
+        }
         processNext()
+    }
+
+    /// Durably queue a take captured before a stock was chosen.
+    ///
+    /// The entry exists before the stock sheet is shown, so leaving the sheet
+    /// (Done/swipe), taking another clip, or relaunching cannot strand it. It is
+    /// discoverable in the queue and resumable with `assignStock` or
+    /// `exportOriginal`. It is never rendered until a stock is assigned.
+    @discardableResult
+    func enqueueAwaitingStock(sourceURL: URL) -> UUID? {
+        guard Self.isUsableFile(sourceURL) else {
+            reportRenderError("Source video not ready. Try again.")
+            return nil
+        }
+        rendererErrorMessage = nil
+        let job = RenderJob(awaitingStockSourceURL: sourceURL, sessionId: sessionId)
+        jobs.append(job)
+        guard persistJobs() else {
+            isPersistenceBlocked = true
+            publishQueueMessage()
+            return job.id
+        }
+        publishQueueMessage()
+        return job.id
+    }
+
+    /// Assign a stock to an awaiting entry and let it render.
+    func assignStock(jobId: UUID, stockId: String, iso: Float, gauge: PrintGauge? = nil,
+                     deliveryPreferences: RenderDeliveryPreferences? = nil) {
+        guard let index = jobs.firstIndex(where: { $0.id == jobId }),
+              jobs[index].status == .awaitingStock else { return }
+        jobs[index].stockId = stockId
+        jobs[index].iso = iso
+        jobs[index].printGauge = gauge
+        if let deliveryPreferences { jobs[index].deliveryPreferences = deliveryPreferences }
+        jobs[index].status = .pending
+        jobs[index].errorMessage = nil
+        jobs[index].sessionId = sessionId
+        guard persistJobs() else {
+            isPersistenceBlocked = true
+            publishQueueMessage()
+            return
+        }
+        processNext()
+    }
+
+    /// Deliver an awaiting entry's kept original to Photos without rendering it.
+    func exportOriginal(jobId: UUID) {
+        guard let index = jobs.firstIndex(where: { $0.id == jobId }),
+              jobs[index].status == .awaitingStock || jobs[index].originalOnly == true else { return }
+        jobs[index].originalOnly = true
+        jobs[index].status = .pending
+        jobs[index].errorMessage = nil
+        jobs[index].sessionId = sessionId
+        guard persistJobs() else {
+            isPersistenceBlocked = true
+            publishQueueMessage()
+            return
+        }
+        processNext()
+    }
+
+    /// Durably queue a kept original that failed validation for verbatim Photos
+    /// delivery. It is never rendered, and the reason is retained.
+    ///
+    /// Returns whether the entry was durably recorded; the caller must only clear
+    /// its handoff when this returns true.
+    @discardableResult
+    func enqueueOriginalOnly(sourceURL: URL, reason: String) -> Bool {
+        guard Self.isUsableFile(sourceURL) else {
+            externalErrorMessage = "The kept recording is no longer available to save "
+                + "(\(reason))."
+            return false
+        }
+        rendererErrorMessage = nil
+        jobs.append(RenderJob(originalOnlySourceURL: sourceURL, reason: reason, sessionId: sessionId))
+        let accepted = persistJobs()
+        if !accepted { isPersistenceBlocked = true }
+        publishQueueMessage()
+        processNext()
+        return accepted
     }
 
     func retry(jobId: UUID) {
@@ -154,7 +217,21 @@ final class RenderQueueViewModel {
         jobs[index].status = .pending
         jobs[index].errorMessage = nil
         jobs[index].sessionId = sessionId
-        persistJobs()
+        guard persistJobs() else {
+            isPersistenceBlocked = true
+            publishQueueMessage()
+            return
+        }
+        processNext()
+    }
+
+    /// Retry the durable write and continue the queue. The queued media is never
+    /// touched; only the transition that failed to persist is re-attempted.
+    func resume() {
+        guard isPersistenceBlocked else { return }
+        guard persistJobs() else { return }
+        isPersistenceBlocked = false
+        publishQueueMessage()
         processNext()
     }
 
@@ -176,18 +253,23 @@ final class RenderQueueViewModel {
         catch { rendererInitError = error.localizedDescription }
     }
 
-    private func persistJobs() {
+    /// Persist the queue. Returns false when a durable write failed, so callers
+    /// can pause further side effects rather than acting on unrecorded state.
+    @discardableResult
+    private func persistJobs() -> Bool {
         guard canPersist else {
             publishQueueMessage()
-            return
+            return true
         }
         do {
-            try persister.save(jobs)
+            if let persistOverride { try persistOverride(jobs) } else { try persister.save(jobs) }
             persistenceErrorMessage = nil
             publishQueueMessage()
+            return true
         } catch {
             persistenceErrorMessage = "Queue state could not be saved: \(error.localizedDescription)"
             publishQueueMessage()
+            return false
         }
     }
 
@@ -209,10 +291,34 @@ final class RenderQueueViewModel {
         }
     }
 
+    /// Pause the queue after a durable transition failed. The job returns to
+    /// pending so `resume()` re-runs it; its in-memory delivery outcomes are kept
+    /// so an already-confirmed side effect is not repeated.
+    private func pauseAfterDurableFailure(_ jobId: UUID) {
+        update(jobId) { $0.status = .pending }
+        isPersistenceBlocked = true
+        publishQueueMessage()
+    }
+
+    /// Persist a terminal failure. If it cannot be recorded, pause the queue so
+    /// no further job runs on state that would be lost on relaunch.
+    private func recordFailureState() {
+        if !persistJobs() {
+            isPersistenceBlocked = true
+            publishQueueMessage()
+        }
+    }
+
     private func processNext() {
+        guard !isPersistenceBlocked else { return }
         guard worker == nil, let job = jobs.first(where: { $0.status == .pending }) else { return }
         update(job.id) { $0.status = .processing; $0.errorMessage = nil; $0.sessionId = sessionId }
-        persistJobs()
+        guard persistJobs() else {
+            update(job.id) { $0.status = .pending }
+            isPersistenceBlocked = true
+            publishQueueMessage()
+            return
+        }
         worker = Task { [weak self] in
             guard let self else { return }
             await executeJob(job.id)
@@ -223,6 +329,14 @@ final class RenderQueueViewModel {
 
     private func executeJob(_ jobId: UUID) async {
         guard let initial = job(jobId) else { return }
+
+        // A kept original is delivered verbatim and never rendered, on this run
+        // or any relaunch.
+        if initial.originalOnly == true {
+            await deliverOriginalOnly(jobId)
+            return
+        }
+
         // A confirmed Photos asset does not depend on the retained output file.
         // This also recovers a crash between the two requested deliveries.
         if initial.outputSavedToPhotos != true {
@@ -231,7 +345,7 @@ final class RenderQueueViewModel {
                 if let persistedOutput = outputURL, !Self.isUsableFile(persistedOutput) {
                     outputURL = nil
                     update(jobId) { $0.outputURL = nil; $0.outputSavedToPhotos = nil }
-                    persistJobs()
+                    guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
                 }
                 if outputURL == nil {
                     outputURL = try await render(initial)
@@ -239,13 +353,13 @@ final class RenderQueueViewModel {
                         throw QueueError.invalidOutput
                     }
                     update(jobId) { $0.outputURL = url }
-                    persistJobs()
+                    guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
                 }
                 guard let outputURL, Self.isUsableFile(outputURL) else { throw QueueError.invalidOutput }
                 try await saveOperation(outputURL)
                 update(jobId) { $0.outputSavedToPhotos = true }
                 // Persist the first success before attempting the original.
-                persistJobs()
+                guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
             } catch {
                 if let outputURL = job(jobId)?.outputURL {
                     let message = Self.isUsableFile(outputURL)
@@ -259,7 +373,7 @@ final class RenderQueueViewModel {
                 } else {
                     await failRender(jobId, error: error)
                 }
-                persistJobs()
+                recordFailureState()
                 return
             }
         }
@@ -269,7 +383,7 @@ final class RenderQueueViewModel {
                 // audio, orientation and custom metadata; never trim or delete it.
                 try await saveOperation(initial.sourceURL)
                 update(jobId) { $0.sourceSavedToPhotos = true }
-                persistJobs()
+                guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
             } catch {
                 let sourceDetail = Self.isUsableFile(initial.sourceURL)
                     ? "Original remains in the app."
@@ -282,18 +396,51 @@ final class RenderQueueViewModel {
                     $0.sourceSavedToPhotos = false
                     $0.errorMessage = "Rendered movie saved to Photos, but original Apple Log could not be saved: \(error.localizedDescription). \(sourceDetail) \(outputDetail) Retry saves only the original."
                 }
-                persistJobs()
+                recordFailureState()
                 return
             }
         }
         update(jobId) { $0.status = .completed; $0.errorMessage = nil }
-        persistJobs()
-        if let outputURL = job(jobId)?.outputURL, Self.isUsableFile(outputURL) {
-            if let postDeliveryOperation {
-                await postDeliveryOperation(outputURL, jobId)
-            } else {
-                await dumpFrames(from: outputURL, jobId: jobId)
+        guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
+        // Optional injected post-delivery diagnostics only; production performs no
+        // automatic frame dumping.
+        if let outputURL = job(jobId)?.outputURL, Self.isUsableFile(outputURL),
+           let postDeliveryOperation {
+            await postDeliveryOperation(outputURL, jobId)
+        }
+    }
+
+    /// Deliver a kept original to Photos unchanged, without rendering it.
+    private func deliverOriginalOnly(_ jobId: UUID) async {
+        guard let job = job(jobId) else { return }
+        if job.sourceSavedToPhotos == true {
+            update(jobId) { $0.status = .completed; $0.errorMessage = nil }
+            guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
+            return
+        }
+        let reasonSuffix = job.retainedReason.map { " (\($0))" } ?? ""
+        guard Self.isUsableFile(job.sourceURL) else {
+            update(jobId) {
+                $0.status = .failed
+                $0.sourceSavedToPhotos = false
+                $0.errorMessage = "The kept recording is no longer available to save\(reasonSuffix)."
             }
+            recordFailureState()
+            return
+        }
+        do {
+            try await saveOperation(job.sourceURL)
+            update(jobId) { $0.status = .completed; $0.sourceSavedToPhotos = true; $0.errorMessage = nil }
+            guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
+        } catch {
+            update(jobId) {
+                $0.status = .failed
+                $0.sourceSavedToPhotos = false
+                $0.errorMessage = "Recording did not pass validation\(reasonSuffix). "
+                    + "Saving the original to Photos failed: \(error.localizedDescription). "
+                    + "It remains in the app."
+            }
+            recordFailureState()
         }
     }
 
@@ -350,30 +497,6 @@ final class RenderQueueViewModel {
 
     private func job(_ id: UUID) -> RenderJob? { jobs.first { $0.id == id } }
 
-    /// Deliver a kept original to Photos unchanged.
-    ///
-    /// A take that failed validation is never rendered and never becomes a queue
-    /// entry, but the readable file is still the user's footage, so it is saved
-    /// verbatim. Runs off the render worker so it can neither disturb nor be
-    /// blocked by the render queue.
-    func saveOriginal(sourceURL: URL, reason: String) {
-        guard Self.isUsableFile(sourceURL) else {
-            externalErrorMessage = "The kept recording is no longer available to save "
-                + "(\(reason))."
-            return
-        }
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await saveOperation(sourceURL)
-            } catch {
-                externalErrorMessage = "Recording did not pass validation (\(reason)). "
-                    + "Saving the original to Photos failed: \(error.localizedDescription). "
-                    + "It remains in the app."
-            }
-        }
-    }
-
     private func update(_ id: UUID, _ change: (inout RenderJob) -> Void) {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
         let previousStatus = jobs[index].status
@@ -402,29 +525,6 @@ final class RenderQueueViewModel {
         guard authorized else { throw QueueError.photosPermissionDenied }
         try await PHPhotoLibrary.shared().performChanges {
             PHAssetCreationRequest.forAsset().addResource(with: .video, fileURL: url, options: nil)
-        }
-    }
-
-    private nonisolated func dumpFrames(from url: URL, jobId: UUID) async {
-        let asset = AVAsset(url: url)
-        guard let duration = try? await asset.load(.duration), duration.seconds > 0 else { return }
-        let times: [CMTime] = [CMTime(seconds: 0, preferredTimescale: 600),
-                               CMTime(seconds: duration.seconds / 2, preferredTimescale: 600),
-                               CMTime(seconds: max(0, duration.seconds - 0.1), preferredTimescale: 600)]
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = .zero
-        generator.requestedTimeToleranceAfter = .zero
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let frameDir = docs.appendingPathComponent("frames/\(jobId.uuidString)")
-        try? FileManager.default.createDirectory(at: frameDir, withIntermediateDirectories: true)
-        for (idx, time) in times.enumerated() {
-            guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil),
-                  let destination = CGImageDestinationCreateWithURL(
-                    frameDir.appendingPathComponent(["start", "middle", "end"][idx] + ".png") as CFURL,
-                    "public.png" as CFString, 1, nil) else { continue }
-            CGImageDestinationAddImage(destination, cgImage, nil)
-            CGImageDestinationFinalize(destination)
         }
     }
 
