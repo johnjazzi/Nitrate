@@ -1,0 +1,135 @@
+# Getting Nitrate into the App Store
+
+October 15, 2026. Ordered so each step only needs the previous one. Nothing here has been done for you: no app record was created, no agreement accepted, no price chosen, no build uploaded.
+
+Official sources for every Apple step are listed at the end.
+
+## Step 0 — Check what already exists
+
+The bundle identifier is `com.filmemulation.app` and the StoreKit product IDs are `com.filmemulation.*`. Before creating anything, sign in to App Store Connect and look for an app with that bundle ID.
+
+- **If it exists:** use it. Do not create a second record and do not change the bundle ID — an identifier that has shipped cannot be reused for a different app.
+- **If it does not:** create it in Step 2.
+
+This check is not optional: creating a duplicate wastes the identifier permanently.
+
+## Step 1 — Account and agreements (Account Holder only)
+
+1. Confirm your Apple Developer Program membership is active.
+2. In App Store Connect → **Business**, review and sign the current **Paid Apps Agreement** if you intend to sell the subscription or lifetime unlock. You cannot add banking or tax details before this is signed.[8]
+3. Add your **banking** information and complete the **tax** forms. Apple verifies what you submit; these are payout details, not app configuration.[16][17]
+
+Enter these yourself, in Apple's authenticated UI. Do not send bank details, tax IDs, passwords or keys through chat.
+
+If you are not selling yet, you can still ship a free app — skip the agreement and the two purchase products, and the access policy will treat every production user as being on the local 7-day evaluation.
+
+## Step 2 — Create the app record
+
+In App Store Connect → **Apps** → **+** → **New App**:[3]
+
+| Field | Value |
+|---|---|
+| Platform | iOS |
+| Name | Your chosen App Store name (must be unique on the store) |
+| Primary language | Your language |
+| Bundle ID | `com.filmemulation.app` |
+| SKU | Any internal ID, e.g. `nitrate-ios-001`. Never shown to users |
+| User access | Full access |
+
+## Step 3 — App privacy (required)
+
+1. **Privacy policy URL is required for every app.** Host your policy at a public URL and enter it under **App privacy → Privacy Policy**. A user privacy choices URL is optional.[4][5]
+2. Complete the **App Privacy** questionnaire. Answer from what the app actually does. The reviewed code has no analytics, no network client of its own, no machine-learning frameworks, and no third-party SDKs — its only network use is Apple's StoreKit. Do not claim "no data collected" for Apple services you did not examine.
+3. Keep the in-app privacy link: the guidelines require an accessible policy link inside the app as well as in the listing.[5]
+4. The app ships a `PrivacyInfo.xcprivacy` declaring the required-reason APIs it uses (user defaults, boot time, disk space, file timestamps) with the approved reasons for each.[6]
+
+## Step 4 — Listing metadata
+
+| Item | Notes |
+|---|---|
+| Category | Photo & Video |
+| Age rating | Complete the questionnaire honestly |
+| Content rights | You own or have rights to everything in the app |
+| Support URL | Required — a page with a contact route |
+| Marketing URL | Optional |
+| Description / keywords / subtitle | Yours to write |
+
+**Screenshots:** at least one set for the required iPhone size class, captured from the actual app. App previews are optional and must show real behaviour.[12] Capture from the device or a simulator — do not invent dimensions, and confirm the current required sizes in App Store Connect when you upload.
+
+## Step 5 — Export compliance
+
+When you upload, App Store Connect asks about encryption. Answer truthfully for the binary you actually built: this app implements no cryptography of its own and links no crypto library; its only secure traffic is Apple's StoreKit. Read the questions rather than assuming the exemption applies, and record the answer you gave.
+
+## Step 6 — Products (only if you are selling)
+
+Lifetime unlock — **Monetization → In-App Purchases → + → Non-Consumable**, product ID `com.filmemulation.lifetime`.[21]
+
+Yearly subscription — **Monetization → Subscriptions → create a subscription group → Create**, product ID `com.filmemulation.subscription.yearly`, duration **1 year**.[20]
+
+For each: reference name, localized display name and description, price, availability, and review information. Note that **your first auto-renewable subscription must be submitted with a new app version**, and the price/duration cannot be changed after submission.[20]
+
+Test the products with a sandbox account before relying on them; sandbox purchases do not incur charges.[15]
+
+## Step 7 — Build and upload
+
+```sh
+cd ~/projects/untitled-ios-film-emulation-app
+xcodegen generate
+```
+
+Then in Xcode: select the **Nitrate** scheme, destination **Any iOS Device (arm64)**, and **Product → Archive**. In the Organizer, **Validate App** first, then **Distribute App → App Store Connect → Upload**.[10]
+
+Before each upload, increment `CURRENT_PROJECT_VERSION` in `project.yml` — the build string must be unique per upload.[2]
+
+Current values: `MARKETING_VERSION` 0.1.0, `CURRENT_PROJECT_VERSION` 1, minimum iOS 27.
+
+Note that Apple's current requirements state uploads must be built with Xcode 26 / the iOS 26 SDK or later; your installed Xcode 27 clears that floor, but re-check the requirements page at submission time.[9]
+
+## Step 8 — TestFlight first
+
+1. After the build processes, it appears under **TestFlight**.[1]
+2. Complete **Test Information**: beta description, what to test, and a feedback email.[1]
+3. **Internal testing:** add yourself — internal testers are users of your own App Store Connect account, so as a solo developer that is just you. Up to 100 are allowed.[18]
+4. **External testing:** add testers or a public link. The **first build of an app goes to Beta App Review** before external testers can install it; builds remain testable for up to 90 days.[1]
+5. TestFlight purchases run in Apple's sandbox. Because Nitrate grants unrestricted access in a genuine TestFlight install, testers are never asked to check out at all.[14]
+
+## Step 9 — Submit for review
+
+1. Select the processed build for the version.
+2. Fill in **App Review Information**: contact details, and notes explaining that the camera requires a device advertising an Apple 4K/24 Apple Log 2 capture format on iOS 27+. Never tell reviewers that unsupported hardware will work.
+3. Attach the products you want reviewed with this version.
+4. Submit. The status moves to **Waiting for Review**; reply to any reviewer message from the submission page.[11]
+
+## Step 10 — Release
+
+Choose **manually release this version** so approval is separated from publication: after approval the version sits at **Pending Developer Release** until you release it, and it can take up to 24 hours to appear on the store.[13]
+
+After it is live, verify the listing, a real purchase or restore, and one full capture → render → Photos save on production.
+
+## What I can do versus what only you can do
+
+**I can:** prepare and check metadata, keep the build reproducible, write release notes, prepare review notes, and run verification and archives.
+
+**Only you can:** accept agreements, enter banking and tax details, choose names and prices, approve the privacy policy, and press upload, submit and release.
+
+## Sources
+
+[1] https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview
+[2] https://developer.apple.com/help/app-store-connect/manage-builds/upload-builds
+[3] https://developer.apple.com/help/app-store-connect/create-an-app-record/add-a-new-app
+[4] https://developer.apple.com/help/app-store-connect/manage-app-information/manage-app-privacy
+[5] https://developer.apple.com/app-store/review/guidelines
+[6] https://developer.apple.com/documentation/bundleresources/describing-use-of-required-reason-api
+[8] https://developer.apple.com/help/app-store-connect/manage-agreements/sign-and-update-agreements
+[9] https://developer.apple.com/news/upcoming-requirements
+[10] https://developer.apple.com/documentation/Xcode/distributing-your-app-for-beta-testing-and-releases?changes=l_6
+[11] https://developer.apple.com/help/app-store-connect/manage-your-apps-availability/overview-of-publishing-your-app-on-the-app-store
+[12] https://developer.apple.com/app-store/app-previews
+[13] https://developer.apple.com/help/app-store-connect/manage-your-apps-availability/select-an-app-store-version-release-option
+[14] https://developer.apple.com/help/app-store-connect/test-a-beta-version/testing-subscriptions-and-in-app-purchases-in-testflight
+[15] https://developer.apple.com/help/app-store-connect/test-in-app-purchases/overview-of-testing-in-sandbox
+[16] https://developer.apple.com/help/app-store-connect/manage-banking-information/enter-banking-information
+[17] https://developer.apple.com/help/app-store-connect/manage-tax-information/provide-tax-information
+[18] https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers
+[20] https://developer.apple.com/help/app-store-connect/manage-subscriptions/offer-auto-renewable-subscriptions
+[21] https://developer.apple.com/help/app-store-connect/manage-in-app-purchases/create-consumable-or-non-consumable-in-app-purchases
