@@ -18,6 +18,10 @@ enum AccessDistribution: String, Sendable, CaseIterable {
     /// App Store installs always carry a receipt, so this cannot unlock a real
     /// customer.
     case development
+    /// A local StoreKit configuration file is driving purchases (Xcode's
+    /// `.xcode` environment). Treated exactly like the App Store so the real
+    /// paywall can be exercised before any product is registered.
+    case storeKitTesting
     case testFlight
     case appStore
     case unknown
@@ -98,6 +102,12 @@ enum AppAccessPolicy {
     static func resolvedChannel(current: AccessDistribution,
                                cached: AccessDistribution?) -> AccessDistribution {
         current == .unknown ? (cached ?? .unknown) : current
+    }
+
+    /// The channel behaves like a real customer: an evaluation, then a verified
+    /// purchase. Used for App Store and for local StoreKit testing.
+    static func isProductionLike(_ distribution: AccessDistribution) -> Bool {
+        distribution == .appStore || distribution == .storeKitTesting
     }
 
     static func evaluate(distribution: AccessDistribution,

@@ -4,11 +4,25 @@ October 15, 2026. Ordered so each step only needs the previous one. Nothing here
 
 Official sources for every Apple step are listed at the end.
 
+## Blocker — there is no distribution certificate
+
+A Release archive was produced and inspected. It is **not submittable**, for one reason:
+
+- The archive is signed with **Apple Development** and carries `get-task-allow = true` under an `iOS Team Provisioning Profile: *` wildcard. App Store Connect rejects any build carrying `get-task-allow`.
+
+`project.yml` forced `CODE_SIGN_IDENTITY: "Apple Development"` in every configuration, so Release archived with a development profile. That is fixed: the identity is now per-configuration, `Apple Development` for Debug and `Apple Distribution` for Release.
+
+What remains is outside the repository. This machine holds two code-signing identities — `Developer ID Application` and `Apple Development` — and **no Apple Distribution certificate**, which an App Store upload requires. Xcode creates one the first time you archive with automatic signing, or you can create it in the developer portal under Certificates, Identifiers & Profiles.
+
+Creating a certificate is an account-level change, so it has not been done. Once it exists, re-run the archive and re-check that `get-task-allow` is absent before uploading.
+
+Everything else about the archive inspected clean: bundle `com.nitrate.app`, version `0.1.0` build `1`, minimum iOS `27.0`, arm64 only, `PrivacyInfo.xcprivacy` present, LUTs, grain and `stocks.json` bundled, and no debug-only entry points in the binary.
+
 ## Step 0 — The record already exists
 
 The App Store Connect record is **nitrate.camera**, bundle ID **`com.nitrate.app`**, so the code must use exactly that identifier — an upload whose bundle ID differs from the record is rejected. `project.yml` has been set to `com.nitrate.app` and the built `Info.plist` verified.
 
-An earlier identifier, `com.filmemulation.app`, appears throughout the history and is still used by the `com.filmemulation.*` movie metadata keys and the StoreKit product IDs. It is not published: an App Store lookup for it returns no app. If an unused App ID for it sits in the developer portal, deleting it is optional housekeeping.
+An earlier identifier, `com.filmemulation.app`, appears throughout the history and is still used by the `com.filmemulation.*` movie metadata keys. It is not published: an App Store lookup for it returns no app. If an unused App ID for it sits in the developer portal, deleting it is optional housekeeping.
 
 Do not create a second app record. An identifier that has shipped can never be reused for a different app.
 
@@ -72,6 +86,12 @@ Test the products with a sandbox account before relying on them; sandbox purchas
 **Create these identifiers exactly as written.** App Store Connect will not let you change or delete a product identifier once the product exists — you can only stop selling it. The IDs above are the single source of truth in `PaidProduct` (`App/Modules/Purchase/AppAccessPolicy.swift`), pinned by a test; if you register something different, change the code and that test in the same commit.
 
 ## Step 7 — Build and upload
+
+Before uploading, test the paywall locally against the StoreKit fixture in
+`StoreKit/Nitrate.storekit` — see `storekit-testing.md`. It exercises evaluation,
+purchase, restore, expiry and refund without any product existing in App Store
+Connect, and it is the only way to see the paywall before a real App Store build,
+because a development install is deliberately unrestricted.
 
 ```sh
 cd ~/projects/untitled-ios-film-emulation-app

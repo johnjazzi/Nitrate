@@ -106,6 +106,33 @@ struct AppAccessPolicyTests {
         #expect(state.trialDaysRemaining == AppAccessPolicy.trialDayCount)
     }
 
+    @Test func storeKitTestingExercisesTheRealPaywall() {
+        // A local StoreKit configuration must behave like a customer, so the
+        // purchase, restore and expiry flows can be tested before any product
+        // is registered in App Store Connect.
+        let expired = AppAccessPolicy.evaluate(
+            distribution: .storeKitTesting,
+            firstLaunch: reference.addingTimeInterval(-30 * day),
+            now: reference,
+            verifiedEntitlements: [])
+        #expect(!expired.canUsePaidFeatures)
+        #expect(!expired.isBetaAccess)
+        #expect(!expired.isUnrestricted)
+
+        let subscribed = AppAccessPolicy.evaluate(
+            distribution: .storeKitTesting,
+            firstLaunch: reference.addingTimeInterval(-30 * day),
+            now: reference,
+            verifiedEntitlements: [entitlement(.yearlySubscription, expiresIn: 5 * day)])
+        #expect(subscribed.canUsePaidFeatures)
+
+        #expect(AppAccessPolicy.isProductionLike(.appStore))
+        #expect(AppAccessPolicy.isProductionLike(.storeKitTesting))
+        #expect(!AppAccessPolicy.isProductionLike(.development))
+        #expect(!AccessDistribution.storeKitTesting.isCacheable,
+                "A local testing channel must never be remembered as a real install.")
+    }
+
     @Test func developmentBuildIsUnrestrictedWithoutASubscription() {
         // A locally signed build has no App Store receipt; the developer must
         // never be locked out of their own app.

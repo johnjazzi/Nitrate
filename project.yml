@@ -37,6 +37,11 @@ schemes:
         Nitrate: all
     run:
       config: Debug
+      # Drives local StoreKit purchases so the real paywall (evaluation,
+      # purchase, restore, expiry) can be tested before any product exists in
+      # App Store Connect. Kept outside App/ so it is never compiled into or
+      # bundled with the shipping app.
+      storeKitConfiguration: StoreKit/Nitrate.storekit
     profile:
       config: Release
     archive:
@@ -117,9 +122,18 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: "U43C6BCZFS"
-        CODE_SIGN_IDENTITY: "Apple Development"
         PROVISIONING_PROFILE_SPECIFIER: ""
         ENABLE_USER_SCRIPT_SANDBOXING: NO
+      configs:
+        # Forcing "Apple Development" in every configuration signed the Release
+        # archive with a development profile, so it carried get-task-allow and
+        # could never be uploaded. Automatic signing picks the right identity
+        # per configuration: development for device builds, distribution for an
+        # archive.
+        Debug:
+          CODE_SIGN_IDENTITY: "Apple Development"
+        Release:
+          CODE_SIGN_IDENTITY: "Apple Distribution"
     preBuildScripts:
       - name: SwiftLint
         script: |

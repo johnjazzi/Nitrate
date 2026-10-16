@@ -96,6 +96,9 @@ final class StoreManager {
                 let environment = appTransaction.environment
                 if environment == .production { return .appStore }
                 if environment == .sandbox { return .testFlight }
+                // `.xcode` means a local StoreKit configuration file is active.
+                // Exercise the real paywall rather than a free unlock.
+                if environment == .xcode { return .storeKitTesting }
                 return .unknown
             case .unverified:
                 return .unknown
