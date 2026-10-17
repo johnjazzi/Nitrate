@@ -57,6 +57,11 @@ In App Store Connect → **Apps** → **+** → **New App**:[3]
 
 ## Step 4 — Listing metadata
 
+Use `app-store-metadata.md` for the reviewed handoff and open submission risks;
+`app-store-metadata.en-US.json` contains draft pasteable values, not an API import.
+The owner still supplies narrative, real contact/policy destinations and prices.
+Do not treat these drafts as metadata already saved in App Store Connect.
+
 | Item | Notes |
 |---|---|
 | Category | Photo & Video |
