@@ -1,0 +1,33 @@
+name: Release version
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled, edited]
+
+# Enforcement only: this workflow never rewrites, pushes, or merges a PR.
+permissions:
+  contents: read
+
+jobs:
+  release-version:
+    name: Release version gate
+    if: github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # Keep untrusted label text out of shell source.
+      RELEASE_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+      RELEASE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Check out PR head with base history
+        # Official actions/checkout v4.3.1; verified against its GitHub tag.
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test release policy helper
+        run: python3 scripts/test_release_version.py -v
+      - name: Check exact next release version and advanced local build
+        run: python3 scripts/release_version.py check --base "$RELEASE_BASE_SHA"
