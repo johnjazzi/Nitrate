@@ -114,6 +114,8 @@ def compile_check() -> bool:
 
 
 def verify() -> bool:
+    if not run("release-metadata-tests", [sys.executable, str(ROOT / "scripts" / "test_release_metadata.py")]):
+        return False
     if not run("cloud-bootstrap-tests", [sys.executable, str(ROOT / "scripts" / "test_cloud_bootstrap.py")]):
         return False
     if not generate_project():

@@ -22,7 +22,7 @@ settings:
     INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "Nitrate saves rendered videos and optional original Log recordings to your photo library."
     INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "Nitrate saves rendered videos and optional original Log recordings to your photo library."
     INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
-    INFOPLIST_KEY_UIRequiredDeviceCapabilities: "metal video-capture"
+    INFOPLIST_KEY_UIRequiredDeviceCapabilities: "metal video-camera"
     INFOPLIST_KEY_UIStatusBarHidden: "YES"
     DEVELOPMENT_TEAM: "U43C6BCZFS"
 
@@ -120,6 +120,9 @@ targets:
         # they are written into recorded files, so renaming them would change
         # the file contract.
         PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app
+        # The portrait-locked capture UI targets iPhone, not native iPad
+        # multitasking (which requires all four interface orientations).
+        TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: "U43C6BCZFS"
         # Left as the development identity in every configuration, which is the
