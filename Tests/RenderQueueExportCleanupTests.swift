@@ -162,10 +162,80 @@ struct RenderQueueExportCleanupTests {
         #expect(queue.jobs.first?.cleanupWarning != nil)
         #expect(queue.jobs.first?.mediaCleanupCompleted != true)
         fails = false
-        queue.onAppear()
+        queue.retryMediaCleanup()
         await settle(queue)
         #expect(queue.jobs.first?.mediaCleanupCompleted == true)
         #expect(queue.jobs.first?.cleanupWarning == nil)
         #expect(saves == 1)
+    }
+
+    @Test func receiptPersistenceFailurePreventsPhotosAndCleanup() async throws {
+        let fixture = try ExportCleanupFixture()
+        defer { fixture.remove() }
+        let source = try fixture.movie("clip_take.mov", in: fixture.sources)
+        let output = try fixture.movie("render_take.mov", in: fixture.outputs)
+        var saves = 0
+        let queue = RenderQueueViewModel(render: { _ in output }, save: { _ in saves += 1 }, persist: { jobs in
+            if jobs.first?.receipt != nil { throw Failure.denied }
+        }, receipt: { _, _ in RenderReceipt() }, mediaCleanup: fixture.cleaner)
+        queue.enqueue(sourceURL: source, stockId: "test", iso: 100)
+        await settle(queue)
+        #expect(saves == 0)
+        #expect(queue.isPersistenceBlocked)
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(FileManager.default.fileExists(atPath: output.path))
+    }
+
+    @Test func cleanupWriteCrashWindowRecoversMissingMoviesWithoutDelivery() async throws {
+        let fixture = try ExportCleanupFixture()
+        defer { fixture.remove() }
+        let source = try fixture.movie("clip_take.mov", in: fixture.sources)
+        let output = try fixture.movie("render_take.mov", in: fixture.outputs)
+        var durable: [RenderJob] = []
+        let queue = RenderQueueViewModel(render: { _ in output }, save: { _ in }, persist: { jobs in
+            if jobs.first?.mediaCleanupCompleted == true { throw Failure.denied }
+            durable = jobs
+        }, receipt: { _, _ in RenderReceipt() }, mediaCleanup: fixture.cleaner)
+        queue.enqueue(sourceURL: source, stockId: "test", iso: 100)
+        await settle(queue)
+        #expect(queue.isPersistenceBlocked)
+        #expect(durable.first?.status == .completed)
+        #expect(durable.first?.outputURL == output)
+        #expect(!FileManager.default.fileExists(atPath: source.path))
+        #expect(!FileManager.default.fileExists(atPath: output.path))
+        let snapshot = durable
+        let recovered = RenderQueueViewModel(render: { _ in throw Failure.denied }, save: { _ in
+            Issue.record("Cleanup recovery must not deliver again")
+        }, persist: { _ in }, load: { snapshot }, mediaCleanup: fixture.cleaner)
+        recovered.onAppear()
+        await settle(recovered)
+        #expect(recovered.jobs.first?.mediaCleanupCompleted == true)
+        #expect(recovered.jobs.first?.outputURL == nil)
+    }
+
+    @Test func reusedOutputHasNoInventedRenderDurationAndFailedSharedSourceIsProtected() async throws {
+        let fixture = try ExportCleanupFixture()
+        defer { fixture.remove() }
+        let source = try fixture.movie("clip_shared.mov", in: fixture.sources)
+        let output = try fixture.movie("render_existing.mov", in: fixture.outputs)
+        var ready = RenderJob(sourceURL: source, stockId: "test", iso: 100)
+        ready.outputURL = output
+        var failed = RenderJob(sourceURL: source, stockId: "failed", iso: 100)
+        failed.status = .failed
+        let snapshot = [ready, failed]
+        let queue = RenderQueueViewModel(render: { _ in
+            Issue.record("An existing output must not be rendered again")
+            return output
+        }, save: { _ in }, persist: { _ in }, load: { snapshot }, receipt: { url, elapsed in
+            #expect(url == output)
+            #expect(elapsed == nil)
+            return RenderReceipt()
+        }, mediaCleanup: fixture.cleaner)
+        queue.onAppear()
+        await settle(queue)
+        #expect(queue.jobs.first?.receipt?.renderDurationSeconds == nil)
+        #expect(queue.jobs.first?.mediaCleanupCompleted != true)
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(!FileManager.default.fileExists(atPath: output.path))
     }
 }
