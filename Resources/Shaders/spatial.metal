@@ -21,14 +21,14 @@ constexpr sampler spatial_linear_sampler(
 /// low-frequency by nature, so half-res blurring is visually equivalent while
 /// cutting the scratch texture cost (and bandwidth) by 4x at 4K.
 
-/// Rec.709 luma of an Apple Log 2 code value triple.
+/// Rec.709 luma of the post-LUT graded image.
 static inline float spatial_luma(float3 c) {
     return dot(c, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
 /// Extract a highlight mask from the source image.
 ///
-/// Reads the full-resolution source (Apple Log 2 code values) but writes a
+/// Reads the full-resolution graded source but writes a
 /// half-resolution, UNTINTED mask (the highlight weight in all three channels).
 /// Keeping it untinted lets one mask drive both the narrow halation and the
 /// wide glow, which use different colour casts, so the expensive blur is only
@@ -62,67 +62,8 @@ kernel void spatial_mask(
     mask.write(float4(highlight, highlight, highlight, 1.0f), gid);
 }
 
-/// Separable Gaussian blur, horizontal pass.
-///
-/// Nine taps with linear-filtering offsets, so one sample stands in for two
-/// texels. `radius` is in texels; larger radii also feed the wider glow.
-kernel void spatial_blur_h(
-    texture2d<float, access::sample> input  [[texture(0)]],
-    texture2d<float, access::write>  output [[texture(1)]],
-    constant float& radius                  [[buffer(0)]],
-    uint2 gid [[thread_position_in_grid]]
-) {
-    if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
-        return;
-    }
-
-    float2 size = float2(input.get_width(), input.get_height());
-    float2 uv = (float2(gid) + 0.5f) / size;
-
-    const float weights[5] = { 0.2270270270f, 0.1945945946f, 0.1216216216f,
-                               0.0540540541f, 0.0162162162f };
-    // Offsets paired for linear sampling: 1.3846153846 and 3.2307692308 texels.
-    const float offsets[5] = { 0.0f, 1.3846153846f, 3.2307692308f,
-                               5.0769230769f, 6.9230769231f };
-
-    float4 sum = input.sample(spatial_linear_sampler, uv) * weights[0];
-    for (int i = 1; i < 5; ++i) {
-        float offset = offsets[i] * radius / size.x;
-        sum += input.sample(spatial_linear_sampler, uv + float2(offset, 0.0f)) * weights[i];
-        sum += input.sample(spatial_linear_sampler, uv - float2(offset, 0.0f)) * weights[i];
-    }
-
-    output.write(sum, gid);
-}
-
-/// Separable Gaussian blur, vertical pass.
-kernel void spatial_blur_v(
-    texture2d<float, access::sample> input  [[texture(0)]],
-    texture2d<float, access::write>  output [[texture(1)]],
-    constant float& radius                  [[buffer(0)]],
-    uint2 gid [[thread_position_in_grid]]
-) {
-    if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
-        return;
-    }
-
-    float2 size = float2(input.get_width(), input.get_height());
-    float2 uv = (float2(gid) + 0.5f) / size;
-
-    const float weights[5] = { 0.2270270270f, 0.1945945946f, 0.1216216216f,
-                               0.0540540541f, 0.0162162162f };
-    const float offsets[5] = { 0.0f, 1.3846153846f, 3.2307692308f,
-                               5.0769230769f, 6.9230769231f };
-
-    float4 sum = input.sample(spatial_linear_sampler, uv) * weights[0];
-    for (int i = 1; i < 5; ++i) {
-        float offset = offsets[i] * radius / size.y;
-        sum += input.sample(spatial_linear_sampler, uv + float2(0.0f, offset)) * weights[i];
-        sum += input.sample(spatial_linear_sampler, uv - float2(0.0f, offset)) * weights[i];
-    }
-
-    output.write(sum, gid);
-}
+// Diffusion is encoded by SpatialEffectsStage using MPSImageGaussianBlur.
+// Do not restore sparse radius-scaled taps: they create detached source copies.
 
 /// Composite a blurred mask back over the graded image.
 ///
