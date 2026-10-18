@@ -24,6 +24,9 @@ settings:
     INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
     INFOPLIST_KEY_UIRequiredDeviceCapabilities: "metal video-camera"
     INFOPLIST_KEY_UIStatusBarHidden: "YES"
+    # Only Apple-provided services and SHA-256 diagnostic hashing; matches
+    # the reviewed App Store Connect export-compliance answer.
+    INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: "NO"
     DEVELOPMENT_TEAM: "U43C6BCZFS"
 
 configs:

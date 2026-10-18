@@ -47,6 +47,11 @@ class ReleaseMetadataTests(unittest.TestCase):
                     "Apple registers video-camera, not video-capture",
                 )
 
+    def test_export_compliance_declaration_is_explicit(self):
+        for name, settings in self.settings.items():
+            with self.subTest(configuration=name):
+                self.assertEqual(settings.get("INFOPLIST_KEY_ITSAppUsesNonExemptEncryption"), "NO")
+
     def test_release_has_advanced_past_initial_beta(self):
         # A floor, not a pinned current version: later releases/builds pass
         # without editing this regression for the initial repeated 0.1.1 (1).
