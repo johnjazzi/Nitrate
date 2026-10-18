@@ -22,28 +22,36 @@ project, change a developer account, create certificates, or publish a build.
 
 ## Configure the existing Cloud workflow
 
-In App Store Connect → nitrate.camera → Xcode Cloud → Workflows → Default:
+In App Store Connect → Apps → nitrate.camera → Xcode Cloud → Workflows →
+TestFlight → Edit (the workflow was originally named Default):
 
-1. Start conditions: initially Manual Start on the updated `main` branch. After
-   the first successful beta delivery, use Branch Changes restricted to `main`
-   if every reviewed merge should produce a beta. Do not distribute from every
-   worker branch or PR.
+1. Start Conditions: add **Branch Changes → Custom Branches → main**. Manual
+   Start may remain for explicit rebuilds. Do not enable distribution for every
+   branch or Pull Request Changes. A PR opening does not release a beta; merging
+   it changes main and triggers the release workflow.
 2. Environment: choose an available Xcode with the iOS 27 SDK. For a candidate
    intended for external testing, enable Clean and restrict workflow editing as
    required by Apple's distribution workflow settings.
 3. Actions: use **Archive**, iOS, scheme **Nitrate**, deployment preparation
    **TestFlight and App Store**. A Build action alone does not distribute an app.
    Do not choose Internal Testing Only if friends will test that same binary.
-4. Add a TestFlight internal-testing post-action targeting the owner's group.
+4. Add a TestFlight internal-testing post-action targeting **Personal Testing**
+   (or the owner's actual chosen internal group).
    Keep external distribution manual until the owner's beta smoke test passes.
-5. Start a **new** build from the updated `main` head. Rebuilding the failed
-   commit `758be50` cannot pick up this fix or the newer launch changes.
+5. Save the workflow. Merge the reviewed release PR and confirm a **new** build
+   starts automatically from that exact main merge SHA. Rebuilding an old failed
+   commit does not pick up the new source.
 6. In logs, require `Cloud bootstrap ready: Nitrate.xcodeproj, XcodeGen 2.46.0,
    SwiftLint 0.65.1` before successful dependency resolution.
-7. After Archive/export processing succeeds, verify the exact build appears
-   under TestFlight, complete compliance requirements, and assign it to the
-   test group if needed. A successful local archive or Cloud compile is not proof
-   that TestFlight delivery completed.
+7. In **TestFlight → iOS → Build Uploads**, require **Complete**, then verify the
+   release version and Cloud build number, membership in Personal Testing, and
+   availability in the TestFlight app. A successful archive or Cloud compile is
+   not proof that delivery completed. Device auto-install also depends on the
+   user's TestFlight Automatic Updates preference.
+
+These are the desired account settings, not a claim that this repository can
+read or save the live Apple workflow. Confirm Start Conditions and Post-Actions
+in the signed-in owner session; an unauthenticated browser cannot verify them.
 
 Use Xcode Cloud's build number for distributed builds; it increments independently
 of the marketing version. The marketing version remains in `project.yml` and
@@ -53,6 +61,17 @@ in a post-clone script or overwrite it by editing the generated project later.
 
 The local StoreKit run fixture is for local tests; it is not a requirement for
 TestFlight and must not be bundled into the application.
+
+Cloud must archive the **Nitrate** scheme, configuration **Release**, bundle ID
+`com.nitrate.app`. **NitrateDev** archives DevRelease using
+`com.nitrate.app.dev` and is not a TestFlight distribution scheme. The reviewed
+export-compliance declaration is included in the generated plist; reassess it
+if cryptographic behavior or dependencies change.
+
+Prepare and validate the PR version with the commands in
+[development and release builds](../docs/development.md). GitHub's release-version
+check is separate from Apple's archive/upload workflow and does not auto-merge
+or publish the PR.
 
 ## Local validation
 

@@ -14,20 +14,24 @@ settings:
     # Single source of truth for the version shown on the splash and in
     # CFBundleShortVersionString / CFBundleVersion. Bump MARKETING_VERSION for a
     # user-visible release, CURRENT_PROJECT_VERSION for every build.
-    MARKETING_VERSION: "0.1.1"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.1.2"
+    CURRENT_PROJECT_VERSION: "2"
     INFOPLIST_KEY_CFBundleDisplayName: Nitrate
     INFOPLIST_KEY_NSCameraUsageDescription: "Nitrate needs camera access to capture Apple Log video for film stock processing."
     INFOPLIST_KEY_NSMicrophoneUsageDescription: "Nitrate records audio to accompany your film clips."
     INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "Nitrate saves rendered videos and optional original Log recordings to your photo library."
     INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "Nitrate saves rendered videos and optional original Log recordings to your photo library."
     INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
-    INFOPLIST_KEY_UIRequiredDeviceCapabilities: "metal video-capture"
+    INFOPLIST_KEY_UIRequiredDeviceCapabilities: "metal video-camera"
     INFOPLIST_KEY_UIStatusBarHidden: "YES"
+    # Only Apple-provided services and SHA-256 diagnostic hashing; matches
+    # the reviewed App Store Connect export-compliance answer.
+    INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: "NO"
     DEVELOPMENT_TEAM: "U43C6BCZFS"
 
 configs:
   Debug: debug
+  DevRelease: release
   Release: release
 
 schemes:
@@ -46,6 +50,17 @@ schemes:
       config: Release
     archive:
       config: Release
+  NitrateDev:
+    build:
+      targets:
+        Nitrate: all
+    run:
+      config: Debug
+      storeKitConfiguration: StoreKit/Nitrate.storekit
+    profile:
+      config: DevRelease
+    archive:
+      config: DevRelease
   RenderCLI:
     build:
       targets:
@@ -114,12 +129,11 @@ targets:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UILaunchStoryboardName: LaunchScreen
-        # Must match the App Store Connect app record exactly, or the upload is
-        # rejected. The record (nitrate.camera) uses com.nitrate.app. The
-        # com.filmemulation.* movie metadata keys are deliberately unchanged:
-        # they are written into recorded files, so renaming them would change
-        # the file contract.
-        PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app
+        # Keep artifact paths stable for verification and release tooling.
+        PRODUCT_NAME: Nitrate
+        # The portrait-locked capture UI targets iPhone, not native iPad
+        # multitasking (which requires all four interface orientations).
+        TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: "U43C6BCZFS"
         # Left as the development identity in every configuration, which is the
@@ -132,6 +146,19 @@ targets:
         CODE_SIGN_IDENTITY: "Apple Development"
         PROVISIONING_PROFILE_SPECIFIER: ""
         ENABLE_USER_SCRIPT_SANDBOXING: NO
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app.dev
+          INFOPLIST_KEY_CFBundleDisplayName: Nitrate Dev
+        DevRelease:
+          PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app.dev
+          INFOPLIST_KEY_CFBundleDisplayName: Nitrate Dev
+        Release:
+          # Must match the App Store Connect record (nitrate.camera) exactly.
+          # Local installs never use this production identity. Preserve the
+          # com.filmemulation.* movie metadata keys: they are a file contract.
+          PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app
+          INFOPLIST_KEY_CFBundleDisplayName: Nitrate
     preBuildScripts:
       - name: SwiftLint
         script: |
@@ -173,6 +200,10 @@ targets:
       - path: App/Modules/ProcessingPipeline/
       - path: App/Modules/FilmStockLibrary/
       - path: App/Modules/RenderQueue/RenderJob.swift
+      - path: App/Modules/RenderQueue/RenderReceipt.swift
+      - path: App/Modules/RenderQueue/RenderReceiptService.swift
+      - path: App/Modules/RenderQueue/RenderMediaCleanup.swift
+      - path: App/Modules/RenderQueue/QueueReceiptPresentation.swift
       - path: App/Modules/RenderQueue/QueuePersister.swift
       - path: App/Modules/RenderQueue/RenderQueueViewModel.swift
       - path: App/Modules/RenderQueue/CaptureJournal.swift

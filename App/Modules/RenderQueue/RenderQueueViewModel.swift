@@ -9,6 +9,7 @@ final class RenderQueueViewModel {
     typealias RenderOperation = @MainActor (RenderJob) async throws -> URL
     typealias SaveOperation = @MainActor (URL) async throws -> Void
     typealias PostDeliveryOperation = @MainActor (URL, UUID) async -> Void
+    typealias ReceiptOperation = @MainActor (URL, Double?) async -> RenderReceipt
 
     private let persister: QueuePersister
     private let journal: CaptureJournal
@@ -17,6 +18,8 @@ final class RenderQueueViewModel {
     private let injectedRender: RenderOperation?
     private let saveOperation: SaveOperation
     private let postDeliveryOperation: PostDeliveryOperation?
+    private let receiptOperation: ReceiptOperation
+    private let mediaCleanup: RenderMediaCleanup
     private var worker: Task<Void, Never>?
     private var renderer: PipelineRenderer?
     private var didInitialize = false
@@ -86,6 +89,8 @@ final class RenderQueueViewModel {
          postDelivery: PostDeliveryOperation? = nil,
          persist: (([RenderJob]) throws -> Void)? = nil,
          load: (() throws -> [RenderJob])? = nil,
+         receipt: ReceiptOperation? = nil,
+         mediaCleanup: RenderMediaCleanup = RenderMediaCleanup(),
          journal: CaptureJournal = CaptureJournal(),
          sessionId: String = RenderJob.currentSessionId) {
         persister = QueuePersister(storageURL: persistenceURL)
@@ -95,11 +100,13 @@ final class RenderQueueViewModel {
         injectedRender = render
         saveOperation = save ?? Self.saveToPhotoLibrary
         postDeliveryOperation = postDelivery
+        receiptOperation = receipt ?? { await RenderReceiptService.capture(url: $0, renderDurationSeconds: $1) }
+        self.mediaCleanup = mediaCleanup
         self.sessionId = sessionId
     }
 
     func onAppear() {
-        guard !didInitialize else { return }
+        guard !didInitialize else { processNext(); return }
         didInitialize = true
         initializeRenderer()
         do {
@@ -287,6 +294,7 @@ final class RenderQueueViewModel {
     /// Access to the paid render feature changed (a purchase, a restore, or an
     /// evaluation that ended). Release anything held for access and re-evaluate.
     func renderAccessDidChange() {
+        retryMediaCleanup()
         if renderAllowed() {
             isRenderPausedForAccess = false
             publishQueueMessage()
@@ -370,10 +378,12 @@ final class RenderQueueViewModel {
         }
     }
 
-    private func processNext() {
+    private func processNext(allowCleanup: Bool = true) {
         guard !isPersistenceBlocked else { return }
-        guard worker == nil, let job = jobs.first(where: { $0.status == .pending }) else {
+        guard worker == nil else { return }
+        guard let job = jobs.first(where: { $0.status == .pending }) else {
             isRenderPausedForAccess = false
+            if allowCleanup { retryMediaCleanup() }
             return
         }
         // Delivering a kept original is not the paid feature, so a rescue job
@@ -394,9 +404,99 @@ final class RenderQueueViewModel {
         worker = Task { [weak self] in
             guard let self else { return }
             await executeJob(job.id)
+            await cleanupDeliveredMedia()
             worker = nil
-            processNext()
+            processNext(allowCleanup: false)
         }
+    }
+
+    /// Activation/relaunch retries cleanup only, never a completed Photos save.
+    /// Shares the serial worker with delivery so enqueueing cannot race an unlink.
+    func retryMediaCleanup() {
+        guard worker == nil, !isPersistenceBlocked,
+              jobs.contains(where: Self.needsMediaCleanup) else { return }
+        worker = Task { [weak self] in
+            guard let self else { return }
+            await cleanupDeliveredMedia()
+            worker = nil
+            processNext(allowCleanup: false)
+        }
+    }
+
+    private static func needsMediaCleanup(_ job: RenderJob) -> Bool {
+        guard job.status == .completed, job.receipt != nil,
+              job.mediaCleanupCompleted != true else { return false }
+        if job.originalOnly == true { return job.sourceSavedToPhotos == true }
+        return job.outputSavedToPhotos == true
+            && (job.deliveryPreferences?.saveOriginalLog != true || job.sourceSavedToPhotos == true)
+    }
+
+    private func ensureReceipt(_ id: UUID, url: URL) async -> Bool {
+        guard job(id)?.receipt == nil else { return true }
+        let receipt = await receiptOperation(url, nil)
+        update(id) { $0.receipt = receipt }
+        guard persistJobs() else { pauseAfterDurableFailure(id); return false }
+        return true
+    }
+
+    private func cleanupDeliveredMedia() async {
+        guard !isPersistenceBlocked else { return }
+        let candidates = jobs.filter(Self.needsMediaCleanup).map(\.id)
+        guard !candidates.isEmpty else { return }
+        // Reconfirm the receipt, all delivery outcomes, and terminal status on
+        // disk before crossing the destructive boundary (also on relaunch).
+        guard persistJobs() else { isPersistenceBlocked = true; return }
+        for id in candidates {
+            guard !isPersistenceBlocked, let current = job(id), Self.needsMediaCleanup(current) else { continue }
+            if let output = current.outputURL, Self.isUsableFile(output), let postDeliveryOperation {
+                await postDeliveryOperation(output, id)
+            }
+            // A diagnostic may suspend while a new consumer is enqueued. Resolve
+            // both roles and protections from the current queue, not a snapshot.
+            guard !isPersistenceBlocked, let latest = job(id), Self.needsMediaCleanup(latest) else { continue }
+            var allRemoved = true
+            var warnings: [String] = []
+            let urls = [latest.sourceURL] + [latest.outputURL].compactMap { $0 }
+            for url in urls {
+                let path = RenderMediaCleanup.canonicalPath(url)
+                let protected = jobs.contains { other in
+                    guard other.id != id, !Self.isFullyDeliveredReceipt(other) else { return false }
+                    return ([other.sourceURL] + [other.outputURL].compactMap { $0 }).contains {
+                        RenderMediaCleanup.canonicalPath($0) == path
+                    }
+                }
+                if protected {
+                    allRemoved = false
+                    warnings.append("Local movie is still needed by another queue entry.")
+                    continue
+                }
+                do {
+                    if try mediaCleanup.removeIfOwned(url) {
+                        update(id) { if $0.outputURL == url { $0.outputURL = nil } }
+                    } else {
+                        allRemoved = false
+                        warnings.append("Local movie was not removed because its app ownership could not be verified.")
+                    }
+                } catch {
+                    allRemoved = false
+                    warnings.append("Local movie cleanup failed: \(error.localizedDescription)")
+                }
+            }
+            update(id) {
+                $0.mediaCleanupCompleted = allRemoved
+                $0.cleanupWarning = warnings.isEmpty ? nil : Array(Set(warnings)).sorted().joined(separator: " ")
+            }
+            // Cleanup write failure never changes delivery into a retry. Missing
+            // files are safe on the next launch; confirmed save flags stay set.
+            guard persistJobs() else { isPersistenceBlocked = true; return }
+        }
+    }
+
+    private static func isFullyDeliveredReceipt(_ job: RenderJob) -> Bool {
+        guard job.status == .completed, job.receipt != nil else { return false }
+        if job.originalOnly == true { return job.sourceSavedToPhotos == true }
+        return job.outputSavedToPhotos == true
+            && (job.deliveryPreferences?.saveOriginalLog != true || job.sourceSavedToPhotos == true)
     }
 
     private func executeJob(_ jobId: UUID) async {
@@ -420,14 +520,18 @@ final class RenderQueueViewModel {
                     guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
                 }
                 if outputURL == nil {
+                    let started = ProcessInfo.processInfo.systemUptime
                     outputURL = try await render(initial)
+                    let elapsed = ProcessInfo.processInfo.systemUptime - started
                     guard let url = outputURL, Self.isUsableFile(url) else {
                         throw QueueError.invalidOutput
                     }
-                    update(jobId) { $0.outputURL = url }
+                    let receipt = await receiptOperation(url, elapsed)
+                    update(jobId) { $0.outputURL = url; $0.receipt = receipt }
                     guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
                 }
                 guard let outputURL, Self.isUsableFile(outputURL) else { throw QueueError.invalidOutput }
+                guard await ensureReceipt(jobId, url: outputURL) else { return }
                 try await saveOperation(outputURL)
                 update(jobId) { $0.outputSavedToPhotos = true }
                 // Persist the first success before attempting the original.
@@ -452,7 +556,7 @@ final class RenderQueueViewModel {
         if initial.deliveryPreferences?.saveOriginalLog == true, job(jobId)?.sourceSavedToPhotos != true {
             do {
                 // Deliver the capture file unchanged, including its Log encoding,
-                // audio, orientation and custom metadata; never trim or delete it.
+                // audio, orientation and custom metadata; cleanup follows full delivery.
                 try await saveOperation(initial.sourceURL)
                 update(jobId) { $0.sourceSavedToPhotos = true }
                 guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
@@ -472,20 +576,20 @@ final class RenderQueueViewModel {
                 return
             }
         }
+        if let output = job(jobId)?.outputURL, Self.isUsableFile(output) {
+            guard await ensureReceipt(jobId, url: output) else { return }
+        }
         update(jobId) { $0.status = .completed; $0.errorMessage = nil }
         guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
-        // Optional injected post-delivery diagnostics only; production performs no
-        // automatic frame dumping.
-        if let outputURL = job(jobId)?.outputURL, Self.isUsableFile(outputURL),
-           let postDeliveryOperation {
-            await postDeliveryOperation(outputURL, jobId)
-        }
     }
 
     /// Deliver a kept original to Photos unchanged, without rendering it.
     private func deliverOriginalOnly(_ jobId: UUID) async {
         guard let job = job(jobId) else { return }
         if job.sourceSavedToPhotos == true {
+            if Self.isUsableFile(job.sourceURL) {
+                guard await ensureReceipt(jobId, url: job.sourceURL) else { return }
+            }
             update(jobId) { $0.status = .completed; $0.errorMessage = nil }
             guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
             return
@@ -501,6 +605,7 @@ final class RenderQueueViewModel {
             return
         }
         do {
+            guard await ensureReceipt(jobId, url: job.sourceURL) else { return }
             try await saveOperation(job.sourceURL)
             update(jobId) { $0.status = .completed; $0.sourceSavedToPhotos = true; $0.errorMessage = nil }
             guard persistJobs() else { pauseAfterDurableFailure(jobId); return }

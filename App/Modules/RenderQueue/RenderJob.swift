@@ -27,6 +27,11 @@ struct RenderJob: Codable, Identifiable, Equatable {
     /// Delivery outcomes are optional so older queue JSON remains readable.
     var sourceSavedToPhotos: Bool? = nil
     var outputSavedToPhotos: Bool? = nil
+    /// Local export evidence; absent for legacy history, never inferred later.
+    var receipt: RenderReceipt? = nil
+    /// True only after all owned movie references are removed or already missing.
+    var mediaCleanupCompleted: Bool? = nil
+    var cleanupWarning: String? = nil
     /// True for a kept original queued for verbatim Photos delivery. Such a job
     /// is never rendered, even after a relaunch. Optional so older queue JSON
     /// (and every ordinary render job) stays readable as `nil`.
