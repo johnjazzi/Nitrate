@@ -1,0 +1,87 @@
+name: Xcode checks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xcode-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  xcode:
+    name: Xcode build and tests
+    # Explicit Xcode 27 image: the app's deployment target is iOS 27.
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        # Official actions/checkout v4.3.1, matching the release-version gate.
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Report runner toolchain and Metal availability
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          swift -e 'import Metal; print("Metal device:", MTLCreateSystemDefaultDevice()?.name ?? "unavailable; GPU-dependent tests may skip")'
+      - name: Bootstrap pinned build tools and generate project
+        run: |
+          sh ci_scripts/ci_post_clone.sh
+          printf '%s\n' "$GITHUB_WORKSPACE/build/ci-tools/xcodegen-2.46.0/xcodegen/bin" "$GITHUB_WORKSPACE/build/ci-tools/swiftlint-0.65.1" >> "$GITHUB_PATH"
+      - name: Lint, run tests, and build iOS without signing
+        run: python3 scripts/verify.py verify
+      - name: Report actual test counts and skips
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          bundles = list(Path('build/verification/DerivedData/Logs/Test').glob('*.xcresult'))
+          if not bundles:
+              sys.exit('No test result bundle was produced; see earlier step failures.')
+          bundle = max(bundles, key=lambda path: path.stat().st_mtime)
+          summary = json.loads(subprocess.check_output([
+              'xcrun', 'xcresulttool', 'get', 'test-results', 'summary', '--path', str(bundle)
+          ], text=True))
+          counts = {key: summary[key] for key in ('totalTestCount', 'passedTests', 'failedTests', 'skippedTests')}
+          print(json.dumps(counts, indent=2))
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as output:
+              output.write('## RenderCLI test results\n\n')
+              for key, count in counts.items():
+                  output.write(f'- {key}: {count}\n')
+              output.write('\nSkipped tests are not passed tests. Device-only behavior still needs an iPhone.\n')
+          if counts['skippedTests']:
+              print('::warning::Some tests were skipped; inspect runner capabilities before claiming rendering coverage.')
+          if summary.get('result') != 'Passed' or not counts['passedTests'] or counts['failedTests']:
+              sys.exit('Test results were not a successful nonempty run.')
+          PY
+      - name: Report verification log summaries
+        if: always()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for path in sorted(Path('build/verification').glob('*.log')):
+              print(f'::group::{path.name}')
+              print('\n'.join(path.read_text(errors='replace').splitlines()[-30:]))
+              print('::endgroup::')
+          PY
+      - name: Retain verification logs
+        if: always()
+        # Official actions/upload-artifact v4, resolved from its GitHub tag.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: xcode-verification-logs
+          path: build/verification/*.log
+          if-no-files-found: ignore
+          retention-days: 1
