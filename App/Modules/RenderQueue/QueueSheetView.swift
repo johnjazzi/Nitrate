@@ -15,14 +15,42 @@ struct QueueSheetView: View {
     private var visibleQueuedJobs: [RenderJob] {
         viewModel.outstandingJobs
     }
+    private var visibleAwaitingStock: [RenderJob] {
+        viewModel.awaitingStockJobs
+    }
     private var visibleHistory: [RenderJob] {
         showAll ? viewModel.historyJobs : viewModel.currentSessionResults
     }
-    private var isEmpty: Bool { visibleQueuedJobs.isEmpty && visibleHistory.isEmpty }
+    private var isEmpty: Bool {
+        visibleQueuedJobs.isEmpty && visibleAwaitingStock.isEmpty && visibleHistory.isEmpty
+    }
 
     var body: some View {
         NavigationStack {
             List {
+                if viewModel.isRenderPausedForAccess {
+                    Section {
+                        Label("Rendering is paused", systemImage: "lock.fill")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Rendering the film look needs an active subscription. "
+                             + "Your recordings are kept here and render once you subscribe.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if viewModel.isPersistenceBlocked {
+                    Section {
+                        Button {
+                            viewModel.resume()
+                        } label: {
+                            Label("Resume queue", systemImage: "arrow.clockwise")
+                                .frame(minHeight: 44)
+                        }
+                        Text("The queue is paused because a change could not be saved. Existing media is kept in the app; free space if needed, then resume to retry.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Section("Storage") {
                     CameraStorageSummary(
                         freeSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.freeSpaceBytes : nil,
@@ -39,6 +67,22 @@ struct QueueSheetView: View {
                         )
                     }
                 } else {
+                    if !visibleAwaitingStock.isEmpty {
+                        Section("Awaiting stock (\(visibleAwaitingStock.count))") {
+                            ForEach(visibleAwaitingStock) { job in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    JobRow(job: job)
+                                    chooseStockMenu(for: job)
+                                    Button {
+                                        viewModel.exportOriginal(jobId: job.id)
+                                    } label: {
+                                        Text("Save original").frame(minHeight: 44)
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                        }
+                    }
                     if let current = visibleQueuedJobs.first(where: { $0.status == .processing }) {
                         Section("Processing") { JobRow(job: current, isCurrent: true) }
                     }
@@ -59,13 +103,19 @@ struct QueueSheetView: View {
                         Section("History (\(visibleHistory.count))") {
                             ForEach(visibleHistory) { job in
                                 if job.status == .completed {
-                                    Button { playbackJob = job } label: { JobRow(job: job) }
-                                        .buttonStyle(.plain)
-                                        .swipeActions(edge: .leading) {
-                                            Button { shareVideo(job) } label: {
-                                                Label("Share", systemImage: "square.and.arrow.up")
-                                            }.tint(.blue)
-                                        }
+                                    // A rescue entry has no rendered output; making
+                                    // its row tappable would open a blank player.
+                                    if job.outputURL != nil {
+                                        Button { playbackJob = job } label: { JobRow(job: job) }
+                                            .buttonStyle(.plain)
+                                            .swipeActions(edge: .leading) {
+                                                Button { shareVideo(job) } label: {
+                                                    Label("Share", systemImage: "square.and.arrow.up")
+                                                }.tint(.blue)
+                                            }
+                                    } else {
+                                        JobRow(job: job)
+                                    }
                                 } else {
                                     VStack(alignment: .leading, spacing: 4) {
                                         JobRow(job: job)
@@ -121,6 +171,29 @@ struct QueueSheetView: View {
             videoBitRate: DeliverySettings.averageBitRate,
             audioBitRate: DeliverySettings.aacAverageBitRate
         )
+    }
+
+    private func chooseStockMenu(for job: RenderJob) -> some View {
+        Menu {
+            if let stocks = viewModel.library?.videoStocks(), !stocks.isEmpty {
+                ForEach(stocks, id: \.stockId) { stock in
+                    Button(stock.displayName) {
+                        viewModel.assignStock(
+                            jobId: job.id,
+                            stockId: stock.stockId,
+                            iso: stock.defaultISO,
+                            gauge: viewModel.library?.lastGauge(for: stock.stockId)
+                        )
+                    }
+                }
+            } else {
+                Text("No stocks available")
+            }
+        } label: {
+            Label("Choose stock", systemImage: "film")
+                .frame(minHeight: 44)
+        }
+        .buttonStyle(.bordered)
     }
 
     private func shareVideo(_ job: RenderJob) {
@@ -195,8 +268,14 @@ private struct JobRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
-                Text(job.stockId).font(.caption.weight(.semibold))
-                Text("ISO \(Int(job.iso))").font(.caption2).foregroundStyle(.secondary)
+                Text(job.originalOnly == true ? "Original recording" : (job.stockId.isEmpty ? "Unassigned recording" : job.stockId))
+                    .font(.caption.weight(.semibold))
+                if !job.stockId.isEmpty {
+                    Text("ISO \(Int(job.iso))").font(.caption2).foregroundStyle(.secondary)
+                }
+                if let reason = job.retainedReason {
+                    Text("Kept original: \(reason)").font(.caption2).foregroundStyle(.secondary)
+                }
                 if job.outputSavedToPhotos == true {
                     Text(job.sourceSavedToPhotos == true ? "Rendered + original saved to Photos" : "Rendered saved to Photos")
                         .font(.caption2)
@@ -237,11 +316,12 @@ private struct JobRow: View {
             case .processing:
                 HStack {
                     ProgressView().scaleEffect(0.8)
-                    Text(job.outputSavedToPhotos == true ? "Saving original" : "Rendering / saving")
+                    Text(job.originalOnly == true || job.outputSavedToPhotos == true ? "Saving original" : "Rendering / saving")
                         .font(.caption2).foregroundStyle(.orange)
                 }
             case .completed: Label("Done", systemImage: "checkmark.circle.fill").font(.caption2).foregroundStyle(.green)
             case .failed: Label("Failed", systemImage: "xmark.circle.fill").font(.caption2).foregroundStyle(.red)
+            case .awaitingStock: Label("Awaiting stock", systemImage: "film").font(.caption2).foregroundStyle(.secondary)
             }
         }
         .id(job.status)

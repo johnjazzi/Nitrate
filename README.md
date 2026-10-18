@@ -67,7 +67,7 @@ look already baked into the camera it would be guesswork on top of a guess.
 
 | | |
 |---|---|
-| OS | **iOS 26 or later.** The app installs on iOS 17 and later, but the camera needs 26. Below that it reports the capture path as unsupported rather than recording something else |
+| OS | **iOS 27 or later.** The camera's Apple Log 2 HEVC writer requires iOS 27; the install target matches that requirement |
 | Aperture | **iOS 27 or later.** The variable-aperture API the app uses is not available before that, and the app reports aperture as unavailable |
 | Hardware | Any device whose camera advertises an **Apple Log 2** capture format. Apple Log 2 arrived with the iPhone 17 Pro; the reference device here is an iPhone 18 Pro |
 | Anything else | No Apple Log 2 format means no recording. The app fails with an explicit unsupported error instead of falling back to a baked-in look |
@@ -206,9 +206,14 @@ the stock's D/T light tag.
 
 ### Settings and purchase
 
-Seven-day trial, then a StoreKit-managed yearly subscription or a lifetime
-unlock (`com.filmemulation.subscription.yearly`, `com.filmemulation.lifetime`).
-Prices come from StoreKit.
+A seven-day evaluation of the render, then a StoreKit-managed yearly
+subscription or a lifetime unlock (`com.nitrate.subscription.yearly`,
+`com.nitrate.lifetime`). Prices come from StoreKit.
+
+Recording is never gated: after the evaluation ends you can keep shooting Apple
+Log, and the takes queue until the render is unlocked. This is an in-app
+evaluation, not an Apple-managed introductory offer — do not describe it as a
+free trial in store copy.
 
 ## How the film LUTs are made
 
@@ -336,11 +341,12 @@ crush blacks or clip highlights by construction.
 
 XcodeGen is the source of truth: `project.yml` defines the project, targets and
 schemes, and the generated `*.xcodeproj` is gitignored. The Xcode project, app
-target and scheme are named `Nitrate`, but the bundle identifier
-(`com.filmemulation.app`), the `com.filmemulation.*` movie metadata keys and the
-StoreKit product identifiers keep the original name on purpose — they are
-already shipped, and changing them would orphan existing installs, renders and
-purchases.
+target and scheme are named `Nitrate`, and the bundle identifier is
+`com.nitrate.app`, matching the App Store Connect record.
+
+One identifier still carries the older `com.filmemulation` namespace on purpose:
+the `com.filmemulation.*` movie metadata keys. They are written into recorded and
+rendered files, so renaming them changes the file contract rather than a label.
 
 The iOS app target and the macOS `RenderCLI`/`RenderCLITests` targets share the
 processing pipeline and film-stock sources, so the renderer is testable at 4K on

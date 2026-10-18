@@ -1,5 +1,6 @@
 import Foundation
 import Metal
+import MetalPerformanceShaders
 import simd
 
 /// Spatial halation + glow (epic story 1.4).
@@ -52,9 +53,13 @@ final class SpatialEffectsStage {
 
     private let device: MTLDevice
     private let maskPipeline: MTLComputePipelineState
-    private let blurHPipeline: MTLComputePipelineState
-    private let blurVPipeline: MTLComputePipelineState
     private let compositePipeline: MTLComputePipelineState
+
+    /// Match the old nine-tap kernel's second moment without its detached lobes.
+    /// sqrt(2 * sum(weight[i] * offset[i]^2)) = sqrt(7.6260355034).
+    /// Scaling sparse offsets separated sharp copies of the mask; MPS instead
+    /// continuously convolves it at this standard deviation in both axes.
+    private static let blurSigmaPerRadius: Float = 2.7615277481
 
     init(device: MTLDevice, library: MTLLibrary) throws {
         func pipeline(_ name: String) throws -> MTLComputePipelineState {
@@ -65,8 +70,6 @@ final class SpatialEffectsStage {
         }
         self.device = device
         self.maskPipeline = try pipeline("spatial_mask")
-        self.blurHPipeline = try pipeline("spatial_blur_h")
-        self.blurVPipeline = try pipeline("spatial_blur_v")
         self.compositePipeline = try pipeline("spatial_composite")
     }
 
@@ -86,7 +89,6 @@ final class SpatialEffectsStage {
         let halfHeight = max(1, height / 2)
 
         guard let mask = makeTexture(width: halfWidth, height: halfHeight),
-              let blurScratch = makeTexture(width: halfWidth, height: halfHeight),
               let halationDiffusion = makeTexture(width: halfWidth, height: halfHeight),
               let glowDiffusion = makeTexture(width: halfWidth, height: halfHeight),
               let composited = makeTexture(width: width, height: height),
@@ -118,23 +120,19 @@ final class SpatialEffectsStage {
         let glowRadius = max(4, Float(halfWidth) * Self.glowRadiusFraction)
 
         // 2. Narrow blur → halation diffusion.
-        blurSeparably(
+        blurContinuously(
             source: mask,
             destination: halationDiffusion,
-            scratch: blurScratch,
             radius: halationRadius,
-            commandBuffer: commandBuffer,
-            groups: halfGroups
+            commandBuffer: commandBuffer
         )
 
         // 3. Wide blur → glow diffusion.
-        blurSeparably(
+        blurContinuously(
             source: mask,
             destination: glowDiffusion,
-            scratch: blurScratch,
             radius: glowRadius,
-            commandBuffer: commandBuffer,
-            groups: halfGroups
+            commandBuffer: commandBuffer
         )
 
         // 4. Composite halation, then glow, each with its own cast and strength.
@@ -178,33 +176,17 @@ final class SpatialEffectsStage {
         )
     }
 
-    /// One separable Gaussian blur: horizontal into `scratch`, then vertical out
-    /// of it into `destination`.
-    private func blurSeparably(
+    /// A continuous, efficient Gaussian approximation, including at 4K radii.
+    /// Clamp boundaries preserve uniform highlights instead of darkening edges.
+    private func blurContinuously(
         source: MTLTexture,
         destination: MTLTexture,
-        scratch: MTLTexture,
         radius: Float,
-        commandBuffer: MTLCommandBuffer,
-        groups: MTLSize
+        commandBuffer: MTLCommandBuffer
     ) {
-        var radius = radius
-
-        guard let horizontal = commandBuffer.makeComputeCommandEncoder() else { return }
-        horizontal.setComputePipelineState(blurHPipeline)
-        horizontal.setTexture(source, index: 0)
-        horizontal.setTexture(scratch, index: 1)
-        horizontal.setBytes(&radius, length: MemoryLayout<Float>.size, index: 0)
-        horizontal.dispatchThreadgroups(groups, threadsPerThreadgroup: Self.groupSize)
-        horizontal.endEncoding()
-
-        guard let vertical = commandBuffer.makeComputeCommandEncoder() else { return }
-        vertical.setComputePipelineState(blurVPipeline)
-        vertical.setTexture(scratch, index: 0)
-        vertical.setTexture(destination, index: 1)
-        vertical.setBytes(&radius, length: MemoryLayout<Float>.size, index: 0)
-        vertical.dispatchThreadgroups(groups, threadsPerThreadgroup: Self.groupSize)
-        vertical.endEncoding()
+        let blur = MPSImageGaussianBlur(device: device, sigma: radius * Self.blurSigmaPerRadius)
+        blur.edgeMode = .clamp
+        blur.encode(commandBuffer: commandBuffer, sourceTexture: source, destinationTexture: destination)
     }
 
     /// Add one blurred diffusion layer onto `source`, writing to `into`.

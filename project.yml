@@ -2,7 +2,7 @@ name: Nitrate
 options:
   bundleIdPrefix: com.nitrate
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "27.0"
   xcodeVersion: "16.0"
   generateEmptyDirectories: true
   defaultConfig: Debug
@@ -14,7 +14,7 @@ settings:
     # Single source of truth for the version shown on the splash and in
     # CFBundleShortVersionString / CFBundleVersion. Bump MARKETING_VERSION for a
     # user-visible release, CURRENT_PROJECT_VERSION for every build.
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.1.1"
     CURRENT_PROJECT_VERSION: "1"
     INFOPLIST_KEY_CFBundleDisplayName: Nitrate
     INFOPLIST_KEY_NSCameraUsageDescription: "Nitrate needs camera access to capture Apple Log video for film stock processing."
@@ -37,6 +37,11 @@ schemes:
         Nitrate: all
     run:
       config: Debug
+      # Drives local StoreKit purchases so the real paywall (evaluation,
+      # purchase, restore, expiry) can be tested before any product exists in
+      # App Store Connect. Kept outside App/ so it is never compiled into or
+      # bundled with the shipping app.
+      storeKitConfiguration: StoreKit/Nitrate.storekit
     profile:
       config: Release
     archive:
@@ -109,18 +114,28 @@ targets:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UILaunchStoryboardName: LaunchScreen
-        # Deliberately unchanged by the Nitrate rename: the App Store identifier
-        # and the com.filmemulation.* movie metadata keys are already shipped.
-        PRODUCT_BUNDLE_IDENTIFIER: com.filmemulation.app
+        # Must match the App Store Connect app record exactly, or the upload is
+        # rejected. The record (nitrate.camera) uses com.nitrate.app. The
+        # com.filmemulation.* movie metadata keys are deliberately unchanged:
+        # they are written into recorded files, so renaming them would change
+        # the file contract.
+        PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: "U43C6BCZFS"
+        # Left as the development identity in every configuration, which is the
+        # Xcode default. An archive made this way is development-signed, and the
+        # App Store export re-signs it with the distribution certificate; the
+        # upload therefore needs an Apple Distribution certificate to exist, but
+        # nothing here needs to name it. Setting this to "Apple Distribution"
+        # instead makes every Release build fail with conflicting provisioning
+        # settings, and setting it empty produces an unsigned app.
         CODE_SIGN_IDENTITY: "Apple Development"
         PROVISIONING_PROFILE_SPECIFIER: ""
         ENABLE_USER_SCRIPT_SANDBOXING: NO
     preBuildScripts:
       - name: SwiftLint
         script: |
-          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          export PATH="$SRCROOT/build/ci-tools/swiftlint-0.65.1:/opt/homebrew/bin:/usr/local/bin:$PATH"
           python3 "$SRCROOT/scripts/verify.py" lint
         basedOnDependencyAnalysis: false
 
@@ -160,6 +175,9 @@ targets:
       - path: App/Modules/RenderQueue/RenderJob.swift
       - path: App/Modules/RenderQueue/QueuePersister.swift
       - path: App/Modules/RenderQueue/RenderQueueViewModel.swift
+      - path: App/Modules/RenderQueue/CaptureJournal.swift
+      - path: App/Modules/RenderQueue/PersistedPathRemap.swift
+      - path: App/Modules/Purchase/AppAccessPolicy.swift
       - path: App/Modules/CameraCapture/CameraOriginalStorage.swift
       - path: App/Modules/CameraCapture/CameraPreviewPolicy.swift
       - path: App/Modules/CameraCapture/CameraPreviewTap.swift

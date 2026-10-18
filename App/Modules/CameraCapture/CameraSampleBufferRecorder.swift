@@ -66,10 +66,14 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     private var clipGeneration: UInt64 = 0
     private let writerFactory: CameraSampleBufferWriterFactory
     private let outputValidator: (URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void
+    /// Production: true when the microphone was actually configured for this
+    /// take, so a zero-audio result must be reported as a failure rather than a
+    /// clean success. Not debug-only — a Release build that configured a
+    /// microphone owes the user the same audio-integrity evidence.
+    private var requiresAudioEvidence = false
 #if DEBUG
     private var preservationProbeEnabled = false
     private var sourceProbe: CameraYUVProbe?
-    private var requiresAudioEvidence = false
     private var firstAudioTimeForDiagnostics: CMTime?
     private var audioDurationForDiagnostics: Double = 0
     private var maximumAudioGapForDiagnostics: Double = 0
@@ -129,10 +133,10 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             self.captureRotationAngle = captureRotationAngle
             self.codedDimensions = nil
             self.startAfter = startAfter
+            self.requiresAudioEvidence = requiresAudioEvidence
 #if DEBUG
             self.preservationProbeEnabled = preservationProbeEnabled
             self.sourceProbe = nil
-            self.requiresAudioEvidence = requiresAudioEvidence
 #endif
             self.started = onStarted
             self.finished = onFinished
@@ -672,15 +676,21 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                     self.complete(.failure(CameraRetainedRecordingError(originalURL: destination, reason: latched)))
                     return
                 }
-#if DEBUG
                 // A configured microphone that produced no audio is not a clean
-                // success, but the video-only original is still retained.
-                if self.requiresAudioEvidence, self.audioSettings != nil, self.appendedAudioSamples == 0 {
+                // success, but the video-only original is still retained. This is
+                // production behaviour, not a debug-only guard: a Release build
+                // that configured a microphone must not hand a silent take back
+                // as a clean success.
+                if CameraAudioEvidencePolicy.missingConfiguredAudio(
+                    requiresAudioEvidence: self.requiresAudioEvidence,
+                    hasAudioSettings: self.audioSettings != nil,
+                    appendedAudioSamples: self.appendedAudioSamples) {
                     self.complete(.failure(CameraRetainedRecordingError(
                         originalURL: destination,
                         reason: CameraSampleBufferRecorderError.configuredMicrophoneProducedNoAudio)))
                     return
                 }
+#if DEBUG
                 if self.preservationProbeEnabled {
                     guard let source = self.sourceProbe else {
                         self.complete(.failure(CameraSampleBufferRecorderError.invalidFinalMovie("missing captured YUV smoke probe")))
@@ -799,10 +809,10 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         appendedVideoFrames = 0
         appendedAudioSamples = 0
         recentDropTimes = []
+        requiresAudioEvidence = false
 #if DEBUG
         preservationProbeEnabled = false
         sourceProbe = nil
-        requiresAudioEvidence = false
         firstAudioTimeForDiagnostics = nil
         audioDurationForDiagnostics = 0
         maximumAudioGapForDiagnostics = 0
@@ -1030,4 +1040,116 @@ enum CameraSampleBufferRecorderError: LocalizedError {
         case .invalidFinalMovie(let detail): return "The finalized movie failed Apple Log 2 validation: \(detail)."
         }
     }
+}
+
+// MARK: - Prelaunch camera state policies
+//
+// Pure decision seams for the prelaunch camera fixes (L02, L09, L10, L11). They
+// live here — rather than inline in the session/view model — so the contracts can
+// be exercised by the RenderCLI test target without constructing an
+// AVCaptureSession or a running camera.
+
+/// Production (not debug-only) audio-evidence contract for a finished take.
+///
+/// A take whose microphone was configured but which appended zero audio packets
+/// is not a clean success: the readable video-only original is still retained,
+/// but the take is reported as a failure. A deliberately video-only take (no
+/// audio settings at all) stays a success.
+enum CameraAudioEvidencePolicy {
+    static func missingConfiguredAudio(requiresAudioEvidence: Bool,
+                                       hasAudioSettings: Bool,
+                                       appendedAudioSamples: Int) -> Bool {
+        requiresAudioEvidence && hasAudioSettings && appendedAudioSamples == 0
+    }
+}
+
+/// Audio is only reported as configured when its data output actually attaches
+/// to the session.
+///
+/// Attaching the microphone input without the audio output would let the
+/// recorder demand audio evidence for a take that can never deliver PCM,
+/// turning a healthy video-only capture into a false "configured microphone
+/// produced no audio" failure. When the output cannot attach, the input is
+/// rolled back so the session is left cleanly video-only.
+enum CameraMicrophoneAttachmentPolicy {
+    enum Plan: Equatable, Sendable {
+        /// Keep the input and attach the output; audio is configured.
+        case configureAudio
+        /// Roll the input back and leave audio unconfigured.
+        case rollbackInput
+    }
+
+    static func plan(audioOutputCanAttach: Bool) -> Plan {
+        audioOutputCanAttach ? .configureAudio : .rollbackInput
+    }
+}
+
+/// Manual-focus hardware/UI reconciliation (L09).
+enum CameraManualFocusPolicy {
+    /// A preview tap may switch the device to autofocus only when no manual
+    /// focus is committed; otherwise the MF selection would stay lit while the
+    /// lens silently auto-focused.
+    static func allowsAutofocusOnTap(committedLensPosition: Float?) -> Bool {
+        committedLensPosition == nil
+    }
+
+    /// After a committed lens switch, reapply the locked focus to the new device
+    /// when it supports custom lens positions; otherwise drop it so the readback
+    /// can reset the UI to autofocus.
+    static func lensPositionAfterLensChange(committed: Float?,
+                                            newDeviceSupportsLock: Bool) -> Float? {
+        guard let committed, newDeviceSupportsLock else { return nil }
+        return min(max(committed, 0), 1)
+    }
+}
+
+/// Manual ISO may not move ahead of the hardware while the session refuses
+/// exposure changes during a recording transition (L10).
+enum CameraManualExposureSelectionPolicy {
+    static func canChangeISO(isStartingRecording: Bool, isRecording: Bool,
+                             isStoppingRecording: Bool) -> Bool {
+        !isStartingRecording && !isRecording && !isStoppingRecording
+    }
+
+    static func reconciledISO(previous: Float, requested: Float, accepted: Bool) -> Float {
+        accepted ? requested : previous
+    }
+}
+
+/// Fences an async per-take result (the recorded-duration check) against a later
+/// take that began while it was suspended (L11).
+enum CameraRecordingTakeFence {
+    struct Snapshot: Equatable, Sendable {
+        let generation: UInt64
+        let origin: Date
+        let stoppedAt: Date?
+    }
+
+    /// Snapshot and clear the finishing take's shared timer state before an
+    /// await, so a later take cannot lose its own timer origin when the old load
+    /// resolves. Returns nil when the take never set an origin.
+    static func snapshotAndClear(origin: inout Date?, stoppedAt: inout Date?,
+                                 generation: UInt64) -> Snapshot? {
+        guard let currentOrigin = origin else { return nil }
+        let snapshot = Snapshot(generation: generation, origin: currentOrigin, stoppedAt: stoppedAt)
+        origin = nil
+        stoppedAt = nil
+        return snapshot
+    }
+
+    /// A verdict may only touch shared state while the same take still owns the
+    /// capture generation and no newer take is starting or running.
+    static func accepts(snapshot: Snapshot, currentGeneration: UInt64,
+                        isRecording: Bool, isStartingRecording: Bool) -> Bool {
+        snapshot.generation == currentGeneration && !isRecording && !isStartingRecording
+    }
+}
+
+/// Manual-focus hardware state for the view. `lensPosition` is the committed
+/// locked position (nil = autofocus); `isSupported` reflects the active device.
+/// The revision lets the UI discard snapshots queued before a lens change.
+struct CameraManualFocusSnapshot: Sendable, Equatable {
+    let lensPosition: Float?
+    let isSupported: Bool
+    let cameraRevision: UInt64
 }

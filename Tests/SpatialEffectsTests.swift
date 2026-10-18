@@ -17,6 +17,87 @@ import Metal
 ///
 /// Distinct from `GrainABITests`, which checks a struct layout, not behaviour.
 struct SpatialEffectsTests {
+    /// Thin structures expose sparse scaled taps that broad block averages hide.
+    /// At 1024px, halation radius is 12.8 and glow radius is 25.6 half-res texels.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"),
+          arguments: [false, true], [false, true])
+    func thinHighlightHasContinuousOutwardTails(glow: Bool, horizontal: Bool) throws {
+        let side = 1024
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float, width: side, height: side, mipmapped: false
+        )
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.storageMode = .shared
+        let graded = try #require(device.makeTexture(descriptor: descriptor))
+        // Exactly two half-res mask texels, symmetric about the image centre.
+        // The background is above the shadow fade, but below highlight extraction.
+        var pixels = [Float16](repeating: 0.125, count: side * side * 4)
+        for row in 0..<side {
+            for column in 0..<side {
+                let index = (row * side + column) * 4
+                if (510..<514).contains(horizontal ? row : column) {
+                    pixels[index] = 1
+                    pixels[index + 1] = 1
+                    pixels[index + 2] = 1
+                }
+                pixels[index + 3] = 1
+            }
+        }
+        pixels.withUnsafeBytes { raw in
+            graded.replace(region: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0,
+                           withBytes: raw.baseAddress!, bytesPerRow: side * 8)
+        }
+        let output = try #require(stage.apply(
+            graded: graded, commandQueue: queue,
+            halationStrength: glow ? 0 : 0.75, glowStrength: glow ? 0.75 : 0,
+            halationRadiusFraction: 0.025, halationTint: SIMD3(1, 0.32, 0.10),
+            width: side, height: side
+        ))
+        var result = [Float16](repeating: 0, count: pixels.count)
+        let synchronize = try #require(queue.makeCommandBuffer())
+        let blit = try #require(synchronize.makeBlitCommandEncoder())
+        blit.synchronize(resource: output)
+        blit.endEncoding()
+        synchronize.commit()
+        synchronize.waitUntilCompleted()
+        #expect(synchronize.status == .completed)
+        result.withUnsafeMutableBytes { raw in
+            output.getBytes(raw.baseAddress!, bytesPerRow: side * 8,
+                            from: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0)
+        }
+        func addedLight(at coordinate: Int) -> Double {
+            let index = horizontal ? (coordinate * side + side / 2) * 4
+                : (side / 2 * side + coordinate) * 4
+            return Double(result[index]) - 0.125
+        }
+        // Check individual pixels, not band averages. A detached lobe must not
+        // recover after an earlier valley, even if it is below the main peak.
+        // Two half-float steps allow readback/approximation noise, not ghost lobes.
+        let tolerance = 0.00025
+        var lowestSoFar = addedLight(at: 514)
+        var largestRecovery = 0.0
+        var largestAsymmetry = 0.0
+        for distance in 0..<320 {
+            let right = addedLight(at: 514 + distance)
+            let left = addedLight(at: 509 - distance)
+            largestRecovery = max(largestRecovery, right - lowestSoFar)
+            lowestSoFar = min(lowestSoFar, right)
+            largestAsymmetry = max(largestAsymmetry, abs(right - left))
+        }
+        #expect(largestRecovery <= tolerance,
+                "outward tail must not form detached lobes (recovery=\(largestRecovery), glow=\(glow), horizontal=\(horizontal))")
+        #expect(largestAsymmetry <= tolerance, "diffusion must remain symmetric about the thin highlight")
+        // No-op / too-narrow filters must not pass the monotonicity check vacuously.
+        let tailExtent = glow ? 192 : 96
+        let minimumTail = (0..<tailExtent).map { addedLight(at: 514 + $0) }.min()!
+        #expect(minimumTail > 0.001, "added light must continuously fill the outward tail, not leave dark gaps")
+        #expect(addedLight(at: 514) > addedLight(at: 514 + tailExtent) + 0.001,
+                "the tail must decay rather than lifting the whole frame")
+    }
+
     private static let width = 256
     private static let height = 256
 

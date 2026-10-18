@@ -20,7 +20,9 @@ struct PurchaseView: View {
                     // Trial status
                     trialStatusSection
 
-                    if !viewModel.isPurchased {
+                    if viewModel.isBetaAccess || viewModel.isDevelopmentAccess {
+                        betaBanner
+                    } else if !viewModel.isPurchased {
                         // Purchase options
                         purchaseOptionsSection
                     } else {
@@ -59,7 +61,26 @@ struct PurchaseView: View {
 
     private var trialStatusSection: some View {
         VStack(spacing: 8) {
-            if viewModel.isPurchased {
+            if viewModel.isDevelopmentAccess {
+                Image(systemName: "hammer.fill")
+                    .font(.largeTitle)
+                    .foregroundStyle(.tint)
+                Text("Development Build")
+                    .font(.title2.bold())
+                Text("This build did not come from the App Store, so every feature is unlocked. "
+                     + "Customers installing from the App Store are unaffected.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            } else if viewModel.isBetaAccess {
+                Image(systemName: "testtube.2")
+                    .font(.largeTitle)
+                    .foregroundStyle(.tint)
+                Text("Unrestricted Beta")
+                    .font(.title2.bold())
+                Text("Every feature is unlocked during the beta. No purchase or checkout is required.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            } else if viewModel.isPurchased {
                 Image(systemName: "checkmark.seal.fill")
                     .font(.largeTitle)
                     .foregroundStyle(.green)
@@ -89,10 +110,36 @@ struct PurchaseView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
+    /// Beta installs run without monetization: the live purchase CTA is hidden
+    /// entirely so a tester is never asked to check out.
+    private var betaBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "infinity.circle.fill")
+                .foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Beta access")
+                    .font(.headline)
+                Text("You are testing an unrestricted beta build. All paid features are enabled and no purchase is required.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
     private var purchaseOptionsSection: some View {
         VStack(spacing: 12) {
             Text("Unlock Full Access")
                 .font(.headline)
+
+            if let loadError = viewModel.productLoadError {
+                productUnavailableNotice(detail: loadError)
+            } else if viewModel.pricesUnavailable {
+                productUnavailableNotice(detail: "Prices are still loading from the App Store.")
+            }
 
             // Yearly subscription
             Button(action: viewModel.purchaseSubscription) {
@@ -105,7 +152,7 @@ struct PurchaseView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Text(viewModel.subscriptionPrice ?? "$5.00")
+                    Text(viewModel.subscriptionPrice ?? PurchasePriceText.unavailable)
                         .font(.body.bold())
                 }
                 .padding()
@@ -113,6 +160,7 @@ struct PurchaseView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
             .buttonStyle(.plain)
+            .disabled(viewModel.subscriptionPrice == nil)
 
             // Lifetime
             Button(action: viewModel.purchaseLifetime) {
@@ -125,7 +173,7 @@ struct PurchaseView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Text(viewModel.lifetimePrice ?? "$10.00")
+                    Text(viewModel.lifetimePrice ?? PurchasePriceText.unavailable)
                         .font(.body.bold())
                 }
                 .padding()
@@ -133,6 +181,7 @@ struct PurchaseView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
             .buttonStyle(.plain)
+            .disabled(viewModel.lifetimePrice == nil)
 
             // Restore purchases
             Button("Restore Purchases") {
@@ -140,6 +189,27 @@ struct PurchaseView: View {
             }
             .font(.caption)
         }
+    }
+
+    /// L12: a real product-load failure is shown, never masked by a fallback
+    /// price. Recovery is an explicit retry.
+    private func productUnavailableNotice(detail: String) -> some View {
+        VStack(spacing: 6) {
+            Text("In-app purchases are unavailable")
+                .font(.footnote.bold())
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Retry") {
+                viewModel.retryLoadProducts()
+            }
+            .font(.caption)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity)
+        .background(.thinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     // MARK: - Preview Mode

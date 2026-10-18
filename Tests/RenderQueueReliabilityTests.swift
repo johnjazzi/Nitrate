@@ -22,7 +22,7 @@ struct RenderQueueReliabilityTests {
         Issue.record("Timed out waiting for queue state")
     }
 
-    @Test func keptOriginalIsSavedUnchangedAndNeverRendered() async throws {
+    @Test func keptOriginalIsQueuedOriginalOnlySavedUnchangedAndNeverRendered() async throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }
         var rendered = 0
@@ -34,32 +34,37 @@ struct RenderQueueReliabilityTests {
             saves.append(url)
         })
 
-        model.saveOriginal(sourceURL: files.source, reason: "1.30 s audio gap")
+        let accepted = model.enqueueOriginalOnly(sourceURL: files.source, reason: "1.30 s audio gap")
 
-        try await waitUntil { !saves.isEmpty }
+        #expect(accepted)
+        try await waitUntil { !model.isProcessing }
         #expect(rendered == 0)
         #expect(saves == [files.source])
-        // A kept original is not a queue entry and not a reported failure.
-        #expect(model.jobs.isEmpty)
+        // A kept original is a durable original-only queue entry, never rendered.
+        #expect(model.jobs.count == 1)
+        #expect(model.jobs.first?.originalOnly == true)
+        #expect(model.jobs.first?.status == .completed)
         #expect(model.externalErrorMessage == nil)
     }
 
-    @Test func keptOriginalSaveFailureIsReportedWithoutInventingAJob() async throws {
+    @Test func keptOriginalSaveFailureIsDurablyQueuedForRetry() async throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }
         let model = RenderQueueViewModel(persistenceURL: files.persistence,
                                          render: { _ in files.output },
                                          save: { _ in throw QueueTestError.save })
 
-        model.saveOriginal(sourceURL: files.source, reason: "1.30 s audio gap")
+        let accepted = model.enqueueOriginalOnly(sourceURL: files.source, reason: "1.30 s audio gap")
 
-        try await waitUntil { model.externalErrorMessage != nil }
-        #expect(model.externalErrorMessage?.contains("1.30 s audio gap") == true)
-        #expect(model.externalErrorMessage?.contains("Photos unavailable") == true)
-        #expect(model.jobs.isEmpty)
+        #expect(accepted)
+        try await waitUntil { model.jobs.first?.status == .failed }
+        #expect(model.jobs.count == 1)
+        #expect(model.jobs.first?.errorMessage?.contains("1.30 s audio gap") == true)
+        #expect(model.jobs.first?.errorMessage?.contains("Photos") == true)
+        #expect(model.jobs.first?.sourceSavedToPhotos == false)
     }
 
-    @Test func keptOriginalThatIsGoneIsReportedWithoutSaving() async throws {
+    @Test func keptOriginalThatIsGoneIsNotQueued() async throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }
         var saves: [URL] = []
@@ -67,10 +72,13 @@ struct RenderQueueReliabilityTests {
                                          render: { _ in files.output },
                                          save: { url in saves.append(url) })
 
-        model.saveOriginal(sourceURL: files.directory.appendingPathComponent("missing.mov"),
-                           reason: "1.30 s audio gap")
+        let accepted = model.enqueueOriginalOnly(
+            sourceURL: files.directory.appendingPathComponent("missing.mov"),
+            reason: "1.30 s audio gap")
 
+        #expect(accepted == false)
         #expect(saves.isEmpty)
+        #expect(model.jobs.isEmpty)
         #expect(model.externalErrorMessage?.contains("no longer available") == true)
     }
 
@@ -357,6 +365,78 @@ struct RenderQueueReliabilityTests {
         #expect(model.currentSessionFailures.isEmpty)
     }
 
+    @Test func dismissedFailureDoesNotReturnWhenLaterJobsPersistSuccessfully() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        try Data([4, 5, 6]).write(to: files.output)
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { job in
+            if job.stockId == "A" { throw QueueTestError.render }
+            return files.output
+        }, save: { _ in }, postDelivery: { _, _ in })
+        model.enqueue(sourceURL: files.source, stockId: "A", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { !model.isProcessing }
+        let failedID = try #require(model.jobs.first?.id)
+        let failure = try #require(model.rendererErrorMessage)
+        #expect(model.jobs.first?.status == .failed)
+
+        model.dismissRendererError()
+        model.enqueue(sourceURL: files.source, stockId: "B", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { !model.isProcessing }
+        #expect(model.rendererErrorMessage == nil)
+        model.enqueue(sourceURL: files.source, stockId: "B", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { !model.isProcessing }
+        #expect(model.rendererErrorMessage == nil)
+        #expect(model.jobs.first { $0.id == failedID }?.errorMessage == failure)
+        #expect(model.currentSessionFailures.map(\.id) == [failedID])
+        #expect(model.historyJobs.count == 3)
+    }
+
+    @Test func differentJobFailureWithIdenticalTextIsANewAlert() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in throw QueueTestError.render },
+                                         save: { _ in }, postDelivery: { _, _ in })
+        model.enqueue(sourceURL: files.source, stockId: "A", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { !model.isProcessing }
+        let firstMessage = try #require(model.rendererErrorMessage)
+        model.dismissRendererError()
+        model.enqueue(sourceURL: files.source, stockId: "C", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { !model.isProcessing }
+        #expect(model.jobs.count == 2)
+        #expect(model.jobs[0].id != model.jobs[1].id)
+        #expect(model.jobs.allSatisfy { $0.status == .failed })
+        #expect(model.jobs[0].errorMessage == model.jobs[1].errorMessage)
+        #expect(model.rendererErrorMessage == firstMessage)
+    }
+
+    @Test func retryFailureAnnouncesAgainAndKeepsTheFailedJob() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        var attempts = 0
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { _ in
+            attempts += 1
+            throw QueueTestError.render
+        }, save: { _ in }, postDelivery: { _, _ in })
+        model.enqueue(sourceURL: files.source, stockId: "A", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { !model.isProcessing }
+        let failedID = try #require(model.jobs.first?.id)
+        #expect(model.rendererErrorMessage != nil)
+        model.dismissRendererError()
+        model.retry(jobId: failedID)
+        try await waitUntil { !model.isProcessing }
+        #expect(attempts == 2)
+        #expect(model.rendererErrorMessage == model.jobs.first?.errorMessage)
+        #expect(model.currentSessionFailures.map(\.id) == [failedID])
+        #expect(model.historyJobs.map(\.id) == [failedID])
+    }
+
     @Test func oldQueueJsonWithoutDeliveryFieldsStillDecodes() throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }
@@ -371,28 +451,52 @@ struct RenderQueueReliabilityTests {
         #expect(loaded[0].deliveryPreferences == nil)
     }
 
-    @Test func persistenceSaveFailureIsVisibleAndKeepsMediaFiles() async throws {
+    @Test func persistenceSaveFailurePausesBeforeRenderAndKeepsMediaFiles() async throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }
         try Data([4, 5, 6]).write(to: files.output)
         let blockedParent = files.directory.appendingPathComponent("not-a-directory")
         try Data([7]).write(to: blockedParent)
+        var renders = 0
+        var saves = 0
         let model = RenderQueueViewModel(
             persistenceURL: blockedParent.appendingPathComponent("queue.json"),
-            render: { _ in files.output },
-            save: { _ in }
+            render: { _ in renders += 1; return files.output },
+            save: { _ in saves += 1 }
         )
         let originalSource = try Data(contentsOf: files.source)
         let originalOutput = try Data(contentsOf: files.output)
         model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
                       deliveryPreferences: RenderDeliveryPreferences())
-        try await waitUntil { model.jobs.first?.status == .completed }
+        #expect(model.isPersistenceBlocked)
         #expect(model.rendererErrorMessage?.contains("Queue state could not be saved") == true)
+        try await Task.sleep(for: .milliseconds(25))
+        #expect(renders == 0)
+        #expect(saves == 0)
+        #expect(model.jobs.first?.status == .pending)
         #expect(try Data(contentsOf: files.source) == originalSource)
         #expect(try Data(contentsOf: files.output) == originalOutput)
     }
 
-    @Test func corruptQueueLoadReportsErrorWithoutOverwritingFile() async throws {
+    @Test func dismissingAQueueFailureDoesNotSuppressIndependentAlerts() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in throw QueueTestError.render },
+                                         save: { _ in }, postDelivery: { _, _ in })
+        model.enqueue(sourceURL: files.source, stockId: "A", iso: 400,
+                      deliveryPreferences: RenderDeliveryPreferences())
+        try await waitUntil { !model.isProcessing }
+        model.dismissRendererError()
+        #expect(model.rendererErrorMessage == nil)
+        model.externalErrorMessage = "Stock library failed"
+        #expect(model.rendererErrorMessage == "Stock library failed")
+        model.dismissRendererError()
+        model.externalErrorMessage = "Stock library failed"
+        #expect(model.rendererErrorMessage == "Stock library failed")
+    }
+
+    @Test func corruptQueueIsPreservedAsideAndDoesNotBlockNewWork() async throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }
         let corruptData = Data("{ definitely not queue JSON".utf8)
@@ -408,12 +512,18 @@ struct RenderQueueReliabilityTests {
         model.onAppear()
         #expect(model.jobs.isEmpty)
         #expect(model.rendererErrorMessage?.contains("Queue state could not be loaded") == true)
-        #expect(try Data(contentsOf: files.persistence) == corruptData)
+        // The unreadable file is kept aside rather than overwritten in place.
+        let quarantined = try FileManager.default.contentsOfDirectory(atPath: files.directory.path)
+            .first { $0.contains("corrupt") }
+        let keptPath = try #require(quarantined)
+        #expect(try Data(contentsOf: files.directory.appendingPathComponent(keptPath)) == corruptData)
+
+        // Persistence is re-enabled, so the app is not bricked by the bad file.
         model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
                       deliveryPreferences: RenderDeliveryPreferences())
         try await waitUntil { model.jobs.first?.status == .completed }
-        #expect(try Data(contentsOf: files.persistence) == corruptData)
-        #expect(model.rendererErrorMessage?.contains("Queue state could not be loaded") == true)
+        #expect(!model.isPersistenceBlocked)
+        #expect(try Data(contentsOf: files.directory.appendingPathComponent(keptPath)) == corruptData)
     }
 
     @Test(arguments: [false, true])

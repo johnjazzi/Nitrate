@@ -21,8 +21,6 @@ struct PipelineStageAvailabilityTests {
         "pass1_lut_halation_glow",
         "pass2_grain",
         "spatial_mask",
-        "spatial_blur_h",
-        "spatial_blur_v",
         "spatial_composite"
     ]
 

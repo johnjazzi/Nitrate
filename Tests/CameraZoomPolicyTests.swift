@@ -12,6 +12,50 @@ struct CameraZoomPolicyTests {
         #expect(bounds.target(2) == 1)
     }
 
+    @Test func telephotoFourTimesDisplayScaleCanReachSixteen() throws {
+        // At the tele camera's 4x display multiplier, fourfold device crop is 16x displayed.
+        let bounds = try #require(CameraZoomPolicy.bounds(multiplier: 4, effectiveMinimum: 1,
+                                                           effectiveMaximum: 12, formatMaximum: 20,
+                                                           displayCeiling: 16))
+        #expect(bounds.minimumDisplay == 4)
+        #expect(bounds.maximumDisplay == 16)
+        #expect(bounds.target(16) == 4)
+        #expect(bounds.target(100) == 4)
+    }
+
+    @Test func wideDisplayCeilingRemainsFive() throws {
+        let bounds = try #require(CameraZoomPolicy.bounds(multiplier: 1, effectiveMinimum: 1,
+                                                           effectiveMaximum: 20, formatMaximum: 20,
+                                                           displayCeiling: 5))
+        #expect(bounds.minimumDisplay == 1)
+        #expect(bounds.maximumDisplay == 5)
+        #expect(bounds.target(16) == 5)
+    }
+
+    @Test func telephotoCeilingIntersectsDeviceAndFormatMaximums() throws {
+        let effectiveLimit = try #require(CameraZoomPolicy.bounds(multiplier: 4, effectiveMinimum: 1,
+                                                                   effectiveMaximum: 2.5, formatMaximum: 10,
+                                                                   displayCeiling: 16))
+        #expect(effectiveLimit.maximumDisplay == 10)
+        #expect(effectiveLimit.target(16) == 2.5)
+        let formatLimit = try #require(CameraZoomPolicy.bounds(multiplier: 4, effectiveMinimum: 1,
+                                                                effectiveMaximum: 10, formatMaximum: 3,
+                                                                displayCeiling: 16))
+        #expect(formatLimit.maximumDisplay == 12)
+        #expect(formatLimit.target(16) == 3)
+    }
+
+    @Test func rejectsInvalidExplicitDisplayCeilings() {
+        for invalid: Double in [0, -1, .nan, .infinity, -.infinity] {
+            #expect(CameraZoomPolicy.bounds(multiplier: 4, effectiveMinimum: 1,
+                                            effectiveMaximum: 10, formatMaximum: 10,
+                                            displayCeiling: invalid) == nil)
+        }
+        #expect(CameraZoomPolicy.bounds(multiplier: 4, effectiveMinimum: 2,
+                                        effectiveMaximum: 10, formatMaximum: 10,
+                                        displayCeiling: 7) == nil)
+    }
+
     @Test func effectiveBoundsOverrideFormatAndPreservePerLensMinimum() throws {
         let bounds = try #require(CameraZoomPolicy.bounds(multiplier: 0.5, effectiveMinimum: 1.5,
                                                            effectiveMaximum: 4, formatMaximum: 20))

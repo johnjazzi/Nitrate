@@ -16,6 +16,8 @@ struct ContentView: View {
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
     @State private var controlBounds: [String: CGRect] = [:]
     @State private var currentSourceURL: URL?
+    /// The durable awaiting-stock entry created for the current take, if any.
+    @State private var awaitingStockJobId: UUID?
     /// Shown briefly when a take never started.
     @State private var showsRecordingFailure = false
     @State private var failureFlashGeneration = 0
@@ -57,6 +59,7 @@ struct ContentView: View {
     @AppStorage("camera.manualControlsExpanded") private var manualControlsExpanded = false
     @State private var manualFocusPosition: Double = 0.5
     @State private var isManualFocus = false
+    @State private var focusReadGeneration: UInt64 = 0
 
 #if DEBUG
     /// Frozen frame + live tuning sheet (DEBUG builds only).
@@ -146,15 +149,21 @@ struct ContentView: View {
             if let stock = selectedStock {
                 enqueueRender(sourceURL: url, stock: stock)
             } else {
+                // Durably queue the take before the sheet is shown, so leaving the
+                // sheet (Done/swipe), a second take, or a relaunch cannot strand it.
+                awaitingStockJobId = renderQueueViewModel.enqueueAwaitingStock(sourceURL: url)
                 showStockSheet = true
             }
         }
         .onChange(of: cameraViewModel.retainedOriginal) { _, newValue in
-            // A take that failed validation is never rendered and never becomes a
-            // recorded clip; the readable original is saved to Photos unchanged.
+            // A take that failed validation is never rendered. It is durably
+            // queued original-only, and the handoff is only cleared once that
+            // entry is recorded — otherwise a failed Photos save or a relaunch
+            // would lose the take.
             guard let newValue else { return }
-            renderQueueViewModel.saveOriginal(sourceURL: newValue.url, reason: newValue.reason)
-            cameraViewModel.clearRetainedOriginal()
+            if renderQueueViewModel.enqueueOriginalOnly(sourceURL: newValue.url, reason: newValue.reason) {
+                cameraViewModel.clearRetainedOriginal()
+            }
         }
         .onChange(of: cameraViewModel.recordingFailureToken) { _, token in
             guard token > 0 else { return }
@@ -423,12 +432,22 @@ struct ContentView: View {
 
     private func selectLens(_ lens: CameraLens) {
         guard lens != selectedLens else { return }
+        focusReadGeneration &+= 1
+        let focusRequest = focusReadGeneration
         cameraViewModel.selectLens(lens) { error in
             // The view model follows committed session changes, including a
             // successful earlier switch followed by a later request failure.
             selectedLens = cameraViewModel.activeLens
             if let error {
                 cameraViewModel.errorMessage = "Camera switch failed: \(error.localizedDescription)"
+            }
+            cameraViewModel.session.readManualFocusSnapshot { snapshot in
+                guard focusRequest == focusReadGeneration, !cameraViewModel.isSwitchingCameraLens else { return }
+                if !snapshot.isSupported {
+                    isManualFocus = false
+                } else if isManualFocus, let position = snapshot.lensPosition {
+                    manualFocusPosition = Double(position)
+                }
             }
         }
     }
@@ -445,7 +464,11 @@ struct ContentView: View {
             currentISO: currentISO,
             selectedGauge: selectedStock.flatMap { library.lastGauge(for: $0.stockId) } ?? .neutral,
             onShowQueueSheet: { showQueueSheet = true },
-            onShowStockSheet: { showStockSheet = true }
+            onShowStockSheet: {
+                // Opened directly (not from a fresh take): nothing to resume.
+                awaitingStockJobId = nil
+                showStockSheet = true
+            }
         )
     }
 
@@ -500,7 +523,7 @@ struct ContentView: View {
                 .cameraUpright()
             Spacer()
             Button {
-                renderQueueViewModel.rendererErrorMessage = nil
+                renderQueueViewModel.dismissRendererError()
             } label: {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.7))
                     .cameraUpright()
@@ -519,6 +542,7 @@ struct ContentView: View {
             library: library,
             renderQueueViewModel: renderQueueViewModel,
             sourceURL: currentSourceURL,
+            awaitingStockJobId: awaitingStockJobId,
             isPresented: $showStockSheet,
             selectedStock: $selectedStock,
             currentISO: $currentISO
@@ -565,6 +589,9 @@ private struct StockSheetView: View {
     let library: FilmStockLibrary
     let renderQueueViewModel: RenderQueueViewModel
     var sourceURL: URL?
+    /// When set, rendering assigns the stock to this durable awaiting entry
+    /// instead of creating a second job for the same take.
+    var awaitingStockJobId: UUID?
     @Binding var isPresented: Bool
     @Binding var selectedStock: FilmStockConfig?
     @Binding var currentISO: Float
@@ -661,15 +688,25 @@ private struct StockSheetView: View {
     private func renderButton(sourceURL: URL) -> some View {
         Button {
             guard let stock = localSelection else {
-                renderQueueViewModel.rendererErrorMessage = "Select a film stock first."
+                renderQueueViewModel.reportRenderError("Select a film stock first.")
                 return
             }
-            renderQueueViewModel.enqueue(
-                sourceURL: sourceURL,
-                stockId: stock.stockId,
-                iso: stock.defaultISO,
-                gauge: gauge
-            )
+            if let jobId = awaitingStockJobId {
+                // Resume the durable entry created for this take.
+                renderQueueViewModel.assignStock(
+                    jobId: jobId,
+                    stockId: stock.stockId,
+                    iso: stock.defaultISO,
+                    gauge: gauge
+                )
+            } else {
+                renderQueueViewModel.enqueue(
+                    sourceURL: sourceURL,
+                    stockId: stock.stockId,
+                    iso: stock.defaultISO,
+                    gauge: gauge
+                )
+            }
             isPresented = false
         } label: {
             HStack {

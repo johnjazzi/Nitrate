@@ -1,0 +1,61 @@
+{
+  "identifier": "44236FDA-2BC2-4590-8B04-0E915BD42E48",
+  "nonRenewingSubscriptions": [],
+  "products": [
+    {
+      "displayPrice": "9.99",
+      "familyShareable": false,
+      "internalID": "965BF0AD-CDC1-4749-AEF6-0EF861914FA7",
+      "localizations": [
+        {
+          "description": "Unlock Nitrate's film-look rendering forever. Recording is always free.",
+          "displayName": "Lifetime Unlock",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "com.nitrate.lifetime",
+      "referenceName": "Lifetime Unlock",
+      "type": "NonConsumable"
+    }
+  ],
+  "settings": {
+    "_failTransactionsEnabled": false,
+    "_locale": "en_US",
+    "_storefront": "USA",
+    "_storeKitErrors": []
+  },
+  "subscriptionGroups": [
+    {
+      "id": "05CDB087-5479-42B0-B09E-91304D17D53B",
+      "localizations": [],
+      "name": "Nitrate",
+      "subscriptions": [
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "4.99",
+          "familyShareable": false,
+          "groupNumber": 1,
+          "internalID": "55E19B46-3FFB-463B-AA6A-5FE23EEECBE0",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "Render the film look for a year. Recording is always free.",
+              "displayName": "Yearly",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "com.nitrate.subscription.yearly",
+          "recurringSubscriptionPeriod": "P1Y",
+          "referenceName": "Yearly",
+          "subscriptionGroupID": "05CDB087-5479-42B0-B09E-91304D17D53B",
+          "type": "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version": {
+    "major": 4,
+    "minor": 0
+  }
+}

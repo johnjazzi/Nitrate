@@ -116,6 +116,10 @@ final class CameraViewModel {
     private var pendingLensSwitchCount = 0
     private var apertureCommandGeneration: UInt64 = 0
     private let originalStorage = CameraOriginalStorage()
+    /// Marks a take before capture and is acknowledged once the render queue has
+    /// durably accepted it. If the app dies in between, the file is reconciled at
+    /// next launch as an original-only rescue rather than being lost.
+    private let captureJournal = CaptureJournal()
     private var lifecycleGate = CameraLifecycleGate()
     private var configurationInFlight = false
     private var cameraConfigured = false
@@ -172,8 +176,10 @@ final class CameraViewModel {
     private func requestMicrophoneAccess() {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
-            // configure() already adds the mic via addMicrophoneInputLocked().
-            break
+            // Idempotent. This also covers a mic that was denied at launch and
+            // then enabled in Settings: without re-attaching, the session would
+            // record silent video and report it as a clean success.
+            session.addMicrophoneInput()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 guard let self, granted else { return }
@@ -326,6 +332,7 @@ final class CameraViewModel {
         recordingStoppedAt = nil
         do {
             let outputURL = try originalStorage.makeDestination()
+            captureJournal.markPending(outputURL)
             session.startRecording(to: outputURL) { [weak self] error in
                 guard let self else { return }
                 // A stale callback must not touch the session: captureGeneration
@@ -472,17 +479,32 @@ final class CameraViewModel {
     // MARK: - Manual Exposure
 
     func setManualISO(_ iso: Float) {
+        // The session refuses exposure changes during a take
+        // (`exposureChangeDuringRecording`), so an optimistic write here would
+        // display an ISO the hardware never took. Refuse before mutating, matching
+        // the silent gating the other transition-limited controls use.
+        guard CameraManualExposureSelectionPolicy.canChangeISO(
+            isStartingRecording: isStartingRecording, isRecording: isRecording,
+            isStoppingRecording: isStoppingRecording) else { return }
+        let previousISO = manualISO
         manualISO = iso
         exposureCommandGeneration &+= 1
         let generation = exposureCommandGeneration
         session.lockManualExposure(iso: iso) { [weak self] error in
             guard let self else { return }
             guard self.exposureCommandGeneration == generation,
-                  self.lifecycleGate.isActive, !self.isRecording else { return }
+                  self.lifecycleGate.isActive else { return }
             if let error {
+                // Reconcile the rejected selection back to the last accepted
+                // value instead of leaving a value the device never applied.
+                self.manualISO = CameraManualExposureSelectionPolicy.reconciledISO(
+                    previous: previousISO, requested: iso, accepted: false)
                 self.errorMessage = "Failed to set ISO: \(error.localizedDescription)"
                 return
             }
+            // A newer take owns the device now; do not flip the exposure mode
+            // underneath it.
+            guard !self.isRecording, !self.isStartingRecording else { return }
             isManualExposure = true
             refreshExposure()
         }
@@ -716,10 +738,16 @@ final class CameraViewModel {
     // MARK: - Private
 
     private func handleRecordingFinished(_ result: Result<RecordingCompletion, Error>) async {
+        let generation = captureGeneration
         isRecording = false
         isStoppingRecording = false
         refreshRecordingStabilization()
         invalidateRecordingTimers()
+        // Snapshot and clear this take's timer state BEFORE any await. A duration
+        // load that resolves after a new take has already started must not clear
+        // the new take's timer origin nor replace its warning (L11).
+        let snapshot = CameraRecordingTakeFence.snapshotAndClear(
+            origin: &recordingTimerOrigin, stoppedAt: &recordingStoppedAt, generation: generation)
         switch result {
         case .success(let completion):
             switch RecordingFinishPresentationPolicy.plan(for: completion) {
@@ -730,7 +758,7 @@ final class CameraViewModel {
                     recordingWarning = warningMessage
                     errorMessage = "Recording saved, but ended with a warning: \(warningMessage)"
                 }
-                await checkRecordedDuration(of: url)
+                await checkRecordedDuration(of: url, snapshot: snapshot)
 
             case .saveOriginalUnchanged(let url, let reason):
                 // Deliberately not assigned to lastRecordedURL: that assignment is
@@ -746,8 +774,6 @@ final class CameraViewModel {
             errorMessage = "Recording failed: \(error.localizedDescription)"
             failRecordingProminently(error)
         }
-        recordingTimerOrigin = nil
-        recordingStoppedAt = nil
     }
 
     /// A take that never started is not a normal error banner: the user pressed
@@ -763,11 +789,19 @@ final class CameraViewModel {
     /// file that was actually written. A mismatch past the log threshold means
     /// the model is wrong; only a large shortfall is surfaced, because that is
     /// what changes what the user expects to have recorded.
-    private func checkRecordedDuration(of url: URL) async {
-        guard let origin = recordingTimerOrigin else { return }
-        let displayed = (recordingStoppedAt ?? Date()).timeIntervalSince(origin)
+    ///
+    /// `snapshot` is this take's timer state, captured and cleared before the
+    /// await. A suspended duration load that resolves after a new take began is
+    /// fenced out by take generation so it cannot touch the new take's state (L11).
+    private func checkRecordedDuration(of url: URL,
+                                       snapshot: CameraRecordingTakeFence.Snapshot?) async {
+        guard let snapshot else { return }
+        let displayed = (snapshot.stoppedAt ?? Date()).timeIntervalSince(snapshot.origin)
         guard let duration = try? await AVURLAsset(url: url).load(.duration),
               duration.isNumeric else { return }
+        guard CameraRecordingTakeFence.accepts(
+            snapshot: snapshot, currentGeneration: captureGeneration,
+            isRecording: isRecording, isStartingRecording: isStartingRecording) else { return }
         let verdict = RecordingDurationDiscrepancyPolicy.verdict(displayed: displayed,
                                                                 actual: duration.seconds)
 #if DEBUG

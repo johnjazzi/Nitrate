@@ -1,0 +1,42 @@
+{
+  "status": "draft_for_owner_review_not_submitted",
+  "locale": "en-US",
+  "bundle_id": "com.nitrate.app",
+  "name": "nitrate.camera",
+  "subtitle": "Film emulation for video",
+  "primary_category": "Photo & Video",
+  "secondary_category": null,
+  "promotional_text": "Record Apple Log 2 video, choose a film stock and gauge, and render the film look on your iPhone. Requires compatible Apple Log 2 hardware and iOS 27 or later.",
+  "keywords": "analog,cinema,grain,halation,log,filmmaking,stock,16mm,35mm,8mm,hevc,manual,exposure",
+  "description_factual_draft": "Nitrate records Apple Log 2 video and renders a film-stock look after capture.\n\nREQUIREMENTS\niOS 27 or later and a camera that supports 4K Apple Log 2 capture at 24 fps. Not every iPhone or lens supports this format.\n\nCAPTURE AND RENDER\nRecord 4K, 10-bit HEVC video. Choose a daylight or tungsten film-stock look and a print gauge. The render applies colour, halation, glow and grain on the device, then saves the result to Photos.\n\nUse manual ISO and exposure controls. Track recordings and rendering in Storage & Queue. Optionally save the original Log recording alongside the rendered video.\n\nThe app is a camera, not a video editor. It does not currently include a timeline, trimming or imported-clip editing.\n\nACCESS\nFilm-look rendering is available for a seven-day evaluation starting at first launch. No subscription is started and no charge is made by the evaluation itself. After it ends, rendering requires an active yearly subscription or a one-time lifetime unlock. Recording remains available; recordings awaiting film-look rendering stay queued.\n\nThe yearly subscription renews automatically unless cancelled through your Apple account. The lifetime unlock is a separate one-time purchase. Prices are shown in the app before purchase. Restore Purchases is available in Settings.\n\nMEDIA PROCESSING\nCapture and film-look processing run on your device. The app does not use generative AI to process your images or videos.",
+  "author_intro": null,
+  "support_url": null,
+  "privacy_policy_url": null,
+  "terms_url": null,
+  "marketing_url": null,
+  "copyright": null,
+  "review_contact": null,
+  "review_sign_in_required_proposed": false,
+  "review_notes_draft": "Nitrate is an iPhone camera app. Capture requires iOS 27 or later and a device/lens advertising a 3840x2160, 24 fps, ten-bit Apple Log 2 format. Unsupported hardware does not fall back to another capture format. No app account or sign-in is required.\n\nOn compatible hardware: grant camera permission; microphone permission enables audio. Select a stock, record a short clip, stop, then open Storage & Queue from the status display. The film-look render is saved to Photos after add permission is granted. Settings contains purchase and restore controls.\n\nProduction access: seven-day local rendering evaluation from first launch, then com.nitrate.subscription.yearly or com.nitrate.lifetime. Evaluation alone starts no subscription. Recording remains available after expiry; rendering waits for access.\n\nTestFlight builds grant unrestricted beta access and hide purchase controls. This differs intentionally from production. The local StoreKit fixture is not part of the shipping bundle.\n\nBefore submission, attach a recording of the actual submitted build demonstrating capture, render, Photos delivery and purchase UI. This note does not claim that those review artifacts or live product tests have been completed.",
+  "testflight_description": "Test Nitrate's Apple Log 2 capture, film-stock rendering and Photos delivery. Requires iOS 27 or later and compatible 4K/24 Apple Log 2 hardware. Beta builds are unrestricted and require no purchase. Use disposable test footage.",
+  "testflight_what_to_test": "Record a short clip with audio and confirm picture, sound and orientation in the saved render. Check manual ISO, focus, lens switching, portrait and landscape holds. Test microphone denial then re-enabling in Settings. Check queue recovery after relaunch, Photos permission denial and retry. Report device, iOS version, build, steps and whether the original remains accessible. Do not delete the app to troubleshoot: uninstalling can remove locally retained footage. Beta purchase controls are hidden; production purchase/restore/expiry needs separate verification.",
+  "products": [
+    {
+      "product_id": "com.nitrate.subscription.yearly",
+      "type": "auto_renewable_subscription",
+      "duration": "P1Y",
+      "reference_name": "Nitrate Yearly Rendering",
+      "display_name": "Nitrate Yearly",
+      "description": "Film-look rendering for one year.",
+      "price": null
+    },
+    {
+      "product_id": "com.nitrate.lifetime",
+      "type": "non_consumable",
+      "reference_name": "Nitrate Lifetime Rendering",
+      "display_name": "Nitrate Lifetime",
+      "description": "One-time unlock for film-look rendering.",
+      "price": null
+    }
+  ]
+}
