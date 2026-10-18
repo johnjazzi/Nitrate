@@ -28,6 +28,7 @@ settings:
 
 configs:
   Debug: debug
+  DevRelease: release
   Release: release
 
 schemes:
@@ -46,6 +47,17 @@ schemes:
       config: Release
     archive:
       config: Release
+  NitrateDev:
+    build:
+      targets:
+        Nitrate: all
+    run:
+      config: Debug
+      storeKitConfiguration: StoreKit/Nitrate.storekit
+    profile:
+      config: DevRelease
+    archive:
+      config: DevRelease
   RenderCLI:
     build:
       targets:
@@ -114,12 +126,8 @@ targets:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UILaunchStoryboardName: LaunchScreen
-        # Must match the App Store Connect app record exactly, or the upload is
-        # rejected. The record (nitrate.camera) uses com.nitrate.app. The
-        # com.filmemulation.* movie metadata keys are deliberately unchanged:
-        # they are written into recorded files, so renaming them would change
-        # the file contract.
-        PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app
+        # Keep artifact paths stable for verification and release tooling.
+        PRODUCT_NAME: Nitrate
         # The portrait-locked capture UI targets iPhone, not native iPad
         # multitasking (which requires all four interface orientations).
         TARGETED_DEVICE_FAMILY: "1"
@@ -135,6 +143,19 @@ targets:
         CODE_SIGN_IDENTITY: "Apple Development"
         PROVISIONING_PROFILE_SPECIFIER: ""
         ENABLE_USER_SCRIPT_SANDBOXING: NO
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app.dev
+          INFOPLIST_KEY_CFBundleDisplayName: Nitrate Dev
+        DevRelease:
+          PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app.dev
+          INFOPLIST_KEY_CFBundleDisplayName: Nitrate Dev
+        Release:
+          # Must match the App Store Connect record (nitrate.camera) exactly.
+          # Local installs never use this production identity. Preserve the
+          # com.filmemulation.* movie metadata keys: they are a file contract.
+          PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app
+          INFOPLIST_KEY_CFBundleDisplayName: Nitrate
     preBuildScripts:
       - name: SwiftLint
         script: |
