@@ -202,7 +202,23 @@ the stock's D/T light tag.
 - Delivery order is deliberate. The rendered movie is saved first and the
   original second, each confirmed outcome is persisted before the next attempt,
   and a partial failure retries only what is missing — an original-only retry
-  never re-renders or duplicates the render.
+  never re-renders or duplicates the render after its confirmation is durable.
+  A crash between a Photos save and recording that result can still cause a
+  duplicate on retry; the app does not read the library to reconcile that gap.
+- **Latest render and history:** keep a locally derived JPEG poster (at most
+  320 pixels on its longest edge and 64 KiB) and a compact technical render
+  record. **Metadata** shows the recorded file properties and render settings;
+  unknown historic details stay unavailable rather than using today's recipe.
+- After required Photos deliveries and terminal queue state are durably saved,
+  Nitrate removes its owned temporary source/output movies. Failed or partial
+  deliveries, shared files still needed by another job, and legacy completed
+  entries without a receipt are retained. Cleanup failure never repeats a
+  confirmed Photos save.
+- **Open Photos** is a best-effort general library handoff, not a link to a
+  specific video or album. If opening fails, the app shows manual guidance for
+  Photos' Recently Saved collection. Export access remains **add-only**; queue
+  thumbnails and metadata never read the Photos library. Automatic album
+  management is not implemented.
 
 ### Settings and purchase
 
