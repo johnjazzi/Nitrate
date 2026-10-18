@@ -176,6 +176,10 @@ targets:
       - path: App/Modules/ProcessingPipeline/
       - path: App/Modules/FilmStockLibrary/
       - path: App/Modules/RenderQueue/RenderJob.swift
+      - path: App/Modules/RenderQueue/RenderReceipt.swift
+      - path: App/Modules/RenderQueue/RenderReceiptService.swift
+      - path: App/Modules/RenderQueue/RenderMediaCleanup.swift
+      - path: App/Modules/RenderQueue/QueueReceiptPresentation.swift
       - path: App/Modules/RenderQueue/QueuePersister.swift
       - path: App/Modules/RenderQueue/RenderQueueViewModel.swift
       - path: App/Modules/RenderQueue/CaptureJournal.swift
