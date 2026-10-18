@@ -47,6 +47,15 @@ class ReleaseMetadataTests(unittest.TestCase):
                     "Apple registers video-camera, not video-capture",
                 )
 
+    def test_release_has_advanced_past_initial_beta(self):
+        # A floor, not a pinned current version: later releases/builds pass
+        # without editing this regression for the initial repeated 0.1.1 (1).
+        for name, settings in self.settings.items():
+            with self.subTest(configuration=name):
+                version = tuple(map(int, settings["MARKETING_VERSION"].split(".")))
+                self.assertGreaterEqual(version, (0, 1, 2))
+                self.assertGreaterEqual(int(settings["CURRENT_PROJECT_VERSION"]), 2)
+
     def test_preserves_portrait_camera_interface(self):
         for name, settings in self.settings.items():
             with self.subTest(configuration=name):

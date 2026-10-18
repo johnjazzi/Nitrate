@@ -22,6 +22,22 @@ This applies to mid-task boundaries too (e.g. a bug report arriving right after 
 finished feature) — close out the finished work first, then investigate the new
 item.
 
+## Release versioning
+
+- `project.yml` owns `MARKETING_VERSION` (release version) and
+  `CURRENT_PROJECT_VERSION` (the build number displayed in parentheses).
+- Each release PR into `main` must advance the release version. Default to a
+  patch increment; use `release:minor` or `release:major` labels only when that
+  larger increment is explicitly requested. Do not apply two bump labels.
+- Increment the build number for each new archive intended for distribution,
+  including rebuilds of the same release version. Do not bump for ordinary
+  local Debug builds. Never edit an already-created archive to change its version.
+- After changing the version, regenerate with XcodeGen and inspect the new
+  archive's Info.plist. An archive command alone does not increment these settings.
+- The automatic distribution target is TestFlight beta, not a public App Store
+  release. Repo instructions describe policy, not proof that release automation
+  or an App Store Connect upload has run.
+
 ## Project notes
 
 - XcodeGen project: `project.yml` is the source of truth; `*.xcodeproj` is
