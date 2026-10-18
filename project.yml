@@ -14,7 +14,7 @@ settings:
     # Single source of truth for the version shown on the splash and in
     # CFBundleShortVersionString / CFBundleVersion. Bump MARKETING_VERSION for a
     # user-visible release, CURRENT_PROJECT_VERSION for every build.
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.1.1"
     CURRENT_PROJECT_VERSION: "1"
     INFOPLIST_KEY_CFBundleDisplayName: Nitrate
     INFOPLIST_KEY_NSCameraUsageDescription: "Nitrate needs camera access to capture Apple Log video for film stock processing."
@@ -135,7 +135,7 @@ targets:
     preBuildScripts:
       - name: SwiftLint
         script: |
-          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          export PATH="$SRCROOT/build/ci-tools/swiftlint-0.65.1:/opt/homebrew/bin:/usr/local/bin:$PATH"
           python3 "$SRCROOT/scripts/verify.py" lint
         basedOnDependencyAnalysis: false
 
