@@ -11,6 +11,18 @@ struct QueueSheetView: View {
     @State private var showAll = false
     @State private var shareTarget: RenderJob?
     @State private var playbackJob: RenderJob?
+    @State private var metadataJob: RenderJob?
+    @State private var photosOpenFailed = false
+
+    private var latestRender: RenderJob? {
+        let candidates = viewModel.jobs.map {
+            QueueReceiptPresentation.Candidate(id: $0.id, completed: $0.status == .completed,
+                                               originalOnly: $0.originalOnly == true,
+                                               createdAt: $0.createdAt, recordedAt: $0.receipt?.recordedAt)
+        }
+        let id = QueueReceiptPresentation.latestRenderID(in: candidates)
+        return viewModel.jobs.first { $0.id == id }
+    }
 
     private var visibleQueuedJobs: [RenderJob] {
         viewModel.outstandingJobs
@@ -19,10 +31,11 @@ struct QueueSheetView: View {
         viewModel.awaitingStockJobs
     }
     private var visibleHistory: [RenderJob] {
-        showAll ? viewModel.historyJobs : viewModel.currentSessionResults
+        let history = showAll ? viewModel.historyJobs : viewModel.currentSessionResults
+        return history.filter { $0.id != latestRender?.id }
     }
     private var isEmpty: Bool {
-        visibleQueuedJobs.isEmpty && visibleAwaitingStock.isEmpty && visibleHistory.isEmpty
+        visibleQueuedJobs.isEmpty && visibleAwaitingStock.isEmpty && visibleHistory.isEmpty && latestRender == nil
     }
 
     var body: some View {
@@ -57,6 +70,20 @@ struct QueueSheetView: View {
                         totalSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.totalSpaceBytes : nil,
                         estimatedSeconds: estimatedRemainingSeconds
                     )
+                }
+                Section("Photos") {
+                    Button(action: openPhotos) {
+                        Label("Open Photos", systemImage: "photo.on.rectangle")
+                            .frame(minHeight: QueueReceiptPresentation.minimumActionHeight)
+                    }
+                    .accessibilityIdentifier(QueueReceiptPresentation.photosActionID + ".general")
+                    Text("Opens Photos, not a specific video. Look in Recently Saved for confirmed saves.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let latestRender {
+                    Section("Latest render") {
+                        receiptCard(for: latestRender, prominent: true)
+                    }
                 }
                 if isEmpty {
                     Section("Render queue") {
@@ -103,30 +130,14 @@ struct QueueSheetView: View {
                         Section("History (\(visibleHistory.count))") {
                             ForEach(visibleHistory) { job in
                                 if job.status == .completed {
-                                    // A rescue entry has no rendered output; making
-                                    // its row tappable would open a blank player.
-                                    if job.outputURL != nil {
-                                        Button { playbackJob = job } label: { JobRow(job: job) }
-                                            .buttonStyle(.plain)
-                                            .swipeActions(edge: .leading) {
-                                                Button { shareVideo(job) } label: {
-                                                    Label("Share", systemImage: "square.and.arrow.up")
-                                                }.tint(.blue)
-                                            }
-                                    } else {
-                                        JobRow(job: job)
-                                    }
+                                    receiptCard(for: job)
                                 } else {
                                     VStack(alignment: .leading, spacing: 4) {
                                         JobRow(job: job)
                                         if let error = job.errorMessage {
                                             Text(error).font(.caption).foregroundStyle(.red)
                                         }
-                                        if job.outputURL != nil {
-                                            Button { playbackJob = job } label: {
-                                                Text("View video").frame(minHeight: 44)
-                                            }
-                                        }
+                                        receiptCard(for: job)
                                         Button { viewModel.retry(jobId: job.id) } label: {
                                             Text("Retry").frame(minHeight: 44)
                                         }
@@ -150,14 +161,22 @@ struct QueueSheetView: View {
                 }
             }
             .sheet(item: $shareTarget) { job in
-                if let url = job.outputURL {
+                if let url = job.retainedOutputURL {
                     ShareSheet(items: [url])
                 }
             }
             .sheet(item: $playbackJob) { job in
-                if let url = job.outputURL {
-                    VideoPreviewSheet(url: url, title: job.stockId, iso: job.iso)
+                if let url = job.retainedOutputURL {
+                    VideoPreviewSheet(url: url, title: job.receiptTitle, iso: job.iso)
                 }
+            }
+            .sheet(item: $metadataJob) { job in
+                QueueReceiptMetadataView(job: job)
+            }
+            .alert("Could not open Photos", isPresented: $photosOpenFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(PhotosLibraryOpener.failureMessage)
             }
         }
         .onAppear { cameraViewModel.updateFreeSpace() }
@@ -196,9 +215,23 @@ struct QueueSheetView: View {
         .buttonStyle(.bordered)
     }
 
+    private func receiptCard(for job: RenderJob, prominent: Bool = false) -> some View {
+        QueueReceiptCard(job: job, prominent: prominent, openPhotos: openPhotos,
+                         showMetadata: { metadataJob = job },
+                         playLocal: {
+                             guard job.retainedOutputURL != nil else { return }
+                             playbackJob = job
+                         }, shareLocal: { shareVideo(job) })
+    }
+
+    private func openPhotos() {
+        Task { @MainActor in
+            photosOpenFailed = !(await PhotosLibraryOpener.open())
+        }
+    }
+
     private func shareVideo(_ job: RenderJob) {
-        guard let url = job.outputURL,
-              FileManager.default.fileExists(atPath: url.path) else { return }
+        guard job.retainedOutputURL != nil else { return }
         shareTarget = job
     }
 }
@@ -226,7 +259,7 @@ private struct VideoPreviewSheet: View {
                     ContentUnavailableView(
                         "Render Not Found",
                         systemImage: "film.slash",
-                        description: Text("The rendered file is no longer on disk. Re-render this job to play it again.")
+                        description: Text("This local copy is no longer available. If its save was confirmed, open Photos manually and look in Recently Saved.")
                     )
                 } else if let player {
                     VideoPlayer(player: player)
@@ -235,7 +268,7 @@ private struct VideoPreviewSheet: View {
                     ProgressView()
                 }
             }
-            .navigationTitle("\(title) · ISO \(Int(iso))")
+            .navigationTitle("\(title) · Render ISO \(QueueReceiptPresentation.number(Double(iso)))")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -271,7 +304,8 @@ private struct JobRow: View {
                 Text(job.originalOnly == true ? "Original recording" : (job.stockId.isEmpty ? "Unassigned recording" : job.stockId))
                     .font(.caption.weight(.semibold))
                 if !job.stockId.isEmpty {
-                    Text("ISO \(Int(job.iso))").font(.caption2).foregroundStyle(.secondary)
+                    Text("Selected render ISO \(QueueReceiptPresentation.number(Double(job.iso)))")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
                 if let reason = job.retainedReason {
                     Text("Kept original: \(reason)").font(.caption2).foregroundStyle(.secondary)
