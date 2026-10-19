@@ -818,6 +818,13 @@ final class PipelineRenderer: @unchecked Sendable {
             await audioCopy.value
 
             if let videoFailure {
+                // An audio-lane failure is the real cause when both lanes stopped.
+                // The audio lane calls cancel() on failure, which surfaces here as
+                // a bare CancellationError and would otherwise mask the error that
+                // actually stopped the render (e.g. an audio-append rejection).
+                if videoFailure is CancellationError, let audioFailure = audioResult.getFailure {
+                    throw audioFailure
+                }
                 throw videoFailure
             } else if let audioFailure = audioResult.getFailure {
                 throw audioFailure
