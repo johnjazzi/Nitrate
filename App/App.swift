@@ -30,6 +30,14 @@ struct NitrateApp: App {
         _renderQueueViewModel = State(initialValue: RenderQueueViewModel())
         _purchaseViewModel = State(initialValue: PurchaseViewModel())
         stockLibraryError = loadError
+
+        #if DEBUG
+        // Development-only halation timing harness; runs only when launched
+        // with `-halation-benchmark` and prints to stdout.
+        if HalationDeviceBenchmark.isRequested {
+            Task.detached { HalationDeviceBenchmark.run() }
+        }
+        #endif
     }
 
     var body: some Scene {

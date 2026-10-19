@@ -50,8 +50,30 @@ struct SpatialEffectsTests {
             graded.replace(region: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0,
                            withBytes: raw.baseAddress!, bytesPerRow: side * 8)
         }
+        // Halation reads the UNGRADED frame, so this fixture needs its own Apple
+        // Log 2 source: the same thin line as a superwhite (3x white) against an
+        // 18% grey surround. Without it halation has no linear scene light to
+        // work from and the test would measure nothing.
+        let input = try #require(device.makeTexture(descriptor: descriptor))
+        var sourcePixels = [Float16](repeating: Self.appleLogEncode(0.18), count: side * side * 4)
+        for row in 0..<side {
+            for column in 0..<side {
+                let index = (row * side + column) * 4
+                if (510..<514).contains(horizontal ? row : column) {
+                    let encoded = Self.appleLogEncode(3.0)
+                    sourcePixels[index] = encoded
+                    sourcePixels[index + 1] = encoded
+                    sourcePixels[index + 2] = encoded
+                }
+                sourcePixels[index + 3] = 1
+            }
+        }
+        sourcePixels.withUnsafeBytes { raw in
+            input.replace(region: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0,
+                          withBytes: raw.baseAddress!, bytesPerRow: side * 8)
+        }
         let output = try #require(stage.apply(
-            graded: graded, commandQueue: queue,
+            graded: graded, input: input, commandQueue: queue,
             halationStrength: glow ? 0 : 0.75, glowStrength: glow ? 0.75 : 0,
             halationRadiusFraction: 0.025, halationTint: SIMD3(1, 0.32, 0.10),
             width: side, height: side
@@ -90,11 +112,18 @@ struct SpatialEffectsTests {
         #expect(largestRecovery <= tolerance,
                 "outward tail must not form detached lobes (recovery=\(largestRecovery), glow=\(glow), horizontal=\(horizontal))")
         #expect(largestAsymmetry <= tolerance, "diffusion must remain symmetric about the thin highlight")
-        // No-op / too-narrow filters must not pass the monotonicity check vacuously.
-        let tailExtent = glow ? 192 : 96
-        let minimumTail = (0..<tailExtent).map { addedLight(at: 514 + $0) }.min()!
+        // Two distinct properties, so two distances. CONTINUITY is checked across
+        // the lit part of the tail: no dark gaps (the old sparse-tap kernel left
+        // detached lobes here). DECAY is checked further out, where the tail must
+        // have fallen away rather than lifting the frame. The decay distance grew
+        // with the physical model because red now diffuses at 1.8x the base radius
+        // — the tail is legitimately wider than the single shared radius it
+        // replaced, and the old 96px sat inside it rather than past it.
+        let litExtent = 96
+        let minimumTail = (0..<litExtent).map { addedLight(at: 514 + $0) }.min()!
         #expect(minimumTail > 0.001, "added light must continuously fill the outward tail, not leave dark gaps")
-        #expect(addedLight(at: 514) > addedLight(at: 514 + tailExtent) + 0.001,
+        let decayExtent = 192
+        #expect(addedLight(at: 514) > addedLight(at: 514 + decayExtent) + 0.001,
                 "the tail must decay rather than lifting the whole frame")
     }
 
@@ -117,6 +146,46 @@ struct SpatialEffectsTests {
                 pixels.append(value)
                 pixels.append(value)
                 pixels.append(value)
+                pixels.append(1)
+            }
+        }
+        return pixels
+    }
+
+    /// Apple Log 2 encode — the inverse of the decode the shader applies.
+    /// Constants are Apple's via OpenColorIO v2.6.0 `AppleCameras.cpp`, the same
+    /// source the shader and the LUT generator use. Needed because halation now
+    /// reads the UNGRADED frame, so fixtures have to be built as scene light and
+    /// encoded, not written as graded pixels.
+    static func appleLogEncode(_ linear: Double) -> Float16 {
+        let r0 = -0.05641088, rt = 0.01, c = 47.28711236
+        let beta = 0.00964052, gamma = 0.08550479, delta = 0.69336945
+        let code = linear >= rt
+            ? delta + gamma * log2(linear + beta)
+            : c * (linear - r0) * (linear - r0)
+        return Float16(code)
+    }
+
+    /// Linear scene light for the fixture: 18% grey surround, with the block as a
+    /// superwhite source. At 3x diffuse white the block clears red's knee (1.0)
+    /// and green's (2.0) but not blue's (4.0), so the halo must come out warm —
+    /// which is the property the colour assertions below depend on.
+    private static let blockLinear: Double = 3.0
+    private static let surroundLinear: Double = 0.18
+
+    private static func inputPixels() -> [Float16] {
+        let blockLower = 100
+        let blockUpper = 156
+        var pixels = [Float16]()
+        pixels.reserveCapacity(width * height * 4)
+        for row in 0..<height {
+            for column in 0..<width {
+                let inBlock = column >= blockLower && column < blockUpper
+                    && row >= blockLower && row < blockUpper
+                let encoded = appleLogEncode(inBlock ? blockLinear : surroundLinear)
+                pixels.append(encoded)
+                pixels.append(encoded)
+                pixels.append(encoded)
                 pixels.append(1)
             }
         }
@@ -152,7 +221,9 @@ struct SpatialEffectsTests {
         return ChannelMeans(red: red / divisor, green: green / divisor, blue: blue / divisor)
     }
 
-    private static func makeTextures(device: MTLDevice) throws -> (graded: MTLTexture, pixels: [Float16]) {
+    private static func makeTextures(
+        device: MTLDevice
+    ) throws -> (graded: MTLTexture, input: MTLTexture, pixels: [Float16]) {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float,
             width: width,
@@ -162,6 +233,7 @@ struct SpatialEffectsTests {
         descriptor.usage = [.shaderRead, .shaderWrite]
         descriptor.storageMode = .shared
         let graded = try #require(device.makeTexture(descriptor: descriptor))
+        let input = try #require(device.makeTexture(descriptor: descriptor))
 
         let pixels = gradedPixels()
         pixels.withUnsafeBytes { raw in
@@ -172,7 +244,16 @@ struct SpatialEffectsTests {
                 bytesPerRow: width * MemoryLayout<Float16>.size * 4
             )
         }
-        return (graded, pixels)
+        let source = inputPixels()
+        source.withUnsafeBytes { raw in
+            input.replace(
+                region: MTLRegionMake2D(0, 0, width, height),
+                mipmapLevel: 0,
+                withBytes: raw.baseAddress!,
+                bytesPerRow: width * MemoryLayout<Float16>.size * 4
+            )
+        }
+        return (graded, input, pixels)
     }
 
     /// Read an RGBA16Float texture back to CPU half floats.
@@ -216,12 +297,13 @@ struct SpatialEffectsTests {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
-        let (graded, _) = try Self.makeTextures(device: device)
+        let (graded, input, _) = try Self.makeTextures(device: device)
 
         // Halation only: glow is deliberately excluded so this test pins the
         // tight halo rather than the frame-wide bloom, which is measured below.
         let output = try #require(stage.apply(
             graded: graded,
+            input: input,
             commandQueue: queue,
             halationStrength: 0.5,
             glowStrength: 0,
@@ -260,9 +342,10 @@ struct SpatialEffectsTests {
         // The block's right edge is at x=156. This band spans roughly 40-60 px
         // beyond it: past halation's reach, still within glow's.
         func farField(strength: Float, glow: Bool) throws -> Double {
-            let (graded, _) = try Self.makeTextures(device: device)
+            let (graded, input, _) = try Self.makeTextures(device: device)
             let output = try #require(stage.apply(
                 graded: graded,
+                input: input,
                 commandQueue: queue,
                 halationStrength: glow ? 0 : strength,
                 glowStrength: glow ? strength : 0,
@@ -291,10 +374,11 @@ struct SpatialEffectsTests {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
-        let (graded, source) = try Self.makeTextures(device: device)
+        let (graded, input, source) = try Self.makeTextures(device: device)
 
         let output = try #require(stage.apply(
             graded: graded,
+            input: input,
             commandQueue: queue,
             halationStrength: 0,
             glowStrength: 0,
@@ -324,9 +408,10 @@ struct SpatialEffectsTests {
         let sourceLevel = 0.05
 
         func measure(radiusFraction: Float, tint: SIMD3<Float>) throws -> (far: ChannelMeans, near: ChannelMeans) {
-            let (graded, _) = try Self.makeTextures(device: device)
+            let (graded, input, _) = try Self.makeTextures(device: device)
             let output = try #require(stage.apply(
                 graded: graded,
+                input: input,
                 commandQueue: queue,
                 halationStrength: 0.5,
                 glowStrength: 0,
@@ -362,19 +447,28 @@ struct SpatialEffectsTests {
                 "per-stock tint must change halo colour (tight=\(tightRatio), wide=\(wideRatio))")
     }
 
-    /// Ring, not disc: at the centre of a bright highlight the added light must
-    /// be LOWER than in the tail just outside its boundary. The old disc
-    /// compositing (added = blurred mask everywhere) fails this, because the
-    /// centre of the highlight gets the most added light.
+    /// The source brightens and grows, rather than being hollowed into a ring.
+    ///
+    /// This replaces `halationIsARingNotADisc`, which asserted the opposite — that
+    /// the highlight centre receives LESS added light than the tail. That was the
+    /// old implementation's intent: it subtracted the source's own highlight from
+    /// the blurred mask to fake a ring. It is not what halation does. The
+    /// reflected light lands across the source's footprint too, and because that
+    /// energy accumulates and saturates toward white it makes a very bright source
+    /// read as *larger* — the third characteristic of real halation, and the one
+    /// the reference material calls out as missing from other implementations.
+    /// So the centre must gain light, and the added light at the centre must
+    /// exceed the added light in the tail outside it.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func halationIsARingNotADisc() throws {
+    func halationBrightensTheSourceCoreInsteadOfHollowingIt() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
-        let (graded, _) = try Self.makeTextures(device: device)
+        let (graded, input, _) = try Self.makeTextures(device: device)
 
         let output = try #require(stage.apply(
             graded: graded,
+            input: input,
             commandQueue: queue,
             halationStrength: 0.5,
             glowStrength: 0,
@@ -387,18 +481,19 @@ struct SpatialEffectsTests {
 
         let bright: Double = 0.8
         let dark: Double = 0.05
-        // Centre of the bright block (block spans 100..<156): the source's own
-        // highlight lives here, so a ring must add little or nothing on top.
+        // Centre of the bright block (block spans 100..<156).
         let centre = Self.mean(result, columns: 118..<138, rows: 118..<138)
         // Tail hugging the outside of the block's left edge (x=100), dark in the
-        // source — where the reflected light actually lands.
+        // source.
         let tail = Self.mean(result, columns: 70..<99, rows: 110..<146)
 
         let centreAdded = centre.red - bright
         let tailAdded = tail.red - dark
 
-        #expect(tailAdded > 0.01, "the tail outside the highlight must be lit (was \(tailAdded))")
-        #expect(centreAdded < tailAdded,
-                "added light at the highlight centre (\(centreAdded)) must be less than in the tail (\(tailAdded)) — halation must be a ring, not a filled disc")
+        #expect(tailAdded > 0.005, "the tail outside the source must still be lit (was \(tailAdded))")
+        #expect(centreAdded > 0,
+                "the source core must gain light rather than being hollowed out (was \(centreAdded))")
+        #expect(centreAdded > tailAdded,
+                "added light at the source centre (\(centreAdded)) must exceed the tail (\(tailAdded)) — the source grows, it is not a ring")
     }
 }

@@ -516,7 +516,7 @@ final class PipelineRenderer: @unchecked Sendable {
             let height = CVPixelBufferGetHeight(pixelBuffer)
             guard width > 0, height > 0 else { return nil }
 
-            guard let graded = runPass1(
+            guard let pass1 = runPass1(
                 sourcePixelBuffer: pixelBuffer,
                 lut: lut,
                 halationStrength: parameters.halationStrength,
@@ -528,7 +528,8 @@ final class PipelineRenderer: @unchecked Sendable {
 
             guard let spatialStage,
                   let diffused = spatialStage.apply(
-                    graded: graded,
+                    graded: pass1.graded,
+                    input: pass1.source,
                     commandQueue: commandQueue,
                     halationStrength: parameters.halationStrength,
                     glowStrength: parameters.glowStrength,
@@ -901,7 +902,7 @@ final class PipelineRenderer: @unchecked Sendable {
                     evidence = Self.snapshotDecodedBuffer(sourcePixelBuffer)
                 }
                 return outputBuffer.withUnsafeBuffer { destination in
-                    guard let graded = self.runPass1(
+                    guard let pass1 = self.runPass1(
                         sourcePixelBuffer: sourcePixelBuffer,
                         lut: context.lut,
                         halationStrength: config.halationStrength,
@@ -915,7 +916,8 @@ final class PipelineRenderer: @unchecked Sendable {
 
                     guard let spatialStage = self.spatialStage,
                           let diffused = spatialStage.apply(
-                            graded: graded,
+                            graded: pass1.graded,
+                            input: pass1.source,
                             commandQueue: self.commandQueue,
                             halationStrength: config.halationStrength,
                             glowStrength: config.glowStrength,
@@ -1020,6 +1022,11 @@ final class PipelineRenderer: @unchecked Sendable {
     // MARK: - GPU Passes
 
     /// Pass 1: LUT + halation + glow. Returns the intermediate Metal texture.
+    /// Returns BOTH the graded output and the ungraded source texture. Halation
+    /// needs the ungraded frame: it decodes Apple Log 2 to linear scene light,
+    /// and the graded image has already been through the display transform that
+    /// destroys the superwhite separation. The source is backed by the caller's
+    /// pixel buffer, which stays alive for the whole frame.
     private func runPass1(
         sourcePixelBuffer: CVPixelBuffer,
         lut: MTLTexture,
@@ -1028,7 +1035,7 @@ final class PipelineRenderer: @unchecked Sendable {
         outputContrast: Float,
         width: Int,
         height: Int
-    ) -> MTLTexture? {
+    ) -> (graded: MTLTexture, source: MTLTexture)? {
         // Create source texture from CVPixelBuffer via texture cache
         guard let source = makeTexture(from: sourcePixelBuffer, format: .rgba16Float),
               let intermediateTexture = makeIntermediateTexture(width: width, height: height) else {
@@ -1064,7 +1071,8 @@ final class PipelineRenderer: @unchecked Sendable {
         commandBuffer.waitUntilCompleted()
         withExtendedLifetime(source.cvTexture) {}
 
-        return commandBuffer.status == .completed ? intermediateTexture : nil
+        guard commandBuffer.status == .completed else { return nil }
+        return (intermediateTexture, source.texture)
     }
 
     /// Pass 2: grain. Writes result directly into the output pixel buffer.
