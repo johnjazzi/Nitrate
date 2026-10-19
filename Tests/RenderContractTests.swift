@@ -172,7 +172,7 @@ struct RenderContractTests {
         #expect(shippedGrainStocks.allSatisfy { $0.effectiveRecipe.edgeBoostMultiplier == 3 })
         let template = try #require(app.first { $0.stockId == "kodak5219" })
         #expect(template.grainSize == 1.3)
-        #expect(template.effectiveRecipe.version == "5219-current-v10")
+        #expect(template.effectiveRecipe.version == "5219-current-v11")
         #expect(template.effectiveRecipe.grainAlgorithm == RenderRecipe.edgeAmplitudeAlgorithm)
         #expect(template.effectiveRecipe.edgeBoostMultiplier == 3)
         let low = template.overridingISO(250)
@@ -185,21 +185,21 @@ struct RenderContractTests {
         #expect(!template.effectiveRecipe.colorContractVerified)
     }
 
-    @Test func shippedGlowReductionsPreserveHalation() throws {
+    @Test func shippedHalationTuningPreservesGlowGrainAndContrast() throws {
         for path in ["App/Resources/stocks.json", "Resources/stocks.json"] {
             let catalog = try stocks(path)
             let daylight = try #require(catalog.first { $0.stockId == "kodak5207" })
             let tungsten = try #require(catalog.first { $0.stockId == "kodak5219" })
             #expect(daylight.glowStrength == 0.155)
             #expect(tungsten.glowStrength == 0.2325)
-            #expect(daylight.halationStrength == 0.43)
-            #expect(tungsten.halationStrength == 0.43)
+            #expect(daylight.halationStrength == 5)
+            #expect(tungsten.halationStrength == 5)
             #expect(daylight.grainSize == 1.15)
             #expect(tungsten.grainSize == 1.3)
             #expect(daylight.outputContrast == 0.85)
             #expect(tungsten.outputContrast == 0.85)
-            #expect(daylight.effectiveRecipe.version == "5207-current-v5")
-            #expect(tungsten.effectiveRecipe.version == "5219-current-v10")
+            #expect(daylight.effectiveRecipe.version == "5207-current-v6")
+            #expect(tungsten.effectiveRecipe.version == "5219-current-v11")
         }
     }
 
@@ -359,8 +359,8 @@ struct RenderContractTests {
     }
 
     @Test func halationGeometryDecodesPerStock() throws {
-        // Halation geometry is per stock: radius tracks stock speed (faster
-        // emulsion, wider halo) and the tint is a per-stock red-dominant cast.
+        // Geometry stays authored per stock, but both currently use the user's
+        // shared 0.001 spread target. Channel weights remain stock-specific.
         let app = try stocks("App/Resources/stocks.json")
         func radius(_ id: String) throws -> Float {
             try #require(app.first { $0.stockId == id }).halationRadiusFraction
@@ -368,19 +368,25 @@ struct RenderContractTests {
         func tint(_ id: String) throws -> SIMD3<Float> {
             try #require(app.first { $0.stockId == id }).halationTint
         }
-        #expect(try radius("kodak5207") == 0.0055)
-        #expect(try radius("kodak5219") == 0.0065)
-        // Faster stock, wider halo — the values must not all be identical.
-        let slower = try radius("kodak5207")
-        let fastest = try radius("kodak5219")
-        #expect(fastest > slower)
-        #expect(Set(app.map(\.halationRadiusFraction)).count == 2)
+        #expect(try radius("kodak5207") == 0.001)
+        #expect(try radius("kodak5219") == 0.001)
 
         // Published red-dominant range, full-scale red.
         #expect(try tint("kodak5219") == SIMD3(1.0, 0.32, 0.10))
         #expect(try tint("kodak5207") == SIMD3(1.0, 0.28, 0.10))
         #expect(app.allSatisfy { $0.halationTint.x == 1.0 })
         #expect(try tint("kodak5207") != tint("kodak5219"))
+    }
+
+    @Test func halationGainValidationAllowsTheTuningRangeAndRejectsInvalidValues() throws {
+        func config(_ gain: Float) -> FilmStockConfig {
+            FilmStockConfig(stockId: "gain-test", displayName: "Gain test", category: .video,
+                lutName: "test.cube", halationStrength: gain, glowStrength: 0, grainSize: 1, defaultISO: 100)
+        }
+        for gain: Float in [0, 5, 8] { try config(gain).validate() }
+        for gain: Float in [-1, .nan, .infinity, 8.01] {
+            #expect(throws: RenderContractError.self) { try config(gain).validate() }
+        }
     }
 
     @Test func halationGeometryValidationBounds() throws {
