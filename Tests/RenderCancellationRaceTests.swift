@@ -1,3 +1,5 @@
+import CoreMedia
+import CoreVideo
 import Foundation
 import Testing
 
@@ -8,6 +10,9 @@ import Testing
 /// resume it. The render loop therefore races every provider read against an
 /// explicit `CancellationGate` owned by `RenderCancellationHandle`, so a read
 /// that never returns can no longer pin the render task.
+///
+/// The writer append has the same hazard, so the video lane races it too — see
+/// `blockedVideoAppendIsReleasedByCancellation`.
 private enum RaceTestError: Error {
     case boom
 }
@@ -113,4 +118,81 @@ struct RenderCancellationRaceTests {
         handle.cancel()
         #expect(handle.cancellationGate.isSignalled)
     }
+
+    /// (g) THE VIDEO-APPEND SEAM. The receiver's `append(_:with:)` takes a
+    /// `CVReadOnlyPixelBuffer` — a `Sendable` reference — so a cancel landing
+    /// while the append waits on writer backpressure must release the racing
+    /// caller promptly. This is the exact shape `PipelineRenderer.renderFrame`
+    /// uses: a real read-only pixel buffer crosses into the raced task beside a
+    /// non-`Sendable` receiver box. The old code treated this as impossible
+    /// because the output buffer is move-only; the move-only buffer is consumed
+    /// into the `Sendable` read-only view *before* it is boxed, so nothing
+    /// move-only ever crosses the boundary.
+    @Test(.timeLimit(.minutes(1)))
+    func blockedVideoAppendIsReleasedByCancellation() async throws {
+        let gate = CancellationGate()
+        let receiver = BlockingPixelBufferReceiver()
+        let buffer = try #require(makeReadOnlyPixelBuffer())
+        let inputs = RacedInputs((receiver: receiver, buffer: buffer, time: CMTime.zero))
+        let started = ContinuousClock.now
+
+        let call = Task { () -> Error? in
+            do {
+                try await raceAgainstCancellation(gate: gate) {
+                    let inputs = inputs.value
+                    try await inputs.receiver.append(inputs.buffer, with: inputs.time)
+                }
+                return nil
+            } catch {
+                return error
+            }
+        }
+
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !receiver.appendEntered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(receiver.appendEntered, "the append was never entered")
+        gate.signal()
+
+        let error = await call.value
+        #expect(error is CancellationError, "expected CancellationError, got \(String(describing: error))")
+        #expect(ContinuousClock.now - started < .seconds(10),
+                "the raced append was not released promptly after the gate was signalled")
+    }
+}
+
+/// Test double for `AVAssetWriterInput.PixelBufferReceiver.append`: records that
+/// it was entered, then parks until the racing task cancels it — the writer
+/// backpressure a cancelled writer never releases.
+private final class BlockingPixelBufferReceiver: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entered = false
+
+    var appendEntered: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return entered
+    }
+
+    private func markEntered() {
+        lock.lock()
+        entered = true
+        lock.unlock()
+    }
+
+    func append(_ buffer: CVReadOnlyPixelBuffer, with time: CMTime) async throws {
+        markEntered()
+        try await Task.sleep(for: .seconds(3600))
+    }
+}
+
+/// A real (empty) read-only pixel buffer — the `Sendable` value the receiver's
+/// append takes. Built from a genuine `CVPixelBuffer`, not synthesised data.
+private func makeReadOnlyPixelBuffer() -> CVReadOnlyPixelBuffer? {
+    var pixelBuffer: CVPixelBuffer?
+    guard CVPixelBufferCreate(kCFAllocatorDefault, 4, 4, kCVPixelFormatType_32BGRA,
+                              nil, &pixelBuffer) == kCVReturnSuccess,
+          let pixelBuffer else { return nil }
+    return CVReadOnlyPixelBuffer(CVMutablePixelBuffer(unsafeBuffer: pixelBuffer))
 }

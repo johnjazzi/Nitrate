@@ -31,6 +31,12 @@ final class PipelineRenderer: @unchecked Sendable {
     private let audioAppendRejectionAfterSamples: Int?
     private let outputDirectory: URL?
     private let allowsSyntheticInputForTests: Bool
+    /// Test-only: when set, the video lane performs this instead of the
+    /// receiver's real `append`. A test uses it to hold an append open forever
+    /// — the writer backpressure a cancelled writer never releases — and prove
+    /// that the raced append still releases the frame loop. Production leaves
+    /// it nil, so the real append runs unchanged.
+    private let videoAppendOverride: (@Sendable (CVReadOnlyPixelBuffer, CMTime) async throws -> Void)?
 
     // Cached pipeline states
     private var pass1Pipeline: MTLComputePipelineState?
@@ -51,13 +57,15 @@ final class PipelineRenderer: @unchecked Sendable {
         renderFailureAfterFrames: UInt32? = nil,
         audioAppendRejectionAfterSamples: Int? = nil,
         outputDirectory: URL? = nil,
-        allowsSyntheticInputForTests: Bool = false
+        allowsSyntheticInputForTests: Bool = false,
+        videoAppendOverride: (@Sendable (CVReadOnlyPixelBuffer, CMTime) async throws -> Void)? = nil
     ) throws {
         self.resourceBundle = resourceBundle
         self.renderFailureAfterFrames = renderFailureAfterFrames
         self.audioAppendRejectionAfterSamples = audioAppendRejectionAfterSamples
         self.outputDirectory = outputDirectory
         self.allowsSyntheticInputForTests = allowsSyntheticInputForTests
+        self.videoAppendOverride = videoAppendOverride
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw RenderError.noMetalDevice
         }
@@ -1007,22 +1015,38 @@ final class PipelineRenderer: @unchecked Sendable {
 
         // A cancelled writer does NOT resume a pending append: a hosted run
         // entered this append after cancel() and it never returned, so the
-        // render task was pinned exactly as the wedged read used to pin it. Two
-        // guards: never start an append on a writer already asked to cancel, and
-        // race the append itself so a cancel landing mid-append cannot hang.
+        // render task was pinned exactly as the wedged read used to pin it.
+        // Two guards: never start an append on a writer already asked to
+        // cancel, and race the append itself so a cancel landing mid-append
+        // cannot hang.
         let appendGate = context.cancellationHandle.cancellationGate
         if appendGate.isSignalled || Task.isCancelled {
             throw CancellationError()
         }
-        // The append itself is deliberately NOT raced: the output buffer is a
-        // move-only `CVMutablePixelBuffer`, so it cannot be parked in an
-        // `@unchecked Sendable` box and transferred into a raced task. The guard
-        // above closes the failure we actually observed (cancellation arriving
-        // during the GPU work, i.e. before the append starts). A cancel landing
-        // while an append is already waiting on writer backpressure is a residual
-        // risk this guard does not cover.
+        // The append is raced exactly like the audio lane's, and the "the
+        // buffer is move-only so it cannot cross into a raced task" claim was
+        // wrong: the receiver's `append(_:with:)` takes a `CVReadOnlyPixelBuffer`
+        // — a `Sendable` reference type — and the move-only `CVMutablePixelBuffer`
+        // is consumed into it *before* the box is built, so the mutable buffer
+        // itself never crosses a task boundary. Only the reused, non-`Sendable`
+        // receiver needs the unchecked box, the same shape `copyAudioSamples`
+        // already relies on. A cancel landing while the append waits on writer
+        // backpressure now abandons the append (which keeps the buffer alive
+        // until that call ever settles) instead of pinning the frame loop.
+        let appendInputs = RacedInputs((receiver: receiver,
+                                        buffer: CVReadOnlyPixelBuffer(outputBuffer),
+                                        time: sample.presentationTimeStamp))
         do {
-            try await receiver.append(CVReadOnlyPixelBuffer(outputBuffer), with: sample.presentationTimeStamp)
+            try await raceAgainstCancellation(gate: appendGate) {
+                let inputs = appendInputs.value
+                if let override = self.videoAppendOverride {
+                    try await override(inputs.buffer, inputs.time)
+                } else {
+                    try await inputs.receiver.append(inputs.buffer, with: inputs.time)
+                }
+            }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             if Task.isCancelled || context.cancellationHandle.writerStatus == .cancelled {
                 throw CancellationError()
