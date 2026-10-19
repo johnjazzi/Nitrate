@@ -91,6 +91,10 @@ func raceAgainstCancellation(
     gate: CancellationGate,
     operation: @escaping @Sendable () async throws -> Void
 ) async throws {
+    // Nothing to race: once the gate is signalled a read must not start at all,
+    // otherwise it would touch a provider whose reader is already being torn down.
+    if gate.isSignalled { throw CancellationError() }
+
     let relay = RaceRelay()
 
     let operationTask = Task {
@@ -112,7 +116,12 @@ func raceAgainstCancellation(
         gateWatcher.cancel()
     } catch {
         // The gate won (or the operation failed). Abandon the operation task
-        // rather than joining it: a wedged provider read never returns.
+        // rather than joining it: a wedged provider read never returns, so
+        // joining would reintroduce the hang this race exists to prevent. The
+        // abandoned task keeps the provider — and therefore the AVAssetReader
+        // that owns it — alive until that `next()` ever resumes, which may be
+        // never. That is the deliberate trade-off: a reader is NOT torn down at
+        // cancel() time, only released when the abandoned read finally settles.
         operationTask.cancel()
         throw error
     }

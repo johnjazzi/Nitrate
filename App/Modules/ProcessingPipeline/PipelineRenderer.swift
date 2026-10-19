@@ -1404,10 +1404,18 @@ private final class AudioCopyResultBox: @unchecked Sendable {
 }
 
 /// Carries a non-`Sendable` `AVAssetReaderOutput.Provider` into the task that
-/// performs a raced read. The provider is read by one task at a time and the
-/// caller does not touch it while a race is in flight, so unchecked
-/// sendability is sound here — and it avoids transferring (and thus consuming)
-/// the provider, which the loops reuse across iterations.
+/// performs a raced read.
+///
+/// The unchecked sendability is sound **only** because of an invariant the call
+/// sites must keep: *a lane never issues a new read after abandoning one*. Every
+/// loop terminates on a race loss — the video frame loop breaks, the audio copy
+/// lane throws out of its loop — so a stale abandoned `next()` can never run
+/// concurrently with a new read on the same provider. Retrying a read after a
+/// gate win would silently turn this into a real data race on a non-`Sendable`
+/// type. Keep that invariant if you change either loop.
+///
+/// Boxing (rather than transferring) the provider also matters: the loops reuse
+/// it across iterations, so it cannot be consumed via `sending`.
 final class ReadProviderBox: @unchecked Sendable {
     let provider: ReadySampleProvider
 
