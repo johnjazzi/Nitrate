@@ -187,26 +187,36 @@ kernel void spatial_halation_mask(
         return;
     }
 
-    // 2x2 box average of the full-res source into this half-res texel, averaged
-    // in the ENCODED domain: the decode is per-texel, and averaging decoded
-    // linear values across a 2x2 would over-weight a single specular.
+    // 2x2 box average of the full-res source into this half-res texel. Each
+    // sample is decoded to linear light FIRST, then the linear energies are
+    // averaged. Apple Log is a nonlinear encoding, so averaging the code values
+    // and decoding once (the previous behaviour) collapses a subpixel specular
+    // into the mean of its surround instead of preserving its energy — a 9x
+    // pixel next to three 18% pixels would fall below red's knee entirely.
+    // Only samples that actually fall inside the source are counted, so a mask
+    // texel on an odd-sized frame averages the pixels that exist rather than
+    // always dividing by four.
     float3 sum = float3(0.0f);
+    uint valid = 0;
     for (uint dy = 0; dy < 2; ++dy) {
         for (uint dx = 0; dx < 2; ++dx) {
             uint2 src = gid * 2 + uint2(dx, dy);
             if (src.x < input.get_width() && src.y < input.get_height()) {
-                sum += input.read(src).rgb;
+                float3 encoded = input.read(src).rgb;
+                sum += float3(apple_log_decode(encoded.r),
+                              apple_log_decode(encoded.g),
+                              apple_log_decode(encoded.b));
+                valid += 1;
             }
         }
     }
-    float3 encoded = sum * 0.25f;
-
-    float3 linear = float3(apple_log_decode(encoded.r),
-                           apple_log_decode(encoded.g),
-                           apple_log_decode(encoded.b));
+    float3 linear = sum / max(float(valid), 1.0f);
 
     // Per-layer response. `max(0, linear - knee)` is continuous and grows with
     // intensity, so a brighter source bleeds further and reaches more layers.
+    // The knee ordering is explicit and fixed — red (least scattered light,
+    // clears first), then green, then blue — and must never be permuted: it is
+    // what makes a faint halo read red and a bright one read white.
     float3 energy = max(float3(0.0f),
                         linear - float3(redKnee, greenKnee, blueKnee));
 
@@ -247,10 +257,13 @@ kernel void spatial_halation_composite(
 
     // Each layer is diffused at its own radius, so each keeps its own reach:
     // red is the widest and therefore the only one still present in the far
-    // tail, which is what makes a faint halo read red.
+    // tail, which is what makes a faint halo read red. Each layer's OWN channel
+    // is read — the mask carries a distinct per-layer energy in rgb, so sampling
+    // `.r` from all three would feed red's energy into the green and blue layers
+    // and let an all-red source masquerade as full RGB.
     float3 diffusion = float3(red.sample(spatial_linear_sampler, uv).r,
-                              green.sample(spatial_linear_sampler, uv).r,
-                              blue.sample(spatial_linear_sampler, uv).r);
+                              green.sample(spatial_linear_sampler, uv).g,
+                              blue.sample(spatial_linear_sampler, uv).b);
 
     // Normalize by the superwhite level that should reach full contribution, so
     // an 11x excess does not swamp the graded image. `layerScale` weights each
