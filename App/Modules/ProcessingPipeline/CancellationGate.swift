@@ -184,3 +184,15 @@ final class SampleBox<T>: @unchecked Sendable {
         return stored
     }
 }
+
+/// Carries the non-`Sendable` inputs of a raced call into the task that performs
+/// it. Same unchecked-sendability contract as `ReadProviderBox`: a lane never
+/// issues a new call after abandoning one, so only one call touches the receiver
+/// or provider at a time.
+final class RacedInputs<T>: @unchecked Sendable {
+    let value: T
+
+    init(_ value: T) {
+        self.value = value
+    }
+}

@@ -1005,6 +1005,22 @@ final class PipelineRenderer: @unchecked Sendable {
         }
         try outcome.get()
 
+        // A cancelled writer does NOT resume a pending append: a hosted run
+        // entered this append after cancel() and it never returned, so the
+        // render task was pinned exactly as the wedged read used to pin it. Two
+        // guards: never start an append on a writer already asked to cancel, and
+        // race the append itself so a cancel landing mid-append cannot hang.
+        let appendGate = context.cancellationHandle.cancellationGate
+        if appendGate.isSignalled || Task.isCancelled {
+            throw CancellationError()
+        }
+        // The append itself is deliberately NOT raced: the output buffer is a
+        // move-only `CVMutablePixelBuffer`, so it cannot be parked in an
+        // `@unchecked Sendable` box and transferred into a raced task. The guard
+        // above closes the failure we actually observed (cancellation arriving
+        // during the GPU work, i.e. before the append starts). A cancel landing
+        // while an append is already waiting on writer backpressure is a residual
+        // risk this guard does not cover.
         do {
             try await receiver.append(CVReadOnlyPixelBuffer(outputBuffer), with: sample.presentationTimeStamp)
         } catch {
@@ -1060,11 +1076,22 @@ final class PipelineRenderer: @unchecked Sendable {
                     sampleBox.set(try await audioProviderBox.provider.next())
                 }
                 guard let sample = sampleBox.value.flatMap({ $0 }) else { break }
-                if Task.isCancelled { throw CancellationError() }
+                // This lane is an unstructured task, so it does NOT inherit
+                // cancellation: `Task.isCancelled` is always false here and the
+                // gate is the only signal that can stop it.
+                if cancellationHandle.cancellationGate.isSignalled {
+                    throw CancellationError()
+                }
                 if let audioAppendRejectionAfterSamples, appendedSamples >= audioAppendRejectionAfterSamples {
                     throw RenderError.stageFailed("audio-append", "Synthetic audio append rejection.")
                 }
-                try await audioReceiver.append(sample)
+                // Same writer-append hazard as the video lane: race it against
+                // the gate so a cancelled writer cannot pin the audio lane and,
+                // through `await audioCopy.value`, the whole render.
+                let audioAppendInputs = RacedInputs((receiver: audioReceiver, sample: sample))
+                try await raceAgainstCancellation(gate: cancellationHandle.cancellationGate) {
+                    try await audioAppendInputs.value.receiver.append(audioAppendInputs.value.sample)
+                }
                 appendedSamples += 1
             }
             switch cancellationHandle.audioReaderStatus {
