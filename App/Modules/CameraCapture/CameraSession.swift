@@ -2173,9 +2173,17 @@ final class CameraSession: NSObject, @unchecked Sendable {
             connection.isEnabled = true
             self.debugFrameTap.request { [weak self] buffer in
                 guard let self else { return }
+                // The frame crosses to sessionQueue in the same documented box
+                // the other debug hops use; the connection is re-read from the
+                // output on that queue instead of capturing the live object.
+                let transferred = SendablePixelBuffer(buffer: buffer)
                 self.sessionQueue.async {
                     guard request.finish() else { return }
-                    connection.isEnabled = false
+                    self.debugFrameOutput.connection(with: .video)?.isEnabled = false
+                    guard let buffer = transferred.buffer else {
+                        completion(nil)
+                        return
+                    }
                     let converted = DebugFrameConverter.rgbaHalfBuffer(from: buffer)
                     if let converted {
                         // The tap can fall back to its advertised format, which
