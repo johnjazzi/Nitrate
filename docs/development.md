@@ -120,6 +120,34 @@ PR-based merges. An earlier pass against an old base does not validate the next
 release version after another PR merges. Do not require the post-merge Cloud
 archive to pass on PRs: it runs only after main changes.
 
+## Automated build and test checks
+
+`.github/workflows/xcode.yml` runs **Xcode build and tests** on pull requests to
+main, on main pushes, and on manual dispatch. It uses GitHub's `xcode-27` macOS
+image, installs the downloadable Metal toolchain that hosted macOS images do
+not ship (shader compilation otherwise fails with `cannot execute tool
+'metal'`), reports the selected SDK and Metal device, installs the
+checksum-pinned XcodeGen/SwiftLint tools through the existing Cloud bootstrap,
+and runs `python3 scripts/verify.py verify`. This covers lint, Python
+policy/bootstrap checks, the macOS RenderCLI test suite, and an unsigned
+generic iOS build. No
+Apple signing credentials or Photos permissions are needed. Verification logs
+are retained as an Actions artifact for one day. The workflow reads the actual
+`.xcresult` bundle to publish passed, failed, and skipped counts in the run
+summary and fails if no successful nonempty test run was produced. A skipped
+hardware-dependent test is not proof that its rendering behavior passed.
+
+After the first successful run, require **Xcode build and tests** alongside
+**Release version gate** in main's branch protection. Keep the strict
+up-to-date requirement. A main-only Cloud archive cannot serve as a pre-merge
+check. Physical iPhone checks remain necessary for camera, permissions,
+Photos handoff, thermal behavior, and real rendering performance.
+
+The PR check and Xcode Cloud are separate: GitHub Actions provides the
+pre-merge build/test gate; Cloud handles the signed main-branch archive and
+TestFlight delivery. Neither a green unsigned build nor a green archive alone
+establishes end-to-end device behavior or successful TestFlight delivery.
+
 ## Cloud distribution
 
 The intended path is:
