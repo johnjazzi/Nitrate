@@ -99,7 +99,7 @@ def verification_diagnostics_path(logfile: Path) -> Path:
 
 
 def verification_sample_path(logfile: Path, pid: int) -> Path:
-    return logfile.with_name(f"{logfile.stem}-sample-{pid}.txt")
+    return logfile.with_name(f"{logfile.stem}-{pid}.sample.txt")
 
 
 def acquire_lock(path: Path):
@@ -127,7 +127,7 @@ def _emit(output, lock: threading.Lock, text: str) -> None:
         sys.stdout.flush()
 
 
-def _process_group_members(pgid: int) -> list[tuple[int, int, str]]:
+def _process_group_members(pgid: int | None) -> list[tuple[int, int, str]]:
     """Bounded `ps` snapshot of the process group; never blocks the watchdog."""
     try:
         listing = subprocess.run(
@@ -143,11 +143,11 @@ def _process_group_members(pgid: int) -> list[tuple[int, int, str]]:
             continue
         pid, ppid, group, stat, etime, command = parts
         try:
-            if int(group) != pgid:
+            if pgid is not None and int(group) != pgid:
                 continue
         except ValueError:
             continue
-        members.append((int(pid), int(ppid), f"pid={pid} ppid={ppid} stat={stat} etime={etime} {command}"))
+        members.append((int(pid), int(ppid), f"pid={pid} ppid={ppid} pgid={group} stat={stat} etime={etime} {command}"))
     return members
 
 
@@ -195,11 +195,10 @@ def _capture_and_stop(label: str, process: subprocess.Popen, logfile: Path,
                       output, lock: threading.Lock, timeout: float) -> int:
     _emit(output, lock, f"\n[verify watchdog] {label} exceeded {timeout:g}s; collecting diagnostics.\n")
     diagnostics = verification_diagnostics_path(logfile)
-    try:
-        pgid = os.getpgid(process.pid)
-    except ProcessLookupError:
-        pgid = None
-    members = _process_group_members(pgid) if pgid is not None else []
+    # Popen(start_new_session=True) makes this PID the owned process-group ID.
+    # Keep it even if the leader has exited: descendants may still own stdout.
+    pgid = process.pid
+    members = _process_group_members(pgid)
 
     lines = [
         f"label: {label}",
@@ -208,41 +207,51 @@ def _capture_and_stop(label: str, process: subprocess.Popen, logfile: Path,
         f"process_tree ({len(members)} process(es)):",
     ]
     lines += [f"  {description}" for _pid, _ppid, description in members] or ["  (none observed)"]
-    if pgid is not None:
-        lines += _capture_samples(logfile, members, process.pid)
+    # Xcode can ask launchd to start xctest outside its own group. Read-only
+    # diagnostics may inspect it, but termination below stays within our group.
+    snapshot = _process_group_members(None)
+    lines += ["system process snapshot (executable names only):"]
+    lines += [f"  {description}" for _pid, _ppid, description in snapshot]
+    lines += _capture_samples(logfile, snapshot, process.pid)
     diagnostics.write_text("\n".join(lines) + "\n")
     _emit(output, lock, f"[verify watchdog] diagnostics written to {diagnostics.name}\n")
 
-    stopped = False
-    if pgid is not None and pgid != os.getpgrp():
+    def group_exists() -> bool:
+        # On macOS, killpg(group, 0) can report EPERM for a dying group.
+        # Inspect the bounded process snapshot instead; zombies hold no pipes.
+        process.poll()
+        return any("stat=Z" not in description
+                   for _pid, _ppid, description in _process_group_members(pgid))
+
+    if pgid != os.getpgrp():
         _emit(output, lock, f"[verify watchdog] sending SIGTERM to process group {pgid}\n")
         try:
             os.killpg(pgid, signal.SIGTERM)
         except ProcessLookupError:
-            stopped = True
-        try:
-            process.wait(timeout=TERMINATE_GRACE_SECONDS)
-            stopped = True
-        except subprocess.TimeoutExpired:
+            pass
+        deadline = time.monotonic() + TERMINATE_GRACE_SECONDS
+        while group_exists() and time.monotonic() < deadline:
+            # Reap the leader, but do not confuse its exit with all children exiting.
+            process.poll()
+            time.sleep(0.05)
+        if group_exists():
             _emit(output, lock, f"[verify watchdog] sending SIGKILL to process group {pgid}\n")
             try:
                 os.killpg(pgid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-    elif pgid is not None:
-        # Refuse to signal our own group; fall back to the single child.
+    elif process.poll() is None:
         process.kill()
-    if not stopped and process.poll() is None:
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
         _emit(output, lock, "[verify watchdog] process did not exit after SIGKILL\n")
     return TIMEOUT_EXIT_CODE
 
 
 def _run_streaming(label: str, args: list[str], logfile: Path, timeout: float | None) -> tuple[int, bool]:
     timed_out = False
+    deadline = time.monotonic() + timeout if timeout and timeout > 0 else None
     lock = threading.Lock()
     with logfile.open("w", encoding="utf-8") as output:
         try:
@@ -262,16 +271,23 @@ def _run_streaming(label: str, args: list[str], logfile: Path, timeout: float | 
 
         reader = threading.Thread(target=pump, name=f"{label}-output", daemon=True)
         reader.start()
-        wait_timeout = timeout if timeout and timeout > 0 else None
+        wait_timeout = max(0, deadline - time.monotonic()) if deadline is not None else None
         try:
             code = process.wait(timeout=wait_timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
             code = _capture_and_stop(label, process, logfile, output, lock, timeout or 0.0)
-        reader.join(timeout=10)
+        drain_timeout = max(0, deadline - time.monotonic()) if deadline is not None and not timed_out else 10
+        reader.join(timeout=drain_timeout)
+        if reader.is_alive() and not timed_out:
+            timed_out = True
+            code = _capture_and_stop(label, process, logfile, output, lock, timeout or 0.0)
+            reader.join(timeout=5)
         if reader.is_alive():
             _emit(output, lock, "[verify watchdog] output reader did not stop after process exit\n")
-        if process.stdout is not None:
+        elif process.stdout is not None:
+            # TextIO.close can wait on a reader's lock; never call it while the
+            # pump still owns a read from an inherited stdout pipe.
             process.stdout.close()
     return code, timed_out
 

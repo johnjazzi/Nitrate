@@ -70,6 +70,28 @@ class VerifyCommandTests(unittest.TestCase):
         self.assertIn("first-line", log)
         self.assertIn("second-line", log)
 
+    def test_streams_before_the_child_exits(self):
+        acknowledgement = self.root / "stream-observed"
+        script = (
+            "import pathlib,time\n"
+            "print('EARLY_READY', flush=True)\n"
+            f"ack = pathlib.Path({str(acknowledgement)!r})\n"
+            "deadline = time.monotonic() + 2\n"
+            "while not ack.exists() and time.monotonic() < deadline: time.sleep(0.01)\n"
+            "raise SystemExit(0 if ack.exists() else 6)\n"
+        )
+
+        class ObservedStream(io.StringIO):
+            def write(self, text):
+                if text == "EARLY_READY\n":
+                    acknowledgement.write_text("received while child is running")
+                return super().write(text)
+
+        with contextlib.redirect_stdout(ObservedStream()):
+            result = verify.execute("live-stream-test", [sys.executable, "-c", script], kind="test")
+        self.assertTrue(result.ok, "The child waits for its output to be streamed before exiting")
+        self.assertTrue(acknowledgement.exists())
+
     def test_propagates_exact_nonzero_exit_status(self):
         result = verify.execute("exit-test", [sys.executable, "-c", "raise SystemExit(7)"], kind="test")
         self.assertEqual(result.exit_code, 7)
@@ -109,6 +131,41 @@ class VerifyCommandTests(unittest.TestCase):
             time.sleep(0.05)
         # The test's own process must be intact: only the new group is signalled.
         os.kill(os.getpid(), 0)
+
+    def test_timeout_kills_stubborn_child_even_after_group_leader_exits(self):
+        pidfile = self.root / "stubborn.pid"
+        child_code = "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(3)"
+        script = (
+            "import subprocess,sys,time\n"
+            f"child = subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
+            f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+            "time.sleep(30)\n"
+        )
+        started = time.monotonic()
+        with mock.patch.object(verify, "TERMINATE_GRACE_SECONDS", 0.2):
+            result = verify.execute("stubborn-test", [sys.executable, "-c", script], timeout=0.5, kind="test")
+        self.assertTrue(result.timed_out)
+        self.assertFalse(result.ok)
+        self.assertLess(time.monotonic() - started, 2,
+                        "The leader exiting must not skip SIGKILL of surviving group members")
+
+    def test_child_holding_stdout_cannot_outlive_the_command_deadline(self):
+        script = (
+            "import subprocess,sys\n"
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3)'])\n"
+        )
+        started = time.monotonic()
+        with mock.patch.object(verify, "TERMINATE_GRACE_SECONDS", 0.2):
+            result = verify.execute("orphan-output-test", [sys.executable, "-c", script], timeout=0.5)
+        self.assertTrue(result.timed_out, "The deadline includes descendants keeping the output pipe open")
+        self.assertFalse(result.ok)
+        self.assertLess(time.monotonic() - started, 2)
+
+    def test_stack_sample_filename_matches_the_artifact_upload_glob(self):
+        import fnmatch
+        sample = verify.verification_sample_path(Path("test.log"), 123)
+        self.assertTrue(fnmatch.fnmatch(sample.name, "*.sample.txt"),
+                        "Captured samples must match the workflow's artifact pattern")
 
     def test_timeout_retains_bounded_diagnostics_evidence(self):
         result = verify.execute("evidence-test", [sys.executable, "-c", "import time; time.sleep(30)"],
