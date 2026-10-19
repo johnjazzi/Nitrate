@@ -3,6 +3,22 @@ import Testing
 import AVFoundation
 
 struct RenderContractTests {
+    @Test func consumerMetadataUsesConciseNitrateCaption() throws {
+        let stock = FilmStockConfig(stockId: "test", displayName: "Kodak 5219", category: .video,
+            lutName: "test.cube", halationStrength: 0, glowStrength: 0, grainSize: 1, defaultISO: 600)
+        for gauge in PrintGauge.allCases {
+            let config = stock.overridingGauge(gauge)
+            let items = try RenderMovieMetadata.make(config: config, bitrate: 80_000_000)
+            let caption = "nitrate: Kodak 5219 | \(gauge.rawValue)"
+            for key in [AVMetadataKey.commonKeyTitle, .commonKeyDescription] {
+                let item = try #require(items.first { $0.commonKey == key })
+                #expect(item.value as? String == caption)
+            }
+            #expect(items.first { ($0.key as? String) == "com.filmemulation.iso" }?.value as? String == "600")
+            #expect(items.first { ($0.key as? String) == "com.filmemulation.print-gauge" }?.value as? String == gauge.rawValue)
+        }
+    }
+
     @Test func sourceColorContractRequiresAppleLog2Identifier() throws {
         func evidence(primaries: String? = nil, transfer: String? = nil,
                       matrix: String? = AVVideoYCbCrMatrix_ITU_R_2020 as String) -> RenderInputColorProvenance.FormatEvidence {

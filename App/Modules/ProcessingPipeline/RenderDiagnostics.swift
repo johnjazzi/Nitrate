@@ -291,7 +291,8 @@ enum RenderDiagnostics {
 /// Portable export evidence; selected render ISO is not a measurement of capture ISO.
 enum RenderMovieMetadata {
     static func make(config: FilmStockConfig, bitrate: Int = RenderEncodingContract.averageBitRate,
-                     sourceColorProvenance: RenderInputColorProvenance? = nil) throws -> [AVMetadataItem] {
+                     sourceColorProvenance: RenderInputColorProvenance? = nil,
+                     orientation: RenderDeliveryOrientation? = nil) throws -> [AVMetadataItem] {
         try config.validate()
         let snapshot = RenderDiagnosticsManifest.RecipeSnapshot(config: config,
             averageBitRate: bitrate, codec: RenderEncodingContract.codec,
@@ -335,10 +336,15 @@ enum RenderMovieMetadata {
             item.dataType = kCMMetadataBaseDataType_UTF8 as String
             return item
         }
-        // Human-readable fields shown by Finder Get Info and QuickTime Movie Inspector (⌘I);
-        // the custom com.filmemulation.* keys above are invisible in consumer apps.
-        items.append(Self.commonItem(key: AVMetadataKey.commonKeyTitle.rawValue, value: config.displayName))
-        items.append(Self.commonItem(key: AVMetadataKey.commonKeyDescription.rawValue, value: Self.humanReadableSummary(config, bitrate: bitrate)))
+        // Consumer-visible fields, shown by Photos, Finder Get Info and QuickTime
+        // Movie Inspector (⌘I). Kept to the single short tag on purpose: the
+        // detailed recipe lives in the render-settings JSON instead of a caption
+        // that exposes every effect value to the photo library.
+        let caption = RenderConsumerMetadata.caption(stockName: config.displayName,
+                                                     gauge: config.effectivePrintGauge.rawValue)
+        items.append(Self.commonItem(key: AVMetadataKey.commonKeyTitle.rawValue, value: caption))
+        items.append(Self.commonItem(key: AVMetadataKey.commonKeyDescription.rawValue, value: caption))
+        items.append(Self.keywordsItem(RenderConsumerMetadata.keywordsValue(orientation: orientation)))
         return items
     }
 
@@ -351,12 +357,14 @@ enum RenderMovieMetadata {
         return item
     }
 
-    private static func humanReadableSummary(_ config: FilmStockConfig, bitrate: Int) -> String {
-        "ISO \(Int(config.defaultISO)) · 180° shutter · halation \(config.halationStrength) "
-            + "(r \(config.halationRadiusFraction), tint \(config.halationTint.x)/\(config.halationTint.y)/\(config.halationTint.z)) · "
-            + "glow \(config.glowStrength) · "
-            + "grain \(config.grainSize) @ \(config.effectivePrintGauge.rawValue) · "
-            + "\(RenderEncodingContract.codec) @ \(bitrate / 1_000_000) Mbps"
+    /// Standard QuickTime keyword list, read by consumer apps and photo tools.
+    private static func keywordsItem(_ value: String) -> AVMutableMetadataItem {
+        let item = AVMutableMetadataItem()
+        item.keySpace = .quickTimeMetadata
+        item.key = AVMetadataKey.quickTimeMetadataKeyKeywords.rawValue as NSString
+        item.value = value as NSString
+        item.dataType = kCMMetadataBaseDataType_UTF8 as String
+        return item
     }
 }
 

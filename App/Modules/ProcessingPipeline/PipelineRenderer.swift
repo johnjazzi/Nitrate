@@ -136,6 +136,10 @@ final class PipelineRenderer: @unchecked Sendable {
 
         let renderWidth = naturalSize.width
         let renderHeight = naturalSize.height
+        // What Photos shows for the delivered clip: the encoded size with the
+        // delivery transform applied, not the sensor shape.
+        let deliveryOrientation = RenderDeliveryOrientation.from(naturalSize: naturalSize,
+                                                                 preferredTransform: preferredTransform)
 
         // Use naturalSize everywhere — encoded dimensions, never swapped.
         // Rotation is preserved via writerInput.transform below.
@@ -236,7 +240,8 @@ final class PipelineRenderer: @unchecked Sendable {
         }
         writer.add(writerInput)
         writer.metadata = try RenderMovieMetadata.make(
-            config: config, bitrate: bitrate, sourceColorProvenance: sourceColorProvenance
+            config: config, bitrate: bitrate, sourceColorProvenance: sourceColorProvenance,
+            orientation: deliveryOrientation
         )
 
         // Audio passthrough writer input

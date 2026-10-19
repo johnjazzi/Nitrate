@@ -20,6 +20,11 @@ enum AppVersion {
     static let fallbackMarketing = "0.0.0"
     static let fallbackBuild = "0"
 
+    /// The stage suffix shown by the splash and Settings → About. TestFlight
+    /// builds are `.beta`; set this to `nil` for an App Store release. Both
+    /// surfaces read this value, so they cannot disagree.
+    static let stage: Stage? = .beta
+
     static func marketing(bundle: Bundle = .main) -> String {
         string(forKey: "CFBundleShortVersionString", in: bundle) ?? fallbackMarketing
     }
@@ -28,14 +33,14 @@ enum AppVersion {
         string(forKey: "CFBundleVersion", in: bundle) ?? fallbackBuild
     }
 
-    /// `0.1.0 (1) · ALPHA`
+    /// `0.1.3 (3) · BETA`
     static func display(marketing: String, build: String, stage: Stage?) -> String {
         let base = "\(marketing) (\(build))"
         guard let stage else { return base }
         return "\(base) · \(stage.rawValue.uppercased())"
     }
 
-    static func current(stage: Stage? = .alpha, bundle: Bundle = .main) -> String {
+    static func current(bundle: Bundle = .main) -> String {
         display(marketing: marketing(bundle: bundle), build: build(bundle: bundle), stage: stage)
     }
 
