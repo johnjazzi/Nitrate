@@ -19,7 +19,7 @@ jobs:
     name: Xcode build and tests
     # Explicit Xcode 27 image: the app's deployment target is iOS 27.
     runs-on: xcode-27
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out source
         # Official actions/checkout v4.3.1, matching the release-version gate.
@@ -35,6 +35,15 @@ jobs:
         run: |
           sh ci_scripts/ci_post_clone.sh
           printf '%s\n' "$GITHUB_WORKSPACE/build/ci-tools/xcodegen-2.46.0/xcodegen/bin" "$GITHUB_WORKSPACE/build/ci-tools/swiftlint-0.65.1" >> "$GITHUB_PATH"
+      - name: Install the Metal toolchain
+        run: |
+          # Hosted macOS images ship Xcode without the downloadable Metal
+          # toolchain; shader compilation fails with "cannot execute tool
+          # 'metal'" until it is installed.
+          if ! xcodebuild -downloadComponent MetalToolchain; then
+            printf 'MetalToolchain download did not succeed; verifying whether metal is usable anyway\n' >&2
+          fi
+          xcrun --find metal
       - name: Lint, run tests, and build iOS without signing
         run: python3 scripts/verify.py verify
       - name: Report actual test counts and skips

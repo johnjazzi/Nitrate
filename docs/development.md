@@ -124,10 +124,13 @@ archive to pass on PRs: it runs only after main changes.
 
 `.github/workflows/xcode.yml` runs **Xcode build and tests** on pull requests to
 main, on main pushes, and on manual dispatch. It uses GitHub's `xcode-27` macOS
-image, reports the selected SDK and Metal device, installs the checksum-pinned
-XcodeGen/SwiftLint tools through the existing Cloud bootstrap, and runs
-`python3 scripts/verify.py verify`. This covers lint, Python policy/bootstrap
-checks, the macOS RenderCLI test suite, and an unsigned generic iOS build. No
+image, installs the downloadable Metal toolchain that hosted macOS images do
+not ship (shader compilation otherwise fails with `cannot execute tool
+'metal'`), reports the selected SDK and Metal device, installs the
+checksum-pinned XcodeGen/SwiftLint tools through the existing Cloud bootstrap,
+and runs `python3 scripts/verify.py verify`. This covers lint, Python
+policy/bootstrap checks, the macOS RenderCLI test suite, and an unsigned
+generic iOS build. No
 Apple signing credentials or Photos permissions are needed. Verification logs
 are retained as an Actions artifact for one day. The workflow reads the actual
 `.xcresult` bundle to publish passed, failed, and skipped counts in the run
