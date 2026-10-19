@@ -169,20 +169,22 @@ Rendering is offline, per queued clip, through the same chain as the debug
 single-frame renderer:
 
 ```
-decoded frame → pass 1: LUT + output contrast
-              → spatial: halation + glow
-              → pass 2: grain
-              → HEVC Main10 encode → Photos
+decoded Apple Log 2 → halation: decode → add scattered linear light → re-encode
+                    → pass 1: stock LUT + output contrast
+                    → spatial: glow
+                    → pass 2: grain
+                    → HEVC Main10 encode → Photos
 ```
 
-- **Halation** reads the original Apple Log 2 frame separately from the graded
-  image. It decodes scene-linear light and extracts per-channel energy above
-  highlight thresholds, preserving differences between bright sources that the
-  LUT may map to similar display values. Three half-resolution Gaussian blurs
-  spread red widest, green less, and blue least. Their contributions are added
-  over the graded image, including the source core, rather than subtracting the
-  centre to create a hollow ring. Base radius, strength and channel weights are
-  **per stock**; print gauge does not change halation.
+- **Halation** decodes the original Apple Log 2 frame into scene-linear light
+  and extracts per-channel energy above highlight thresholds. Three
+  half-resolution Gaussian blurs spread red widest, green less, and blue least.
+  Their contributions are added to the **linear source**, including its core,
+  then re-encoded to Apple Log 2. The stock LUT grades source and scattered
+  light together; halation is not a separate display-space overlay. Base radius,
+  strength and channel weights are **per stock**; print gauge does not change
+  halation. Debug radius can reach zero, which adds energy locally without
+  diffusion or resampling spread.
 - **Glow** keeps its separate graded-luminance mask and wide amber bloom. It
   does not use the scene-linear halation mask.
 - **Grain** is [described below](#how-the-grain-works).
@@ -191,10 +193,11 @@ The halation model is **physically informed, not a calibrated film simulation**.
 Its initial channel thresholds are 1×, 2× and 4× decoded diffuse white; radius
 multipliers are 1.8×, 1× and 0.5× the stock's base radius. Channel energy is divided
 by an 8× reference before stock weights and strength are applied. These are
-starting values for device tuning, not measured emulsion properties. Diffusion
-uses linear source light, but the final addition is on the graded image and
-fades out in deep shadows. It is not an end-to-end scene-linear exposure model,
-and the new look and render cost still need physical-device validation.
+starting values for device tuning, not measured emulsion properties. Halation
+addition is scene-linear and pre-LUT, with no background-dependent shadow gate;
+final colour and highlight rolloff come from the same stock LUT as the source.
+Passing GPU tests establishes the operation order and numerical behaviour, not
+an aesthetic match to film or a physical-device performance result.
 
 Every render writes a diagnostics manifest into the movie metadata: the recipe
 (LUT, halation, glow and grain algorithm revisions and their parameters), a

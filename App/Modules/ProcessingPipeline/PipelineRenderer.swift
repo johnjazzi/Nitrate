@@ -515,48 +515,61 @@ final class PipelineRenderer: @unchecked Sendable {
             let width = CVPixelBufferGetWidth(pixelBuffer)
             let height = CVPixelBufferGetHeight(pixelBuffer)
             guard width > 0, height > 0 else { return nil }
-
-            guard let pass1 = runPass1(
-                sourcePixelBuffer: pixelBuffer,
-                lut: lut,
-                halationStrength: parameters.halationStrength,
-                glowStrength: parameters.glowStrength,
-                outputContrast: config.outputContrast,
-                width: width,
-                height: height
-            ) else { return nil }
-
             guard let spatialStage,
-                  let diffused = spatialStage.apply(
-                    graded: pass1.graded,
-                    input: pass1.source,
-                    commandQueue: commandQueue,
-                    halationStrength: parameters.halationStrength,
-                    glowStrength: parameters.glowStrength,
-                    halationRadiusFraction: parameters.halationRadiusFraction,
-                    halationTint: parameters.halationTint,
-                    width: width,
-                    height: height
-                  ) else { return nil }
-
-            guard let outputBuffer = makeDebugOutputBuffer(width: width, height: height),
-                  let outputTexture = makeTexture(from: outputBuffer, format: .bgra8Unorm)?.texture else {
+                  let sourceTexture = makeTexture(from: pixelBuffer, format: .rgba16Float) else {
                 return nil
             }
 
-            guard runPass2(
-                inputTexture: diffused,
-                outputPixelBuffer: outputBuffer,
-                frameIndex: frameIndex,
-                iso: config.defaultISO,
-                grainSize: parameters.realizedFootprint,
-                edgeBoostMultiplier: parameters.edgeBoostMultiplier,
-                gaugeAmplitude: parameters.gaugeAmplitude,
-                width: width,
-                height: height
-            ) else { return nil }
+            // Same order the video path uses: halation on the scene-linear
+            // source BEFORE the LUT, then the LUT + output contrast, then glow,
+            // then grain. Keep the source's CVMetalTexture alive across the
+            // halation and LUT passes, both of which read it.
+            return withExtendedLifetime(sourceTexture.cvTexture) { () -> DebugFrameRender? in
+                guard let halated = spatialStage.applyHalation(
+                    source: sourceTexture.texture,
+                    commandQueue: commandQueue,
+                    strength: parameters.halationStrength,
+                    radiusFraction: parameters.halationRadiusFraction,
+                    layerScale: parameters.halationTint,
+                    width: width,
+                    height: height
+                ) else { return nil }
 
-            return DebugFrameRender(texture: outputTexture, pixelBuffer: outputBuffer)
+                guard let graded = runLUTPass(
+                    input: halated,
+                    lut: lut,
+                    outputContrast: config.outputContrast,
+                    width: width,
+                    height: height
+                ) else { return nil }
+
+                guard let glowed = spatialStage.applyGlow(
+                    graded: graded,
+                    commandQueue: commandQueue,
+                    strength: parameters.glowStrength,
+                    width: width,
+                    height: height
+                ) else { return nil }
+
+                guard let outputBuffer = makeDebugOutputBuffer(width: width, height: height),
+                      let outputTexture = makeTexture(from: outputBuffer, format: .bgra8Unorm)?.texture else {
+                    return nil
+                }
+
+                guard runPass2(
+                    inputTexture: glowed,
+                    outputPixelBuffer: outputBuffer,
+                    frameIndex: frameIndex,
+                    iso: config.defaultISO,
+                    grainSize: parameters.realizedFootprint,
+                    edgeBoostMultiplier: parameters.edgeBoostMultiplier,
+                    gaugeAmplitude: parameters.gaugeAmplitude,
+                    width: width,
+                    height: height
+                ) else { return nil }
+
+                return DebugFrameRender(texture: outputTexture, pixelBuffer: outputBuffer)
+            }
         }
     }
 
@@ -876,14 +889,22 @@ final class PipelineRenderer: @unchecked Sendable {
         let receiver = context.receiver
         let config = context.config
 
-        // Get an output pixel buffer from the receiver's pool
+        // Cancellation can invalidate the receiver's pool after the frame loop's
+        // cancellation check. Report that race as cancellation, not allocation
+        // failure; a genuinely unavailable pool still reports its stage error.
         guard let pool = receiver.pixelBufferPool else {
+            if Task.isCancelled || context.cancellationHandle.writerStatus == .cancelled {
+                throw CancellationError()
+            }
             throw RenderError.stageFailed("pixel-buffer-pool", "Writer pixel buffer pool is unavailable.")
         }
         let outputBuffer: CVMutablePixelBuffer
         do {
             outputBuffer = try pool.makeMutablePixelBuffer()
         } catch {
+            if Task.isCancelled || context.cancellationHandle.writerStatus == .cancelled {
+                throw CancellationError()
+            }
             throw RenderError.stageFailed("pixel-buffer-allocation", "Unable to allocate output pixel buffer (\(error)).")
         }
 
@@ -902,48 +923,64 @@ final class PipelineRenderer: @unchecked Sendable {
                     evidence = Self.snapshotDecodedBuffer(sourcePixelBuffer)
                 }
                 return outputBuffer.withUnsafeBuffer { destination in
-                    guard let pass1 = self.runPass1(
-                        sourcePixelBuffer: sourcePixelBuffer,
-                        lut: context.lut,
-                        halationStrength: config.halationStrength,
-                        glowStrength: config.glowStrength,
-                        outputContrast: config.outputContrast,
-                        width: width,
-                        height: height
-                    ) else {
-                        return .failure(RenderError.stageFailed("gpu-pass-1", "The LUT GPU pass did not complete."))
-                    }
-
                     guard let spatialStage = self.spatialStage,
-                          let diffused = spatialStage.apply(
-                            graded: pass1.graded,
-                            input: pass1.source,
+                          let sourceTexture = self.makeTexture(from: sourcePixelBuffer, format: .rgba16Float) else {
+                        return .failure(RenderError.stageFailed("gpu-halation", "Could not wrap the decoded frame for halation."))
+                    }
+                    // Halation is added to the scene-linear source and re-encoded
+                    // to Apple Log 2 BEFORE the LUT, so the scattered light is
+                    // tone-mapped by the same stock curve as the source. Keep the
+                    // source's CVMetalTexture alive across the halation and LUT
+                    // passes, both of which read it.
+                    return withExtendedLifetime(sourceTexture.cvTexture) { () -> Result<Void, Error> in
+                        guard let halated = spatialStage.applyHalation(
+                            source: sourceTexture.texture,
                             commandQueue: self.commandQueue,
-                            halationStrength: config.halationStrength,
-                            glowStrength: config.glowStrength,
-                            halationRadiusFraction: config.halationRadiusFraction,
-                            halationTint: config.halationTint,
+                            strength: config.halationStrength,
+                            radiusFraction: config.halationRadiusFraction,
+                            layerScale: config.halationTint,
                             width: width,
                             height: height
-                          ) else {
-                        return .failure(RenderError.stageFailed("gpu-spatial", "The spatial halation/glow stage did not complete."))
-                    }
+                        ) else {
+                            return .failure(RenderError.stageFailed("gpu-halation", "The halation stage did not complete."))
+                        }
 
-                    let gauge = config.effectivePrintGauge
-                    guard self.runPass2(
-                        inputTexture: diffused,
-                        outputPixelBuffer: destination,
-                        frameIndex: frameIndex,
-                        iso: config.defaultISO,
-                        grainSize: GrainModel.effectiveSize(stockGrainSize: config.grainSize, gauge: gauge),
-                        edgeBoostMultiplier: config.effectiveRecipe.edgeBoostMultiplier,
-                        gaugeAmplitude: gauge.amplitudeMultiplier,
-                        width: width,
-                        height: height
-                    ) else {
-                        return .failure(RenderError.stageFailed("gpu-pass-2", "The grain GPU pass did not complete."))
+                        guard let graded = self.runLUTPass(
+                            input: halated,
+                            lut: context.lut,
+                            outputContrast: config.outputContrast,
+                            width: width,
+                            height: height
+                        ) else {
+                            return .failure(RenderError.stageFailed("gpu-pass-1", "The LUT GPU pass did not complete."))
+                        }
+
+                        guard let glowed = spatialStage.applyGlow(
+                            graded: graded,
+                            commandQueue: self.commandQueue,
+                            strength: config.glowStrength,
+                            width: width,
+                            height: height
+                        ) else {
+                            return .failure(RenderError.stageFailed("gpu-spatial", "The glow stage did not complete."))
+                        }
+
+                        let gauge = config.effectivePrintGauge
+                        guard self.runPass2(
+                            inputTexture: glowed,
+                            outputPixelBuffer: destination,
+                            frameIndex: frameIndex,
+                            iso: config.defaultISO,
+                            grainSize: GrainModel.effectiveSize(stockGrainSize: config.grainSize, gauge: gauge),
+                            edgeBoostMultiplier: config.effectiveRecipe.edgeBoostMultiplier,
+                            gaugeAmplitude: gauge.amplitudeMultiplier,
+                            width: width,
+                            height: height
+                        ) else {
+                            return .failure(RenderError.stageFailed("gpu-pass-2", "The grain GPU pass did not complete."))
+                        }
+                        return .success(())
                     }
-                    return .success(())
                 }
             }
         }
@@ -1021,38 +1058,37 @@ final class PipelineRenderer: @unchecked Sendable {
 
     // MARK: - GPU Passes
 
-    /// Pass 1: LUT + halation + glow. Returns the intermediate Metal texture.
-    /// Returns BOTH the graded output and the ungraded source texture. Halation
-    /// needs the ungraded frame: it decodes Apple Log 2 to linear scene light,
-    /// and the graded image has already been through the display transform that
-    /// destroys the superwhite separation. The source is backed by the caller's
-    /// pixel buffer, which stays alive for the whole frame.
-    private func runPass1(
-        sourcePixelBuffer: CVPixelBuffer,
+    /// Pass 1: grade the (halation-modified) Apple Log 2 frame through the stock
+    /// LUT and output contrast. Returns the display-referred graded texture.
+    ///
+    /// `input` is Apple Log 2 — either the raw decoded frame, or the frame the
+    /// halation stage re-encoded after adding scattered scene light. The LUT is
+    /// authored for Apple Log 2 code values, so halation must be applied to the
+    /// source BEFORE this pass, not to its output: a 2x and a 100x specular both
+    /// land near 1.0 after the LUT, and the superwhite separation halation needs
+    /// would be gone.
+    private func runLUTPass(
+        input: MTLTexture,
         lut: MTLTexture,
-        halationStrength: Float,
-        glowStrength: Float,
         outputContrast: Float,
         width: Int,
         height: Int
-    ) -> (graded: MTLTexture, source: MTLTexture)? {
-        // Create source texture from CVPixelBuffer via texture cache
-        guard let source = makeTexture(from: sourcePixelBuffer, format: .rgba16Float),
-              let intermediateTexture = makeIntermediateTexture(width: width, height: height) else {
-            return nil
-        }
-
-        guard let commandBuffer = commandQueue.makeCommandBuffer(),
+    ) -> MTLTexture? {
+        guard let intermediateTexture = makeIntermediateTexture(width: width, height: height),
+              let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
             return nil
         }
 
-        var halation = halationStrength
-        var glow = glowStrength
+        // `pass1_lut_halation_glow` still binds these two buffers for signature
+        // stability, but halation and glow are spatial now and this pass only
+        // grades, so they are pinned to zero.
+        var halation: Float = 0
+        var glow: Float = 0
         var contrast = outputContrast
 
         encoder.setComputePipelineState(pass1Pipeline!)
-        encoder.setTexture(source.texture, index: 0)
+        encoder.setTexture(input, index: 0)
         encoder.setTexture(intermediateTexture, index: 1)
         encoder.setTexture(lut, index: 2)
         encoder.setBytes(&halation, length: MemoryLayout<Float>.size, index: 0)
@@ -1069,10 +1105,9 @@ final class PipelineRenderer: @unchecked Sendable {
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        withExtendedLifetime(source.cvTexture) {}
 
         guard commandBuffer.status == .completed else { return nil }
-        return (intermediateTexture, source.texture)
+        return intermediateTexture
     }
 
     /// Pass 2: grain. Writes result directly into the output pixel buffer.

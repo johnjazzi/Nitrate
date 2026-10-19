@@ -366,7 +366,8 @@ struct MovieWritingReliabilityTests {
             _ = try await task.value
             Issue.record("A cancelled in-flight render unexpectedly completed")
         } catch {
-            #expect(error is CancellationError || error.localizedDescription.contains("writer"))
+            #expect(error is CancellationError || error.localizedDescription.contains("writer"),
+                    "A cancelled in-flight render surfaced \(type(of: error)): \(error.localizedDescription)")
         }
         #expect(try Data(contentsOf: source) == sourceData)
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["source.mov"])

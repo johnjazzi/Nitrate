@@ -5,28 +5,33 @@ import simd
 
 /// Spatial halation + glow (epic story 1.4).
 ///
-/// The first implementation of halation and glow was purely per-pixel: it added a
-/// warm term scaled by each pixel's own luma, so a highlight could never bleed
-/// *neighbourhood* information into the pixels around it, and glow was a constant
-/// frame-wide lift that raised the black point. This stage does it spatially
-/// instead: build a highlight mask once, blur it separably, then composite the
-/// blurred mask back with a colour cast.
+/// The stage owns two INDEPENDENT effects, applied at different points in the
+/// render and for different reasons. Keeping them separate is the whole point:
 ///
-/// The mask is built and blurred at HALF resolution. Halation and glow are
-/// low-frequency by nature, so half-res blurring is visually equivalent while
-/// cutting scratch-texture work and bandwidth by roughly 4x at 4K.
+///  * HALATION is physical and PRE-LUT. `applyHalation(source:...)` decodes the
+///    ungraded Apple Log 2 frame to linear scene light, takes each emulsion
+///    layer's excess above its knee, diffuses the three layers at their own
+///    radii, adds the scattered energy back in LINEAR light, and re-encodes to
+///    Apple Log 2. The renderer then runs the stock LUT and output contrast on
+///    that re-encoded frame, so the scattered light is tone-mapped by the same
+///    curve as the light that produced it — the halo rolls off with the
+///    highlight instead of clipping into a detached fringe. The graded image is
+///    never read and there is no background-dependent shadow gate: the light
+///    that scatters is the light that is added.
 ///
-/// HALATION is now physical, GLOW is not. Halation reads the ungraded Apple Log 2
-/// frame, decodes it to linear scene light, and takes the excess above each
-/// emulsion layer's knee; the three layers are then diffused at their own radii.
-/// That is what produces the red -> warm red -> white ramp and the growing source
-/// of real halation, rather than a tint applied to one shared luma mask. Glow is
-/// an optical-filter bloom with no such physical model, so it keeps the graded
-/// luma mask and the stock tint it always had — its look is deliberately
-/// unchanged by this work.
+///  * GLOW is an optical-filter bloom with no physical model.
+///    `applyGlow(graded:...)` keeps the graded-luminance highlight mask and the
+///    tinted additive composite it always had, applied POST-LUT. Its look is
+///    deliberately unchanged by the halation work.
+///
+/// Masks and diffusions are built and blurred at HALF resolution. Halation and
+/// glow are low-frequency by nature, so half-res blurring is visually equivalent
+/// while cutting scratch-texture work and bandwidth by roughly 4x at 4K.
 ///
 /// Owns its own pipeline states so the renderer does not have to expose them.
 final class SpatialEffectsStage {
+    // MARK: - Glow parameters (unchanged look)
+
     /// Highlight window for the GLOW mask only, carried over from the original
     /// per-pixel implementation. Halation no longer thresholds a luma value: it
     /// uses per-layer knees in linear light (below).
@@ -37,18 +42,15 @@ final class SpatialEffectsStage {
     /// glow bloom. Proportional rather than a fixed texel count so the look is
     /// resolution-independent instead of shrinking on larger frames. Halation
     /// radius is NOT here: it is per-stock geometry (emulsion thickness / stock
-    /// speed), supplied by `FilmStockConfig.halationRadiusFraction`.
+    /// speed), supplied by `halationRadiusFraction`.
     private static let glowRadiusFraction: Float = 0.05
-
-    /// Ring/tail balance for the glow bloom; see `spatial_composite`.
-    private static let ringTailBalance: Float = 1.0
 
     /// Colour cast for the wide glow bloom. Halation no longer has a tint — its
     /// colour is emergent from the per-layer physics.
     private static let glowTint = SIMD3<Float>(1.0, 0.55, 0.25)
 
-    /// Luma below which added light is faded out, so the effect never lifts the
-    /// black point.
+    /// Luma below which added glow light is faded out, so the bloom never lifts
+    /// the black point. Halation has no such gate: it adds the light it scatters.
     private static let shadowFloor: Float = 0.08
 
     // MARK: - Physical halation parameters
@@ -82,10 +84,10 @@ final class SpatialEffectsStage {
     private static let referenceSuperwhite: Float = 8.0
 
     private let device: MTLDevice
-    private let maskPipeline: MTLComputePipelineState
-    private let compositePipeline: MTLComputePipelineState
+    private let glowMaskPipeline: MTLComputePipelineState
+    private let glowCompositePipeline: MTLComputePipelineState
     private let halationMaskPipeline: MTLComputePipelineState
-    private let halationCompositePipeline: MTLComputePipelineState
+    private let halationApplyPipeline: MTLComputePipelineState
 
     /// Match the old nine-tap kernel's second moment without its detached lobes.
     /// sqrt(2 * sum(weight[i] * offset[i]^2)) = sqrt(7.6260355034).
@@ -101,27 +103,127 @@ final class SpatialEffectsStage {
             return try device.makeComputePipelineState(function: function)
         }
         self.device = device
-        self.maskPipeline = try pipeline("spatial_mask")
-        self.compositePipeline = try pipeline("spatial_composite")
+        self.glowMaskPipeline = try pipeline("spatial_mask")
+        self.glowCompositePipeline = try pipeline("spatial_composite")
         self.halationMaskPipeline = try pipeline("spatial_halation_mask")
-        self.halationCompositePipeline = try pipeline("spatial_halation_composite")
+        self.halationApplyPipeline = try pipeline("spatial_halation_apply")
     }
 
-    /// Apply halation and glow to an already-graded texture, returning a new
-    /// texture that carries the result. Neither `graded` nor `input` is mutated.
+    // MARK: - Halation (pre-LUT)
+
+    /// Apply physical halation to the UNGRADED Apple Log 2 frame and return a
+    /// new texture carrying the result, still Apple Log 2 encoded, ready to be
+    /// graded by the stock LUT and output contrast. `source` is not mutated.
     ///
-    /// `input` is the UNGRADED Apple Log 2 frame. Halation needs it because the
-    /// graded image has already been through the display transform, which maps
-    /// both a 2x and a 100x specular to about 1.0 — the superwhite separation
-    /// halation depends on only exists before the LUT.
-    func apply(
-        graded: MTLTexture,
-        input: MTLTexture,
+    /// `strength` is the stock's halation strength (0 disables the effect, and
+    /// the returned frame then decodes back to the source within rounding).
+    /// `radiusFraction` is the base diffusion radius as a fraction of the
+    /// half-resolution width; `layerScale` weights the three per-layer
+    /// contributions. A radius of 0 means no spatial diffusion — the scattered
+    /// energy is still added, but locally, over the source's own footprint.
+    func applyHalation(
+        source: MTLTexture,
         commandQueue: MTLCommandQueue,
-        halationStrength: Float,
-        glowStrength: Float,
-        halationRadiusFraction: Float,
-        halationTint: SIMD3<Float>,
+        strength: Float,
+        radiusFraction: Float,
+        layerScale: SIMD3<Float>,
+        width: Int,
+        height: Int
+    ) -> MTLTexture? {
+        // Disabled means byte-for-byte identity, including below-black Log noise.
+        guard strength != 0 else { return source }
+        let halfWidth = max(1, (width + 1) / 2)
+        let halfHeight = max(1, (height + 1) / 2)
+        // At zero diffusion, use a full-resolution mask so down/up-sampling
+        // cannot spread a one-pixel source despite the blur being disabled.
+        let maskWidth = radiusFraction <= 0 ? width : halfWidth
+        let maskHeight = radiusFraction <= 0 ? height : halfHeight
+
+        guard let halationMask = makeTexture(width: maskWidth, height: maskHeight),
+              let redDiffusion = radiusFraction > 0 ? makeTexture(width: maskWidth, height: maskHeight) : halationMask,
+              let greenDiffusion = radiusFraction > 0 ? makeTexture(width: maskWidth, height: maskHeight) : halationMask,
+              let blueDiffusion = radiusFraction > 0 ? makeTexture(width: maskWidth, height: maskHeight) : halationMask,
+              let output = makeTexture(width: width, height: height, storageMode: .shared),
+              let commandBuffer = commandQueue.makeCommandBuffer() else {
+            return nil
+        }
+
+        let maskGroups = threadgroups(width: maskWidth, height: maskHeight)
+        let fullGroups = threadgroups(width: width, height: height)
+
+        // 1. Halation mask: per-layer superwhite excess, decoded from the
+        //    ungraded frame. Separate from the glow mask because it needs the
+        //    linear scene light the graded image no longer carries.
+        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+            var red = Self.redKnee
+            var green = Self.greenKnee
+            var blue = Self.blueKnee
+            encoder.setComputePipelineState(halationMaskPipeline)
+            encoder.setTexture(source, index: 0)
+            encoder.setTexture(halationMask, index: 1)
+            encoder.setBytes(&red, length: MemoryLayout<Float>.size, index: 0)
+            encoder.setBytes(&green, length: MemoryLayout<Float>.size, index: 1)
+            encoder.setBytes(&blue, length: MemoryLayout<Float>.size, index: 2)
+            encoder.dispatchThreadgroups(maskGroups, threadsPerThreadgroup: Self.groupSize)
+            encoder.endEncoding()
+        }
+
+        // Radii scale with the frame so the effect looks the same at any size.
+        // There is deliberately no minimum: the stock's fraction is honored as
+        // given, so a small frame or a deliberately tiny debug radius really
+        // diffuses less. A zero radius skips the blur entirely rather than
+        // asking MPS for an invalid sigma of zero.
+        let baseRadius = Float(halfWidth) * radiusFraction
+
+        // 2. One blur per emulsion layer: red widest, then green, then blue.
+        //    MPSImageGaussianBlur convolves every channel at one sigma, so the
+        //    per-layer radii need three passes over the shared mask. A layer
+        //    whose radius is zero is bound the mask itself (no diffusion).
+        let redSource = diffuse(
+            source: halationMask, destination: redDiffusion,
+            radius: baseRadius * Self.redRadiusMultiplier, commandBuffer: commandBuffer
+        )
+        let greenSource = diffuse(
+            source: halationMask, destination: greenDiffusion,
+            radius: baseRadius * Self.greenRadiusMultiplier, commandBuffer: commandBuffer
+        )
+        let blueSource = diffuse(
+            source: halationMask, destination: blueDiffusion,
+            radius: baseRadius * Self.blueRadiusMultiplier, commandBuffer: commandBuffer
+        )
+
+        // 3. Add the scattered light to the scene-linear source and re-encode.
+        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+            var strength = strength
+            var layerScale = layerScale
+            var referenceSuperwhite = Self.referenceSuperwhite
+            encoder.setComputePipelineState(halationApplyPipeline)
+            encoder.setTexture(source, index: 0)
+            encoder.setTexture(redSource, index: 1)
+            encoder.setTexture(greenSource, index: 2)
+            encoder.setTexture(blueSource, index: 3)
+            encoder.setTexture(output, index: 4)
+            encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
+            encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
+            encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
+            encoder.dispatchThreadgroups(fullGroups, threadsPerThreadgroup: Self.groupSize)
+            encoder.endEncoding()
+        }
+
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        return commandBuffer.status == .completed ? output : nil
+    }
+
+    // MARK: - Glow (post-LUT)
+
+    /// Apply the optical-filter glow bloom to the already-graded texture and
+    /// return a new texture carrying the result. `graded` is not mutated. The
+    /// look is unchanged from the pre-physical-halation implementation.
+    func applyGlow(
+        graded: MTLTexture,
+        commandQueue: MTLCommandQueue,
+        strength: Float,
         width: Int,
         height: Int
     ) -> MTLTexture? {
@@ -130,10 +232,6 @@ final class SpatialEffectsStage {
 
         guard let glowMask = makeTexture(width: halfWidth, height: halfHeight),
               let glowDiffusion = makeTexture(width: halfWidth, height: halfHeight),
-              let halationMask = makeTexture(width: halfWidth, height: halfHeight),
-              let redDiffusion = makeTexture(width: halfWidth, height: halfHeight),
-              let greenDiffusion = makeTexture(width: halfWidth, height: halfHeight),
-              let blueDiffusion = makeTexture(width: halfWidth, height: halfHeight),
               let composited = makeTexture(width: width, height: height, storageMode: .shared),
               let commandBuffer = commandQueue.makeCommandBuffer() else {
             return nil
@@ -146,7 +244,7 @@ final class SpatialEffectsStage {
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
             var low = Self.thresholdLow
             var high = Self.thresholdHigh
-            encoder.setComputePipelineState(maskPipeline)
+            encoder.setComputePipelineState(glowMaskPipeline)
             encoder.setTexture(graded, index: 0)
             encoder.setTexture(glowMask, index: 1)
             encoder.setBytes(&low, length: MemoryLayout<Float>.size, index: 0)
@@ -155,52 +253,9 @@ final class SpatialEffectsStage {
             encoder.endEncoding()
         }
 
-        // 2. Halation mask: per-layer superwhite excess, decoded from the
-        //    ungraded frame. Separate from the glow mask because it needs the
-        //    linear scene light the graded image no longer carries.
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
-            var red = Self.redKnee
-            var green = Self.greenKnee
-            var blue = Self.blueKnee
-            encoder.setComputePipelineState(halationMaskPipeline)
-            encoder.setTexture(input, index: 0)
-            encoder.setTexture(halationMask, index: 1)
-            encoder.setBytes(&red, length: MemoryLayout<Float>.size, index: 0)
-            encoder.setBytes(&green, length: MemoryLayout<Float>.size, index: 1)
-            encoder.setBytes(&blue, length: MemoryLayout<Float>.size, index: 2)
-            encoder.dispatchThreadgroups(halfGroups, threadsPerThreadgroup: Self.groupSize)
-            encoder.endEncoding()
-        }
-
-        // Radii scale with the frame so the effect looks the same at any size.
-        // Halation radius is per-stock (emulsion thickness / speed); glow stays
-        // a fixed fraction of width.
-        let baseRadius = max(2, Float(halfWidth) * halationRadiusFraction)
+        // 2. Wide blur for the glow bloom, off the graded mask. Glow stays a
+        //    fixed fraction of width so its look does not track stock geometry.
         let glowRadius = max(4, Float(halfWidth) * Self.glowRadiusFraction)
-
-        // 3. One blur per emulsion layer: red widest, then green, then blue.
-        //    MPSImageGaussianBlur convolves every channel at one sigma, so the
-        //    per-layer radii need three passes over the shared mask.
-        blurContinuously(
-            source: halationMask,
-            destination: redDiffusion,
-            radius: max(2, baseRadius * Self.redRadiusMultiplier),
-            commandBuffer: commandBuffer
-        )
-        blurContinuously(
-            source: halationMask,
-            destination: greenDiffusion,
-            radius: max(2, baseRadius * Self.greenRadiusMultiplier),
-            commandBuffer: commandBuffer
-        )
-        blurContinuously(
-            source: halationMask,
-            destination: blueDiffusion,
-            radius: max(2, baseRadius * Self.blueRadiusMultiplier),
-            commandBuffer: commandBuffer
-        )
-
-        // 4. Wide blur for the glow bloom, off the graded mask.
         blurContinuously(
             source: glowMask,
             destination: glowDiffusion,
@@ -208,26 +263,13 @@ final class SpatialEffectsStage {
             commandBuffer: commandBuffer
         )
 
-        // 5. Composite halation, then glow. Halation adds the per-layer light
-        //    with the stock's layer weights; glow keeps its tint and ring shape.
-        halationComposite(
-            source: graded,
-            redDiffusion: redDiffusion,
-            greenDiffusion: greenDiffusion,
-            blueDiffusion: blueDiffusion,
-            into: composited,
-            strength: halationStrength,
-            layerScale: halationTint,
-            commandBuffer: commandBuffer,
-            groups: fullGroups
-        )
+        // 3. Composite the tinted bloom over the graded image.
         composite(
-            source: composited,
+            source: graded,
             diffusion: glowDiffusion,
             into: composited,
-            strength: glowStrength,
+            strength: strength,
             tint: Self.glowTint,
-            ringTailBalance: 0,
             commandBuffer: commandBuffer,
             groups: fullGroups
         )
@@ -249,8 +291,29 @@ final class SpatialEffectsStage {
         )
     }
 
+    /// Diffuse `source` into `destination` and return the texture the caller
+    /// should sample. A positive `radius` (in half-resolution texels) becomes an
+    /// MPS Gaussian blur; a zero radius means "no spatial diffusion" and the
+    /// mask itself is returned, so the scattered energy is still added — locally
+    /// — rather than the whole effect vanishing. `sigma = radius * k` is only
+    /// evaluated for a strictly positive radius, so MPS is never asked for an
+    /// invalid sigma of zero.
+    private func diffuse(
+        source: MTLTexture,
+        destination: MTLTexture,
+        radius: Float,
+        commandBuffer: MTLCommandBuffer
+    ) -> MTLTexture {
+        guard radius > 0 else { return source }
+        let blur = MPSImageGaussianBlur(device: device, sigma: radius * Self.blurSigmaPerRadius)
+        blur.edgeMode = .clamp
+        blur.encode(commandBuffer: commandBuffer, sourceTexture: source, destinationTexture: destination)
+        return destination
+    }
+
     /// A continuous, efficient Gaussian approximation, including at 4K radii.
     /// Clamp boundaries preserve uniform highlights instead of darkening edges.
+    /// Reserved for the glow path, whose radius is always positive.
     private func blurContinuously(
         source: MTLTexture,
         destination: MTLTexture,
@@ -262,55 +325,14 @@ final class SpatialEffectsStage {
         blur.encode(commandBuffer: commandBuffer, sourceTexture: source, destinationTexture: destination)
     }
 
-    /// Add the three diffused halation layers onto `source`, writing to `into`.
-    ///
-    /// The three diffusions are sampled separately and recombined by channel, so
-    /// each layer keeps its own reach. Red contributes most because it is the
-    /// layer most re-exposed by scattered light; where green and blue have also
-    /// responded the sum tends toward white.
-    private func halationComposite(
-        source: MTLTexture,
-        redDiffusion: MTLTexture,
-        greenDiffusion: MTLTexture,
-        blueDiffusion: MTLTexture,
-        into: MTLTexture,
-        strength: Float,
-        layerScale: SIMD3<Float>,
-        commandBuffer: MTLCommandBuffer,
-        groups: MTLSize
-    ) {
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
-        var strength = strength
-        var shadowFloor = Self.shadowFloor
-        var layerScale = layerScale
-        var referenceSuperwhite = Self.referenceSuperwhite
-
-        encoder.setComputePipelineState(halationCompositePipeline)
-        // Three separate bindings, not one combined texture: each layer is
-        // diffused at its own radius, so combining them into one rgb texture
-        // first would need an extra full pass over all three.
-        encoder.setTexture(source, index: 0)
-        encoder.setTexture(redDiffusion, index: 1)
-        encoder.setTexture(greenDiffusion, index: 2)
-        encoder.setTexture(blueDiffusion, index: 3)
-        encoder.setTexture(into, index: 4)
-        encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
-        encoder.setBytes(&shadowFloor, length: MemoryLayout<Float>.size, index: 1)
-        encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 2)
-        encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 3)
-        encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: Self.groupSize)
-        encoder.endEncoding()
-    }
-
-    /// Add one blurred diffusion layer onto `source`, writing to `into`.
-    /// `ringTailBalance` is 1 for the glow ring, 0 for a plain bloom.
+    /// Add one blurred glow diffusion layer onto `source`, writing to `into`.
+    /// A plain tinted bloom; the image's own luminance fades it out of shadows.
     private func composite(
         source: MTLTexture,
         diffusion: MTLTexture,
         into: MTLTexture,
         strength: Float,
         tint: SIMD3<Float>,
-        ringTailBalance: Float,
         commandBuffer: MTLCommandBuffer,
         groups: MTLSize
     ) {
@@ -318,20 +340,14 @@ final class SpatialEffectsStage {
         var strength = strength
         var shadowFloor = Self.shadowFloor
         var tint = tint
-        var ringTailBalance = ringTailBalance
-        var thresholdLow = Self.thresholdLow
-        var thresholdHigh = Self.thresholdHigh
 
-        encoder.setComputePipelineState(compositePipeline)
+        encoder.setComputePipelineState(glowCompositePipeline)
         encoder.setTexture(source, index: 0)
         encoder.setTexture(diffusion, index: 1)
         encoder.setTexture(into, index: 2)
         encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&shadowFloor, length: MemoryLayout<Float>.size, index: 1)
         encoder.setBytes(&tint, length: MemoryLayout<SIMD3<Float>>.size, index: 2)
-        encoder.setBytes(&ringTailBalance, length: MemoryLayout<Float>.size, index: 3)
-        encoder.setBytes(&thresholdLow, length: MemoryLayout<Float>.size, index: 4)
-        encoder.setBytes(&thresholdHigh, length: MemoryLayout<Float>.size, index: 5)
         encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: Self.groupSize)
         encoder.endEncoding()
     }

@@ -327,6 +327,11 @@ struct DebugFrameSheet: View {
                         viewModel.parameters.halationRadiusFraction,
                         viewModel.parameters.glowStrength))
                 .font(.caption.monospacedDigit())
+            // Truthful statement of the render order this sheet drives: halation
+            // is added to the scene-linear source and re-encoded to Apple Log 2
+            // BEFORE the stock LUT; glow is a post-LUT graded-luminance bloom.
+            Text("Order: halation (scene-linear, pre-LUT) → LUT + contrast → glow → grain")
+                .font(.caption2).foregroundStyle(.secondary)
             if let message = viewModel.message {
                 Text(message).font(.caption).foregroundStyle(.red)
             } else {
@@ -391,7 +396,7 @@ struct DebugFrameSheet: View {
             labelled(String(format: "Radius fraction %.4f", viewModel.parameters.halationRadiusFraction)) {
                 Slider(value: float({ viewModel.parameters.halationRadiusFraction },
                                     { viewModel.parameters.halationRadiusFraction = $0 }),
-                       in: 0.004...0.05, step: 0.001)
+                       in: 0...0.05, step: 0.001)
             }
             labelled(String(format: "Tint  R %.2f   G %.2f   B %.2f",
                             viewModel.parameters.halationTint.x,

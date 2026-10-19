@@ -172,7 +172,7 @@ struct RenderContractTests {
         #expect(shippedGrainStocks.allSatisfy { $0.effectiveRecipe.edgeBoostMultiplier == 3 })
         let template = try #require(app.first { $0.stockId == "kodak5219" })
         #expect(template.grainSize == 1.3)
-        #expect(template.effectiveRecipe.version == "5219-current-v9")
+        #expect(template.effectiveRecipe.version == "5219-current-v10")
         #expect(template.effectiveRecipe.grainAlgorithm == RenderRecipe.edgeAmplitudeAlgorithm)
         #expect(template.effectiveRecipe.edgeBoostMultiplier == 3)
         let low = template.overridingISO(250)
@@ -198,8 +198,8 @@ struct RenderContractTests {
             #expect(tungsten.grainSize == 1.3)
             #expect(daylight.outputContrast == 0.85)
             #expect(tungsten.outputContrast == 0.85)
-            #expect(daylight.effectiveRecipe.version == "5207-current-v4")
-            #expect(tungsten.effectiveRecipe.version == "5219-current-v9")
+            #expect(daylight.effectiveRecipe.version == "5207-current-v5")
+            #expect(tungsten.effectiveRecipe.version == "5219-current-v10")
         }
     }
 
@@ -260,6 +260,21 @@ struct RenderContractTests {
         #expect(decoded.effectiveRecipe.input.transfer == "Apple Log 2")
         #expect(decoded.effectiveRecipe.input.provenance == "user-declared")
         #expect(!decoded.colorContractVerified)
+    }
+
+    @Test func halationRecipeNamesThePreLUTLinearAlgorithm() throws {
+        let catalogue = try stocks("App/Resources/stocks.json")
+        #expect(catalogue.allSatisfy {
+            $0.effectiveRecipe.halationAlgorithm == "scene-linear-pre-lut-layer-diffusion-v3"
+        })
+    }
+
+    @Test func historicalHalationMetadataDecodesButCannotExecuteAsTheNewAlgorithm() throws {
+        var historical = try #require(stocks("App/Resources/stocks.json").first)
+        historical.recipe?.halationAlgorithm = "input-luma-spatial-highlight-addition-v2"
+        let decoded = try JSONDecoder().decode(FilmStockConfig.self, from: JSONEncoder().encode(historical))
+        #expect(decoded.effectiveRecipe.halationAlgorithm == "input-luma-spatial-highlight-addition-v2")
+        #expect(throws: RenderContractError.self) { try decoded.validate() }
     }
 
     @Test func historicalLUTAlgorithmMetadataDecodesButCannotExecute() throws {

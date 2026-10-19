@@ -397,18 +397,24 @@ enum HalationDeviceBenchmark {
 
             func once() -> Double {
                 let start = DispatchTime.now().uptimeNanoseconds
-                let result = stage.apply(
-                    graded: graded,
-                    input: input,
+                // Production order: halation on the scene-linear source, then
+                // the LUT (not timed here), then the post-LUT glow bloom.
+                let halated = stage.applyHalation(
+                    source: input,
                     commandQueue: queue,
-                    halationStrength: 0.43,
-                    glowStrength: 0.35,
-                    halationRadiusFraction: 0.011,
-                    halationTint: SIMD3<Float>(1.0, 0.32, 0.10),
+                    strength: 0.43,
+                    radiusFraction: 0.011,
+                    layerScale: SIMD3<Float>(1.0, 0.32, 0.10),
+                    width: width,
+                    height: height)
+                let glowed = stage.applyGlow(
+                    graded: graded,
+                    commandQueue: queue,
+                    strength: 0.35,
                     width: width,
                     height: height)
                 let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
-                return result == nil ? .nan : elapsed
+                return (halated == nil || glowed == nil) ? .nan : elapsed
             }
 
             for _ in 0..<5 { _ = once() }

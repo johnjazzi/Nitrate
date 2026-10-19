@@ -1,161 +1,37 @@
 import Foundation
 import Testing
 import Metal
+import simd
 
 /// Behavioural tests for the spatial halation/glow stage (epic story 1.4).
 ///
-/// The effect this replaced was per-pixel: it could only brighten pixels that were
-/// already bright, so a highlight never influenced its neighbours, and glow was a
-/// constant frame-wide lift. These tests pin the properties that make the new
-/// stage genuinely spatial, so a regression back to per-pixel behaviour fails:
+/// The stage now has TWO independent halves, and the tests are split the same
+/// way:
 ///
-///   1. light appears OUTSIDE the bright region (diffusion happened),
-///   2. the added light is warm — red above green above blue,
-///   3. the added light is LOCAL — far away the frame is untouched (this is what
-///      distinguishes diffusion from the old constant glow),
-///   4. zero strength is a no-op, so stock values of 0 really disable it.
+///  * `applyHalation` is physical and PRE-LUT. It decodes the ungraded Apple Log
+///    2 frame to linear scene light, diffuses each emulsion layer's superwhite
+///    excess at its own radius, adds the scattered energy back in LINEAR light,
+///    and re-encodes to Apple Log 2. The properties pinned here are the ones
+///    that make that physical: light appears OUTSIDE the source, the added light
+///    is warm, it is LOCAL, zero strength is identity, the source core grows
+///    instead of being hollowed into a ring, the per-layer knees select layers by
+///    intensity, each layer's own channel is read, and the whole thing is added
+///    in scene-linear BEFORE the encode.
 ///
-/// Distinct from `GrainABITests`, which checks a struct layout, not behaviour.
+///  * `applyGlow` is a post-LUT graded-luminance bloom, unchanged in look. Its
+///    tests pin that it still spreads light broadly and further than halation.
+///
+/// The mask kernel `spatial_halation_mask` is also dispatched directly so its
+/// decode-before-average order and odd-dimension handling can be asserted
+/// exactly rather than inferred through the blur and composite.
 struct SpatialEffectsTests {
-    /// Thin structures expose sparse scaled taps that broad block averages hide.
-    /// At 1024px, halation radius is 12.8 and glow radius is 25.6 half-res texels.
-    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"),
-          arguments: [false, true], [false, true])
-    func thinHighlightHasContinuousOutwardTails(glow: Bool, horizontal: Bool) throws {
-        let side = 1024
-        let device = try #require(MTLCreateSystemDefaultDevice())
-        let queue = try #require(device.makeCommandQueue())
-        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba16Float, width: side, height: side, mipmapped: false
-        )
-        descriptor.usage = [.shaderRead, .shaderWrite]
-        descriptor.storageMode = .shared
-        let graded = try #require(device.makeTexture(descriptor: descriptor))
-        // Exactly two half-res mask texels, symmetric about the image centre.
-        // The background is above the shadow fade, but below highlight extraction.
-        var pixels = [Float16](repeating: 0.125, count: side * side * 4)
-        for row in 0..<side {
-            for column in 0..<side {
-                let index = (row * side + column) * 4
-                if (510..<514).contains(horizontal ? row : column) {
-                    pixels[index] = 1
-                    pixels[index + 1] = 1
-                    pixels[index + 2] = 1
-                }
-                pixels[index + 3] = 1
-            }
-        }
-        pixels.withUnsafeBytes { raw in
-            graded.replace(region: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0,
-                           withBytes: raw.baseAddress!, bytesPerRow: side * 8)
-        }
-        // Halation reads the UNGRADED frame, so this fixture needs its own Apple
-        // Log 2 source: the same thin line as a superwhite (3x white) against an
-        // 18% grey surround. Without it halation has no linear scene light to
-        // work from and the test would measure nothing.
-        let input = try #require(device.makeTexture(descriptor: descriptor))
-        var sourcePixels = [Float16](repeating: Self.appleLogEncode(0.18), count: side * side * 4)
-        for row in 0..<side {
-            for column in 0..<side {
-                let index = (row * side + column) * 4
-                if (510..<514).contains(horizontal ? row : column) {
-                    let encoded = Self.appleLogEncode(3.0)
-                    sourcePixels[index] = encoded
-                    sourcePixels[index + 1] = encoded
-                    sourcePixels[index + 2] = encoded
-                }
-                sourcePixels[index + 3] = 1
-            }
-        }
-        sourcePixels.withUnsafeBytes { raw in
-            input.replace(region: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0,
-                          withBytes: raw.baseAddress!, bytesPerRow: side * 8)
-        }
-        let output = try #require(stage.apply(
-            graded: graded, input: input, commandQueue: queue,
-            halationStrength: glow ? 0 : 0.75, glowStrength: glow ? 0.75 : 0,
-            halationRadiusFraction: 0.025, halationTint: SIMD3(1, 0.32, 0.10),
-            width: side, height: side
-        ))
-        var result = [Float16](repeating: 0, count: pixels.count)
-        let synchronize = try #require(queue.makeCommandBuffer())
-        let blit = try #require(synchronize.makeBlitCommandEncoder())
-        blit.synchronize(resource: output)
-        blit.endEncoding()
-        synchronize.commit()
-        synchronize.waitUntilCompleted()
-        #expect(synchronize.status == .completed)
-        result.withUnsafeMutableBytes { raw in
-            output.getBytes(raw.baseAddress!, bytesPerRow: side * 8,
-                            from: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0)
-        }
-        func addedLight(at coordinate: Int) -> Double {
-            let index = horizontal ? (coordinate * side + side / 2) * 4
-                : (side / 2 * side + coordinate) * 4
-            return Double(result[index]) - 0.125
-        }
-        // Check individual pixels, not band averages. A detached lobe must not
-        // recover after an earlier valley, even if it is below the main peak.
-        // Two half-float steps allow readback/approximation noise, not ghost lobes.
-        let tolerance = 0.00025
-        var lowestSoFar = addedLight(at: 514)
-        var largestRecovery = 0.0
-        var largestAsymmetry = 0.0
-        for distance in 0..<320 {
-            let right = addedLight(at: 514 + distance)
-            let left = addedLight(at: 509 - distance)
-            largestRecovery = max(largestRecovery, right - lowestSoFar)
-            lowestSoFar = min(lowestSoFar, right)
-            largestAsymmetry = max(largestAsymmetry, abs(right - left))
-        }
-        #expect(largestRecovery <= tolerance,
-                "outward tail must not form detached lobes (recovery=\(largestRecovery), glow=\(glow), horizontal=\(horizontal))")
-        #expect(largestAsymmetry <= tolerance, "diffusion must remain symmetric about the thin highlight")
-        // Two distinct properties, so two distances. CONTINUITY is checked across
-        // the lit part of the tail: no dark gaps (the old sparse-tap kernel left
-        // detached lobes here). DECAY is checked further out, where the tail must
-        // have fallen away rather than lifting the frame. The decay distance grew
-        // with the physical model because red now diffuses at 1.8x the base radius
-        // — the tail is legitimately wider than the single shared radius it
-        // replaced, and the old 96px sat inside it rather than past it.
-        let litExtent = 96
-        let minimumTail = (0..<litExtent).map { addedLight(at: 514 + $0) }.min()!
-        #expect(minimumTail > 0.001, "added light must continuously fill the outward tail, not leave dark gaps")
-        let decayExtent = 192
-        #expect(addedLight(at: 514) > addedLight(at: 514 + decayExtent) + 0.001,
-                "the tail must decay rather than lifting the whole frame")
-    }
 
-    private static let width = 256
-    private static let height = 256
-
-    /// Dark frame with one bright block, as Float16 RGBA samples.
-    private static func gradedPixels() -> [Float16] {
-        let dark: Float16 = 0.05
-        let bright: Float16 = 0.8
-        let blockLower = 100
-        let blockUpper = 156
-        var pixels = [Float16]()
-        pixels.reserveCapacity(width * height * 4)
-        for row in 0..<height {
-            for column in 0..<width {
-                let inBlock = column >= blockLower && column < blockUpper
-                    && row >= blockLower && row < blockUpper
-                let value: Float16 = inBlock ? bright : dark
-                pixels.append(value)
-                pixels.append(value)
-                pixels.append(value)
-                pixels.append(1)
-            }
-        }
-        return pixels
-    }
+    // MARK: - Fixtures and helpers
 
     /// Apple Log 2 encode — the inverse of the decode the shader applies.
     /// Constants are Apple's via OpenColorIO v2.6.0 `AppleCameras.cpp`, the same
     /// source the shader and the LUT generator use. Needed because halation now
-    /// reads the UNGRADED frame, so fixtures have to be built as scene light and
+    /// reads the UNGRADED frame, so fixtures are built as scene light and
     /// encoded, not written as graded pixels.
     static func appleLogEncode(_ linear: Double) -> Float16 {
         let r0 = -0.05641088, rt = 0.01, c = 47.28711236
@@ -166,103 +42,78 @@ struct SpatialEffectsTests {
         return Float16(code)
     }
 
-    /// Linear scene light for the fixture: 18% grey surround, with the block as a
-    /// superwhite source. At 3x diffuse white the block clears red's knee (1.0)
-    /// and green's (2.0) but not blue's (4.0), so the halo must come out warm —
-    /// which is the property the colour assertions below depend on.
-    private static let blockLinear: Double = 3.0
-    private static let surroundLinear: Double = 0.18
+    /// Apple Log 2 decode, so read-back code values can be measured as the scene
+    /// light they carry — the space halation is actually added in.
+    static func appleLogDecode(_ code: Double) -> Double {
+        let r0 = -0.05641088, rt = 0.01, c = 47.28711236
+        let beta = 0.00964052, gamma = 0.08550479, delta = 0.69336945
+        let pt = c * (rt - r0) * (rt - r0)
+        if code >= pt { return pow(2, (code - delta) / gamma) - beta }
+        if code >= 0 { return (code / c).squareRoot() + r0 }
+        return r0
+    }
 
-    private static func inputPixels() -> [Float16] {
-        let blockLower = 100
-        let blockUpper = 156
+    /// RGBA16Float, CPU-readable texture with the given pixels.
+    private static func makeTexture(
+        device: MTLDevice, width: Int, height: Int, pixels: [Float16]
+    ) throws -> MTLTexture {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false
+        )
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.storageMode = .shared
+        let texture = try #require(device.makeTexture(descriptor: descriptor))
+        pixels.withUnsafeBytes { raw in
+            texture.replace(
+                region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
+                withBytes: raw.baseAddress!, bytesPerRow: width * 8
+            )
+        }
+        return texture
+    }
+
+    /// Build an Apple Log 2 encoded source from per-pixel linear scene light.
+    private static func sourcePixels(
+        width: Int, height: Int, _ value: (Int, Int) -> SIMD3<Double>
+    ) -> [Float16] {
         var pixels = [Float16]()
         pixels.reserveCapacity(width * height * 4)
         for row in 0..<height {
             for column in 0..<width {
-                let inBlock = column >= blockLower && column < blockUpper
-                    && row >= blockLower && row < blockUpper
-                let encoded = appleLogEncode(inBlock ? blockLinear : surroundLinear)
-                pixels.append(encoded)
-                pixels.append(encoded)
-                pixels.append(encoded)
+                let v = value(column, row)
+                pixels.append(appleLogEncode(v.x))
+                pixels.append(appleLogEncode(v.y))
+                pixels.append(appleLogEncode(v.z))
                 pixels.append(1)
             }
         }
         return pixels
     }
 
-    /// Mean per-channel value over a rectangle of an RGBA16Float readback buffer.
-    private struct ChannelMeans {
-        let red: Double
-        let green: Double
-        let blue: Double
-    }
-
-    private static func mean(
-        _ values: [Float16],
-        columns: Range<Int>,
-        rows: Range<Int>
-    ) -> ChannelMeans {
-        var red = 0.0
-        var green = 0.0
-        var blue = 0.0
-        var count = 0
-        for row in rows {
-            for column in columns {
-                let index = (row * width + column) * 4
-                red += Double(values[index])
-                green += Double(values[index + 1])
-                blue += Double(values[index + 2])
-                count += 1
+    /// Build a raw (non-encoded) RGBA16Float pixel array — for GRADED fixtures,
+    /// which are already display-referred and must not be Apple Log encoded.
+    private static func rawPixels(
+        width: Int, height: Int, _ value: (Int, Int) -> SIMD3<Double>
+    ) -> [Float16] {
+        var pixels = [Float16]()
+        pixels.reserveCapacity(width * height * 4)
+        for row in 0..<height {
+            for column in 0..<width {
+                let v = value(column, row)
+                pixels.append(Float16(v.x))
+                pixels.append(Float16(v.y))
+                pixels.append(Float16(v.z))
+                pixels.append(1)
             }
         }
-        let divisor = Double(count)
-        return ChannelMeans(red: red / divisor, green: green / divisor, blue: blue / divisor)
+        return pixels
     }
 
-    private static func makeTextures(
-        device: MTLDevice
-    ) throws -> (graded: MTLTexture, input: MTLTexture, pixels: [Float16]) {
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba16Float,
-            width: width,
-            height: height,
-            mipmapped: false
-        )
-        descriptor.usage = [.shaderRead, .shaderWrite]
-        descriptor.storageMode = .shared
-        let graded = try #require(device.makeTexture(descriptor: descriptor))
-        let input = try #require(device.makeTexture(descriptor: descriptor))
-
-        let pixels = gradedPixels()
-        pixels.withUnsafeBytes { raw in
-            graded.replace(
-                region: MTLRegionMake2D(0, 0, width, height),
-                mipmapLevel: 0,
-                withBytes: raw.baseAddress!,
-                bytesPerRow: width * MemoryLayout<Float16>.size * 4
-            )
-        }
-        let source = inputPixels()
-        source.withUnsafeBytes { raw in
-            input.replace(
-                region: MTLRegionMake2D(0, 0, width, height),
-                mipmapLevel: 0,
-                withBytes: raw.baseAddress!,
-                bytesPerRow: width * MemoryLayout<Float16>.size * 4
-            )
-        }
-        return (graded, input, pixels)
-    }
-
-    /// Read an RGBA16Float texture back to CPU half floats.
+    /// Synchronize then read an RGBA16Float texture back to CPU half floats.
     private static func readBack(
-        _ texture: MTLTexture,
-        device: MTLDevice,
-        queue: MTLCommandQueue
+        _ texture: MTLTexture, device: MTLDevice, queue: MTLCommandQueue,
+        width: Int, height: Int
     ) throws -> [Float16] {
-        // Synchronize so managed storage is coherent before getBytes.
         if let synchronize = queue.makeCommandBuffer(), let blit = synchronize.makeBlitCommandEncoder() {
             blit.synchronize(resource: texture)
             blit.endEncoding()
@@ -272,13 +123,54 @@ struct SpatialEffectsTests {
         var values = [Float16](repeating: 0, count: width * height * 4)
         values.withUnsafeMutableBytes { raw in
             texture.getBytes(
-                raw.baseAddress!,
-                bytesPerRow: width * MemoryLayout<Float16>.size * 4,
-                from: MTLRegionMake2D(0, 0, width, height),
-                mipmapLevel: 0
+                raw.baseAddress!, bytesPerRow: width * 8,
+                from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0
             )
         }
         return values
+    }
+
+    /// Run `applyHalation` and return the ENCODED result (Apple Log 2).
+    private static func runHalation(
+        stage: SpatialEffectsStage, device: MTLDevice, queue: MTLCommandQueue,
+        width: Int, height: Int, sourcePixels: [Float16],
+        strength: Float, radiusFraction: Float, layerScale: SIMD3<Float>
+    ) throws -> [Float16] {
+        let input = try makeTexture(device: device, width: width, height: height, pixels: sourcePixels)
+        let output = try #require(stage.applyHalation(
+            source: input, commandQueue: queue,
+            strength: strength, radiusFraction: radiusFraction, layerScale: layerScale,
+            width: width, height: height
+        ))
+        return try readBack(output, device: device, queue: queue, width: width, height: height)
+    }
+
+    /// Decode an RGBA16Float read-back to linear scene light as rgb triples.
+    private static func decodedLinear(_ encoded: [Float16], count: Int) -> [Double] {
+        var linear = [Double](repeating: 0, count: count * 3)
+        for index in 0..<count {
+            linear[index * 3] = appleLogDecode(Double(encoded[index * 4]))
+            linear[index * 3 + 1] = appleLogDecode(Double(encoded[index * 4 + 1]))
+            linear[index * 3 + 2] = appleLogDecode(Double(encoded[index * 4 + 2]))
+        }
+        return linear
+    }
+
+    /// Mean decoded-linear rgb over a rectangle.
+    private static func linearMean(
+        _ linear: [Double], width: Int, columns: Range<Int>, rows: Range<Int>
+    ) -> SIMD3<Double> {
+        var sum = SIMD3<Double>(0, 0, 0)
+        var count = 0
+        for row in rows {
+            for column in columns {
+                let index = (row * width + column) * 3
+                sum += SIMD3(linear[index], linear[index + 1], linear[index + 2])
+                count += 1
+            }
+        }
+        let divisor = Double(max(count, 1))
+        return sum / divisor
     }
 
     /// Compile `Resources/Shaders/spatial.metal` at runtime so the test exercises
@@ -292,302 +184,453 @@ struct SpatialEffectsTests {
         return try device.makeLibrary(source: source, options: nil)
     }
 
-    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func halationDiffusesOutsideTheHighlight() throws {
-        let device = try #require(MTLCreateSystemDefaultDevice())
-        let queue = try #require(device.makeCommandQueue())
-        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
-        let (graded, input, _) = try Self.makeTextures(device: device)
+    // MARK: - Shared fixtures
 
-        // Halation only: glow is deliberately excluded so this test pins the
-        // tight halo rather than the frame-wide bloom, which is measured below.
-        let output = try #require(stage.apply(
-            graded: graded,
-            input: input,
-            commandQueue: queue,
-            halationStrength: 0.5,
-            glowStrength: 0,
-            halationRadiusFraction: 0.012,
-            halationTint: SIMD3(1.0, 0.32, 0.10),
-            width: Self.width,
-            height: Self.height
-        ))
-        let result = try Self.readBack(output, device: device, queue: queue)
+    private static let side = 256
+    private static let blockLower = 100
+    private static let blockUpper = 156
+    private static let surround: Double = 0.18
+    private static let superwhite: Double = 3.0
+    private static let tint = SIMD3<Float>(1.0, 0.32, 0.10)
 
-        // A band hugging the outside of the block, which is dark in the source.
-        let adjacent = Self.mean(result, columns: 70..<99, rows: 110..<146)
-        // Far corner, ~60px from the block edge — beyond the halation radius.
-        let far = Self.mean(result, columns: 5..<40, rows: 5..<40)
-
-        // Warm cast: light passing through the emulsion skews red.
-        #expect(adjacent.red > adjacent.green)
-        #expect(adjacent.green > adjacent.blue)
-
-        // Far corner stays essentially untouched — proof the effect is local and
-        // not the constant frame-wide lift the old per-pixel glow applied.
-        // Measured: the source block edge is at x=100, this band spans 14-43px
-        // from it, and halation decays to exactly the source level (0.0500) by
-        // ~40px. So assert both "light was added here" and "nothing here".
-        #expect(adjacent.red > 0.06, "halation must add light outside the bright block")
-        #expect(far.red < 0.0505, "far field must stay at the source level, not be lifted")
-        #expect(adjacent.red > far.red + 0.01)
-    }
-
-    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func glowSpreadsWiderThanHalation() throws {
-        let device = try #require(MTLCreateSystemDefaultDevice())
-        let queue = try #require(device.makeCommandQueue())
-        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
-
-        // The block's right edge is at x=156. This band spans roughly 40-60 px
-        // beyond it: past halation's reach, still within glow's.
-        func farField(strength: Float, glow: Bool) throws -> Double {
-            let (graded, input, _) = try Self.makeTextures(device: device)
-            let output = try #require(stage.apply(
-                graded: graded,
-                input: input,
-                commandQueue: queue,
-                halationStrength: glow ? 0 : strength,
-                glowStrength: glow ? strength : 0,
-                halationRadiusFraction: 0.012,
-                halationTint: SIMD3(1.0, 0.32, 0.10),
-                width: Self.width,
-                height: Self.height
-            ))
-            let result = try Self.readBack(output, device: device, queue: queue)
-            return Self.mean(result, columns: 196..<216, rows: 100..<156).red
+    private static func blockSource(
+        width: Int, height: Int, block: SIMD3<Double>
+    ) -> [Float16] {
+        sourcePixels(width: width, height: height) { column, row in
+            let inBlock = column >= blockLower && column < blockUpper
+                && row >= blockLower && row < blockUpper
+            return inBlock ? block : SIMD3(surround, surround, surround)
         }
-
-        let halationFar = try farField(strength: 0.5, glow: false)
-        let glowFar = try farField(strength: 0.5, glow: true)
-
-        // Halation has decayed back to the untouched source level here, while
-        // glow is still measurably lifting the frame that far out. This is the
-        // property that separates a wide bloom from a tight halo.
-        #expect(halationFar < 0.0505, "halation should not reach this far (was \(halationFar))")
-        #expect(glowFar > halationFar + 0.003,
-                "glow must reach further than halation (halation=\(halationFar), glow=\(glowFar))")
     }
 
+    // MARK: - Halation: local, warm, physical
+
+    /// Light appears outside the bright region, it is warm, and it is local.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func zeroStrengthLeavesTheFrameUnchanged() throws {
+    func halationAddsWarmLocalLightOutsideTheHighlight() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
-        let (graded, input, source) = try Self.makeTextures(device: device)
+        let source = Self.blockSource(width: Self.side, height: Self.side,
+                                      block: SIMD3(Self.superwhite, Self.superwhite, Self.superwhite))
+        let encoded = try Self.runHalation(
+            stage: stage, device: device, queue: queue,
+            width: Self.side, height: Self.side, sourcePixels: source,
+            strength: 0.5, radiusFraction: 0.012, layerScale: Self.tint
+        )
+        let linear = Self.decodedLinear(encoded, count: Self.side * Self.side)
 
-        let output = try #require(stage.apply(
-            graded: graded,
-            input: input,
-            commandQueue: queue,
-            halationStrength: 0,
-            glowStrength: 0,
-            halationRadiusFraction: 0.012,
-            halationTint: SIMD3(1.0, 0.32, 0.10),
-            width: Self.width,
-            height: Self.height
-        ))
-        let result = try Self.readBack(output, device: device, queue: queue)
+        // Band hugging the outside of the block (right edge x=156); dark in source.
+        let adjacent = Self.linearMean(linear, width: Self.side, columns: 158..<178, rows: 100..<156)
+        // Far corner, well beyond the halation radius.
+        let far = Self.linearMean(linear, width: Self.side, columns: 5..<40, rows: 5..<40)
 
-        // Every sample matches the input: a stock with both effects at zero is a
-        // pure passthrough, so disabling the look really disables it.
+        let addedRed = adjacent.x - Self.surround
+        let addedGreen = adjacent.y - Self.surround
+        let addedBlue = adjacent.z - Self.surround
+
+        #expect(addedRed > 0.002, "halation must add light outside the bright block (was \\(addedRed))")
+        // Warm: red responds to the least light, green next; blue is below its
+        // 4.0 knee at a 3.0x source and stays dark.
+        #expect(addedRed > addedGreen + 0.0005, "red must dominate green (red \\(addedRed), green \\(addedGreen))")
+        #expect(addedGreen > addedBlue + 0.0005, "green must dominate blue (green \\(addedGreen), blue \\(addedBlue))")
+
+        // Far corner stays at the source level — the effect is local, not the
+        // constant frame-wide lift the old per-pixel glow applied.
+        #expect(abs(far.x - Self.surround) < 0.003, "far field must stay at the source level (was \\(far.x))")
+        #expect(abs(far.z - Self.surround) < 0.003, "far field must stay at the source level (was \\(far.z))")
+    }
+
+    /// The source core gains light rather than being hollowed into a ring.
+    ///
+    /// Reflected light lands across the source's own footprint too, and because
+    /// that energy accumulates it makes a very bright source read as *larger*.
+    /// So the centre must gain light, and the added light at the centre must
+    /// exceed the added light in the tail outside it. A ring (subtracting the
+    /// source's own highlight) would fail both.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func halationBrightensSourceCoreInsteadOfHollowingIt() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        let source = Self.blockSource(width: Self.side, height: Self.side,
+                                      block: SIMD3(Self.superwhite, Self.superwhite, Self.superwhite))
+        let encoded = try Self.runHalation(
+            stage: stage, device: device, queue: queue,
+            width: Self.side, height: Self.side, sourcePixels: source,
+            strength: 0.5, radiusFraction: 0.012, layerScale: Self.tint
+        )
+        let linear = Self.decodedLinear(encoded, count: Self.side * Self.side)
+
+        let centre = Self.linearMean(linear, width: Self.side, columns: 118..<138, rows: 118..<138)
+        let tail = Self.linearMean(linear, width: Self.side, columns: 70..<99, rows: 110..<146)
+
+        let centreAdded = centre.x - Self.superwhite
+        let tailAdded = tail.x - Self.surround
+
+        #expect(tailAdded > 0.005, "the tail outside the source must still be lit (was \\(tailAdded))")
+        #expect(centreAdded > 0, "the source core must gain light, not be hollowed (was \\(centreAdded))")
+        #expect(centreAdded > tailAdded,
+                "added light at the source centre (\\(centreAdded)) must exceed the tail (\\(tailAdded)) — the source grows, it is not a ring")
+    }
+
+    /// Zero strength is identity: a stock with halation at 0 is a passthrough.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func zeroStrengthIsIdentityForHalation() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        let source = Self.blockSource(width: Self.side, height: Self.side,
+                                      block: SIMD3(Self.superwhite, Self.superwhite, Self.superwhite))
+        let encoded = try Self.runHalation(
+            stage: stage, device: device, queue: queue,
+            width: Self.side, height: Self.side, sourcePixels: source,
+            strength: 0, radiusFraction: 0.012, layerScale: Self.tint
+        )
+        // Decode-then-encode is not bit-exact in float16, so this compares in
+        // code space with a tolerance of two half-float steps, not equality.
         for index in stride(from: 0, to: source.count, by: 4) {
-            #expect(abs(Double(result[index]) - Double(source[index])) < 0.002)
+            #expect(abs(Double(encoded[index]) - Double(source[index])) < 0.002,
+                    "zero strength must not change the frame (index \\(index))")
         }
     }
 
-    /// Per-stock halo geometry: two stocks with different radius and tint must
-    /// produce measurably different halo spread AND colour, not merely a
-    /// different intensity. 5207 (tight, saturated red) vs 5219 (wide, less
-    /// saturated) per the published starting values.
+    // MARK: - Per-layer physics
+
+    /// Neutral sources across the knee ladder light exactly the layers whose
+    /// knee they clear. Reading red's energy into the green/blue channels would
+    /// light green and blue for a source that never reaches their knees.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func halationKneeLadderSelectsLayersByIntensity() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+
+        func halo(_ level: Double) throws -> SIMD3<Double> {
+            let source = Self.blockSource(width: Self.side, height: Self.side,
+                                          block: SIMD3(level, level, level))
+            let encoded = try Self.runHalation(
+                stage: stage, device: device, queue: queue,
+                width: Self.side, height: Self.side, sourcePixels: source,
+                strength: 1.0, radiusFraction: 0.03, layerScale: Self.tint
+            )
+            let linear = Self.decodedLinear(encoded, count: Self.side * Self.side)
+            let band = Self.linearMean(linear, width: Self.side, columns: 160..<180, rows: 100..<156)
+            return band - SIMD3(repeating: Self.surround)
+        }
+
+        // 1.5x: clears red's 1.0 knee only.
+        let redOnly = try halo(1.5)
+        // 3.0x: clears red and green, still below blue's 4.0.
+        let redGreen = try halo(3.0)
+        // 8.0x: clears all three.
+        let allLayers = try halo(8.0)
+
+        #expect(redOnly.x > 0.002, "red must respond above its 1.0 knee (was \\(redOnly.x))")
+        #expect(redOnly.y < redOnly.x * 0.1, "green must stay dark below its 2.0 knee (was \\(redOnly.y))")
+        #expect(redOnly.z < redOnly.x * 0.1, "blue must stay dark below its 4.0 knee (was \\(redOnly.z))")
+
+        #expect(redGreen.y > 0.002, "green must respond above its 2.0 knee (was \\(redGreen.y))")
+        #expect(redGreen.z < redGreen.y * 0.1, "blue must stay dark below its 4.0 knee (was \\(redGreen.z))")
+
+        #expect(allLayers.z > 0.002, "blue must respond above its 4.0 knee (was \\(allLayers.z))")
+    }
+
+    /// An all-red source exposes only the red layer, so its halo must stay red.
+    /// If the apply kernel read `.r` from the green and blue diffusions, red's
+    /// diffused energy would light them and the source would masquerade as RGB.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func colouredSourceDoesNotLightOtherLayers() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        // Block: red at 3x diffuse white, green/blue at 18% grey. Only red is
+        // above its knee, so the mask is (red, 0, 0).
+        let source = Self.blockSource(
+            width: Self.side, height: Self.side,
+            block: SIMD3(Self.superwhite, Self.surround, Self.surround)
+        )
+        let encoded = try Self.runHalation(
+            stage: stage, device: device, queue: queue,
+            width: Self.side, height: Self.side, sourcePixels: source,
+            strength: 1.0, radiusFraction: 0.03, layerScale: Self.tint
+        )
+        let linear = Self.decodedLinear(encoded, count: Self.side * Self.side)
+        let band = Self.linearMean(linear, width: Self.side, columns: 160..<180, rows: 100..<156)
+        let added = band - SIMD3(repeating: Self.surround)
+
+        #expect(added.x > 0.002, "the red layer must respond (was \\(added.x))")
+        #expect(added.y < added.x * 0.1, "an all-red source must not light green (was \\(added.y))")
+        #expect(added.z < added.x * 0.1, "an all-red source must not light blue (was \\(added.z))")
+    }
+
+    /// Per-stock halo geometry: two stocks with different radius and layer weight
+    /// must produce measurably different spread AND colour.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
     func perStockGeometryChangesSpreadAndColour() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
-        let sourceLevel = 0.05
 
-        func measure(radiusFraction: Float, tint: SIMD3<Float>) throws -> (far: ChannelMeans, near: ChannelMeans) {
-            let (graded, input, _) = try Self.makeTextures(device: device)
-            let output = try #require(stage.apply(
-                graded: graded,
-                input: input,
-                commandQueue: queue,
-                halationStrength: 0.5,
-                glowStrength: 0,
-                halationRadiusFraction: radiusFraction,
-                halationTint: tint,
-                width: Self.width,
-                height: Self.height
-            ))
-            let result = try Self.readBack(output, device: device, queue: queue)
-            // Far band, ~40-60px beyond the block's right edge (x=156): a tight
-            // halo has decayed here, a wide one still reaches. Source is dark.
-            let far = Self.mean(result, columns: 196..<216, rows: 100..<156)
-            // Band hugging the boundary, where both radii carry signal — used
-            // for the colour comparison.
-            let near = Self.mean(result, columns: 162..<182, rows: 100..<156)
+        func measure(radiusFraction: Float, layerScale: SIMD3<Float>) throws -> (far: SIMD3<Double>, near: SIMD3<Double>) {
+            let source = Self.blockSource(width: Self.side, height: Self.side,
+                                          block: SIMD3(Self.superwhite, Self.superwhite, Self.superwhite))
+            let encoded = try Self.runHalation(
+                stage: stage, device: device, queue: queue,
+                width: Self.side, height: Self.side, sourcePixels: source,
+                strength: 0.5, radiusFraction: radiusFraction, layerScale: layerScale
+            )
+            let linear = Self.decodedLinear(encoded, count: Self.side * Self.side)
+            // Far band, ~40-60px beyond the block's right edge (x=156).
+            let far = Self.linearMean(linear, width: Self.side, columns: 196..<216, rows: 100..<156)
+            // Band hugging the boundary, where both radii carry signal.
+            let near = Self.linearMean(linear, width: Self.side, columns: 162..<182, rows: 100..<156)
             return (far, near)
         }
 
-        let tight = try measure(radiusFraction: 0.008, tint: SIMD3(1.0, 0.20, 0.10))
-        let wide = try measure(radiusFraction: 0.040, tint: SIMD3(1.0, 0.32, 0.10))
+        let tight = try measure(radiusFraction: 0.008, layerScale: SIMD3(1.0, 0.20, 0.10))
+        let wide = try measure(radiusFraction: 0.040, layerScale: SIMD3(1.0, 0.32, 0.10))
 
-        // Spread: the wider per-stock radius adds more light further out.
-        let tightFar = tight.far.red - sourceLevel
-        let wideFar = wide.far.red - sourceLevel
+        let tightFar = tight.far.x - Self.surround
+        let wideFar = wide.far.x - Self.surround
         #expect(wideFar > tightFar + 0.002,
-                "wider per-stock radius must spread further (tight=\(tightFar), wide=\(wideFar))")
+                "wider per-stock radius must spread further (tight \\(tightFar), wide \\(wideFar))")
 
-        // Colour: the green/red ratio is the halo cast, independent of strength
-        // and radius, so a tint change must move it.
-        let tightRatio = (tight.near.green - sourceLevel) / (tight.near.red - sourceLevel)
-        let wideRatio = (wide.near.green - sourceLevel) / (wide.near.red - sourceLevel)
-        #expect(wideRatio > tightRatio + 0.05,
-                "per-stock tint must change halo colour (tight=\(tightRatio), wide=\(wideRatio))")
+        let tightRatio = (tight.near.y - Self.surround) / (tight.near.x - Self.surround)
+        let wideRatio = (wide.near.y - Self.surround) / (wide.near.x - Self.surround)
+        #expect(wideRatio > tightRatio + 0.03,
+                "per-stock layer weight must change halo colour (tight \\(tightRatio), wide \\(wideRatio))")
     }
 
-    /// The source brightens and grows, rather than being hollowed into a ring.
-    ///
-    /// This replaces `halationIsARingNotADisc`, which asserted the opposite — that
-    /// the highlight centre receives LESS added light than the tail. That was the
-    /// old implementation's intent: it subtracted the source's own highlight from
-    /// the blurred mask to fake a ring. It is not what halation does. The
-    /// reflected light lands across the source's footprint too, and because that
-    /// energy accumulates and saturates toward white it makes a very bright source
-    /// read as *larger* — the third characteristic of real halation, and the one
-    /// the reference material calls out as missing from other implementations.
-    /// So the centre must gain light, and the added light at the centre must
-    /// exceed the added light in the tail outside it.
+    // MARK: - Radius: zero and small, without the old floor
+
+    /// Zero radius means no spatial diffusion — but the scattered energy is
+    /// still added, locally, over the source's own footprint. It is not "no
+    /// effect", and it must not ask MPS for an invalid sigma of zero.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func halationBrightensTheSourceCoreInsteadOfHollowingIt() throws {
+    func halationZeroRadiusAddsLocalEnergyWithoutDiffusion() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
-        let (graded, input, _) = try Self.makeTextures(device: device)
-
-        let output = try #require(stage.apply(
-            graded: graded,
-            input: input,
-            commandQueue: queue,
-            halationStrength: 0.5,
-            glowStrength: 0,
-            halationRadiusFraction: 0.012,
-            halationTint: SIMD3(1.0, 0.32, 0.10),
-            width: Self.width,
-            height: Self.height
-        ))
-        let result = try Self.readBack(output, device: device, queue: queue)
-
-        let bright: Double = 0.8
-        let dark: Double = 0.05
-        // Centre of the bright block (block spans 100..<156).
-        let centre = Self.mean(result, columns: 118..<138, rows: 118..<138)
-        // Tail hugging the outside of the block's left edge (x=100), dark in the
-        // source.
-        let tail = Self.mean(result, columns: 70..<99, rows: 110..<146)
-
-        let centreAdded = centre.red - bright
-        let tailAdded = tail.red - dark
-
-        #expect(tailAdded > 0.005, "the tail outside the source must still be lit (was \(tailAdded))")
-        #expect(centreAdded > 0,
-                "the source core must gain light rather than being hollowed out (was \(centreAdded))")
-        #expect(centreAdded > tailAdded,
-                "added light at the source centre (\(centreAdded)) must exceed the tail (\(tailAdded)) — the source grows, it is not a ring")
-    }
-
-    // ======================================================================
-    // Physical halation: per-layer channel and downsample regressions
-    // ======================================================================
-    //
-    // The two defects these tests pin are invisible to any assertion on a
-    // NEUTRAL source alone, because a neutral source puts equal energy in every
-    // channel — an all-red mask blurred and then read from `.r` in all three
-    // composite channels looks identical to a correct one. So the fixtures below
-    // deliberately separate the channels: sources that sit between the per-layer
-    // knees, and sources that are coloured, where "red's energy leaked into the
-    // green and blue layers" changes the measured halo.
-
-    /// Linear-scene-light fixture with independent per-channel block/surround
-    /// values, encoded as Apple Log 2 for the ungraded input.
-    private static func inputPixels(block: SIMD3<Double>, surround: SIMD3<Double>) -> [Float16] {
-        let blockLower = 100
-        let blockUpper = 156
-        var pixels = [Float16]()
-        pixels.reserveCapacity(width * height * 4)
-        for row in 0..<height {
-            for column in 0..<width {
-                let inBlock = column >= blockLower && column < blockUpper
-                    && row >= blockLower && row < blockUpper
-                let value = inBlock ? block : surround
-                pixels.append(appleLogEncode(value.x))
-                pixels.append(appleLogEncode(value.y))
-                pixels.append(appleLogEncode(value.z))
-                pixels.append(1)
-            }
-        }
-        return pixels
-    }
-
-    /// Graded texture (fixed dark/bright block, used only for the shadow fade)
-    /// plus an ungraded input built from the supplied scene light.
-    private static func makeTextures(
-        device: MTLDevice,
-        source: [Float16]
-    ) throws -> (graded: MTLTexture, input: MTLTexture) {
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba16Float,
-            width: width,
-            height: height,
-            mipmapped: false
+        let source = Self.blockSource(width: Self.side, height: Self.side,
+                                      block: SIMD3(Self.superwhite, Self.superwhite, Self.superwhite))
+        let encoded = try Self.runHalation(
+            stage: stage, device: device, queue: queue,
+            width: Self.side, height: Self.side, sourcePixels: source,
+            strength: 1.0, radiusFraction: 0, layerScale: Self.tint
         )
-        descriptor.usage = [.shaderRead, .shaderWrite]
-        descriptor.storageMode = .shared
-        let graded = try #require(device.makeTexture(descriptor: descriptor))
-        let input = try #require(device.makeTexture(descriptor: descriptor))
+        let linear = Self.decodedLinear(encoded, count: Self.side * Self.side)
 
-        let pixels = gradedPixels()
-        pixels.withUnsafeBytes { raw in
-            graded.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
-                           withBytes: raw.baseAddress!, bytesPerRow: width * 8)
-        }
-        source.withUnsafeBytes { raw in
-            input.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
-                          withBytes: raw.baseAddress!, bytesPerRow: width * 8)
-        }
-        return (graded, input)
+        let core = Self.linearMean(linear, width: Self.side, columns: 110..<146, rows: 110..<146)
+        let justOutside = Self.linearMean(linear, width: Self.side, columns: 158..<178, rows: 100..<156)
+        let far = Self.linearMean(linear, width: Self.side, columns: 5..<40, rows: 5..<40)
+
+        #expect(core.x - Self.superwhite > 0.002,
+                "zero radius must still add local energy over the source (was \\(core.x - Self.superwhite))")
+        #expect(justOutside.x - Self.surround < 0.003,
+                "zero radius must not diffuse into the surround (was \\(justOutside.x - Self.surround))")
+        #expect(abs(far.x - Self.surround) < 0.003, "zero radius must not reach the far field (was \\(far.x))")
     }
 
-    /// Run halation only and return the mean ADDED light in a band hugging the
-    /// block's right edge (x=156), where the graded source is dark (0.05).
-    /// Added light is measured per channel, so a channel that should be dark
-    /// reads as zero and a channel fed the wrong layer's energy reads as lit.
-    private static func halationAddedLight(
-        device: MTLDevice,
-        queue: MTLCommandQueue,
-        stage: SpatialEffectsStage,
-        source: [Float16],
-        radiusFraction: Float,
-        tint: SIMD3<Float>
-    ) throws -> ChannelMeans {
-        let (graded, input) = try makeTextures(device: device, source: source)
-        let output = try #require(stage.apply(
-            graded: graded,
-            input: input,
-            commandQueue: queue,
-            halationStrength: 1.0,
-            glowStrength: 0,
-            halationRadiusFraction: radiusFraction,
-            halationTint: tint,
-            width: width,
-            height: height
-        ))
-        let result = try readBack(output, device: device, queue: queue)
-        let band = mean(result, columns: 160..<180, rows: 100..<156)
-        let dark = 0.05
-        return ChannelMeans(red: band.red - dark, green: band.green - dark, blue: band.blue - dark)
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func zeroStrengthPreservesEncodedShadowValuesExactly() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        let source = Self.rawPixels(width: 8, height: 8) { _, _ in SIMD3(0.02, 0.1, 0.5) }
+        let output = try Self.runHalation(stage: stage, device: device, queue: queue,
+            width: 8, height: 8, sourcePixels: source, strength: 0, radiusFraction: 0.01,
+            layerScale: Self.tint)
+        #expect(output == source, "Disabled halation must not clamp negative scene-light noise or re-encode the source")
     }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func zeroRadiusPreservesASinglePixelSourceFootprint() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        let source = Self.sourcePixels(width: 8, height: 8) { x, y in
+            x == 3 && y == 3 ? SIMD3(9, 9, 9) : SIMD3(0.18, 0.18, 0.18)
+        }
+        let output = try Self.runHalation(stage: stage, device: device, queue: queue,
+            width: 8, height: 8, sourcePixels: source, strength: 1, radiusFraction: 0,
+            layerScale: Self.tint)
+        let changedPixels = (0..<64).filter { index in
+            abs(Double(output[index * 4]) - Double(source[index * 4])) > 0.001
+        }
+        #expect(changedPixels == [27], "Zero radius must add energy only to the source pixel, not a resampled footprint")
+    }
+
+    /// A larger radius spreads further, and any positive radius spreads further
+    /// than zero. This is what the removed `max(2, ...)` floor used to prevent:
+    /// radii below two texels were silently clamped up to the same value.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func halationSmallRadiusSpreadsLessThanLarge() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+
+        func nearBand(radiusFraction: Float) throws -> Double {
+            let source = Self.blockSource(width: Self.side, height: Self.side,
+                                          block: SIMD3(Self.superwhite, Self.superwhite, Self.superwhite))
+            let encoded = try Self.runHalation(
+                stage: stage, device: device, queue: queue,
+                width: Self.side, height: Self.side, sourcePixels: source,
+                strength: 1.0, radiusFraction: radiusFraction, layerScale: Self.tint
+            )
+            let linear = Self.decodedLinear(encoded, count: Self.side * Self.side)
+            return Self.linearMean(linear, width: Self.side, columns: 158..<178, rows: 100..<156).x - Self.surround
+        }
+
+        let zero = try nearBand(radiusFraction: 0)
+        let small = try nearBand(radiusFraction: 0.01)
+        let large = try nearBand(radiusFraction: 0.03)
+
+        #expect(small > zero + 0.001, "any positive radius must spread further than zero (zero \\(zero), small \\(small))")
+        #expect(large > small + 0.001, "a larger radius must spread further (small \\(small), large \\(large))")
+    }
+
+    // MARK: - Order of operations
+
+    /// The scattered energy is added in scene-LINEAR light and then re-encoded to
+    /// Apple Log 2, so the stock LUT grades it by the same curve as the source.
+    ///
+    /// Dispatches `spatial_halation_apply` directly with a uniform source and
+    /// known diffusion so the arithmetic is exact. A kernel that added in the
+    /// encoded (code) domain instead — the old bug — would land near 0.95, not
+    /// 0.38, so the two orders are far apart.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func halationEnergyIsAddedInSceneLinearBeforeTheEncode() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let function = try #require(
+            try Self.shaderLibrary(device: device).makeFunction(name: "spatial_halation_apply")
+        )
+        let pipeline = try device.makeComputePipelineState(function: function)
+        let side = 16
+
+        // Source 0.18; each layer carries 1.6, normalized by referenceSuperwhite
+        // 8 → 0.2 added in linear → 0.38.
+        let source = Self.sourcePixels(width: side, height: side) { _, _ in SIMD3(0.18, 0.18, 0.18) }
+        func fill(_ channel: Int, _ value: Float) -> [Float16] {
+            var pixels = [Float16](repeating: 0, count: side * side * 4)
+            for index in 0..<(side * side) { pixels[index * 4 + channel] = Float16(value) }
+            return pixels
+        }
+
+        func run(strength: Float) throws -> SIMD3<Double> {
+            let sourceTexture = try Self.makeTexture(device: device, width: side, height: side, pixels: source)
+            let red = try Self.makeTexture(device: device, width: side, height: side, pixels: fill(0, 1.6))
+            let green = try Self.makeTexture(device: device, width: side, height: side, pixels: fill(1, 1.6))
+            let blue = try Self.makeTexture(device: device, width: side, height: side, pixels: fill(2, 1.6))
+            let output = try Self.makeTexture(device: device, width: side, height: side,
+                                              pixels: [Float16](repeating: 0, count: side * side * 4))
+            let commandBuffer = try #require(queue.makeCommandBuffer())
+            let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
+            var strength = strength
+            var layerScale = SIMD3<Float>(1, 1, 1)
+            var referenceSuperwhite: Float = 8
+            encoder.setComputePipelineState(pipeline)
+            encoder.setTexture(sourceTexture, index: 0)
+            encoder.setTexture(red, index: 1)
+            encoder.setTexture(green, index: 2)
+            encoder.setTexture(blue, index: 3)
+            encoder.setTexture(output, index: 4)
+            encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
+            encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
+            encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
+            encoder.dispatchThreadgroups(
+                MTLSize(width: 1, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: side, height: side, depth: 1)
+            )
+            encoder.endEncoding()
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+            #expect(commandBuffer.status == .completed)
+            let values = try Self.readBack(output, device: device, queue: queue, width: side, height: side)
+            return SIMD3(
+                Self.appleLogDecode(Double(values[0])),
+                Self.appleLogDecode(Double(values[1])),
+                Self.appleLogDecode(Double(values[2]))
+            )
+        }
+
+        let full = try run(strength: 1.0)
+        #expect(abs(full.x - 0.38) < 0.004, "linear add + encode expected 0.38 (was \\(full.x))")
+        #expect(abs(full.y - 0.38) < 0.004, "linear add + encode expected 0.38 (was \\(full.y))")
+        #expect(abs(full.z - 0.38) < 0.004, "linear add + encode expected 0.38 (was \\(full.z))")
+
+        let half = try run(strength: 0.5)
+        #expect(abs(half.x - 0.28) < 0.004, "strength must scale the linear contribution (was \\(half.x))")
+    }
+
+    /// The apply kernel reads each layer's OWN channel. Three diffusion textures
+    /// with energy in different channels pin this directly: a kernel that
+    /// sampled `.r` from all three would add the decoy values instead.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func halationApplyReadsEachLayerChannel() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let function = try #require(
+            try Self.shaderLibrary(device: device).makeFunction(name: "spatial_halation_apply")
+        )
+        let pipeline = try device.makeComputePipelineState(function: function)
+        let side = 16
+
+        let source = Self.sourcePixels(width: side, height: side) { _, _ in SIMD3(0.18, 0.18, 0.18) }
+        func uniform(_ fill: SIMD3<Float>) -> [Float16] {
+            var pixels = [Float16](repeating: 0, count: side * side * 4)
+            for index in 0..<(side * side) {
+                pixels[index * 4] = Float16(fill.x)
+                pixels[index * 4 + 1] = Float16(fill.y)
+                pixels[index * 4 + 2] = Float16(fill.z)
+                pixels[index * 4 + 3] = 1
+            }
+            return pixels
+        }
+
+        let sourceTexture = try Self.makeTexture(device: device, width: side, height: side, pixels: source)
+        // Decoys in `.r` of the green and blue textures are what a wrong read picks up.
+        let red = try Self.makeTexture(device: device, width: side, height: side, pixels: uniform(SIMD3(0.8, 0.9, 0.9)))
+        let green = try Self.makeTexture(device: device, width: side, height: side, pixels: uniform(SIMD3(0.7, 0.5, 0.7)))
+        let blue = try Self.makeTexture(device: device, width: side, height: side, pixels: uniform(SIMD3(0.6, 0.6, 0.4)))
+        let output = try Self.makeTexture(device: device, width: side, height: side,
+                                          pixels: [Float16](repeating: 0, count: side * side * 4))
+
+        let commandBuffer = try #require(queue.makeCommandBuffer())
+        let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
+        var strength: Float = 1.0
+        var layerScale = SIMD3<Float>(1, 1, 1)
+        var referenceSuperwhite: Float = 8
+        encoder.setComputePipelineState(pipeline)
+        encoder.setTexture(sourceTexture, index: 0)
+        encoder.setTexture(red, index: 1)
+        encoder.setTexture(green, index: 2)
+        encoder.setTexture(blue, index: 3)
+        encoder.setTexture(output, index: 4)
+        encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
+        encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
+        encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
+        encoder.dispatchThreadgroups(
+            MTLSize(width: 1, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: side, height: side, depth: 1)
+        )
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        #expect(commandBuffer.status == .completed)
+
+        let values = try Self.readBack(output, device: device, queue: queue, width: side, height: side)
+        // 0.18 + 0.8/8 = 0.28, 0.18 + 0.5/8 = 0.2425, 0.18 + 0.4/8 = 0.23.
+        let redOut = Self.appleLogDecode(Double(values[0]))
+        let greenOut = Self.appleLogDecode(Double(values[1]))
+        let blueOut = Self.appleLogDecode(Double(values[2]))
+        #expect(abs(redOut - 0.28) < 0.004, "red must read the red layer (was \\(redOut))")
+        #expect(abs(greenOut - 0.2425) < 0.004, "green must read the green layer (was \\(greenOut))")
+        #expect(abs(blueOut - 0.23) < 0.004, "blue must read the blue layer (was \\(blueOut))")
+    }
+
+    // MARK: - Mask kernel (dispatched directly)
 
     /// Dispatch `spatial_halation_mask` directly and read the half-resolution
     /// mask back, so per-layer energy and the 2x2 downsample can be asserted
@@ -606,34 +649,14 @@ struct SpatialEffectsTests {
         )
         let pipeline = try device.makeComputePipelineState(function: function)
 
-        let inputDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false
+        let input = try makeTexture(
+            device: device, width: width, height: height,
+            pixels: sourcePixels(width: width, height: height, linear)
         )
-        inputDescriptor.usage = [.shaderRead, .shaderWrite]
-        inputDescriptor.storageMode = .shared
-        let input = try #require(device.makeTexture(descriptor: inputDescriptor))
-        var pixels = [Float16]()
-        pixels.reserveCapacity(width * height * 4)
-        for row in 0..<height {
-            for column in 0..<width {
-                let value = linear(column, row)
-                pixels.append(appleLogEncode(value.x))
-                pixels.append(appleLogEncode(value.y))
-                pixels.append(appleLogEncode(value.z))
-                pixels.append(1)
-            }
-        }
-        pixels.withUnsafeBytes { raw in
-            input.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
-                          withBytes: raw.baseAddress!, bytesPerRow: width * 8)
-        }
-
-        let maskDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba16Float, width: maskWidth, height: maskHeight, mipmapped: false
+        let mask = try makeTexture(
+            device: device, width: maskWidth, height: maskHeight,
+            pixels: [Float16](repeating: 0, count: maskWidth * maskHeight * 4)
         )
-        maskDescriptor.usage = [.shaderRead, .shaderWrite]
-        maskDescriptor.storageMode = .shared
-        let mask = try #require(device.makeTexture(descriptor: maskDescriptor))
 
         let commandBuffer = try #require(queue.makeCommandBuffer())
         let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
@@ -655,12 +678,7 @@ struct SpatialEffectsTests {
         commandBuffer.waitUntilCompleted()
         #expect(commandBuffer.status == .completed)
 
-        var values = [Float16](repeating: 0, count: maskWidth * maskHeight * 4)
-        values.withUnsafeMutableBytes { raw in
-            mask.getBytes(raw.baseAddress!, bytesPerRow: maskWidth * 8,
-                          from: MTLRegionMake2D(0, 0, maskWidth, maskHeight), mipmapLevel: 0)
-        }
-        return values
+        return try readBack(mask, device: device, queue: queue, width: maskWidth, height: maskHeight)
     }
 
     /// A subpixel superwhite must survive the half-resolution downsample.
@@ -686,9 +704,9 @@ struct SpatialEffectsTests {
         let red = Double(mask[0])
         let green = Double(mask[1])
         let blue = Double(mask[2])
-        #expect(abs(red - 1.385) < 0.02, "red must preserve the subpixel specular (was \(red))")
-        #expect(abs(green - 0.385) < 0.02, "green must preserve the subpixel specular (was \(green))")
-        #expect(blue < 0.01, "blue is below its 4.0 knee and must stay dark (was \(blue))")
+        #expect(abs(red - 1.385) < 0.02, "red must preserve the subpixel specular (was \\(red))")
+        #expect(abs(green - 0.385) < 0.02, "green must preserve the subpixel specular (was \\(green))")
+        #expect(blue < 0.01, "blue is below its 4.0 knee and must stay dark (was \\(blue))")
     }
 
     /// A mask texel whose 2x2 block runs off an odd-sized frame must average the
@@ -711,154 +729,135 @@ struct SpatialEffectsTests {
         let red = Double(mask[4])
         let green = Double(mask[5])
         let blue = Double(mask[6])
-        #expect(abs(red - 1.5) < 0.02, "partial block must average its valid samples (was \(red))")
-        #expect(abs(green - 0.5) < 0.02, "partial block must average its valid samples (was \(green))")
-        #expect(blue < 0.01, "blue is below its 4.0 knee (was \(blue))")
+        #expect(abs(red - 1.5) < 0.02, "partial block must average its valid samples (was \\(red))")
+        #expect(abs(green - 0.5) < 0.02, "partial block must average its valid samples (was \\(green))")
+        #expect(blue < 0.01, "blue is below its 4.0 knee (was \\(blue))")
 
         // Texel (0,0): full block, same uniform source, must agree.
         #expect(abs(Double(mask[0]) - red) < 0.02,
                 "full and partial blocks of a uniform source must agree")
     }
 
-    /// Neutral sources across the knee ladder must light exactly the layers
-    /// whose knee they clear. Reading red's energy into the green/blue channels
-    /// would light green and blue for a source that never reaches their knees.
+    // MARK: - Profiles and glow
+
+    /// The outward halo is a single connected, monotonically decaying,
+    /// light-only ramp. No detached lobe (the old sparse-tap kernel left them)
+    /// and no dark gap; the profile never recovers after falling.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func halationKneeLadderSelectsLayersByIntensity() throws {
+    func halationProfileIsConnectedMonotonicAndLightOnly() throws {
+        let side = 1024
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
-        let grey = SIMD3<Double>(0.18, 0.18, 0.18)
-        let tint = SIMD3<Float>(1.0, 0.32, 0.10)
-
-        func halo(_ level: Double) throws -> ChannelMeans {
-            try Self.halationAddedLight(
-                device: device, queue: queue, stage: stage,
-                source: Self.inputPixels(block: SIMD3(level, level, level), surround: grey),
-                radiusFraction: 0.03, tint: tint
-            )
+        // A thin vertical line: two half-res mask texels, symmetric about centre.
+        let source = Self.sourcePixels(width: side, height: side) { column, _ in
+            (510..<514).contains(column)
+                ? SIMD3(Self.superwhite, Self.superwhite, Self.superwhite)
+                : SIMD3(Self.surround, Self.surround, Self.surround)
         }
+        let encoded = try Self.runHalation(
+            stage: stage, device: device, queue: queue,
+            width: side, height: side, sourcePixels: source,
+            strength: 2.0, radiusFraction: 0.012, layerScale: Self.tint
+        )
+        let linear = Self.decodedLinear(encoded, count: side * side)
 
-        // 1.5x: clears red's 1.0 knee only.
-        let redOnly = try halo(1.5)
-        // 3.0x: clears red and green, still below blue's 4.0.
-        let redGreen = try halo(3.0)
-        // 8.0x: clears all three.
-        let allLayers = try halo(8.0)
+        let row = 512
+        func red(_ column: Int) -> Double { linear[(row * side + column) * 3] }
+        func encodedRed(_ column: Int) -> Double { Double(encoded[(row * side + column) * 4]) }
 
-        #expect(redOnly.red > 0.001, "red must respond above its 1.0 knee (was \(redOnly.red))")
-        #expect(redOnly.green < redOnly.red * 0.1,
-                "green must stay dark below its 2.0 knee (was \(redOnly.green))")
-        #expect(redOnly.blue < redOnly.red * 0.1,
-                "blue must stay dark below its 4.0 knee (was \(redOnly.blue))")
+        // Light-only: scattered energy is added, never subtracted, so the profile
+        // never dips below the source level.
+        var minimum = Double.greatestFiniteMagnitude
+        var largestRecovery = 0.0
+        var lowestSoFar = encodedRed(514)
+        var largestAsymmetry = 0.0
+        for distance in 0..<320 {
+            let right = encodedRed(514 + distance)
+            let left = encodedRed(509 - distance)
+            minimum = min(minimum, red(514 + distance))
+            largestRecovery = max(largestRecovery, right - lowestSoFar)
+            lowestSoFar = min(lowestSoFar, right)
+            largestAsymmetry = max(largestAsymmetry, abs(right - left))
+        }
+        #expect(minimum >= Self.surround - 0.003, "the halo must be light-only (min \\(minimum))")
+        // Two half-float steps allow readback/approximation noise, not ghost lobes.
+        #expect(largestRecovery <= 0.002,
+                "the outward tail must not recover after falling (recovery \\(largestRecovery))")
+        #expect(largestAsymmetry <= 0.003, "diffusion must remain symmetric about the thin highlight")
 
-        #expect(redGreen.green > 0.001, "green must respond above its 2.0 knee (was \(redGreen.green))")
-        #expect(redGreen.blue < redGreen.green * 0.1,
-                "blue must stay dark below its 4.0 knee (was \(redGreen.blue))")
-
-        #expect(allLayers.blue > 0.001, "blue must respond above its 4.0 knee (was \(allLayers.blue))")
+        // Connectivity: the lit part of the tail has no dark gaps. A 4px line
+        // diffused at this radius carries its strongest tail within ~48px.
+        let minimumTail = (0..<48).map { red(514 + $0) }.min()!
+        #expect(minimumTail > Self.surround + 0.001, "the tail must be continuously lit (min \\(minimumTail))")
+        // Decay: the tail falls away rather than lifting the whole frame.
+        #expect(red(514) > red(514 + 300) + 0.001, "the tail must decay rather than lifting the frame")
     }
 
-    /// An all-red source exposes only the red layer, so its halo must stay red.
-    /// If the composite read `.r` from the green and blue diffusions, red's
-    /// diffused energy would light them and the source would masquerade as RGB.
+    /// Glow is a broad, post-LUT bloom that reaches further than the tight halo.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func colouredSourceDoesNotLightOtherLayers() throws {
+    func glowIsABroadBloomReachingFurtherThanHalation() throws {
+        let side = 1024
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
 
-        // Block: red at 3x diffuse white, green/blue at 18% grey. Only red is
-        // above its knee, so the mask is (red, 0, 0).
-        let halo = try Self.halationAddedLight(
-            device: device, queue: queue, stage: stage,
-            source: Self.inputPixels(
-                block: SIMD3(3.0, 0.18, 0.18),
-                surround: SIMD3(0.18, 0.18, 0.18)
-            ),
-            radiusFraction: 0.03, tint: SIMD3<Float>(1.0, 0.32, 0.10)
+        // Halation reach, measured in scene-linear added light on the source.
+        let source = Self.sourcePixels(width: side, height: side) { column, _ in
+            (510..<514).contains(column)
+                ? SIMD3(Self.superwhite, Self.superwhite, Self.superwhite)
+                : SIMD3(Self.surround, Self.surround, Self.surround)
+        }
+        let halationEncoded = try Self.runHalation(
+            stage: stage, device: device, queue: queue,
+            width: side, height: side, sourcePixels: source,
+            strength: 1.0, radiusFraction: 0.012, layerScale: Self.tint
         )
+        let halationLinear = Self.decodedLinear(halationEncoded, count: side * side)
+        var halationReach = 0
+        for distance in 0..<500 where halationLinear[(512 * side + 514 + distance) * 3] - Self.surround > 0.001 {
+            halationReach = distance
+        }
 
-        #expect(halo.red > 0.001, "the red layer must respond (was \(halo.red))")
-        #expect(halo.green < halo.red * 0.1,
-                "an all-red source must not light the green layer (was \(halo.green))")
-        #expect(halo.blue < halo.red * 0.1,
-                "an all-red source must not light the blue layer (was \(halo.blue))")
+        // Glow reach, measured on the graded image it blooms.
+        let gradedPixels = Self.rawPixels(width: side, height: side) { column, _ in
+            (510..<514).contains(column) ? SIMD3(1.0, 1.0, 1.0) : SIMD3(0.125, 0.125, 0.125)
+        }
+        let graded = try Self.makeTexture(device: device, width: side, height: side, pixels: gradedPixels)
+        let glowed = try #require(stage.applyGlow(
+            graded: graded, commandQueue: queue, strength: 0.75, width: side, height: side
+        ))
+        let glowValues = try Self.readBack(glowed, device: device, queue: queue, width: side, height: side)
+        func glowRed(_ column: Int) -> Double { Double(glowValues[(512 * side + column) * 4]) }
+        var glowReach = 0
+        for distance in 0..<500 where glowRed(514 + distance) - 0.125 > 0.001 {
+            glowReach = distance
+        }
+
+        #expect(halationReach > 0, "halation must reach beyond the source")
+        #expect(glowReach > halationReach,
+                "glow must reach further than halation (halation \\(halationReach), glow \\(glowReach))")
     }
 
-    /// The composite must read each layer's own channel. Three diffusion
-    /// textures with energy in different channels pin this directly: a kernel
-    /// that samples `.r` from all three would add red only.
+    /// Glow is unchanged by the halation work: zero strength is a passthrough.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func halationCompositeReadsEachLayerChannel() throws {
+    func zeroStrengthIsIdentityForGlow() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
-        let function = try #require(
-            try Self.shaderLibrary(device: device).makeFunction(name: "spatial_halation_composite")
-        )
-        let pipeline = try device.makeComputePipelineState(function: function)
-
-        let side = 16
-        func texture(_ fill: SIMD4<Float16>) throws -> MTLTexture {
-            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: .rgba16Float, width: side, height: side, mipmapped: false
-            )
-            descriptor.usage = [.shaderRead, .shaderWrite]
-            descriptor.storageMode = .shared
-            let texture = try #require(device.makeTexture(descriptor: descriptor))
-            var pixels = [Float16]()
-            pixels.reserveCapacity(side * side * 4)
-            for _ in 0..<(side * side) {
-                pixels.append(contentsOf: [fill.x, fill.y, fill.z, fill.w])
-            }
-            pixels.withUnsafeBytes { raw in
-                texture.replace(region: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0,
-                                withBytes: raw.baseAddress!, bytesPerRow: side * 8)
-            }
-            return texture
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        let pixels = Self.rawPixels(width: Self.side, height: Self.side) { column, row in
+            let inBlock = column >= Self.blockLower && column < Self.blockUpper
+                && row >= Self.blockLower && row < Self.blockUpper
+            return SIMD3(repeating: inBlock ? 0.8 : 0.05)
         }
-
-        let graded = try texture(SIMD4(0.5, 0.5, 0.5, 1))
-        // Each diffusion carries energy in a DIFFERENT channel; the decoys in
-        // `.r` of the green and blue textures are what a wrong read picks up.
-        let red = try texture(SIMD4(0.8, 0, 0, 1))
-        let green = try texture(SIMD4(0, 0.6, 0, 1))
-        let blue = try texture(SIMD4(0, 0, 0.4, 1))
-        let output = try texture(SIMD4(0, 0, 0, 1))
-
-        let commandBuffer = try #require(queue.makeCommandBuffer())
-        let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
-        var strength: Float = 1.0
-        var shadowFloor: Float = 0.08
-        var layerScale = SIMD3<Float>(1, 1, 1)
-        var referenceSuperwhite: Float = 1.0
-        encoder.setComputePipelineState(pipeline)
-        encoder.setTexture(graded, index: 0)
-        encoder.setTexture(red, index: 1)
-        encoder.setTexture(green, index: 2)
-        encoder.setTexture(blue, index: 3)
-        encoder.setTexture(output, index: 4)
-        encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
-        encoder.setBytes(&shadowFloor, length: MemoryLayout<Float>.size, index: 1)
-        encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 2)
-        encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 3)
-        encoder.dispatchThreadgroups(
-            MTLSize(width: 1, height: 1, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: side, height: side, depth: 1)
-        )
-        encoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        #expect(commandBuffer.status == .completed)
-
-        var values = [Float16](repeating: 0, count: side * side * 4)
-        values.withUnsafeMutableBytes { raw in
-            output.getBytes(raw.baseAddress!, bytesPerRow: side * 8,
-                            from: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0)
+        let graded = try Self.makeTexture(device: device, width: Self.side, height: Self.side, pixels: pixels)
+        let glowed = try #require(stage.applyGlow(
+            graded: graded, commandQueue: queue, strength: 0, width: Self.side, height: Self.side
+        ))
+        let values = try Self.readBack(glowed, device: device, queue: queue, width: Self.side, height: Self.side)
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            #expect(abs(Double(values[index]) - Double(pixels[index])) < 0.002,
+                    "zero glow strength must not change the frame (index \\(index))")
         }
-        // shadowWeight at luma 0.5 is 1, so added light is (0.8, 0.6, 0.4).
-        #expect(abs(Double(values[0]) - 1.3) < 0.01, "red channel (was \(values[0]))")
-        #expect(abs(Double(values[1]) - 1.1) < 0.01, "green channel must read the green layer (was \(values[1]))")
-        #expect(abs(Double(values[2]) - 0.9) < 0.01, "blue channel must read the blue layer (was \(values[2]))")
     }
 }
