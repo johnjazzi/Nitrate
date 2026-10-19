@@ -23,6 +23,26 @@ struct AppVersionTests {
         #expect(text.hasPrefix("\(AppVersion.marketing()) (\(AppVersion.build()))"))
     }
 
+    /// The app is distributed to TestFlight, so the suffix must say BETA. `nil`
+    /// is the released state and is the only other valid value.
+    @Test func currentStageIsBetaBeforeRelease() {
+        #expect(AppVersion.stage == .beta)
+    }
+
+    @Test func currentVersionAppliesTheCurrentStage() {
+        #expect(AppVersion.current() == AppVersion.display(marketing: AppVersion.marketing(),
+                                                          build: AppVersion.build(),
+                                                          stage: AppVersion.stage))
+    }
+
+    @Test func currentVersionCarriesTheStageSuffix() {
+        #expect(AppVersion.current().hasSuffix("· BETA"))
+    }
+
+    @Test func splashAndAboutShareOneVersionString() {
+        #expect(AboutPresentation.versionLine() == AboutPresentation.versionPrefix + AppVersion.current())
+    }
+
     @Test func placeholderEdgeDetailsArePopulated() {
         let details = SplashEdgeDetails.placeholder
         let fields = [

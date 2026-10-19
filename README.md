@@ -386,10 +386,12 @@ exposure, grain and preview policies, and the film-stock catalogue.
 source of truth. XcodeGen feeds them into the generated Info.plist, and the
 launch splash renders them through `AppVersion` (`App/AppIdentity.swift`).
 
-- Bump `MARKETING_VERSION` for a user-visible release (currently `0.1.0`).
+- Bump `MARKETING_VERSION` for a user-visible release (currently `0.1.3`).
 - Bump `CURRENT_PROJECT_VERSION` for every build.
-- Pre-release builds show the stage suffix: `0.1.0 (1) · ALPHA`. Pass `stage: nil`
-  to `AppVersion.current()` for a shipping build.
+- `AppVersion.stage` (`App/AppIdentity.swift`) is the single source of truth for
+  the stage suffix. It is `.beta` while the app is distributed through
+  TestFlight; set it to `nil` for an App Store release. The launch splash and
+  Settings → About both render `AppVersion.current()`, so they cannot disagree.
 
 ## Status and known limits
 
