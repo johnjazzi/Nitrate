@@ -175,14 +175,26 @@ decoded frame → pass 1: LUT + output contrast
               → HEVC Main10 encode → Photos
 ```
 
-- **Halation** builds a highlight mask once at half resolution, blurs it
-  separably, then composites it back with a ring/tail balance and a red-dominant
-  tint. Radius and tint are **per stock**, set from emulsion thickness and stock
-  speed.
-- **Glow** is a wide, low-frequency amber bloom from the same half-resolution
-  mask. At that frequency half resolution looks the same and cuts bandwidth
-  roughly 4× at 4K.
+- **Halation** reads the original Apple Log 2 frame separately from the graded
+  image. It decodes scene-linear light and extracts per-channel energy above
+  highlight thresholds, preserving differences between bright sources that the
+  LUT may map to similar display values. Three half-resolution Gaussian blurs
+  spread red widest, green less, and blue least. Their contributions are added
+  over the graded image, including the source core, rather than subtracting the
+  centre to create a hollow ring. Base radius, strength and channel weights are
+  **per stock**; print gauge does not change halation.
+- **Glow** keeps its separate graded-luminance mask and wide amber bloom. It
+  does not use the scene-linear halation mask.
 - **Grain** is [described below](#how-the-grain-works).
+
+The halation model is **physically informed, not a calibrated film simulation**.
+Its initial channel thresholds are 1×, 2× and 4× decoded diffuse white; radius
+multipliers are 1.8×, 1× and 0.5× the stock's base radius. Channel energy is divided
+by an 8× reference before stock weights and strength are applied. These are
+starting values for device tuning, not measured emulsion properties. Diffusion
+uses linear source light, but the final addition is on the graded image and
+fades out in deep shadows. It is not an end-to-end scene-linear exposure model,
+and the new look and render cost still need physical-device validation.
 
 Every render writes a diagnostics manifest into the movie metadata: the recipe
 (LUT, halation, glow and grain algorithm revisions and their parameters), a
