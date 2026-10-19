@@ -65,7 +65,18 @@ private struct CameraOrientationSessionReference: @unchecked Sendable {
 
 /// AD-3: Manages the AVCaptureSession — Apple Log, HEVC H.265, 4K, 24fps, clean preview.
 /// Runs on a dedicated serial queue. Never posts to main thread directly.
-final class CameraSession: NSObject {
+///
+/// `@unchecked Sendable` states the confinement this type already relies on:
+/// every mutable stored property is written only inside `sessionQueue` blocks,
+/// with two exceptions that are guarded by `recordingStateLock`
+/// (`publicRecordingState`, `recordedStartHeadOffset`), so capturing `self` in
+/// the queue's `@Sendable` blocks hands the reference to one serial executor
+/// rather than sharing it between two. The `private(set)` lens/device/exposure
+/// snapshots are also read on the main actor; those are word-sized value types
+/// written on `sessionQueue` only, so a reader observes a value from before or
+/// after a write. `let` dependencies (queues, capture objects) are immutable
+/// after `init`.
+final class CameraSession: NSObject, @unchecked Sendable {
     let session = AVCaptureSession()
     fileprivate let sessionQueue = DispatchQueue(label: "camera.session")
     private let sampleBufferQueue = DispatchQueue(label: "camera.sample-buffer-writer")
@@ -273,7 +284,7 @@ final class CameraSession: NSObject {
             && previewFormatReady && previewOutput.connection(with: .video) != nil
         // Synchronize delivery invalidation before enabling the connection. The
         // session clock excludes buffered frames from an old lens/start/owner.
-        let startAfter = session.masterClock.map { CMClockGetTime($0) } ?? .invalid
+        let startAfter = session.synchronizationClock.map { CMClockGetTime($0) } ?? .invalid
         previewTap.setEnabled(enabled, startAfter: startAfter)
         previewOutput.connection(with: .video)?.isEnabled = enabled
     }
@@ -1801,21 +1812,26 @@ final class CameraSession: NSObject {
                 // The completion's sync time is when the requested exposure
                 // actually takes effect; frames before it still carry the old
                 // exposure, so the recorder drops them.
-                let completionHandler: (CMTime) -> Void = { [weak self] syncTime in
+                // `setExposureModeCustom` stores this handler and calls it on its
+                // own queue, so it must be `@Sendable`: it re-enters sessionQueue
+                // through a fresh weak capture instead of handing the outer weak
+                // `self` (a captured var) to a nested concurrent block.
+                let completionHandler: @Sendable (CMTime) -> Void = { [weak self] syncTime in
                     let headOffset = Date().timeIntervalSince(startRequestedAt)
 #if DEBUG
                     self?.startPhases.exposureAppliedAt = Date()
 #endif
-                    self?.sessionQueue.async {
-                        guard let self, self.recordingGeneration == generation,
-                              self.recordingStartPending else { return }
-                        self.recordingStateLock.lock()
-                        self.recordedStartHeadOffset = headOffset
-                        self.recordingStateLock.unlock()
-                        self.beginSampleBufferRecording(to: url, generation: generation,
-                                                        startAfter: syncTime,
-                                                        deliveryOrientation: deliveryOrientation,
-                                                        captureRotationAngle: captureRotationAngle)
+                    guard let session = self else { return }
+                    session.sessionQueue.async { [weak session] in
+                        guard let session, session.recordingGeneration == generation,
+                              session.recordingStartPending else { return }
+                        session.recordingStateLock.lock()
+                        session.recordedStartHeadOffset = headOffset
+                        session.recordingStateLock.unlock()
+                        session.beginSampleBufferRecording(to: url, generation: generation,
+                                                           startAfter: syncTime,
+                                                           deliveryOrientation: deliveryOrientation,
+                                                           captureRotationAngle: captureRotationAngle)
                     }
                 }
                 if #available(iOS 27.0, *), let heldAperture = self.heldAperture(on: device) {
@@ -2157,9 +2173,17 @@ final class CameraSession: NSObject {
             connection.isEnabled = true
             self.debugFrameTap.request { [weak self] buffer in
                 guard let self else { return }
+                // The frame crosses to sessionQueue in the same documented box
+                // the other debug hops use; the connection is re-read from the
+                // output on that queue instead of capturing the live object.
+                let transferred = SendablePixelBuffer(buffer: buffer)
                 self.sessionQueue.async {
                     guard request.finish() else { return }
-                    connection.isEnabled = false
+                    self.debugFrameOutput.connection(with: .video)?.isEnabled = false
+                    guard let buffer = transferred.buffer else {
+                        completion(nil)
+                        return
+                    }
                     let converted = DebugFrameConverter.rgbaHalfBuffer(from: buffer)
                     if let converted {
                         // The tap can fall back to its advertised format, which

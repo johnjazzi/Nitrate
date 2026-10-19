@@ -185,7 +185,7 @@ enum RenderDiagnostics {
     }
 
     static func inspectMedia(url: URL) async -> RenderDiagnosticsManifest.Media {
-        let asset = AVAsset(url: url)
+        let asset = AVURLAsset(url: url)
         let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
         let tracks = (try? await asset.loadTracks(withMediaType: .video)) ?? []
         guard let videoTrack = tracks.first else {
@@ -236,7 +236,7 @@ enum RenderDiagnostics {
     }
 
     static func extractFrames(from url: URL, directory: URL) async -> [RenderDiagnosticsManifest.Frame] {
-        let asset = AVAsset(url: url)
+        let asset = AVURLAsset(url: url)
         guard let duration = try? await asset.load(.duration), duration.seconds > 0 else {
             return ["start", "middle", "end"].enumerated().map { index, role in
                 .init(role: role, requestedSeconds: Double(index), actualSeconds: nil, file: nil, error: "Unable to load media duration.")
@@ -248,25 +248,29 @@ enum RenderDiagnostics {
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
-        return zip(roles, requested).map { role, seconds in
+        var frames: [RenderDiagnosticsManifest.Frame] = []
+        for (role, seconds) in zip(roles, requested) {
             let request = CMTime(seconds: seconds, preferredTimescale: 600)
             do {
-                var actual = CMTime.zero
-                let image = try generator.copyCGImage(at: request, actualTime: &actual)
+                // `image(at:)` replaces the synchronous `copyCGImage(at:actualTime:)`
+                // and reports the actual frame time it produced.
+                let generated = try await generator.image(at: request)
                 let file = "\(role).png"
                 let destination = directory.appendingPathComponent(file)
                 guard let writer = CGImageDestinationCreateWithURL(destination as CFURL, UTType.png.identifier as CFString, 1, nil) else {
                     throw NSError(domain: "RenderDiagnostics", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unable to create PNG destination."])
                 }
-                CGImageDestinationAddImage(writer, image, nil)
+                CGImageDestinationAddImage(writer, generated.image, nil)
                 guard CGImageDestinationFinalize(writer) else {
                     throw NSError(domain: "RenderDiagnostics", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unable to write PNG."])
                 }
-                return .init(role: role, requestedSeconds: seconds, actualSeconds: actual.seconds, file: file, error: nil)
+                frames.append(.init(role: role, requestedSeconds: seconds,
+                                    actualSeconds: generated.actualTime.seconds, file: file, error: nil))
             } catch {
-                return .init(role: role, requestedSeconds: seconds, actualSeconds: nil, file: nil, error: error.localizedDescription)
+                frames.append(.init(role: role, requestedSeconds: seconds, actualSeconds: nil, file: nil, error: error.localizedDescription))
             }
         }
+        return frames
     }
 
     static func writeManifest(_ manifest: RenderDiagnosticsManifest, to bundleURL: URL) throws {

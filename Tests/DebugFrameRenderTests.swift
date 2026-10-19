@@ -34,8 +34,12 @@ struct DebugFrameRenderTests {
     }
 
     /// Mid-grey RGBA-half frame with a bright central block, in the 64RGBAHalf
-    /// layout the decoder hands pass1.
-    private static func makeSyntheticFrame() throws -> CVPixelBuffer {
+    /// layout the decoder hands pass1. The values are Apple Log 2 CODE values
+    /// (the decoder output), so a higher `highlight` code is a larger linear
+    /// scene-light excess above the per-layer knees.
+    private static func makeSyntheticFrame(
+        background: Float16 = 0.5, highlight: Float16 = 0.9
+    ) throws -> CVPixelBuffer {
         let attributes: [String: Any] = [
             kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
@@ -146,6 +150,9 @@ struct DebugFrameRenderTests {
         var none = PipelineRenderer.DebugFrameParameters(config: config)
         none.halationStrength = 0
         none.glowStrength = 0
+        // Pin a radius that reaches the measured band rather than relying on the
+        // stock's small default, which at this 128px frame diffuses only a few px.
+        none.halationRadiusFraction = 0.03
         var strong = none
         strong.halationStrength = 0.9
 
@@ -169,6 +176,94 @@ struct DebugFrameRenderTests {
                 "halation strength must add light outside the highlight (red delta \\(redDelta))")
         #expect(redDelta > greenDelta,
                 "halation light must be red-dominant (red \\(redDelta) vs green \\(greenDelta))")
+    }
+
+    @Test func debugHalationSliderAllowsAmplificationAndFineRadiusTuning() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent(
+            "App/Modules/CameraCapture/DebugFrameSheet.swift"), encoding: .utf8)
+        let section = try #require(source.components(separatedBy: "private var halationSection: some View {").last)
+            .components(separatedBy: "private var glowSection: some View {")[0]
+        #expect(section.contains("in: 0...8, step: 0.01"), "Halation strength must allow gain above the old ceiling")
+        #expect(section.contains("in: 0.0005...0.0030, step: 0.0001"), "Radius tuning must cover the requested fine range and increments")
+        #expect(section.components(separatedBy: "in: 0...1, step: 0.01").count == 4,
+                "The three channel-weight dials must retain their existing range")
+        // The sheet must state the real order of operations, not a placeholder.
+        #expect(source.contains("halation (scene-linear, pre-LUT)"),
+                "The debug sheet must truthfully label halation as pre-LUT")
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func debugHalationGainAboveOneReachesTheRenderedPixels() throws {
+        let renderer = try makeRenderer()
+        let config = try loadConfig()
+        let frame = try Self.makeSyntheticFrame()
+        var parameters = PipelineRenderer.DebugFrameParameters(config: config)
+        parameters.glowStrength = 0
+        parameters.presenceMultiplier = 0
+        parameters.halationStrength = 1
+        parameters.halationRadiusFraction = 0.03
+        let reference = try #require(renderer.renderDebugFrame(
+            pixelBuffer: frame, config: config, parameters: parameters))
+        let referenceFrame = try read(reference.pixelBuffer)
+        parameters.halationStrength = 8
+        let amplified = try #require(renderer.renderDebugFrame(
+            pixelBuffer: frame, config: config, parameters: parameters))
+        let amplifiedFrame = try read(amplified.pixelBuffer)
+        let referenceBand = mean(referenceFrame, columns: 82..<100, rows: 52..<76)
+        let amplifiedBand = mean(amplifiedFrame, columns: 82..<100, rows: 52..<76)
+        #expect(amplifiedBand.red > referenceBand.red + 10,
+                "Gain above one must visibly increase halation, not be clamped before rendering")
+    }
+
+    /// A uniform source with zero diffusion has an independent CPU reference:
+    /// add the per-layer excess in linear, encode, then run that new source
+    /// through the same LUT with halation disabled. This pins the render order
+    /// without making assumptions about the film LUT's nonlinear brightness.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func halationIsGradedThroughTheSameLUTAsTheSource() throws {
+        let renderer = try makeRenderer()
+        let config = try loadConfig()
+        let code: Float16 = 0.8
+        let frame = try Self.makeSyntheticFrame(background: code, highlight: code)
+        var parameters = PipelineRenderer.DebugFrameParameters(config: config)
+        parameters.glowStrength = 0
+        parameters.presenceMultiplier = 0
+        parameters.halationStrength = 4
+        parameters.halationRadiusFraction = 0
+        let rendered = try #require(renderer.renderDebugFrame(
+            pixelBuffer: frame, config: config, parameters: parameters))
+        let actual = try read(rendered.pixelBuffer)
+
+        // Uniform input means the half-resolution mask is uniform as well, so
+        // its exact expected contribution needs no blur or GPU implementation.
+        let linear = pow(2.0, (Double(code) - 0.69336945) / 0.08550479) - 0.00964052
+        let knees = [1.0, 2.0, 4.0]
+        let scales = [Double(parameters.halationTint.x), Double(parameters.halationTint.y),
+                      Double(parameters.halationTint.z)]
+        let expectedCodes = zip(knees, scales).map { knee, scale -> Float16 in
+            let combined = linear + max(0, linear - knee) * scale * 4 / 8
+            return Float16(0.69336945 + 0.08550479 * log2(combined + 0.00964052))
+        }
+        let expectedSource = try Self.makeSyntheticFrame(background: code, highlight: code)
+        #expect(CVPixelBufferLockBaseAddress(expectedSource, []) == kCVReturnSuccess)
+        let base = try #require(CVPixelBufferGetBaseAddress(expectedSource))
+        let rowBytes = CVPixelBufferGetBytesPerRow(expectedSource)
+        for y in 0..<Self.height {
+            let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: Float16.self)
+            for x in 0..<Self.width {
+                for channel in 0..<3 { row[x * 4 + channel] = expectedCodes[channel] }
+            }
+        }
+        CVPixelBufferUnlockBaseAddress(expectedSource, [])
+        parameters.halationStrength = 0
+        let reference = try #require(renderer.renderDebugFrame(
+            pixelBuffer: expectedSource, config: config, parameters: parameters))
+        let expected = try read(reference.pixelBuffer)
+        let maximumDifference = zip(actual.pixels, expected.pixels)
+            .map { abs(Int($0.0) - Int($0.1)) }.max() ?? 0
+        #expect(maximumDifference <= 2,
+                "Halation must enter the LUT as added scene light (max byte difference \(maximumDifference))")
     }
 
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))

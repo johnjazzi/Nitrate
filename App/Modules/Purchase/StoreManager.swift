@@ -86,6 +86,18 @@ final class StoreManager {
         // installs always carry a receipt, so this cannot unlock a real
         // customer. It is also what keeps the developer unblocked without a
         // personal subscription.
+        //
+        // `appStoreReceiptURL` is deprecated in iOS 18 in favour of
+        // `AppTransaction.shared`, and this call is deliberately NOT migrated
+        // yet. The receipt check is the only thing standing between an
+        // unresolved launch and `.development`, and `.development` grants
+        // unrestricted access. If `AppTransaction.shared` throws for an offline
+        // App Store install as well as for a receipt-less development build,
+        // collapsing the two into one `catch` would hand every offline
+        // production user the paid features for free. That distinction can only
+        // be verified against a real App Store install, which does not exist
+        // until the app ships; `#if DEBUG` short-circuits before this code, so a
+        // local build cannot exercise it either. Migrate after launch, verified.
         guard let receiptURL = Bundle.main.appStoreReceiptURL,
               FileManager.default.fileExists(atPath: receiptURL.path) else {
             return .development

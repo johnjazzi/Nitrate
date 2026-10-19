@@ -9,30 +9,40 @@ constexpr sampler spatial_linear_sampler(
 
 /// Spatial halation + glow (epic story 1.4).
 ///
-/// The previous implementation was purely per-pixel: it added a warm term
-/// scaled by the pixel's own luma, so a highlight could never bleed *neighbourhood*
-/// information into surrounding pixels, and glow was a constant frame-wide lift.
-/// This stage extracts a highlight mask once, blurs it separably, then composites
-/// the blurred mask back over the graded image. Diffusion is now genuinely
-/// spatial: bright areas bleed warm light into their surroundings the way light
-/// scattering inside film does.
+/// Two independent effects live here and must stay independent.
 ///
-/// The mask is built and blurred at HALF resolution. Halation and glow are
-/// low-frequency by nature, so half-res blurring is visually equivalent while
-/// cutting the scratch texture cost (and bandwidth) by 4x at 4K.
+/// HALATION is a scene-light phenomenon and is applied BEFORE the stock LUT.
+/// `spatial_halation_mask` reads the ungraded Apple Log 2 frame, decodes it to
+/// linear scene light, and takes each emulsion layer's excess above its knee.
+/// `spatial_halation_apply` then decodes the source again, adds the diffused
+/// per-layer energy in LINEAR light, and re-encodes the result to Apple Log 2.
+/// The stock LUT and output contrast are applied to that re-encoded frame
+/// afterwards, so the scattered light is tone-mapped by the same curve as the
+/// light that produced it: the halo rolls off with the highlight instead of
+/// clipping into a detached fringe. Nothing here reads or writes the graded
+/// image, and there is no shadow gate — the light that scatters is the light
+/// that is added.
+///
+/// GLOW is an optical-filter bloom with no physical model. It keeps the
+/// graded-luminance highlight mask (`spatial_mask`) and the tinted additive
+/// composite (`spatial_composite`) it always had, and is applied AFTER the LUT.
+/// Its look is deliberately unchanged by the halation work.
+///
+/// Masks and diffusions are built and blurred at HALF resolution. Halation and
+/// glow are low-frequency by nature, so half-res blurring is visually
+/// equivalent while cutting the scratch-texture cost (and bandwidth) by roughly
+/// 4x at 4K.
 
 /// Rec.709 luma of the post-LUT graded image.
 static inline float spatial_luma(float3 c) {
     return dot(c, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
-/// Extract a highlight mask from the source image.
+/// Extract a highlight mask from the GRADED image for the glow bloom.
 ///
-/// Reads the full-resolution graded source but writes a
-/// half-resolution, UNTINTED mask (the highlight weight in all three channels).
-/// Keeping it untinted lets one mask drive both the narrow halation and the
-/// wide glow, which use different colour casts, so the expensive blur is only
-/// paid for once. The tint is applied at composite time.
+/// Reads the full-resolution graded source but writes a half-resolution,
+/// UNTINTED mask (the highlight weight in all three channels). The tint is
+/// applied at composite time, so a stock change never needs a re-blur.
 kernel void spatial_mask(
     texture2d<float, access::read>  source [[texture(0)]],
     texture2d<float, access::write> mask   [[texture(1)]],
@@ -65,18 +75,13 @@ kernel void spatial_mask(
 // Diffusion is encoded by SpatialEffectsStage using MPSImageGaussianBlur.
 // Do not restore sparse radius-scaled taps: they create detached source copies.
 
-/// Composite a blurred mask back over the graded image.
+/// Composite a blurred GLOW mask back over the graded image.
 ///
-/// `strength` carries the stock's halation or glow value and `tint` its colour
-/// cast, so this is a plain additive screen-in of tinted light with the image's
-/// luminance modulating the effect so shadows stay clean.
-///
-/// Halation is a RING, not a filled disc: light reflects off the film base and
-/// re-exposes the emulsion *around* the source, not on top of it. The blurred
-/// mask is therefore reduced by the source's own highlight contribution so the
-/// added light lands in the tail outside the boundary. `ringTailBalance` mixes
-/// between the pure ring (1) and the raw blurred mask — a softer glow — (0);
-/// glow passes 0 so it stays a plain bloom rather than acquiring a hole.
+/// A plain additive, tinted bloom. `strength` carries the stock's glow value
+/// and `tint` its colour cast; the image's own luminance fades the effect out of
+/// the deepest shadows so glow never lifts the black point. Glow is a bloom, not
+/// a ring: it is added as a filled spread with no hole punched in the centre.
+/// Halation does not use this kernel — see `spatial_halation_apply`.
 kernel void spatial_composite(
     texture2d<float, access::read>  graded   [[texture(0)]],
     texture2d<float, access::sample> mask     [[texture(1)]],
@@ -84,9 +89,6 @@ kernel void spatial_composite(
     constant float& strength                  [[buffer(0)]],
     constant float& shadowFloor               [[buffer(1)]],
     constant float3& tint                     [[buffer(2)]],
-    constant float& ringTailBalance           [[buffer(3)]],
-    constant float& thresholdLow              [[buffer(4)]],
-    constant float& thresholdHigh             [[buffer(5)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
@@ -102,19 +104,191 @@ kernel void spatial_composite(
     float2 uv = (float2(gid) + 0.5f) / size;
     float spread = mask.sample(spatial_linear_sampler, uv).r;
 
-    // The source's own highlight contribution, recomputed at full resolution
-    // with the same window the mask kernel used. Subtracting it from the blurred
-    // mask empties the centre of the highlight and leaves the tail lit — a ring.
-    float sourceHighlight = smoothstep(thresholdLow, thresholdHigh, spatial_luma(base.rgb));
-    float ring = max(0.0f, spread - sourceHighlight);
-    float contribution = mix(spread, ring, ringTailBalance);
-
-    // Fade the added light out of the deepest shadows so halation and glow
-    // never lift the black point (the old constant glow term did exactly that).
+    // Fade the added light out of the deepest shadows so glow never lifts the
+    // black point (the old constant glow term did exactly that).
     float luminance = spatial_luma(base.rgb);
     float shadowWeight = smoothstep(0.0f, shadowFloor, luminance);
 
-    float3 result = base.rgb + tint * contribution * strength * shadowWeight;
+    float3 result = base.rgb + tint * spread * strength * shadowWeight;
 
     output.write(float4(result, base.a), gid);
+}
+
+// ===========================================================================
+// Physical halation (pre-LUT, scene-linear)
+// ===========================================================================
+//
+// Halation is light crossing the emulsion, reflecting off the film base or the
+// anti-halation backing, and re-exposing the surrounding emulsion. Three things
+// follow, and every implementation before this one got at least one wrong:
+//
+//  1. It is a *light* phenomenon, so it is computed in linear scene light. A 2x
+//     specular and a 100x specular both land near 1.0 once the display transform
+//     has been applied, so the quantity that drives halation is already gone
+//     after the LUT. These kernels read the ungraded Apple Log 2 frame and
+//     decode it, add the scattered light in linear, and re-encode.
+//  2. The three emulsion layers do not respond equally. Red is re-exposed by the
+//     least scattered light, then green, then blue, which is why a halo reads
+//     red at low intensity, warm red as it grows, and white once it is bright
+//     enough to reach all three. That falls out of per-layer knees and
+//     per-layer diffusion radii — not from a colour tint applied afterwards.
+//  3. The reflected light lands across the source's own footprint too. It is
+//     added, never subtracted, so a very bright source reads as *larger* rather
+//     than being hollowed into a ring.
+//
+// Superwhite reference: the Apple Log 2 white paper maps 100% scene reflection
+// to decoded linear 1.0, and the recorded 10-bit range reaches about 12x that.
+// So `linear - knee` is excess above diffuse white, in multiples of white.
+
+/// Apple Log / Apple Log 2 transfer function, decoded. Constants are Apple's,
+/// via OpenColorIO v2.6.0 `AppleCameras.cpp` (BSD-3-Clause), which this repo
+/// already vendors for LUT generation. Log 2 shares the curve with Log 1; only
+/// the primaries differ.
+constant float AL_R0 = -0.05641088f;
+constant float AL_RT = 0.01f;
+constant float AL_C = 47.28711236f;
+constant float AL_BETA = 0.00964052f;
+constant float AL_GAMMA = 0.08550479f;
+constant float AL_DELTA = 0.69336945f;
+constant float AL_PT = AL_C * (AL_RT - AL_R0) * (AL_RT - AL_R0);
+
+static inline float apple_log_decode(float code) {
+    if (code >= AL_PT) {
+        return pow(2.0f, (code - AL_DELTA) / AL_GAMMA) - AL_BETA;
+    }
+    if (code >= 0.0f) {
+        return sqrt(code / AL_C) + AL_R0;
+    }
+    return AL_R0;
+}
+
+/// Inverse of `apple_log_decode`: linear scene light back to Apple Log 2 code.
+/// Applied to the halation result so the frame re-enters the pipeline in the
+/// same encoding the stock LUT expects.
+static inline float apple_log_encode(float linear) {
+    if (linear >= AL_RT) {
+        return AL_DELTA + AL_GAMMA * log2(linear + AL_BETA);
+    }
+    return AL_C * (linear - AL_R0) * (linear - AL_R0);
+}
+
+/// Per-layer superwhite energy from the ungraded frame, at half resolution.
+///
+/// The channels stay separate because they diffuse to different radii and
+/// because the ratio between them carries the colour ramp — a single luma value
+/// cannot express "red has responded but blue has not".
+kernel void spatial_halation_mask(
+    texture2d<float, access::read>  input  [[texture(0)]],
+    texture2d<float, access::write> mask   [[texture(1)]],
+    constant float& redKnee                [[buffer(0)]],
+    constant float& greenKnee              [[buffer(1)]],
+    constant float& blueKnee               [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= mask.get_width() || gid.y >= mask.get_height()) {
+        return;
+    }
+
+    // 2x2 box average of the full-res source into this half-res texel. Each
+    // sample is decoded to linear light FIRST, then the linear energies are
+    // averaged. Apple Log is a nonlinear encoding, so averaging the code values
+    // and decoding once (the previous behaviour) collapses a subpixel specular
+    // into the mean of its surround instead of preserving its energy — a 9x
+    // pixel next to three 18% pixels would fall below red's knee entirely.
+    // Only samples that actually fall inside the source are counted, so a mask
+    // texel on an odd-sized frame averages the pixels that exist rather than
+    // always dividing by four.
+    float3 sum = float3(0.0f);
+    uint valid = 0;
+    // Zero diffusion uses a full-resolution mask: avoid even the implicit
+    // spread introduced by half-resolution downsampling and linear upsampling.
+    uint scale = (mask.get_width() == input.get_width()
+                  && mask.get_height() == input.get_height()) ? 1u : 2u;
+    for (uint dy = 0; dy < scale; ++dy) {
+        for (uint dx = 0; dx < scale; ++dx) {
+            uint2 src = gid * scale + uint2(dx, dy);
+            if (src.x < input.get_width() && src.y < input.get_height()) {
+                float3 encoded = input.read(src).rgb;
+                sum += float3(apple_log_decode(encoded.r),
+                              apple_log_decode(encoded.g),
+                              apple_log_decode(encoded.b));
+                valid += 1;
+            }
+        }
+    }
+    float3 linear = sum / max(float(valid), 1.0f);
+
+    // Per-layer response. `max(0, linear - knee)` is continuous and grows with
+    // intensity, so a brighter source bleeds further and reaches more layers.
+    // The knee ordering is explicit and fixed — red (least scattered light,
+    // clears first), then green, then blue — and must never be permuted: it is
+    // what makes a faint halo read red and a bright one read white.
+    float3 energy = max(float3(0.0f),
+                        linear - float3(redKnee, greenKnee, blueKnee));
+
+    mask.write(float4(energy, 1.0f), gid);
+}
+
+/// Add the three diffused layers to the scene-linear source, then re-encode.
+///
+/// The source is decoded per channel, the diffused per-layer energy is added in
+/// linear light, and the sum is re-encoded to Apple Log 2. That re-encoded frame
+/// is what the stock LUT and output contrast grade, so the added light shares the
+/// source's tone curve. No colour tint is applied: the colour is the consequence
+/// of the per-layer physics — red responds to the least light and scatters
+/// furthest, so a faint halo reads red, and where green and blue have also
+/// responded the sum tends to white. The energy is ADDED over the source's own
+/// footprint as well, which is why a very bright source reads as larger rather
+/// than hollowed into a ring.
+kernel void spatial_halation_apply(
+    texture2d<float, access::read>  source [[texture(0)]],
+    texture2d<float, access::sample> red   [[texture(1)]],
+    texture2d<float, access::sample> green [[texture(2)]],
+    texture2d<float, access::sample> blue  [[texture(3)]],
+    texture2d<float, access::write> output [[texture(4)]],
+    constant float& strength               [[buffer(0)]],
+    constant float3& layerScale            [[buffer(1)]],
+    constant float& referenceSuperwhite    [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
+        return;
+    }
+
+    float4 base = source.read(gid);
+
+    // `gid` is in source/output space, so normalize by the OUTPUT size. The
+    // masks are half resolution; normalizing by their own size would double the
+    // sampling coordinate and miss the diffusion entirely.
+    float2 size = float2(source.get_width(), source.get_height());
+    float2 uv = (float2(gid) + 0.5f) / size;
+
+    // Each layer is diffused at its own radius, so each keeps its own reach:
+    // red is the widest and therefore the only one still present in the far
+    // tail, which is what makes a faint halo read red. Each layer's OWN channel
+    // is read — the mask carries a distinct per-layer energy in rgb, so sampling
+    // `.r` from all three would feed red's energy into the green and blue layers
+    // and let an all-red source masquerade as full RGB.
+    float3 diffusion = float3(red.sample(spatial_linear_sampler, uv).r,
+                              green.sample(spatial_linear_sampler, uv).g,
+                              blue.sample(spatial_linear_sampler, uv).b);
+
+    // Normalize by the superwhite level that should reach full contribution, so
+    // an 11x excess does not swamp the graded image. `layerScale` weights each
+    // layer's contribution: red is the strongest because it is the layer most
+    // re-exposed by scattered light.
+    float3 contribution = diffusion / max(referenceSuperwhite, 0.0001f) * layerScale * strength;
+
+    // Decode the source to linear scene light, add the scattered energy there,
+    // and re-encode. Adding in the encoded domain instead would apply the log
+    // curve twice and detach the halo from the highlight it came from.
+    float3 linear = float3(apple_log_decode(base.r),
+                           apple_log_decode(base.g),
+                           apple_log_decode(base.b));
+    float3 scattered = max(float3(0.0f), linear + contribution);
+
+    output.write(float4(apple_log_encode(scattered.r),
+                        apple_log_encode(scattered.g),
+                        apple_log_encode(scattered.b),
+                        base.a), gid);
 }

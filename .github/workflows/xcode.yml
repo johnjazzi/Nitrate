@@ -20,22 +20,35 @@ jobs:
     # Explicit Xcode 27 image: the app's deployment target is iOS 27.
     runs-on: xcode-27
     timeout-minutes: 45
+    env:
+      # Opt-in diagnostics: stream command output live (no `xcodebuild -quiet`)
+      # and watchdog each invocation so a hung test is stopped with evidence
+      # instead of running out the whole job timeout. The RenderCLI test
+      # invocation gets a ~10 minute budget, not the 45 minute job cap.
+      NITRATE_VERIFY_DIAGNOSTICS: "1"
+      NITRATE_VERIFY_TEST_TIMEOUT_SECONDS: "600"
+      NITRATE_VERIFY_COMMAND_TIMEOUT_SECONDS: "600"
+      NITRATE_VERIFY_SAMPLE_SECONDS: "10"
     steps:
       - name: Check out source
+        timeout-minutes: 3
         # Official actions/checkout v4.3.1, matching the release-version gate.
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
       - name: Report runner toolchain and Metal availability
+        timeout-minutes: 3
         run: |
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
           swift -e 'import Metal; print("Metal device:", MTLCreateSystemDefaultDevice()?.name ?? "unavailable; GPU-dependent tests may skip")'
       - name: Bootstrap pinned build tools and generate project
+        timeout-minutes: 5
         run: |
           sh ci_scripts/ci_post_clone.sh
           printf '%s\n' "$GITHUB_WORKSPACE/build/ci-tools/xcodegen-2.46.0/xcodegen/bin" "$GITHUB_WORKSPACE/build/ci-tools/swiftlint-0.65.1" >> "$GITHUB_PATH"
       - name: Install the Metal toolchain
+        timeout-minutes: 10
         run: |
           # Hosted macOS images ship Xcode without the downloadable Metal
           # toolchain; shader compilation fails with "cannot execute tool
@@ -46,7 +59,33 @@ jobs:
           xcrun --find metal
       - name: Lint, run tests, and build iOS without signing
         run: python3 scripts/verify.py verify
+      - name: Summarize any partial test results
+        if: always()
+        # Bounded: reads xcresult metadata only and never uploads the bundle.
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          out = Path('build/verification/partial-xcresult.txt')
+          out.parent.mkdir(parents=True, exist_ok=True)
+          bundles = sorted(Path('build/verification/DerivedData/Logs/Test').glob('*.xcresult'))
+          if not bundles:
+              out.write_text('No xcresult bundle was produced before the step ended.\n')
+          else:
+              bundle = max(bundles, key=lambda path: path.stat().st_mtime)
+              try:
+                  summary = subprocess.run(
+                      ['xcrun', 'xcresulttool', 'get', 'test-results', 'summary', '--path', str(bundle)],
+                      capture_output=True, text=True, timeout=60,
+                  )
+                  out.write_text(f'bundle: {bundle}\n{summary.stdout}{summary.stderr}')
+              except subprocess.TimeoutExpired:
+                  out.write_text(f'bundle: {bundle}\nxcresulttool summary timed out after 60s\n')
+          print(out.read_text(errors='replace'))
+          PY
       - name: Report actual test counts and skips
+        timeout-minutes: 2
         if: always()
         run: |
           python3 - <<'PY'
@@ -85,12 +124,18 @@ jobs:
               print('\n'.join(path.read_text(errors='replace').splitlines()[-30:]))
               print('::endgroup::')
           PY
-      - name: Retain verification logs
+      - name: Retain verification logs and diagnostics
         if: always()
         # Official actions/upload-artifact v4, resolved from its GitHub tag.
+        # Bounded set: logs, watchdog diagnostics/samples, and a small partial
+        # xcresult summary. The DerivedData bundle is never uploaded.
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: xcode-verification-logs
-          path: build/verification/*.log
+          name: xcode-verification-diagnostics
+          path: |
+            build/verification/*.log
+            build/verification/*.diagnostics.txt
+            build/verification/*.sample.txt
+            build/verification/partial-xcresult.txt
           if-no-files-found: ignore
-          retention-days: 1
+          retention-days: 3

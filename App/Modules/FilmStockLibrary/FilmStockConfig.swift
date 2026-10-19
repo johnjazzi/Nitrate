@@ -15,14 +15,11 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
     let halationStrength: Float
     let glowStrength: Float
     let grainSize: Float
-    /// Per-stock halo geometry. Halation radius tracks emulsion thickness and
-    /// stock speed, so a slow 5207 and a fast 5219 must not share halo size;
-    /// `halationRadiusFraction` is the blur radius as a fraction of the
-    /// half-resolution frame width (resolution-independent, like the glow
-    /// radius). `halationTint` is the red-dominant colour cast of the halo,
-    /// kept at full scale in red: how *much* light is added belongs to
-    /// `halationStrength`, not to a dim tint. Defaults preserve the previous
-    /// global values so a stock JSON that omits the keys still loads.
+    /// Per-stock halation geometry and red-dominant layer weights. Radius is an
+    /// authored fraction of the half-resolution frame width, not a measured
+    /// emulsion thickness; different stocks may share a tuned starting radius.
+    /// Red stays full-scale so overall gain belongs to `halationStrength`, not
+    /// to a dim tint. Defaults preserve legacy JSON that omits these keys.
     var halationRadiusFraction: Float = 0.012
     var halationTint: SIMD3<Float> = SIMD3(1.0, 0.32, 0.10)
     var outputContrast: Float = 1.0
@@ -60,7 +57,7 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
             if !condition { throw RenderContractError.invalid(stockID: stockId, field: field) }
         }
         try require(!lutName.isEmpty, "lutName")
-        try require(halationStrength.isFinite && (0...1).contains(halationStrength), "halationStrength")
+        try require(halationStrength.isFinite && (0...8).contains(halationStrength), "halationStrength")
         try require(glowStrength.isFinite && (0...1).contains(glowStrength), "glowStrength")
         try require(grainSize.isFinite && grainSize > 0, "grainSize")
         try require(halationRadiusFraction.isFinite && halationRadiusFraction > 0
@@ -176,7 +173,7 @@ struct RenderRecipe: Codable, Equatable, Sendable {
         output: .init(gamut: "unverified", transfer: "unverified", provenance: "unverified"),
         domainMin: [0, 0, 0], domainMax: [1, 1, 1], domainProvenance: "implicit-cube-default",
         lutAlgorithm: "resolve-rgb-red-fastest-texel-center-linear-clamp-v2",
-        halationAlgorithm: "input-luma-spatial-highlight-addition-v2",
+        halationAlgorithm: "scene-linear-pre-lut-layer-diffusion-v3",
         glowAlgorithm: "blurred-warm-highlight-addition-v2",
         grainAlgorithm: legacyGrainAlgorithm,
         edgeBoostMultiplier: 0,

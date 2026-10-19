@@ -1,12 +1,27 @@
 import AVFoundation
+import CoreMedia
 @preconcurrency import Metal
 import CoreVideo
+
+/// The sample-buffer payload the iOS 26 / macOS 26 asset-reader provider vends.
+/// `AVAssetReader.outputProvider(for:)` is the non-deprecated replacement for
+/// `AVAssetReader.add(_:)` plus `copyNextSampleBuffer()`.
+typealias ReadySampleProvider = AVAssetReaderOutput.Provider<CMReadySampleBuffer<CMSampleBuffer.DynamicContent>>
 
 /// AD-6: Metal GPU pipeline — hybrid 2-pass post-record render.
 /// Pass 1: LUT + halation + glow (single fused Metal compute shader).
 /// Pass 2: 3D noise volume grain with temporal coherence (AD-9).
 /// Input: .mov URL carrying the Apple Log 2 stream tags (native camera codec).
 /// Output: .mov URL (HEVC H.265, 4K, ~60 Mbps).
+///
+/// Sample transport uses the iOS 26 / macOS 26 receiver/provider API
+/// (`AVAssetReader.outputProvider(for:)`, `AVAssetWriter.inputReceiver(for:)`,
+/// `AVAssetWriter.inputPixelBufferReceiver(for:pixelBufferAttributes:)`). The
+/// receiver's async `append(_:)` performs the backpressure wait that the old
+/// `isReadyForMoreMediaData` polling loop did, and the provider's `next()`
+/// replaces `copyNextSampleBuffer()`. The GPU passes themselves — LUT,
+/// halation/glow, grain — are untouched, so the rendered pixels and frame
+/// timing are unchanged.
 final class PipelineRenderer: @unchecked Sendable {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
@@ -97,7 +112,7 @@ final class PipelineRenderer: @unchecked Sendable {
         try Task.checkCancellation()
         try config.validate()
 
-        let asset = AVAsset(url: sourceURL)
+        let asset = AVURLAsset(url: sourceURL)
         let reader = try AVAssetReader(asset: asset)
 
         guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else {
@@ -154,11 +169,12 @@ final class PipelineRenderer: @unchecked Sendable {
             kCVPixelBufferHeightKey as String: renderHeight
         ]
         let readerOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: readerOutputSettings)
-        readerOutput.alwaysCopiesSampleData = false
         guard reader.canAdd(readerOutput) else {
             throw RenderError.stageFailed("video-reader-setup", "The video reader cannot accept the source track.")
         }
-        reader.add(readerOutput)
+        // `outputProvider(for:)` registers the output and vends its samples; it
+        // replaces `add(_:)` + `copyNextSampleBuffer()`.
+        let videoProvider = reader.outputProvider(for: readerOutput)
         reader.timeRange = trimRange ?? CMTimeRange(start: .zero, duration: duration)
 
         // Audio reader (passthrough) uses its OWN AVAssetReader instance.
@@ -166,15 +182,15 @@ final class PipelineRenderer: @unchecked Sendable {
         // `renderQueue` while audio is copied on a separate queue, so sharing
         // one reader across both threads risks dropped or corrupted samples.
         var audioReader: AVAssetReader?
-        var audioWriterInput: AVAssetWriterInput?
+        var audioProvider: ReadySampleProvider?
+        var audioReceiver: AVAssetWriterInput.SampleBufferReceiver?
         if let audioTrack = audioTrack {
             let ar = try AVAssetReader(asset: asset)
             let audioOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
-            audioOutput.alwaysCopiesSampleData = false
             guard ar.canAdd(audioOutput) else {
                 throw RenderError.stageFailed("audio-reader-setup", "The audio reader cannot accept the source track.")
             }
-            ar.add(audioOutput)
+            audioProvider = ar.outputProvider(for: audioOutput)
             ar.timeRange = trimRange ?? CMTimeRange(start: .zero, duration: duration)
             audioReader = ar
         }
@@ -218,27 +234,27 @@ final class PipelineRenderer: @unchecked Sendable {
         ]
 
         let writerInput = AVAssetWriterInput(mediaType: .video, outputSettings: writerOutputSettings)
-        writerInput.expectsMediaDataInRealTime = false
         writerInput.transform = preferredTransform
 
-        // BGRA 8-bit adaptor; HEVC encoder converts BGRA → Y′CbCr internally.
+        // BGRA 8-bit receiver pool; HEVC encoder converts BGRA → Y′CbCr internally.
         // Output tagged Rec.709 SDR (LUT pack is "Apple Log 2 → Rec.709"); exact transfer
         // gamma (2.2 vs 2.4) still unverified — BT.709 transfer is the standard SDR tag.
-        let sourcePixelBufferAttributes: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey as String: renderWidth,
-            kCVPixelBufferHeightKey as String: renderHeight,
-            kCVPixelBufferMetalCompatibilityKey as String: true
-        ]
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: writerInput,
-            sourcePixelBufferAttributes: sourcePixelBufferAttributes
+        var sourcePixelBufferAttributes = CVPixelBufferCreationAttributes(
+            pixelFormatType: CVPixelFormatType(rawValue: kCVPixelFormatType_32BGRA),
+            size: CVImageSize(width: Int(renderWidth), height: Int(renderHeight)),
+            compatibility: [.metalTexture]
         )
+        sourcePixelBufferAttributes.backing = .ioSurface
 
         guard writer.canAdd(writerInput) else {
             throw RenderError.stageFailed("video-writer-setup", "The movie writer cannot accept the video input.")
         }
-        writer.add(writerInput)
+        // `inputPixelBufferReceiver(for:pixelBufferAttributes:)` registers the
+        // input and vends the pool + append surface; it replaces `add(_:)` plus
+        // `AVAssetWriterInputPixelBufferAdaptor`.
+        let videoReceiver = writer.inputPixelBufferReceiver(
+            for: writerInput, pixelBufferAttributes: sourcePixelBufferAttributes
+        )
         writer.metadata = try RenderMovieMetadata.make(
             config: config, bitrate: bitrate, sourceColorProvenance: sourceColorProvenance,
             orientation: deliveryOrientation
@@ -250,16 +266,16 @@ final class PipelineRenderer: @unchecked Sendable {
             let audioDesc = try await audioTrack.load(.formatDescriptions).first
             let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil,
                                                   sourceFormatHint: audioDesc)
-            audioInput.expectsMediaDataInRealTime = false
             guard writer.canAdd(audioInput) else {
                 throw RenderError.stageFailed("audio-writer-setup", "The movie writer cannot accept the audio input.")
             }
-            writer.add(audioInput)
-            audioWriterInput = audioInput
+            audioReceiver = writer.inputReceiver(for: audioInput)
         }
 
         do {
-            guard writer.startWriting() else {
+            do {
+                try writer.start()
+            } catch {
                 throw RenderError.writerFailed(writer.error)
             }
             // Reader sample timestamps remain on the source timeline. Starting the
@@ -267,22 +283,25 @@ final class PipelineRenderer: @unchecked Sendable {
             let sessionStart = (trimRange ?? CMTimeRange(start: .zero, duration: duration)).start
             writer.startSession(atSourceTime: sessionStart)
 
-            guard reader.startReading() else {
+            do {
+                try reader.start()
+            } catch {
                 throw RenderError.readerFailed(reader.error)
             }
-            if let audioReader, !audioReader.startReading() {
-                throw RenderError.readerFailed(audioReader.error)
+            if let audioReader {
+                do {
+                    try audioReader.start()
+                } catch {
+                    throw RenderError.readerFailed(audioReader.error)
+                }
             }
 
             let frameResult = try await processFrames(
-                videoReader: reader,
-                readerOutput: readerOutput,
-                adaptor: adaptor,
-                writerInput: writerInput,
-                writer: writer,
+                videoProvider: videoProvider,
+                videoReceiver: videoReceiver,
                 config: config,
-                audioReader: audioReader,
-                audioWriterInput: audioWriterInput,
+                audioProvider: audioProvider,
+                audioReceiver: audioReceiver,
                 cancellationHandle: cancellationHandle,
                 captureFirstBufferEvidence: collectDecodedBufferEvidence
             )
@@ -496,47 +515,61 @@ final class PipelineRenderer: @unchecked Sendable {
             let width = CVPixelBufferGetWidth(pixelBuffer)
             let height = CVPixelBufferGetHeight(pixelBuffer)
             guard width > 0, height > 0 else { return nil }
-
-            guard let graded = runPass1(
-                sourcePixelBuffer: pixelBuffer,
-                lut: lut,
-                halationStrength: parameters.halationStrength,
-                glowStrength: parameters.glowStrength,
-                outputContrast: config.outputContrast,
-                width: width,
-                height: height
-            ) else { return nil }
-
             guard let spatialStage,
-                  let diffused = spatialStage.apply(
-                    graded: graded,
-                    commandQueue: commandQueue,
-                    halationStrength: parameters.halationStrength,
-                    glowStrength: parameters.glowStrength,
-                    halationRadiusFraction: parameters.halationRadiusFraction,
-                    halationTint: parameters.halationTint,
-                    width: width,
-                    height: height
-                  ) else { return nil }
-
-            guard let outputBuffer = makeDebugOutputBuffer(width: width, height: height),
-                  let outputTexture = makeTexture(from: outputBuffer, format: .bgra8Unorm)?.texture else {
+                  let sourceTexture = makeTexture(from: pixelBuffer, format: .rgba16Float) else {
                 return nil
             }
 
-            guard runPass2(
-                inputTexture: diffused,
-                outputPixelBuffer: outputBuffer,
-                frameIndex: frameIndex,
-                iso: config.defaultISO,
-                grainSize: parameters.realizedFootprint,
-                edgeBoostMultiplier: parameters.edgeBoostMultiplier,
-                gaugeAmplitude: parameters.gaugeAmplitude,
-                width: width,
-                height: height
-            ) else { return nil }
+            // Same order the video path uses: halation on the scene-linear
+            // source BEFORE the LUT, then the LUT + output contrast, then glow,
+            // then grain. Keep the source's CVMetalTexture alive across the
+            // halation and LUT passes, both of which read it.
+            return withExtendedLifetime(sourceTexture.cvTexture) { () -> DebugFrameRender? in
+                guard let halated = spatialStage.applyHalation(
+                    source: sourceTexture.texture,
+                    commandQueue: commandQueue,
+                    strength: parameters.halationStrength,
+                    radiusFraction: parameters.halationRadiusFraction,
+                    layerScale: parameters.halationTint,
+                    width: width,
+                    height: height
+                ) else { return nil }
 
-            return DebugFrameRender(texture: outputTexture, pixelBuffer: outputBuffer)
+                guard let graded = runLUTPass(
+                    input: halated,
+                    lut: lut,
+                    outputContrast: config.outputContrast,
+                    width: width,
+                    height: height
+                ) else { return nil }
+
+                guard let glowed = spatialStage.applyGlow(
+                    graded: graded,
+                    commandQueue: commandQueue,
+                    strength: parameters.glowStrength,
+                    width: width,
+                    height: height
+                ) else { return nil }
+
+                guard let outputBuffer = makeDebugOutputBuffer(width: width, height: height),
+                      let outputTexture = makeTexture(from: outputBuffer, format: .bgra8Unorm)?.texture else {
+                    return nil
+                }
+
+                guard runPass2(
+                    inputTexture: glowed,
+                    outputPixelBuffer: outputBuffer,
+                    frameIndex: frameIndex,
+                    iso: config.defaultISO,
+                    grainSize: parameters.realizedFootprint,
+                    edgeBoostMultiplier: parameters.edgeBoostMultiplier,
+                    gaugeAmplitude: parameters.gaugeAmplitude,
+                    width: width,
+                    height: height
+                ) else { return nil }
+
+                return DebugFrameRender(texture: outputTexture, pixelBuffer: outputBuffer)
+            }
         }
     }
 
@@ -656,181 +689,135 @@ final class PipelineRenderer: @unchecked Sendable {
     // MARK: - Frame Processing
 
     private func processFrames(
-        videoReader: AVAssetReader,
-        readerOutput: AVAssetReaderTrackOutput,
-        adaptor: AVAssetWriterInputPixelBufferAdaptor,
-        writerInput: AVAssetWriterInput,
-        writer: AVAssetWriter,
+        videoProvider: ReadySampleProvider,
+        videoReceiver: AVAssetWriterInput.PixelBufferReceiver,
         config: FilmStockConfig,
-        audioReader: AVAssetReader?,
-        audioWriterInput: AVAssetWriterInput?,
+        // The audio lane is handed to a concurrent child task, so this call
+        // takes ownership of it: `sending` is what lets the child task carry
+        // these non-`Sendable` AVFoundation objects across the isolation
+        // boundary without an unsafe escape hatch.
+        audioProvider: sending ReadySampleProvider?,
+        audioReceiver: sending AVAssetWriterInput.SampleBufferReceiver?,
         cancellationHandle: RenderCancellationHandle,
         captureFirstBufferEvidence: Bool
     ) async throws -> (counters: RenderDiagnosticsManifest.Counters,
                        firstBufferEvidence: RenderDiagnosticsManifest.DecodedBufferEvidence?) {
-        guard let lut = lutTexture else {
+        guard let lut = renderQueue.sync(execute: { lutTexture }) else {
             throw RenderError.missingResource("LUT texture not loaded")
         }
 
-        let counterBox = FrameCounterBox()
+        var counters = RenderDiagnosticsManifest.Counters()
+        var firstBufferEvidence: RenderDiagnosticsManifest.DecodedBufferEvidence?
+        var videoFailure: Error?
         let audioResult = AudioCopyResultBox()
 
+        // The audio passthrough lane runs concurrently with the video lane.
+        // AVAssetWriter will not hand out more video buffers while it is still
+        // waiting on another input, so the audio lane must make progress
+        // alongside the video lane or the writer deadlocks.
+        //
+        // The task is created here, before the cancellation handler, so it is
+        // born in this function's own nonisolated context; the handler's
+        // operation closure is `isolated(any)`, and spawning a concurrent child
+        // from there would be rejected as a data race by region isolation.
+        let audioCopy = Task {
+            await copyAudioSamples(
+                from: audioProvider,
+                to: audioReceiver,
+                result: audioResult,
+                cancellationHandle: cancellationHandle
+            )
+        }
+
         return try await withTaskCancellationHandler {
-          try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(RenderDiagnosticsManifest.Counters, RenderDiagnosticsManifest.DecodedBufferEvidence?), Error>) in
-            renderQueue.async { [weak self] in
-                guard let self else {
-                    continuation.resume(throwing: RenderError.stageFailed("renderer", "Renderer was released before frame processing."))
-                    return
+            // These mutable values are owned exclusively by this task.
+            var frameIndex: UInt32 = 0
+            var firstFrame = true
+
+            while true {
+                if let audioFailure = audioResult.getFailure {
+                    videoFailure = audioFailure
+                    break
                 }
-                // These mutable values are owned exclusively by renderQueue.
-                var frameIndex: UInt32 = 0
-                var firstFrame = true
-                var actualWidth = 0
-                var actualHeight = 0
-                var firstBufferEvidence: RenderDiagnosticsManifest.DecodedBufferEvidence?
+                if Task.isCancelled || cancellationHandle.writerStatus == .cancelled {
+                    videoFailure = CancellationError()
+                    break
+                }
 
-                // Start audio passthrough on a parallel queue. The audio
-                // reader is dedicated to audio, so it is only touched from
-                // this queue (the video reader lives on `renderQueue`).
-                let audioDone: DispatchWorkItem? = {
-                    guard audioReader != nil, audioWriterInput != nil else { return nil }
-                    let work = DispatchWorkItem { [weak self] in
-                        guard let self else {
-                            audioResult.set(.failure(RenderError.stageFailed("audio-copy", "Renderer was released during audio copy.")))
-                            return
-                        }
-                        let result = self.copyAudioSamples(
-                            from: audioReader,
-                            to: audioWriterInput,
-                            cancellationHandle: cancellationHandle
-                        )
-                        audioResult.set(result)
-                        if case .failure = result { cancellationHandle.cancel() }
-                    }
-                    DispatchQueue.global(qos: .utility).async(execute: work)
-                    return work
-                }()
-
-                var videoFailure: Error?
-                var reachedVideoEOF = false
-                while !reachedVideoEOF {
-                    if let audioFailure = audioResult.getFailure {
-                        videoFailure = audioFailure
-                        break
-                    }
-                    if cancellationHandle.writerStatus == .cancelled {
+                // Read first so writer backpressure cannot hide reader EOF.
+                let sample: CMReadySampleBuffer<CMSampleBuffer.DynamicContent>?
+                do {
+                    sample = try await videoProvider.next()
+                } catch {
+                    videoFailure = cancellationHandle.writerStatus == .cancelled
+                        ? CancellationError()
+                        : RenderError.readerFailed(cancellationHandle.videoReaderError ?? error)
+                    break
+                }
+                guard let sample else {
+                    // End of video. A reader that stopped for any reason other
+                    // than reaching the end of its range is a failure.
+                    switch cancellationHandle.videoReaderStatus {
+                    case .completed:
+                        videoReceiver.finish()
+                    case .failed:
+                        videoFailure = RenderError.readerFailed(cancellationHandle.videoReaderError)
+                    case .cancelled:
                         videoFailure = CancellationError()
-                        break
+                    default:
+                        videoFailure = RenderError.stageFailed("video-reader", "Video ended before the reader completed.")
                     }
+                    break
+                }
+                counters.decoded += 1
 
-                    // Read first so writer backpressure cannot hide reader EOF.
-                    guard let sampleBuffer = cancellationHandle.copyNextVideoSample(from: readerOutput) else {
-                        switch cancellationHandle.videoReaderStatus {
-                        case .completed:
-                            cancellationHandle.markVideoFinished(writerInput)
-                            reachedVideoEOF = true
-                        case .failed:
-                            videoFailure = RenderError.readerFailed(cancellationHandle.videoReaderError)
-                        case .cancelled:
-                            videoFailure = CancellationError()
-                        default:
-                            videoFailure = RenderError.stageFailed("video-reader", "Video ended before the reader completed.")
-                        }
-                        break
-                    }
-                    counterBox.counters.decoded += 1
+                let isFirstFrame = firstFrame
+                firstFrame = false
 
-                    // A sample is already pending; wait for writer readiness.
-                    var pollCount = 0
-                    while !writerInput.isReadyForMoreMediaData {
-                        if let audioFailure = audioResult.getFailure {
-                            videoFailure = audioFailure
-                            break
-                        }
-                        let writerStatus = cancellationHandle.writerStatus
-                        if writerStatus == .failed || writerStatus == .cancelled {
-                            videoFailure = writerStatus == .cancelled
-                                ? CancellationError()
-                                : RenderError.writerFailed(cancellationHandle.writerError)
-                            break
-                        }
-                        usleep(1000)
-                        pollCount += 1
-                        if pollCount > 5000 {  // 5s timeout
-                            // The writer has not failed, it simply never asked for
-                            // more video — report that honestly instead of claiming
-                            // an asset-writer failure.
-                            videoFailure = RenderError.stageFailed(
-                                "video-backpressure",
-                                "The video writer did not accept frames for 5 seconds (audio input: \(audioWriterInput != nil))."
-                            )
-                            break
-                        }
-                    }
-                    if videoFailure != nil { break }
-
-                    guard let sourcePixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-                        videoFailure = RenderError.stageFailed("decode", "Sample buffer has no pixel buffer.")
-                        break
-                    }
-                    let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-
-                    if firstFrame {
-                        actualWidth = CVPixelBufferGetWidth(sourcePixelBuffer)
-                        actualHeight = CVPixelBufferGetHeight(sourcePixelBuffer)
-                        if captureFirstBufferEvidence {
-                            firstBufferEvidence = Self.snapshotDecodedBuffer(sourcePixelBuffer)
-                        }
-                        firstFrame = false
-                    }
-
-                    // Process: input → pass1 (LUT) → spatial halation/glow → pass2 (grain) → output
-                    switch self.renderFrame(
-                        sourcePixelBuffer: sourcePixelBuffer,
+                // Process: input → pass1 (LUT) → spatial halation/glow → pass2 (grain) → output
+                do {
+                    let evidence = try await renderFrame(
+                        sample: sample,
                         context: FrameRenderContext(
-                            adaptor: adaptor,
+                            receiver: videoReceiver,
                             config: config,
                             lut: lut,
                             cancellationHandle: cancellationHandle
                         ),
                         frameIndex: frameIndex,
-                        timestamp: timestamp,
-                        size: MTLSize(width: actualWidth, height: actualHeight, depth: 1)
-                    ) {
-                    case .failure(let error):
-                        videoFailure = audioResult.getFailure ?? error
-                        break
-                    case .success:
-                        break
-                    }
-                    if videoFailure != nil { break }
-                    counterBox.counters.processed += 1
-                    counterBox.counters.appended += 1
-                    frameIndex += 1
+                        captureEvidence: captureFirstBufferEvidence && isFirstFrame
+                    )
+                    if let evidence { firstBufferEvidence = evidence }
+                } catch {
+                    videoFailure = audioResult.getFailure ?? error
+                    break
                 }
 
-                if videoFailure != nil {
-                    // Cancel writer/reader to release an audio worker blocked on
-                    // writer backpressure, then join it before returning.
-                    cancellationHandle.cancel()
-                }
-                audioDone?.wait()
-
-                if let videoFailure {
-                    continuation.resume(throwing: videoFailure)
-                } else if let audioFailure = audioResult.getFailure {
-                    continuation.resume(throwing: audioFailure)
-                } else if cancellationHandle.videoReaderStatus == .failed {
-                    continuation.resume(throwing: RenderError.readerFailed(cancellationHandle.videoReaderError))
-                } else if cancellationHandle.videoReaderStatus != .completed {
-                    continuation.resume(throwing: CancellationError())
-                } else if cancellationHandle.audioReaderStatus == .failed {
-                    continuation.resume(throwing: RenderError.readerFailed(cancellationHandle.audioReaderError))
-                } else {
-                    continuation.resume(returning: (counterBox.counters, firstBufferEvidence))
-                }
+                counters.processed += 1
+                counters.appended += 1
+                frameIndex += 1
             }
-          }
+
+            if videoFailure != nil {
+                // Cancel writer/reader to release an audio worker blocked on
+                // writer backpressure, then join it before returning.
+                cancellationHandle.cancel()
+            }
+            await audioCopy.value
+
+            if let videoFailure {
+                throw videoFailure
+            } else if let audioFailure = audioResult.getFailure {
+                throw audioFailure
+            } else if cancellationHandle.videoReaderStatus == .failed {
+                throw RenderError.readerFailed(cancellationHandle.videoReaderError)
+            } else if cancellationHandle.videoReaderStatus != .completed {
+                throw CancellationError()
+            } else if cancellationHandle.audioReaderStatus == .failed {
+                throw RenderError.readerFailed(cancellationHandle.audioReaderError)
+            } else {
+                return (counters, firstBufferEvidence)
+            }
         } onCancel: {
             cancellationHandle.cancel()
         }
@@ -885,170 +872,223 @@ final class PipelineRenderer: @unchecked Sendable {
     }
 
     /// Grade and encode a single frame: LUT pass, spatial halation/glow,
-    /// grain pass, then append. Returns the stage failure to report, if any.
+    /// grain pass, then append. Throws the stage failure to report, if any.
+    ///
+    /// The GPU passes are byte-for-byte the same as before the receiver
+    /// migration; only the output buffer source (the receiver's pool) and the
+    /// append call changed.
     private func renderFrame(
-        sourcePixelBuffer: CVPixelBuffer,
+        sample: CMReadySampleBuffer<CMSampleBuffer.DynamicContent>,
         context: FrameRenderContext,
         frameIndex: UInt32,
-        timestamp: CMTime,
-        size: MTLSize
-    ) -> Result<Void, Error> {
+        captureEvidence: Bool
+    ) async throws -> RenderDiagnosticsManifest.DecodedBufferEvidence? {
         if let renderFailureAfterFrames, frameIndex >= renderFailureAfterFrames {
-            return .failure(RenderError.stageFailed("injected-frame-failure", "Synthetic writer failure after \(frameIndex) frames."))
+            throw RenderError.stageFailed("injected-frame-failure", "Synthetic writer failure after \(frameIndex) frames.")
         }
-        let adaptor = context.adaptor
+        let receiver = context.receiver
         let config = context.config
-        let width = size.width
-        let height = size.height
 
-        // Get an output pixel buffer from the adaptor's pool
-        guard let pool = adaptor.pixelBufferPool else {
-            return .failure(RenderError.stageFailed("pixel-buffer-pool", "Writer pixel buffer pool is unavailable."))
+        // Cancellation can invalidate the receiver's pool after the frame loop's
+        // cancellation check. Report that race as cancellation, not allocation
+        // failure; a genuinely unavailable pool still reports its stage error.
+        guard let pool = receiver.pixelBufferPool else {
+            if Task.isCancelled || context.cancellationHandle.writerStatus == .cancelled {
+                throw CancellationError()
+            }
+            throw RenderError.stageFailed("pixel-buffer-pool", "Writer pixel buffer pool is unavailable.")
         }
-        var outputPixelBuffer: CVPixelBuffer?
-        let allocationStatus = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &outputPixelBuffer)
-        guard allocationStatus == kCVReturnSuccess, let outBuf = outputPixelBuffer else {
-            return .failure(RenderError.stageFailed("pixel-buffer-allocation", "Unable to allocate output pixel buffer (\(allocationStatus))."))
-        }
-
-        guard let graded = runPass1(
-            sourcePixelBuffer: sourcePixelBuffer,
-            lut: context.lut,
-            halationStrength: config.halationStrength,
-            glowStrength: config.glowStrength,
-            outputContrast: config.outputContrast,
-            width: width,
-            height: height
-        ) else {
-            return .failure(RenderError.stageFailed("gpu-pass-1", "The LUT GPU pass did not complete."))
+        let outputBuffer: CVMutablePixelBuffer
+        do {
+            outputBuffer = try pool.makeMutablePixelBuffer()
+        } catch {
+            if Task.isCancelled || context.cancellationHandle.writerStatus == .cancelled {
+                throw CancellationError()
+            }
+            throw RenderError.stageFailed("pixel-buffer-allocation", "Unable to allocate output pixel buffer (\(error)).")
         }
 
-        guard let spatialStage,
-              let diffused = spatialStage.apply(
-                graded: graded,
-                commandQueue: commandQueue,
-                halationStrength: config.halationStrength,
-                glowStrength: config.glowStrength,
-                halationRadiusFraction: config.halationRadiusFraction,
-                halationTint: config.halationTint,
-                width: width,
-                height: height
-              ) else {
-            return .failure(RenderError.stageFailed("gpu-spatial", "The spatial halation/glow stage did not complete."))
-        }
+        // The GPU passes and the LUT texture read stay confined to
+        // `renderQueue`, exactly as before the migration, so they still
+        // serialize with the debug single-frame path's `renderQueue.sync`.
+        var evidence: RenderDiagnosticsManifest.DecodedBufferEvidence?
+        let outcome: Result<Void, Error> = renderQueue.sync {
+            sample.withUnsafeSampleBuffer { sampleBuffer in
+                guard let sourcePixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+                    return .failure(RenderError.stageFailed("decode", "Sample buffer has no pixel buffer."))
+                }
+                let width = CVPixelBufferGetWidth(sourcePixelBuffer)
+                let height = CVPixelBufferGetHeight(sourcePixelBuffer)
+                if captureEvidence {
+                    evidence = Self.snapshotDecodedBuffer(sourcePixelBuffer)
+                }
+                return outputBuffer.withUnsafeBuffer { destination in
+                    guard let spatialStage = self.spatialStage,
+                          let sourceTexture = self.makeTexture(from: sourcePixelBuffer, format: .rgba16Float) else {
+                        return .failure(RenderError.stageFailed("gpu-halation", "Could not wrap the decoded frame for halation."))
+                    }
+                    // Halation is added to the scene-linear source and re-encoded
+                    // to Apple Log 2 BEFORE the LUT, so the scattered light is
+                    // tone-mapped by the same stock curve as the source. Keep the
+                    // source's CVMetalTexture alive across the halation and LUT
+                    // passes, both of which read it.
+                    return withExtendedLifetime(sourceTexture.cvTexture) { () -> Result<Void, Error> in
+                        guard let halated = spatialStage.applyHalation(
+                            source: sourceTexture.texture,
+                            commandQueue: self.commandQueue,
+                            strength: config.halationStrength,
+                            radiusFraction: config.halationRadiusFraction,
+                            layerScale: config.halationTint,
+                            width: width,
+                            height: height
+                        ) else {
+                            return .failure(RenderError.stageFailed("gpu-halation", "The halation stage did not complete."))
+                        }
 
-        let gauge = config.effectivePrintGauge
-        let grained = runPass2(
-            inputTexture: diffused,
-            outputPixelBuffer: outBuf,
-            frameIndex: frameIndex,
-            iso: config.defaultISO,
-            grainSize: GrainModel.effectiveSize(stockGrainSize: config.grainSize, gauge: gauge),
-            edgeBoostMultiplier: config.effectiveRecipe.edgeBoostMultiplier,
-            gaugeAmplitude: gauge.amplitudeMultiplier,
-            width: width,
-            height: height
-        )
-        guard grained else {
-            return .failure(RenderError.stageFailed("gpu-pass-2", "The grain GPU pass did not complete."))
-        }
+                        guard let graded = self.runLUTPass(
+                            input: halated,
+                            lut: context.lut,
+                            outputContrast: config.outputContrast,
+                            width: width,
+                            height: height
+                        ) else {
+                            return .failure(RenderError.stageFailed("gpu-pass-1", "The LUT GPU pass did not complete."))
+                        }
 
-        guard context.cancellationHandle.appendVideo(outBuf, withPresentationTime: timestamp, using: adaptor) else {
-            return .failure(RenderError.stageFailed("writer-append", context.cancellationHandle.writerError?.localizedDescription ?? "Writer rejected a processed frame."))
+                        guard let glowed = spatialStage.applyGlow(
+                            graded: graded,
+                            commandQueue: self.commandQueue,
+                            strength: config.glowStrength,
+                            width: width,
+                            height: height
+                        ) else {
+                            return .failure(RenderError.stageFailed("gpu-spatial", "The glow stage did not complete."))
+                        }
+
+                        let gauge = config.effectivePrintGauge
+                        guard self.runPass2(
+                            inputTexture: glowed,
+                            outputPixelBuffer: destination,
+                            frameIndex: frameIndex,
+                            iso: config.defaultISO,
+                            grainSize: GrainModel.effectiveSize(stockGrainSize: config.grainSize, gauge: gauge),
+                            edgeBoostMultiplier: config.effectiveRecipe.edgeBoostMultiplier,
+                            gaugeAmplitude: gauge.amplitudeMultiplier,
+                            width: width,
+                            height: height
+                        ) else {
+                            return .failure(RenderError.stageFailed("gpu-pass-2", "The grain GPU pass did not complete."))
+                        }
+                        return .success(())
+                    }
+                }
+            }
         }
-        return .success(())
+        try outcome.get()
+
+        do {
+            try await receiver.append(CVReadOnlyPixelBuffer(outputBuffer), with: sample.presentationTimeStamp)
+        } catch {
+            if Task.isCancelled || context.cancellationHandle.writerStatus == .cancelled {
+                throw CancellationError()
+            }
+            throw RenderError.stageFailed(
+                "writer-append",
+                context.cancellationHandle.writerError?.localizedDescription ?? error.localizedDescription
+            )
+        }
+        return evidence
     }
 
-    /// Copies audio samples from the dedicated audio reader to the writer
-    /// input, waiting out backpressure instead of dropping samples. The
-    /// previous loop called `append` while the input was not ready, which
-    /// returned false and silently discarded samples (gaps/silent audio).
-    /// Runs synchronously on the calling queue — dispatch on a background queue.
+    /// Copies audio samples from the dedicated audio reader's provider to the
+    /// writer's sample-buffer receiver, suspending on the receiver's async
+    /// `append(_:)` until the writer can take each sample — the backpressure
+    /// wait the old `isReadyForMoreMediaData` polling loop performed. The
+    /// previous pre-polling loop called `append` while the input was not ready,
+    /// which returned false and silently discarded samples (gaps/silent audio).
+    ///
+    /// Runs as a child task alongside the video lane. The audio input is marked
+    /// finished as soon as the audio is exhausted.
+    ///
+    /// This must happen HERE, not in the video loop. Audio is a cheap
+    /// passthrough while video frames go through three GPU passes, so the
+    /// audio lane races far ahead of the video and reaches end-of-track
+    /// long before the video does. AVAssetWriter will not hand out more
+    /// video buffers while it is still waiting on another input, so leaving
+    /// the audio input open deadlocked the writer: the video input never
+    /// became ready, the frame loop timed out, and the render failed (or, on
+    /// device, appeared to hang).
     private func copyAudioSamples(
-        from audioReader: AVAssetReader?,
-        to audioWriterInput: AVAssetWriterInput?,
+        from audioProvider: ReadySampleProvider?,
+        to audioReceiver: AVAssetWriterInput.SampleBufferReceiver?,
+        result: AudioCopyResultBox,
         cancellationHandle: RenderCancellationHandle
-    ) -> Result<Void, Error> {
-        guard let audioReader, let audioWriter = audioWriterInput else { return .success(()) }
-        guard let audioOutput = audioReader.outputs.first as? AVAssetReaderTrackOutput else {
-            return .failure(RenderError.stageFailed("audio-reader", "The audio reader has no track output."))
+    ) async {
+        guard let audioProvider, let audioReceiver else {
+            result.set(.success(()))
+            return
         }
 
-        // Mark the audio input finished as soon as the audio is exhausted.
-        //
-        // This must happen HERE, not in the video loop. Audio is a cheap
-        // passthrough while video frames go through three GPU passes, so the
-        // audio thread races far ahead of the video and reaches end-of-track
-        // long before the video does. AVAssetWriter will not hand out more
-        // video buffers while it is still waiting on another input, so leaving
-        // the audio input open deadlocked the writer: the video input never
-        // became ready, the frame loop timed out, and the render failed (or, on
-        // device, appeared to hang).
         var appendedSamples = 0
-        while true {
-            guard let sample = cancellationHandle.copyNextAudioSample(from: audioOutput) else {
-                switch cancellationHandle.audioReaderStatus {
-                case .completed:
-                    cancellationHandle.markAudioFinished(audioWriter)
-                    return .success(())
-                case .failed: return .failure(RenderError.readerFailed(cancellationHandle.audioReaderError))
-                case .cancelled: return .failure(CancellationError())
-                default: return .failure(RenderError.stageFailed("audio-reader", "Audio ended before the reader completed."))
+        do {
+            while let sample = try await audioProvider.next() {
+                if Task.isCancelled { throw CancellationError() }
+                if let audioAppendRejectionAfterSamples, appendedSamples >= audioAppendRejectionAfterSamples {
+                    throw RenderError.stageFailed("audio-append", "Synthetic audio append rejection.")
                 }
+                try await audioReceiver.append(sample)
+                appendedSamples += 1
             }
-
-            if let audioAppendRejectionAfterSamples, appendedSamples >= audioAppendRejectionAfterSamples {
-                return .failure(RenderError.stageFailed("audio-append", "Synthetic audio append rejection."))
+            switch cancellationHandle.audioReaderStatus {
+            case .completed:
+                audioReceiver.finish()
+                result.set(.success(()))
+            case .failed:
+                throw RenderError.readerFailed(cancellationHandle.audioReaderError)
+            case .cancelled:
+                throw CancellationError()
+            default:
+                throw RenderError.stageFailed("audio-reader", "Audio ended before the reader completed.")
             }
-            var pollCount = 0
-            while !audioWriter.isReadyForMoreMediaData {
-                let writerStatus = cancellationHandle.writerStatus
-                if writerStatus == .failed || writerStatus == .cancelled {
-                    if writerStatus == .cancelled { return .failure(CancellationError()) }
-                    return .failure(RenderError.stageFailed("audio-writer", cancellationHandle.writerError?.localizedDescription ?? "Writer failed while copying audio."))
-                }
-                usleep(1000)
-                pollCount += 1
-                if pollCount > 30_000 {  // 30s safety timeout
-                    return .failure(RenderError.stageFailed("audio-backpressure", "The audio writer did not accept samples for 30 seconds."))
-                }
-            }
-            if !cancellationHandle.appendAudio(sample, using: audioWriter) {
-                return .failure(RenderError.stageFailed("audio-append", cancellationHandle.writerError?.localizedDescription ?? "The audio writer rejected a sample."))
-            }
-            appendedSamples += 1
+        } catch {
+            result.set(.failure(error))
+            cancellationHandle.cancel()
         }
     }
 
     // MARK: - GPU Passes
 
-    /// Pass 1: LUT + halation + glow. Returns the intermediate Metal texture.
-    private func runPass1(
-        sourcePixelBuffer: CVPixelBuffer,
+    /// Pass 1: grade the (halation-modified) Apple Log 2 frame through the stock
+    /// LUT and output contrast. Returns the display-referred graded texture.
+    ///
+    /// `input` is Apple Log 2 — either the raw decoded frame, or the frame the
+    /// halation stage re-encoded after adding scattered scene light. The LUT is
+    /// authored for Apple Log 2 code values, so halation must be applied to the
+    /// source BEFORE this pass, not to its output: a 2x and a 100x specular both
+    /// land near 1.0 after the LUT, and the superwhite separation halation needs
+    /// would be gone.
+    private func runLUTPass(
+        input: MTLTexture,
         lut: MTLTexture,
-        halationStrength: Float,
-        glowStrength: Float,
         outputContrast: Float,
         width: Int,
         height: Int
     ) -> MTLTexture? {
-        // Create source texture from CVPixelBuffer via texture cache
-        guard let source = makeTexture(from: sourcePixelBuffer, format: .rgba16Float),
-              let intermediateTexture = makeIntermediateTexture(width: width, height: height) else {
-            return nil
-        }
-
-        guard let commandBuffer = commandQueue.makeCommandBuffer(),
+        guard let intermediateTexture = makeIntermediateTexture(width: width, height: height),
+              let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
             return nil
         }
 
-        var halation = halationStrength
-        var glow = glowStrength
+        // `pass1_lut_halation_glow` still binds these two buffers for signature
+        // stability, but halation and glow are spatial now and this pass only
+        // grades, so they are pinned to zero.
+        var halation: Float = 0
+        var glow: Float = 0
         var contrast = outputContrast
 
         encoder.setComputePipelineState(pass1Pipeline!)
-        encoder.setTexture(source.texture, index: 0)
+        encoder.setTexture(input, index: 0)
         encoder.setTexture(intermediateTexture, index: 1)
         encoder.setTexture(lut, index: 2)
         encoder.setBytes(&halation, length: MemoryLayout<Float>.size, index: 0)
@@ -1065,9 +1105,9 @@ final class PipelineRenderer: @unchecked Sendable {
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        withExtendedLifetime(source.cvTexture) {}
 
-        return commandBuffer.status == .completed ? intermediateTexture : nil
+        guard commandBuffer.status == .completed else { return nil }
+        return intermediateTexture
     }
 
     /// Pass 2: grain. Writes result directly into the output pixel buffer.
@@ -1317,16 +1357,10 @@ struct GrainUniforms {
 /// Everything one frame needs to be graded and appended, bundled so the frame
 /// loop's per-frame helper keeps a manageable parameter list.
 private struct FrameRenderContext {
-    let adaptor: AVAssetWriterInputPixelBufferAdaptor
+    let receiver: AVAssetWriterInput.PixelBufferReceiver
     let config: FilmStockConfig
     let lut: MTLTexture
     let cancellationHandle: RenderCancellationHandle
-}
-
-/// Frame processing is serialized on `renderQueue`; this box avoids crossing a mutable
-/// value capture into that closure while retaining exact per-run diagnostic counters.
-private final class FrameCounterBox: @unchecked Sendable {
-    var counters = RenderDiagnosticsManifest.Counters()
 }
 
 /// Captures the result from the dedicated audio-copy worker for the render queue.
@@ -1348,9 +1382,11 @@ private final class AudioCopyResultBox: @unchecked Sendable {
     }
 }
 
-/// Serializes reader cancellation with sample copies and writer cancellation
-/// with appends. Each worker releases its lane lock before waiting for
-/// backpressure, so cancellation can acquire the lock and unblock it.
+/// Serializes reader/writer cancellation against the status and error reads
+/// the frame loop and the audio lane poll. Sample transport itself no longer
+/// needs a lane lock: `AVAssetReaderOutput.Provider.next()` and the writer
+/// receivers' `append(_:)` are concurrency-safe and are driven from structured
+/// child tasks rather than from a shared serial queue.
 private final class RenderCancellationHandle: @unchecked Sendable {
     private let writer: AVAssetWriter
     private let videoReader: AVAssetReader
@@ -1366,9 +1402,9 @@ private final class RenderCancellationHandle: @unchecked Sendable {
     }
 
     func cancel() {
-        // Workers never hold a reader lock while acquiring the writer lock.
         // Cancel the writer first to release backpressure, then stop each
-        // reader only after any in-flight copy has returned.
+        // reader. Cancelling the writer makes a pending receiver `append(_:)`
+        // and a pending provider `next()` return immediately.
         writerLock.lock()
         writer.cancelWriting()
         writerLock.unlock()
@@ -1382,18 +1418,6 @@ private final class RenderCancellationHandle: @unchecked Sendable {
             audioReader.cancelReading()
             audioReaderLock.unlock()
         }
-    }
-
-    func copyNextVideoSample(from output: AVAssetReaderTrackOutput) -> CMSampleBuffer? {
-        videoReaderLock.lock()
-        defer { videoReaderLock.unlock() }
-        return output.copyNextSampleBuffer()
-    }
-
-    func copyNextAudioSample(from output: AVAssetReaderTrackOutput) -> CMSampleBuffer? {
-        audioReaderLock.lock()
-        defer { audioReaderLock.unlock() }
-        return output.copyNextSampleBuffer()
     }
 
     var videoReaderStatus: AVAssetReader.Status {
@@ -1432,36 +1456,6 @@ private final class RenderCancellationHandle: @unchecked Sendable {
         writerLock.lock()
         defer { writerLock.unlock() }
         return writer.error
-    }
-
-    func appendVideo(
-        _ buffer: CVPixelBuffer,
-        withPresentationTime time: CMTime,
-        using adaptor: AVAssetWriterInputPixelBufferAdaptor
-    ) -> Bool {
-        writerLock.lock()
-        defer { writerLock.unlock() }
-        guard writer.status != .cancelled else { return false }
-        return adaptor.append(buffer, withPresentationTime: time)
-    }
-
-    func appendAudio(_ sample: CMSampleBuffer, using input: AVAssetWriterInput) -> Bool {
-        writerLock.lock()
-        defer { writerLock.unlock() }
-        guard writer.status != .cancelled else { return false }
-        return input.append(sample)
-    }
-
-    func markVideoFinished(_ input: AVAssetWriterInput) {
-        writerLock.lock()
-        defer { writerLock.unlock() }
-        input.markAsFinished()
-    }
-
-    func markAudioFinished(_ input: AVAssetWriterInput) {
-        writerLock.lock()
-        defer { writerLock.unlock() }
-        input.markAsFinished()
     }
 }
 

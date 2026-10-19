@@ -5,6 +5,12 @@ options:
     iOS: "27.0"
   xcodeVersion: "16.0"
   generateEmptyDirectories: true
+  # Reference every source by its full path from the project root, so a file
+  # reached through a target's directory source and the same file listed
+  # explicitly by another target resolve to one group instead of two. Without
+  # this XcodeGen reports the ProcessingPipeline/CameraCapture references as
+  # members of multiple groups and the project is malformed.
+  createIntermediateGroups: true
   defaultConfig: Debug
 
 settings:
@@ -14,8 +20,8 @@ settings:
     # Single source of truth for the version shown on the splash and in
     # CFBundleShortVersionString / CFBundleVersion. Bump MARKETING_VERSION for a
     # user-visible release, CURRENT_PROJECT_VERSION for every build.
-    MARKETING_VERSION: "0.1.4"
-    CURRENT_PROJECT_VERSION: "4"
+    MARKETING_VERSION: "0.1.5"
+    CURRENT_PROJECT_VERSION: "5"
     INFOPLIST_KEY_CFBundleDisplayName: Nitrate
     INFOPLIST_KEY_NSCameraUsageDescription: "Nitrate needs camera access to capture Apple Log video for film stock processing."
     INFOPLIST_KEY_NSMicrophoneUsageDescription: "Nitrate records audio to accompany your film clips."
@@ -169,7 +175,11 @@ targets:
   RenderCLI:
     type: tool
     platform: macOS
-    deploymentTarget: "14.0"
+    # macOS 26.0 is the minimum that provides the AVFoundation receiver/provider
+    # API (AVAssetReader.outputProvider(for:), AVAssetWriter.inputReceiver(for:),
+    # AVAssetWriterInput.PixelBufferReceiver/SampleBufferReceiver, start()) that
+    # replaces the iOS 27 / macOS 27 deprecations. See PipelineRenderer.swift.
+    deploymentTarget: "26.0"
     sources:
       - path: CLI/
       - path: App/Modules/ProcessingPipeline/
@@ -190,7 +200,9 @@ targets:
   RenderCLITests:
     type: bundle.unit-test
     platform: macOS
-    deploymentTarget: "14.0"
+    # Must match RenderCLI: this target compiles PipelineRenderer.swift, which
+    # adopts the macOS 26 AVFoundation receiver/provider API.
+    deploymentTarget: "26.0"
     sources:
       - path: Tests
       - path: App/AppIdentity.swift
