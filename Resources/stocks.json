@@ -5,7 +5,7 @@
       "displayName": "250D / 5207",
       "category": "video",
       "lutName": "5207 - Apple Log 2.cube",
-      "halationStrength": 5.0,
+      "halationStrength": 3.60,
       "glowStrength": 0.155,
       "grainSize": 1.15,
       "halationRadiusFraction": 0.001,
@@ -17,7 +17,7 @@
       "secondaryTint": "#A67C2E",
       "recipe": {
         "schemaVersion": 1,
-        "version": "5207-current-v6",
+        "version": "5207-current-v7",
         "input": {
           "gamut": "Rec.2020",
           "transfer": "Apple Log 2",
@@ -52,7 +52,7 @@
       "displayName": "500T / 5219",
       "category": "video",
       "lutName": "5219 - Apple Log 2.cube",
-      "halationStrength": 5.0,
+      "halationStrength": 3.60,
       "glowStrength": 0.2325,
       "grainSize": 1.3,
       "halationRadiusFraction": 0.001,
@@ -64,7 +64,7 @@
       "secondaryTint": "#153A4A",
       "recipe": {
         "schemaVersion": 1,
-        "version": "5219-current-v11",
+        "version": "5219-current-v12",
         "input": {
           "gamut": "Rec.2020",
           "transfer": "Apple Log 2",

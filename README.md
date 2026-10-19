@@ -183,8 +183,7 @@ decoded Apple Log 2 → halation: decode → add scattered linear light → re-e
   then re-encoded to Apple Log 2. The stock LUT grades source and scattered
   light together; halation is not a separate display-space overlay. Base radius,
   strength and channel weights are **per stock**; print gauge does not change
-  halation. Debug radius can reach zero, which adds energy locally without
-  diffusion or resampling spread.
+  halation. The debug radius slider covers 0.0005–0.0030 in 0.0001 increments.
 - **Glow** keeps its separate graded-luminance mask and wide amber bloom. It
   does not use the scene-linear halation mask.
 - **Grain** is [described below](#how-the-grain-works).

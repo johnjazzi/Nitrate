@@ -396,7 +396,7 @@ struct DebugFrameSheet: View {
             labelled(String(format: "Radius fraction %.4f", viewModel.parameters.halationRadiusFraction)) {
                 Slider(value: float({ viewModel.parameters.halationRadiusFraction },
                                     { viewModel.parameters.halationRadiusFraction = $0 }),
-                       in: 0...0.05, step: 0.001)
+                       in: 0.0005...0.0030, step: 0.0001)
             }
             labelled(String(format: "Tint  R %.2f   G %.2f   B %.2f",
                             viewModel.parameters.halationTint.x,

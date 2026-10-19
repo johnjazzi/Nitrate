@@ -172,7 +172,7 @@ struct RenderContractTests {
         #expect(shippedGrainStocks.allSatisfy { $0.effectiveRecipe.edgeBoostMultiplier == 3 })
         let template = try #require(app.first { $0.stockId == "kodak5219" })
         #expect(template.grainSize == 1.3)
-        #expect(template.effectiveRecipe.version == "5219-current-v11")
+        #expect(template.effectiveRecipe.version == "5219-current-v12")
         #expect(template.effectiveRecipe.grainAlgorithm == RenderRecipe.edgeAmplitudeAlgorithm)
         #expect(template.effectiveRecipe.edgeBoostMultiplier == 3)
         let low = template.overridingISO(250)
@@ -192,14 +192,14 @@ struct RenderContractTests {
             let tungsten = try #require(catalog.first { $0.stockId == "kodak5219" })
             #expect(daylight.glowStrength == 0.155)
             #expect(tungsten.glowStrength == 0.2325)
-            #expect(daylight.halationStrength == 5)
-            #expect(tungsten.halationStrength == 5)
+            #expect(daylight.halationStrength == 3.60)
+            #expect(tungsten.halationStrength == 3.60)
             #expect(daylight.grainSize == 1.15)
             #expect(tungsten.grainSize == 1.3)
             #expect(daylight.outputContrast == 0.85)
             #expect(tungsten.outputContrast == 0.85)
-            #expect(daylight.effectiveRecipe.version == "5207-current-v6")
-            #expect(tungsten.effectiveRecipe.version == "5219-current-v11")
+            #expect(daylight.effectiveRecipe.version == "5207-current-v7")
+            #expect(tungsten.effectiveRecipe.version == "5219-current-v12")
         }
     }
 
