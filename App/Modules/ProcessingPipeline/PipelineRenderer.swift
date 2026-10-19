@@ -733,6 +733,10 @@ final class PipelineRenderer: @unchecked Sendable {
             // These mutable values are owned exclusively by this task.
             var frameIndex: UInt32 = 0
             var firstFrame = true
+            // The provider is non-`Sendable`; the box carries it into the raced
+            // read task without requiring an unsafe transfer of the provider
+            // itself. The provider is only read by one task at a time.
+            let videoProviderBox = ReadProviderBox(videoProvider)
 
             while true {
                 if let audioFailure = audioResult.getFailure {
@@ -745,9 +749,17 @@ final class PipelineRenderer: @unchecked Sendable {
                 }
 
                 // Read first so writer backpressure cannot hide reader EOF.
+                // The read is raced against the cancellation gate: a wedged
+                // reader can leave this `next()` suspended forever, and only
+                // the gate — not reader cancellation — is guaranteed to release
+                // the loop.
                 let sample: CMReadySampleBuffer<CMSampleBuffer.DynamicContent>?
                 do {
-                    sample = try await videoProvider.next()
+                    let sampleBox = SampleBox<CMReadySampleBuffer<CMSampleBuffer.DynamicContent>?>()
+                    try await raceAgainstCancellation(gate: cancellationHandle.cancellationGate) {
+                        sampleBox.set(try await videoProviderBox.provider.next())
+                    }
+                    sample = sampleBox.value.flatMap { $0 }
                 } catch {
                     videoFailure = cancellationHandle.writerStatus == .cancelled
                         ? CancellationError()
@@ -1029,9 +1041,18 @@ final class PipelineRenderer: @unchecked Sendable {
             return
         }
 
+        let audioProviderBox = ReadProviderBox(audioProvider)
         var appendedSamples = 0
         do {
-            while let sample = try await audioProvider.next() {
+            while true {
+                // Race the read against the cancellation gate: a wedged audio
+                // reader can leave `next()` suspended forever, and only the gate
+                // is guaranteed to release it.
+                let sampleBox = SampleBox<CMReadySampleBuffer<CMSampleBuffer.DynamicContent>?>()
+                try await raceAgainstCancellation(gate: cancellationHandle.cancellationGate) {
+                    sampleBox.set(try await audioProviderBox.provider.next())
+                }
+                guard let sample = sampleBox.value.flatMap({ $0 }) else { break }
                 if Task.isCancelled { throw CancellationError() }
                 if let audioAppendRejectionAfterSamples, appendedSamples >= audioAppendRejectionAfterSamples {
                     throw RenderError.stageFailed("audio-append", "Synthetic audio append rejection.")
@@ -1382,36 +1403,62 @@ private final class AudioCopyResultBox: @unchecked Sendable {
     }
 }
 
+/// Carries a non-`Sendable` `AVAssetReaderOutput.Provider` into the task that
+/// performs a raced read. The provider is read by one task at a time and the
+/// caller does not touch it while a race is in flight, so unchecked
+/// sendability is sound here — and it avoids transferring (and thus consuming)
+/// the provider, which the loops reuse across iterations.
+final class ReadProviderBox: @unchecked Sendable {
+    let provider: ReadySampleProvider
+
+    init(_ provider: ReadySampleProvider) {
+        self.provider = provider
+    }
+}
+
 /// Serializes reader/writer cancellation against the status and error reads
 /// the frame loop and the audio lane poll. Sample transport itself no longer
 /// needs a lane lock: `AVAssetReaderOutput.Provider.next()` and the writer
 /// receivers' `append(_:)` are concurrency-safe and are driven from structured
 /// child tasks rather than from a shared serial queue.
-private final class RenderCancellationHandle: @unchecked Sendable {
-    private let writer: AVAssetWriter
-    private let videoReader: AVAssetReader
+final class RenderCancellationHandle: @unchecked Sendable {
+    private let writer: AVAssetWriter?
+    private let videoReader: AVAssetReader?
     private let audioReader: AVAssetReader?
     private let writerLock = NSLock()
     private let videoReaderLock = NSLock()
     private let audioReaderLock = NSLock()
 
-    init(writer: AVAssetWriter, videoReader: AVAssetReader, audioReader: AVAssetReader?) {
+    /// The explicit release signal the render loop races every provider read
+    /// against. It is the only release that is guaranteed to un-park a read the
+    /// readers have wedged on, so `cancel()` signals it.
+    let cancellationGate = CancellationGate()
+
+    init(writer: AVAssetWriter?, videoReader: AVAssetReader?, audioReader: AVAssetReader?) {
         self.writer = writer
         self.videoReader = videoReader
         self.audioReader = audioReader
     }
 
     func cancel() {
-        // Cancel the writer first to release backpressure, then stop each
-        // reader. Cancelling the writer makes a pending receiver `append(_:)`
-        // and a pending provider `next()` return immediately.
-        writerLock.lock()
-        writer.cancelWriting()
-        writerLock.unlock()
+        // Signal the gate first. Cancelling the writer releases receiver
+        // backpressure and cancelling each reader stops the decode, but neither
+        // reliably resumes a pending provider `next()` — a wedged reader can
+        // leave it suspended forever — so the gate is what actually releases a
+        // blocked read.
+        cancellationGate.signal()
 
-        videoReaderLock.lock()
-        videoReader.cancelReading()
-        videoReaderLock.unlock()
+        if let writer {
+            writerLock.lock()
+            writer.cancelWriting()
+            writerLock.unlock()
+        }
+
+        if let videoReader {
+            videoReaderLock.lock()
+            videoReader.cancelReading()
+            videoReaderLock.unlock()
+        }
 
         if let audioReader {
             audioReaderLock.lock()
@@ -1421,12 +1468,14 @@ private final class RenderCancellationHandle: @unchecked Sendable {
     }
 
     var videoReaderStatus: AVAssetReader.Status {
+        guard let videoReader else { return .unknown }
         videoReaderLock.lock()
         defer { videoReaderLock.unlock() }
         return videoReader.status
     }
 
     var videoReaderError: Error? {
+        guard let videoReader else { return nil }
         videoReaderLock.lock()
         defer { videoReaderLock.unlock() }
         return videoReader.error
@@ -1447,12 +1496,14 @@ private final class RenderCancellationHandle: @unchecked Sendable {
     }
 
     var writerStatus: AVAssetWriter.Status {
+        guard let writer else { return .unknown }
         writerLock.lock()
         defer { writerLock.unlock() }
         return writer.status
     }
 
     var writerError: Error? {
+        guard let writer else { return nil }
         writerLock.lock()
         defer { writerLock.unlock() }
         return writer.error
