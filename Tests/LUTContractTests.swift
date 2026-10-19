@@ -136,8 +136,6 @@ struct LUTContractTests {
         return try JSONDecoder().decode(Container.self, from: data).stocks
     }
 
-    /// Repo root: this file lives at Tests/LUTContractTests.swift.
-    private var root: URL {
-        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-    }
+    /// Fixture root: a packaged repository snapshot, or the source checkout.
+    private var root: URL { TestRepository.root }
 }

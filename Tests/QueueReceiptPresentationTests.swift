@@ -56,7 +56,7 @@ struct QueueReceiptPresentationTests {
 
     /// Source-contract coverage only: native hit testing and handoff still need device checks.
     @Test func independentActionsAreWiredWithoutPhotosReads() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let folder = root.appendingPathComponent("App/Modules/RenderQueue")
         let views = try String(contentsOf: folder.appendingPathComponent("QueueReceiptViews.swift"), encoding: .utf8)
         let sheet = try String(contentsOf: folder.appendingPathComponent("QueueSheetView.swift"), encoding: .utf8)

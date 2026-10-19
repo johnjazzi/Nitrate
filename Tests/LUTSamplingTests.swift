@@ -313,7 +313,5 @@ struct LUTSamplingTests {
 
     private enum CubeParseError: Error { case invalidNumber }
 
-    private static var root: URL {
-        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-    }
+    private static var root: URL { TestRepository.root }
 }

@@ -80,7 +80,7 @@ struct CameraPreviewGPUTests {
     }
 
     private func loadLUT(device: any MTLDevice, log: Float) throws -> (any MTLTexture, Float) {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let text = try String(contentsOf: root.appendingPathComponent(
             "App/Resources/Preview/AppleLog2ToRec709.cube"), encoding: .utf8)
         var values: [Float] = []

@@ -155,7 +155,7 @@ struct RenderContractTests {
 
     struct Container: Decodable { let stocks: [FilmStockConfig] }
     private func stocks(_ path: String) throws -> [FilmStockConfig] {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         return try JSONDecoder().decode(Container.self, from: Data(contentsOf: root.appendingPathComponent(path))).stocks
     }
 

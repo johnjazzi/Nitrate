@@ -11,7 +11,7 @@ struct StockCatalogTests {
     /// baked into the cubes (see docs/lut-provenance.md), so the identifiers and
     /// LUT names carry the negative emulsion only.
     @Test func shippedCatalogContainsExactlyTheTwoVideoStocksInPickerOrder() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let data = try Data(contentsOf: root.appendingPathComponent("Resources/stocks.json"))
         let stocks = try JSONDecoder().decode(Catalog.self, from: data).stocks
 

@@ -113,8 +113,7 @@ struct DebugFrameRenderTests {
 
     private func loadConfig() throws -> FilmStockConfig {
         let url = testBundle.url(forResource: "stocks", withExtension: "json")
-            ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-                .appendingPathComponent("../App/Resources/stocks.json").standardizedFileURL
+            ?? TestRepository.root.appendingPathComponent("App/Resources/stocks.json")
         let container = try JSONDecoder().decode(Container.self, from: Data(contentsOf: url))
         return try #require(container.stocks.first { $0.stockId == "kodak5219" })
     }
@@ -179,7 +178,7 @@ struct DebugFrameRenderTests {
     }
 
     @Test func debugHalationSliderAllowsAmplificationAndFineRadiusTuning() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let source = try String(contentsOf: root.appendingPathComponent(
             "App/Modules/CameraCapture/DebugFrameSheet.swift"), encoding: .utf8)
         let section = try #require(source.components(separatedBy: "private var halationSection: some View {").last)

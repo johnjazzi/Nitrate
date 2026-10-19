@@ -411,6 +411,10 @@ def verify() -> bool:
         return False
     if not run("cloud-bootstrap-tests", [sys.executable, str(ROOT / "scripts" / "test_cloud_bootstrap.py")], kind="test"):
         return False
+    if not run("test-fixture-tests", [sys.executable, str(ROOT / "scripts" / "test_package_test_fixtures.py")], kind="test"):
+        return False
+    if not run("ci-policy-tests", [sys.executable, str(ROOT / "scripts" / "test_ci_policy.py")], kind="test"):
+        return False
     if not run("verify-workflow-tests", [sys.executable, str(ROOT / "scripts" / "test_verify_workflow.py")], kind="test"):
         return False
     if not generate_project():

@@ -1,0 +1,50 @@
+name: Repository policy checks
+
+# Lightweight, portable, automatic gate. Every check here is stdlib Python on a
+# stock Ubuntu runner: no Xcode, no xcodebuild, no macOS minutes. This workflow
+# is added alongside the existing gates; it does NOT yet replace the native
+# Xcode check. See docs/ci-migration.md for the deliberate cutover plan.
+#
+# This job is intentionally NOT wired to any release/version mutation: it only
+# reads the repository and asserts policy contracts.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Enforcement only: this workflow never rewrites, pushes, or merges anything.
+permissions:
+  contents: read
+
+concurrency:
+  group: policy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-policy-checks:
+    name: Repository policy checks
+    runs-on: ubuntu-latest
+    # The entire job is capped at 10 minutes; it installs nothing and runs only
+    # stdlib Python, so it must never need more.
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        timeout-minutes: 3
+        # Official actions/checkout v4.3.1, the same pin the release-version
+        # gate uses.
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Run portable repository policy checks
+        timeout-minutes: 8
+        # Explicit scripts only: no discovery, no network installs. The image
+        # already ships python3, git, and sh. The Cloud bootstrap suite drives
+        # ci_post_clone.sh with fake tools, so it needs no network and no macOS
+        # tooling. Native-only suites (XcodeGen/plutil and Mac process/CPU
+        # semantics) stay on the Cloud/native path.
+        run: |
+          python3 scripts/test_release_version.py -v
+          python3 scripts/test_cloud_bootstrap.py -v
+          python3 scripts/test_package_test_fixtures.py -v
+          python3 scripts/test_ci_policy.py -v

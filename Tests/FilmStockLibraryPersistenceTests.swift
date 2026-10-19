@@ -5,8 +5,7 @@ import Testing
 @MainActor
 struct FilmStockLibraryPersistenceTests {
     private var catalogURL: URL {
-        URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent("Resources/stocks.json")
+        TestRepository.root.appendingPathComponent("Resources/stocks.json")
     }
 
     private func isolatedDefaults() throws -> (UserDefaults, String) {

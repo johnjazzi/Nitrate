@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 
 struct ManualControlsOverlayTests {
     @Test func manualPanelBouncesOnlyWhenContentActuallyOverflows() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let source = try String(contentsOf: root.appendingPathComponent(
             "App/Modules/CameraCapture/ManualControlsOverlay.swift"), encoding: .utf8)
         #expect(source.contains("ScrollView([.horizontal, .vertical])"),
@@ -43,7 +43,7 @@ struct ManualControlsOverlayTests {
         #expect(host.fittingSize.height <= 170, "Native compact content must fit without scrolling at its normal width.")
 
         // Inspect the actual label/readout declarations, not only a smaller clipping viewport.
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let source = try String(contentsOf: root.appendingPathComponent(
             "App/Modules/CameraCapture/ManualControlsSurface.swift"), encoding: .utf8)
         #expect(source.contains("private var compactTextRowHeight: CGFloat { 18 }"))
@@ -79,7 +79,7 @@ struct ManualControlsOverlayTests {
     }
 
     @Test func productionPanelKeepsHardwareBindingsAndSingleOuterRotation() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         func source(_ path: String) throws -> String {
             try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
         }
