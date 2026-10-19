@@ -36,7 +36,7 @@ TEST_TIMEOUT_ENV = "NITRATE_VERIFY_TEST_TIMEOUT_SECONDS"
 COMMAND_TIMEOUT_ENV = "NITRATE_VERIFY_COMMAND_TIMEOUT_SECONDS"
 SAMPLE_SECONDS_ENV = "NITRATE_VERIFY_SAMPLE_SECONDS"
 DEFAULT_TEST_TIMEOUT_SECONDS = 600
-DEFAULT_COMMAND_TIMEOUT_SECONDS = 1800
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 600
 DEFAULT_SAMPLE_SECONDS = 10
 TIMEOUT_EXIT_CODE = 124
 TERMINATE_GRACE_SECONDS = 10
@@ -152,17 +152,29 @@ def _process_group_members(pgid: int | None) -> list[tuple[int, int, str]]:
 
 
 def _sample_targets(members: list[tuple[int, int, str]], leader: int) -> list[tuple[int, str]]:
-    targets: list[tuple[int, str]] = []
+    parents = {pid: ppid for pid, ppid, _description in members}
+    targets = [(pid, description) for pid, _ppid, description in members if pid == leader][:1]
+
+    def descends_from_leader(pid: int) -> bool:
+        visited: set[int] = set()
+        while pid in parents and pid not in visited:
+            if pid == leader:
+                return True
+            visited.add(pid)
+            pid = parents[pid]
+        return False
+
+    candidates = []
     for pid, _ppid, description in members:
-        if pid == leader:
-            targets.append((pid, description))
-            break
-    for pid, _ppid, description in members:
-        if pid == leader:
+        if pid == leader or "stat=Z" in description:
             continue
-        if any(hint in description.lower() for hint in ("xctest", "rendercli", "swift-testing", "test")):
-            targets.append((pid, description))
-            break
+        command = description.split(None, 5)[-1].lower()
+        name = Path(command).name
+        # Never spend the runner sample slot on system testmanagerd services.
+        is_rendercli = name.startswith("rendercli")
+        if is_rendercli or name in {"xctest", "swift-testing"} or ".xctest/" in command:
+            candidates.append((not descends_from_leader(pid), not is_rendercli, pid, description))
+    targets.extend((pid, description) for _unowned, _generic, pid, description in sorted(candidates))
     return targets[:SAMPLE_TARGET_LIMIT]
 
 
@@ -179,11 +191,14 @@ def _capture_samples(logfile: Path, members: list[tuple[int, int, str]], leader:
     for pid, description in _sample_targets(members, leader):
         path = verification_sample_path(logfile, pid)
         try:
-            subprocess.run([executable, str(pid), str(int(budget)), "-file", str(path)],
+            result = subprocess.run([executable, str(pid), str(int(budget)), "-file", str(path)],
                            timeout=budget + 10, check=False,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except (OSError, subprocess.TimeoutExpired):
             notes.append(f"sample: pid {pid} capture failed or timed out")
+            continue
+        if result.returncode != 0 or not path.is_file() or path.stat().st_size == 0:
+            notes.append(f"sample: pid {pid} capture failed (exit {result.returncode}; no verified stack capture)")
             continue
         notes.append(f"sample: {description} -> {path.name}")
     if not notes:
@@ -233,7 +248,7 @@ def _capture_and_stop(label: str, process: subprocess.Popen, logfile: Path,
         while group_exists() and time.monotonic() < deadline:
             # Reap the leader, but do not confuse its exit with all children exiting.
             process.poll()
-            time.sleep(0.05)
+            time.sleep(0.2)
         if group_exists():
             _emit(output, lock, f"[verify watchdog] sending SIGKILL to process group {pgid}\n")
             try:

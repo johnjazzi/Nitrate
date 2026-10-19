@@ -19,7 +19,7 @@ jobs:
     name: Xcode build and tests
     # Explicit Xcode 27 image: the app's deployment target is iOS 27.
     runs-on: xcode-27
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       # Opt-in diagnostics: stream command output live (no `xcodebuild -quiet`)
       # and watchdog each invocation so a hung test is stopped with evidence
@@ -27,24 +27,28 @@ jobs:
       # invocation gets a ~10 minute budget, not the 45 minute job cap.
       NITRATE_VERIFY_DIAGNOSTICS: "1"
       NITRATE_VERIFY_TEST_TIMEOUT_SECONDS: "600"
-      NITRATE_VERIFY_COMMAND_TIMEOUT_SECONDS: "1800"
+      NITRATE_VERIFY_COMMAND_TIMEOUT_SECONDS: "600"
       NITRATE_VERIFY_SAMPLE_SECONDS: "10"
     steps:
       - name: Check out source
+        timeout-minutes: 3
         # Official actions/checkout v4.3.1, matching the release-version gate.
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
       - name: Report runner toolchain and Metal availability
+        timeout-minutes: 3
         run: |
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
           swift -e 'import Metal; print("Metal device:", MTLCreateSystemDefaultDevice()?.name ?? "unavailable; GPU-dependent tests may skip")'
       - name: Bootstrap pinned build tools and generate project
+        timeout-minutes: 5
         run: |
           sh ci_scripts/ci_post_clone.sh
           printf '%s\n' "$GITHUB_WORKSPACE/build/ci-tools/xcodegen-2.46.0/xcodegen/bin" "$GITHUB_WORKSPACE/build/ci-tools/swiftlint-0.65.1" >> "$GITHUB_PATH"
       - name: Install the Metal toolchain
+        timeout-minutes: 10
         run: |
           # Hosted macOS images ship Xcode without the downloadable Metal
           # toolchain; shader compilation fails with "cannot execute tool
@@ -64,6 +68,7 @@ jobs:
           import subprocess
 
           out = Path('build/verification/partial-xcresult.txt')
+          out.parent.mkdir(parents=True, exist_ok=True)
           bundles = sorted(Path('build/verification/DerivedData/Logs/Test').glob('*.xcresult'))
           if not bundles:
               out.write_text('No xcresult bundle was produced before the step ended.\n')
@@ -80,6 +85,7 @@ jobs:
           print(out.read_text(errors='replace'))
           PY
       - name: Report actual test counts and skips
+        timeout-minutes: 2
         if: always()
         run: |
           python3 - <<'PY'

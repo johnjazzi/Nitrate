@@ -167,6 +167,22 @@ class VerifyCommandTests(unittest.TestCase):
         self.assertTrue(fnmatch.fnmatch(sample.name, "*.sample.txt"),
                         "Captured samples must match the workflow's artifact pattern")
 
+    def test_samples_real_runner_instead_of_testmanagerd(self):
+        members = [
+            (10, 1, "pid=10 ppid=1 pgid=10 stat=S etime=00:01 /usr/bin/xcodebuild"),
+            (11, 1, "pid=11 ppid=1 pgid=11 stat=S etime=00:10 /usr/libexec/testmanagerd"),
+            (12, 1, "pid=12 ppid=1 pgid=12 stat=S etime=00:01 /tmp/RenderCLITests.xctest/Contents/MacOS/RenderCLITests"),
+        ]
+        self.assertEqual([pid for pid, _ in verify._sample_targets(members, 10)], [10, 12])
+
+    def test_samples_owned_runner_before_unrelated_xctest(self):
+        members = [
+            (10, 1, "pid=10 ppid=1 pgid=10 stat=S etime=00:01 /usr/bin/xcodebuild"),
+            (11, 1, "pid=11 ppid=1 pgid=11 stat=S etime=00:10 /usr/bin/xctest"),
+            (12, 10, "pid=12 ppid=10 pgid=10 stat=S etime=00:01 /tmp/RenderCLITests"),
+        ]
+        self.assertEqual([pid for pid, _ in verify._sample_targets(members, 10)], [10, 12])
+
     def test_timeout_retains_bounded_diagnostics_evidence(self):
         result = verify.execute("evidence-test", [sys.executable, "-c", "import time; time.sleep(30)"],
                                 timeout=0.4, kind="test")
@@ -192,7 +208,7 @@ class VerifyCommandTests(unittest.TestCase):
     def test_default_budgets_are_bounded_and_local_mode_has_no_timeout(self):
         with mock.patch.dict(os.environ, {verify.DIAGNOSTICS_ENV: "1"}, clear=True):
             self.assertEqual(verify.resolve_timeout("test", None), 600)
-            self.assertEqual(verify.resolve_timeout("command", None), 1800)
+            self.assertEqual(verify.resolve_timeout("command", None), 600)
         with mock.patch.dict(os.environ, {verify.DIAGNOSTICS_ENV: "0"}, clear=False):
             self.assertIsNone(verify.resolve_timeout("test", None))
 
@@ -215,6 +231,7 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_enables_opt_in_diagnostics_with_ten_minute_test_budget(self):
         self.assertIn('NITRATE_VERIFY_DIAGNOSTICS: "1"', self.workflow)
         self.assertIn('NITRATE_VERIFY_TEST_TIMEOUT_SECONDS: "600"', self.workflow)
+        self.assertIn('NITRATE_VERIFY_COMMAND_TIMEOUT_SECONDS: "600"', self.workflow)
         self.assertIn("python3 scripts/verify.py verify", self.workflow)
 
     def test_uploads_diagnostics_on_always_without_unbounded_bundles(self):
@@ -226,7 +243,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn(".xcresult\n", self.workflow)
 
     def test_job_timeout_leaves_room_but_is_not_the_test_budget(self):
-        self.assertIn("timeout-minutes: 30", self.workflow)
+        self.assertIn("timeout-minutes: 45", self.workflow)
 
     def test_verify_wires_the_diagnostics_test_script(self):
         source = (REPO_ROOT / "scripts" / "verify.py").read_text()
