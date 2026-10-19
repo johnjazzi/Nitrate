@@ -35,8 +35,8 @@ typealias CameraCaptureCodedDimensions = CameraSampleValidationPolicy.CodedDimen
 /// rather than a share, which is what makes the transfer safe: the dictionary
 /// is a copy-on-write value whose snapshot the recorder takes on the caller's
 /// thread, the caller only ever rebinds its own variables afterwards, and the
-/// metadata items are freshly built immutable items that the writer is handed
-/// as-is. Nothing mutates either after the transfer.
+/// metadata items are built fresh for this take, handed to the writer as-is and
+/// never mutated again. Nothing writes to either after the transfer.
 private struct CameraRecorderStartSnapshot: @unchecked Sendable {
     let videoSettings: [String: Any]
     let audioSettings: [String: Any]?
