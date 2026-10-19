@@ -701,12 +701,12 @@ final class RenderQueueViewModel {
         }
         guard authorized else { throw QueueError.photosPermissionDenied }
         // The movie carries its own tag, so the asset gets the same short caption
-        // and keywords as the file. No library read is involved.
+        // as the file. No library read is involved.
         let tag = await RenderConsumerMetadata.tag(for: url)
         try await PHPhotoLibrary.shared().performChanges {
             let request = PHAssetCreationRequest.forAsset()
             request.addResource(with: .video, fileURL: url, options: nil)
-            request.applyConsumerTag(tag)
+            request.applyConsumerCaption(tag)
         }
     }
 
@@ -724,12 +724,15 @@ final class RenderQueueViewModel {
 }
 
 private extension PHAssetCreationRequest {
-    /// Native Photos caption and keywords for the delivered asset. The same
-    /// strings are embedded in the movie, so an OS without these properties
-    /// still shows the tag from the file's own metadata.
-    func applyConsumerTag(_ tag: RenderConsumerMetadata.Tag?) {
+    /// Native Photos caption for the delivered asset. The same string is embedded
+    /// in the movie, so an OS without this property still shows the tag from the
+    /// file's own metadata.
+    ///
+    /// Keywords are deliberately NOT set here: Photos imports the movie's own
+    /// keyword list into the asset, and adding the same keywords reports them
+    /// twice in the Info panel. The embedded list stays the single source.
+    func applyConsumerCaption(_ tag: RenderConsumerMetadata.Tag?) {
         guard let tag, #available(iOS 27.0, macOS 27.0, *) else { return }
         caption = tag.caption
-        for keyword in tag.keywords { addKeyword(keyword) }
     }
 }
