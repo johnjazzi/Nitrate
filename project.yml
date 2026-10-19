@@ -5,6 +5,12 @@ options:
     iOS: "27.0"
   xcodeVersion: "16.0"
   generateEmptyDirectories: true
+  # Reference every source by its full path from the project root, so a file
+  # reached through a target's directory source and the same file listed
+  # explicitly by another target resolve to one group instead of two. Without
+  # this XcodeGen reports the ProcessingPipeline/CameraCapture references as
+  # members of multiple groups and the project is malformed.
+  createIntermediateGroups: true
   defaultConfig: Debug
 
 settings:
