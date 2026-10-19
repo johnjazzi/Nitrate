@@ -990,14 +990,42 @@ final class PipelineRenderer: @unchecked Sendable {
             return
         }
 
+        // Once the writer or the audio reader has been cancelled, the receiver's
+        // async `append(_:)` and the provider's `next()` throw a raw AVFoundation
+        // error rather than `CancellationError`. The pre-migration code polled
+        // `isReadyForMoreMediaData` and checked the writer status explicitly,
+        // returning `CancellationError` when it saw `.cancelled`; the async
+        // replacement dropped that mapping, so a cancelled render could surface
+        // an opaque writer/reader error instead. Restore it: a failure observed
+        // while the writer or audio reader is cancelled is cancellation, and any
+        // other failure is rethrown unchanged.
+        func mappedCancellation(_ error: Error) -> Error {
+            if cancellationHandle.writerStatus == .cancelled
+                || cancellationHandle.audioReaderStatus == .cancelled {
+                return CancellationError()
+            }
+            return error
+        }
+
         var appendedSamples = 0
         do {
-            while let sample = try await audioProvider.next() {
+            while true {
+                let sample: CMReadySampleBuffer<CMSampleBuffer.DynamicContent>?
+                do {
+                    sample = try await audioProvider.next()
+                } catch {
+                    throw mappedCancellation(error)
+                }
+                guard let sample else { break }
                 if Task.isCancelled { throw CancellationError() }
                 if let audioAppendRejectionAfterSamples, appendedSamples >= audioAppendRejectionAfterSamples {
                     throw RenderError.stageFailed("audio-append", "Synthetic audio append rejection.")
                 }
-                try await audioReceiver.append(sample)
+                do {
+                    try await audioReceiver.append(sample)
+                } catch {
+                    throw mappedCancellation(error)
+                }
                 appendedSamples += 1
             }
             switch cancellationHandle.audioReaderStatus {
