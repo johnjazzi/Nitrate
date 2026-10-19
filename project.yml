@@ -209,6 +209,7 @@ targets:
       - path: App/Modules/RenderQueue/CaptureJournal.swift
       - path: App/Modules/RenderQueue/PersistedPathRemap.swift
       - path: App/Modules/Purchase/AppAccessPolicy.swift
+      - path: App/Modules/Purchase/AboutPresentation.swift
       - path: App/Modules/CameraCapture/CameraOriginalStorage.swift
       - path: App/Modules/CameraCapture/CameraPreviewPolicy.swift
       - path: App/Modules/CameraCapture/CameraPreviewTap.swift

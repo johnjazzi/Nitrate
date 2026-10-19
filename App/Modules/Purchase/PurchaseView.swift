@@ -304,6 +304,8 @@ struct PurchaseView: View {
                 Label("Film emulation for iPhone video", systemImage: "movieclapper")
                 Label("Apple Log + Metal GPU pipeline", systemImage: "cpu")
                 Label("Kodak 250D / 5207 & 500T / 5219", systemImage: "film")
+                Label(AboutPresentation.versionLine(), systemImage: "number")
+                    .accessibilityIdentifier(AboutPresentation.versionRowID)
             }
             .font(.caption)
             .foregroundStyle(.secondary)
