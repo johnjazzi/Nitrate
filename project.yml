@@ -169,7 +169,11 @@ targets:
   RenderCLI:
     type: tool
     platform: macOS
-    deploymentTarget: "14.0"
+    # macOS 26.0 is the minimum that provides the AVFoundation receiver/provider
+    # API (AVAssetReader.outputProvider(for:), AVAssetWriter.inputReceiver(for:),
+    # AVAssetWriterInput.PixelBufferReceiver/SampleBufferReceiver, start()) that
+    # replaces the iOS 27 / macOS 27 deprecations. See PipelineRenderer.swift.
+    deploymentTarget: "26.0"
     sources:
       - path: CLI/
       - path: App/Modules/ProcessingPipeline/
@@ -190,7 +194,9 @@ targets:
   RenderCLITests:
     type: bundle.unit-test
     platform: macOS
-    deploymentTarget: "14.0"
+    # Must match RenderCLI: this target compiles PipelineRenderer.swift, which
+    # adopts the macOS 26 AVFoundation receiver/provider API.
+    deploymentTarget: "26.0"
     sources:
       - path: Tests
       - path: App/AppIdentity.swift
