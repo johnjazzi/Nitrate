@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreMedia
 
 protocol CameraSampleBufferWriting: AnyObject {
     var status: AVAssetWriter.Status { get }
@@ -7,8 +8,18 @@ protocol CameraSampleBufferWriting: AnyObject {
     func isReady(for mediaType: AVMediaType) -> Bool
     func append(_ sampleBuffer: CMSampleBuffer, for mediaType: AVMediaType) -> Bool
     func markInputsAsFinished()
-    func finishWriting(completion: @escaping () -> Void)
+    func finishWriting(completion: @escaping @Sendable () -> Void)
     func cancelWriting()
+    /// Why the most recent append was refused, when the writer can tell a
+    /// backpressure refusal apart from an encode failure. The real-time
+    /// receiver used by the production writer refuses a sample rather than
+    /// reporting readiness, so the recorder asks after a refused append.
+    var lastAppendRefusal: Error? { get }
+}
+
+extension CameraSampleBufferWriting {
+    /// Writers that report readiness before the append have nothing to add.
+    var lastAppendRefusal: Error? { nil }
 }
 
 typealias CameraSampleBufferWriterFactory = (
@@ -16,6 +27,36 @@ typealias CameraSampleBufferWriterFactory = (
     _ transform: CGAffineTransform
 ) throws -> CameraSampleBufferWriting
 typealias CameraCaptureCodedDimensions = CameraSampleValidationPolicy.CodedDimensions
+
+/// Output settings and metadata handed from the caller to the recorder's serial
+/// queue. `[String: Any]` and `[AVMetadataItem]` cannot conform to `Sendable`
+/// (the marker protocol cannot be used in a conditional cast either, so the
+/// values cannot be re-typed at the boundary). This is a one-way hand-off
+/// rather than a share, which is what makes the transfer safe: the dictionary
+/// is a copy-on-write value whose snapshot the recorder takes on the caller's
+/// thread, the caller only ever rebinds its own variables afterwards, and the
+/// metadata items are freshly built immutable items that the writer is handed
+/// as-is. Nothing mutates either after the transfer.
+private struct CameraRecorderStartSnapshot: @unchecked Sendable {
+    let videoSettings: [String: Any]
+    let audioSettings: [String: Any]?
+    let metadata: [AVMetadataItem]
+}
+
+/// A capture sample in transit.
+///
+/// `CMSampleBuffer` is a non-`Sendable` class reference, so neither a queue
+/// hand-off nor `CMReadySampleBuffer.init(unsafeBuffer:)` accepts one directly:
+/// the initializer takes a `sending` buffer, and the compiler cannot prove that
+/// a buffer arriving from an AVFoundation callback or from the writer's append
+/// is unreferenced elsewhere. This box states the hand-off the recorder
+/// performs — the producing side stops using the buffer once it is boxed (the
+/// audio path copies the PCM into the recorder's own block buffer first,
+/// precisely so the hand-off never holds capture-pool memory), and one consumer
+/// at a time reads it. The buffer itself is immutable; only the reference moves.
+private struct TransferredSampleBuffer: @unchecked Sendable {
+    let sampleBuffer: CMSampleBuffer
+}
 
 /// A bounded sample-buffer writer. Each clip owns a distinct writer; recorder
 /// state is confined to the shared serial capture delegate queue.
@@ -80,7 +121,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
 #endif
 
     init(queue: DispatchQueue,
-         writerFactory: @escaping CameraSampleBufferWriterFactory = AVCameraSampleBufferWriter.make,
+         writerFactory: @escaping CameraSampleBufferWriterFactory = CameraSampleBufferRecorder.defaultWriterFactory,
          outputValidator: @escaping (URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void = CameraSampleBufferRecorder.validateOutput,
          scheduleDrainTimeout: ((TimeInterval, @escaping @Sendable () -> Void) -> Void)? = nil) {
         self.queue = queue
@@ -105,6 +146,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         onStarted: @escaping @Sendable (Error?) -> Void,
         onFinished: @escaping @Sendable (Result<URL, Error>) -> Void
     ) {
+        let snapshot = CameraRecorderStartSnapshot(videoSettings: videoSettings,
+                                                   audioSettings: audioSettings, metadata: metadata)
         queue.async { [weak self] in
             guard let self else { return }
             guard self.move(to: .begin) else {
@@ -123,11 +166,11 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             self.audioOverflowEpoch = nil
             self.audioHandoffLock.unlock()
             self.recentDropTimes.removeAll()
-            self.videoSettings = videoSettings
-            self.audioSettings = audioSettings
-            if audioSettings == nil { self.audioPreroll.removeAll() }
+            self.videoSettings = snapshot.videoSettings
+            self.audioSettings = snapshot.audioSettings
+            if snapshot.audioSettings == nil { self.audioPreroll.removeAll() }
             self.acceptedPixelFormats = acceptedPixelFormats
-            self.metadata = metadata
+            self.metadata = snapshot.metadata
             self.transform = .identity
             self.deliveryOrientation = deliveryOrientation
             self.captureRotationAngle = captureRotationAngle
@@ -156,11 +199,13 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     }
 
     func submitVideoSampleForTesting(_ sampleBuffer: CMSampleBuffer) {
-        queue.async { [weak self] in self?.appendVideo(sampleBuffer) }
+        let transferred = TransferredSampleBuffer(sampleBuffer: sampleBuffer)
+        queue.async { [weak self] in self?.appendVideo(transferred.sampleBuffer) }
     }
 
     func submitAudioSampleForTesting(_ sampleBuffer: CMSampleBuffer) {
-        queue.async { [weak self] in self?.appendAudio(sampleBuffer) }
+        let transferred = TransferredSampleBuffer(sampleBuffer: sampleBuffer)
+        queue.async { [weak self] in self?.appendAudio(transferred.sampleBuffer) }
     }
 
     func submitDropForTesting(at monotonicTime: Double = ProcessInfo.processInfo.systemUptime) {
@@ -213,14 +258,16 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         pendingAudioHandoffs += 1
         audioHandoffLock.unlock()
         do {
-            let ownedSample = try Self.copyCapturedPCM(sampleBuffer)
+            // The copy is the recorder's own buffer, never capture-pool data,
+            // and this hand-off is the only remaining reference to it.
+            let ownedSample = TransferredSampleBuffer(sampleBuffer: try Self.copyCapturedPCM(sampleBuffer))
             queue.async { [weak self] in
                 guard let self else { return }
                 defer { self.releaseAudioHandoff(generation) }
                 // Fence on the clip generation so a stale handoff from clip N
                 // cannot land in clip N+1 and evict its valid preroll audio.
                 guard self.clipGeneration == generation else { return }
-                self.appendAudio(ownedSample)
+                self.appendAudio(ownedSample.sampleBuffer)
             }
         } catch {
             queue.async { [weak self] in
@@ -453,7 +500,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             return
         }
         guard writer.status == .writing, writer.append(sampleBuffer, for: .video) else {
-            fail(writer.error ?? CameraSampleBufferRecorderError.appendFailed("video"))
+            fail(writer.error ?? writer.lastAppendRefusal
+                 ?? CameraSampleBufferRecorderError.appendFailed("video"))
             return
         }
 #if DEBUG
@@ -543,7 +591,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             return
         }
         guard writer.status == .writing, writer.append(sampleBuffer, for: .audio) else {
-            fail(writer.error ?? CameraSampleBufferRecorderError.appendFailed("audio"))
+            fail(writer.error ?? writer.lastAppendRefusal
+                 ?? CameraSampleBufferRecorderError.appendFailed("audio"))
             return
         }
 #if DEBUG
@@ -653,10 +702,10 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             self.queue.async {
                 guard self.state == .finishing, self.clipGeneration == generation,
                       let activeWriter = self.writer, ObjectIdentifier(activeWriter) == writerIdentity else { return }
-                guard writer.status == .completed,
+                guard activeWriter.status == .completed,
                       let attributes = try? FileManager.default.attributesOfItem(atPath: destination.path),
                       ((attributes[.size] as? NSNumber)?.intValue ?? 0) > 0 else {
-                    self.complete(.failure(writer.error ?? CameraSampleBufferRecorderError.finalizationFailed))
+                    self.complete(.failure(activeWriter.error ?? CameraSampleBufferRecorderError.finalizationFailed))
                     return
                 }
                 do {
@@ -824,17 +873,49 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             && writer.map(ObjectIdentifier.init) == writerIdentity
     }
 
+    /// AVAsset's value accessors are asynchronous, and finalization is
+    /// synchronous on the serial capture queue whose ordering the completion
+    /// callbacks and error propagation depend on. The loads are therefore driven
+    /// to completion here instead of re-ordering the finalization path around a
+    /// task hop.
     private static func validateOutput(_ url: URL, expectedDimensions: CameraCaptureCodedDimensions,
                                        transform: CGAffineTransform, appendedAudioSamples: Int) throws {
+        let outcome = CameraSampleValidationOutcome()
+        let finished = DispatchSemaphore(value: 0)
+        Task {
+            do {
+                try await validateLoadedOutput(url, expectedDimensions: expectedDimensions,
+                                               transform: transform,
+                                               appendedAudioSamples: appendedAudioSamples)
+                outcome.succeed()
+            } catch {
+                outcome.fail(error)
+            }
+            finished.signal()
+        }
+        finished.wait()
+        try outcome.result.get()
+    }
+
+    /// The validation itself, reading the finalized file through the
+    /// asynchronous accessors. A load failure is mapped to the value the
+    /// synchronous accessor used to return for the same condition, so a guard
+    /// below still reports the same error it reported before.
+    private static func validateLoadedOutput(_ url: URL, expectedDimensions: CameraCaptureCodedDimensions,
+                                             transform: CGAffineTransform,
+                                             appendedAudioSamples: Int) async throws {
         let asset = AVURLAsset(url: url)
-        guard let track = asset.tracks(withMediaType: .video).first,
-              let rawFormat = track.formatDescriptions.first else {
+        let videoTracks = (try? await asset.loadTracks(withMediaType: .video)) ?? []
+        guard let track = videoTracks.first else {
             throw CameraSampleBufferRecorderError.invalidFinalMovie("missing video track")
         }
-        // AVAssetTrack bridges its untyped Objective-C format-description array as [Any].
-        // A video track stores CMFormatDescription values; validate the bridged media type
-        // immediately before reading the video-specific fields below.
-        let format = rawFormat as! CMFormatDescription
+        let videoFormats = (try? await track.load(.formatDescriptions)) ?? []
+        guard let rawFormat = videoFormats.first else {
+            throw CameraSampleBufferRecorderError.invalidFinalMovie("missing video track")
+        }
+        // The asynchronous accessor vends typed format descriptions; the media
+        // type is still validated before the video-specific fields are read.
+        let format = rawFormat
         guard CMFormatDescriptionGetMediaType(format) == kCMMediaType_Video else {
             throw CameraSampleBufferRecorderError.invalidFinalMovie("video track has a non-video format description")
         }
@@ -857,13 +938,17 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         let matrix = extensionValue(kCMFormatDescriptionExtension_YCbCrMatrix) as? String
         let primaries = extensionValue(kCMFormatDescriptionExtension_ColorPrimaries) as? String
         let transfer = extensionValue(kCMFormatDescriptionExtension_TransferFunction) as? String
+        // Loaded once: the finalized asset is immutable, so this is the same
+        // value the property read used to return at every use below.
+        let preferredTransform = (try? await track.load(.preferredTransform)) ?? .identity
+        let timeRange = (try? await track.load(.timeRange)) ?? .invalid
         guard codec == 0x68766331,
               dimensions.width == expectedDimensions.width, dimensions.height == expectedDimensions.height,
               bitDepth == 10, isMain10_420,
               CameraSampleValidationPolicy.isAppleLog2(logTransfer), matrix == "ITU_R_2020",
               primaries == nil, transfer == nil,
-              track.preferredTransform == transform,
-              track.timeRange.duration.isValid, track.timeRange.duration.seconds > 0 else {
+              preferredTransform == transform,
+              timeRange.duration.isValid, timeRange.duration.seconds > 0 else {
             let codecText = String(codec, radix: 16)
             let sizeText = "\(dimensions.width)x\(dimensions.height)"
             let bitsText = bitDepth.map(String.init) ?? "missing"
@@ -871,7 +956,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             let matrixText = matrix ?? "missing"
             let primariesText = primaries ?? "missing"
             let transferText = transfer ?? "missing"
-            let transformText = String(describing: track.preferredTransform)
+            let transformText = String(describing: preferredTransform)
             let detail = ["codec=\(codecText)", "size=\(sizeText)", "main10_420=\(isMain10_420)",
                           "bits=\(bitsText)", "log=\(logText)", "matrix=\(matrixText)",
                           "primaries=\(primariesText)", "transfer=\(transferText)",
@@ -882,7 +967,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             codedWidth: Int(dimensions.width), codedHeight: Int(dimensions.height), transform: transform
         )
         let displaySize = CameraSampleValidationPolicy.displayDimensions(
-            codedWidth: Int(dimensions.width), codedHeight: Int(dimensions.height), transform: track.preferredTransform
+            codedWidth: Int(dimensions.width), codedHeight: Int(dimensions.height), transform: preferredTransform
         )
         guard displaySize.0 == expectedDisplay.0, displaySize.1 == expectedDisplay.1 else {
             throw CameraSampleBufferRecorderError.invalidFinalMovie(
@@ -890,14 +975,17 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                 "expected \(expectedDisplay.0)x\(expectedDisplay.1) for the chosen delivery orientation")
         }
         if appendedAudioSamples > 0 {
-            guard let audioTrack = asset.tracks(withMediaType: .audio).first else {
+            let audioTracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+            guard let audioTrack = audioTracks.first else {
                 throw CameraSampleBufferRecorderError.invalidFinalMovie("audio samples were appended without an audio track")
             }
+            let audioTimeRange = (try? await audioTrack.load(.timeRange)) ?? .invalid
+            let audioSegments = (try? await audioTrack.load(.segments)) ?? []
             let skew = CameraCapturePreservationProbe.audioStartSkew(
-                firstAudioPTS: audioTrack.timeRange.start, firstVideoPTS: track.timeRange.start,
-                segments: audioTrack.segments)
-            let endDifference = abs(CMTimeSubtract(CMTimeRangeGetEnd(track.timeRange),
-                                                   CMTimeRangeGetEnd(audioTrack.timeRange)).seconds)
+                firstAudioPTS: audioTimeRange.start, firstVideoPTS: timeRange.start,
+                segments: audioSegments)
+            let endDifference = abs(CMTimeSubtract(CMTimeRangeGetEnd(timeRange),
+                                                   CMTimeRangeGetEnd(audioTimeRange)).seconds)
             do {
                 try CameraCapturePreservationProbe.validateSynchronization(skew: skew, endDifference: endDifference)
             } catch {
@@ -905,7 +993,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             }
         }
         #if DEBUG
-        print("HEVC Log2 output validation: codec=hvc1, size=\(expectedDimensions.width)x\(expectedDimensions.height), bits=10, log=\(String(describing: logTransfer)), matrix=\(String(describing: matrix)), display=\(expectedDisplay.0)x\(expectedDisplay.1), audioSamples=\(appendedAudioSamples), transform=\(track.preferredTransform)")
+        print("HEVC Log2 output validation: codec=hvc1, size=\(expectedDimensions.width)x\(expectedDimensions.height), bits=10, log=\(String(describing: logTransfer)), matrix=\(String(describing: matrix)), display=\(expectedDisplay.0)x\(expectedDisplay.1), audioSamples=\(appendedAudioSamples), transform=\(preferredTransform)")
         #endif
     }
 
@@ -915,20 +1003,81 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         return nil
     }
 
+    /// The production writer needs the receiver API added in iOS/macOS 26, and
+    /// `make` itself still reports `log2WriterUnavailable` below iOS/macOS 27.
+    /// The default argument has to type-check on every supported deployment
+    /// target, so this wrapper keeps the reference reachable everywhere and
+    /// preserves that same failure on systems where the writer is unavailable.
+    private static func defaultWriterFactory(url: URL, videoSettings: [String: Any],
+                                             audioSettings: [String: Any]?,
+                                             metadata: [AVMetadataItem],
+                                             transform: CGAffineTransform) throws -> CameraSampleBufferWriting {
+        guard #available(iOS 26.0, macOS 26.0, *) else {
+            throw CameraSampleBufferRecorderError.log2WriterUnavailable
+        }
+        return try AVCameraSampleBufferWriter.make(url: url, videoSettings: videoSettings,
+                                                   audioSettings: audioSettings, metadata: metadata,
+                                                   transform: transform)
+    }
+
 }
 
+/// Carries the asynchronous validation's outcome back to the synchronous
+/// finalization path. The single stored result is guarded by one lock, so the
+/// task that performs the loads and the queue that waits for it never touch it
+/// concurrently.
+private final class CameraSampleValidationOutcome: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Result<Void, Error> = .success(())
+
+    var result: Result<Void, Error> {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func succeed() {
+        lock.lock()
+        stored = .success(())
+        lock.unlock()
+    }
+
+    func fail(_ error: Error) {
+        lock.lock()
+        stored = .failure(error)
+        lock.unlock()
+    }
+}
+
+/// The production writer. The `AVAssetWriter` receiver API and the
+/// `CMReadySampleBuffer` payload it appends are available from iOS 26/macOS 26,
+/// so the type is declared for those systems and is only ever constructed by
+/// `CameraSampleBufferRecorder.defaultWriterFactory`, which can report the same
+/// `log2WriterUnavailable` failure older systems already got from `make`.
+@available(iOS 26.0, macOS 26.0, *)
 private final class AVCameraSampleBufferWriter: CameraSampleBufferWriting {
     private let writer: AVAssetWriter
     private let videoInput: AVAssetWriterInput
     private let audioInput: AVAssetWriterInput?
+    private let videoReceiver: AVAssetWriterInput.SampleBufferReceiver
+    private let audioReceiver: AVAssetWriterInput.SampleBufferReceiver?
+    /// Set when a real-time receiver refuses a sample it cannot take right now,
+    /// which is the condition the input's readiness query used to report before
+    /// the append was attempted.
+    private var refusedAppend: Error?
 
     var status: AVAssetWriter.Status { writer.status }
     var error: Error? { writer.error }
+    var lastAppendRefusal: Error? { refusedAppend }
 
-    private init(writer: AVAssetWriter, videoInput: AVAssetWriterInput, audioInput: AVAssetWriterInput?) {
+    private init(writer: AVAssetWriter, videoInput: AVAssetWriterInput, audioInput: AVAssetWriterInput?,
+                 videoReceiver: AVAssetWriterInput.SampleBufferReceiver,
+                 audioReceiver: AVAssetWriterInput.SampleBufferReceiver?) {
         self.writer = writer
         self.videoInput = videoInput
         self.audioInput = audioInput
+        self.videoReceiver = videoReceiver
+        self.audioReceiver = audioReceiver
     }
 
     static func make(url: URL, videoSettings: [String: Any], audioSettings: [String: Any]?,
@@ -945,7 +1094,6 @@ private final class AVCameraSampleBufferWriter: CameraSampleBufferWriting {
             throw CameraSampleBufferRecorderError.unsupportedWriterSettings("AAC audio")
         }
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        videoInput.expectsMediaDataInRealTime = true
         videoInput.transform = transform
         guard writer.canAdd(videoInput) else {
             throw CameraSampleBufferRecorderError.unsupportedWriterSettings("HEVC Main10 Apple Log 2")
@@ -953,7 +1101,6 @@ private final class AVCameraSampleBufferWriter: CameraSampleBufferWriting {
         let audioInput: AVAssetWriterInput?
         if let audioSettings {
             let candidate = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-            candidate.expectsMediaDataInRealTime = true
             guard writer.canAdd(candidate) else {
                 throw CameraSampleBufferRecorderError.unsupportedWriterSettings("AAC audio")
             }
@@ -961,31 +1108,67 @@ private final class AVCameraSampleBufferWriter: CameraSampleBufferWriting {
         } else {
             audioInput = nil
         }
-        writer.add(videoInput)
-        if let audioInput { writer.add(audioInput) }
-        return AVCameraSampleBufferWriter(writer: writer, videoInput: videoInput, audioInput: audioInput)
+        // `inputReceiver(for:)` replaces `add(_:)`: it attaches the input to the
+        // writer and returns the real-time receiver for it in one step.
+        let videoReceiver = writer.inputReceiver(for: videoInput)
+        let audioReceiver = audioInput.map { writer.inputReceiver(for: $0) }
+        return AVCameraSampleBufferWriter(writer: writer, videoInput: videoInput, audioInput: audioInput,
+                                          videoReceiver: videoReceiver, audioReceiver: audioReceiver)
     }
 
     func start(at time: CMTime) -> Bool {
-        guard writer.startWriting() else { return false }
+        do {
+            try writer.start()
+        } catch {
+            // `error` still reports the underlying failure, exactly as the
+            // boolean start result did.
+            return false
+        }
         writer.startSession(atSourceTime: time)
         return true
     }
 
+    /// A real-time receiver has no readiness query: `appendImmediately` is the
+    /// gate and refuses a sample it cannot take, which is recorded as
+    /// `lastAppendRefusal`. Reporting ready therefore defers the decision to the
+    /// append instead of pre-empting it, while still reporting "no audio input"
+    /// for a video-only take.
     func isReady(for mediaType: AVMediaType) -> Bool {
         switch mediaType {
-        case .video: return videoInput.isReadyForMoreMediaData
-        case .audio: return audioInput?.isReadyForMoreMediaData ?? false
+        case .video: return true
+        case .audio: return audioReceiver != nil
         default: return false
         }
     }
 
     func append(_ sampleBuffer: CMSampleBuffer, for mediaType: AVMediaType) -> Bool {
         switch mediaType {
-        case .video: return videoInput.append(sampleBuffer)
-        case .audio: return audioInput?.append(sampleBuffer) ?? false
-        default: return false
+        case .video:
+            return appendImmediately(sampleBuffer, to: videoReceiver, labelled: "video")
+        case .audio:
+            guard let audioReceiver else { return false }
+            return appendImmediately(sampleBuffer, to: audioReceiver, labelled: "audio")
+        default:
+            return false
         }
+    }
+
+    /// Appends synchronously, the real-time path: a refusal is remembered so the
+    /// recorder can still attribute it to backpressure rather than to an encode
+    /// failure.
+    private func appendImmediately(_ sampleBuffer: CMSampleBuffer,
+                                   to receiver: AVAssetWriterInput.SampleBufferReceiver,
+                                   labelled label: String) -> Bool {
+        // The receiver consumes the sample as a ready buffer, the transferable
+        // form of the same sample. `TransferredSampleBuffer` states the hand-off
+        // for a buffer the compiler cannot see as unreferenced here.
+        let ready = CMReadySampleBuffer<CMSampleBuffer.DynamicContent>(
+            unsafeBuffer: TransferredSampleBuffer(sampleBuffer: sampleBuffer).sampleBuffer)
+        guard (try? receiver.appendImmediately(ready)) == true else {
+            refusedAppend = CameraSampleBufferRecorderError.backpressure(label)
+            return false
+        }
+        return true
     }
 
     func markInputsAsFinished() {
@@ -993,7 +1176,9 @@ private final class AVCameraSampleBufferWriter: CameraSampleBufferWriting {
         audioInput?.markAsFinished()
     }
 
-    func finishWriting(completion: @escaping () -> Void) { writer.finishWriting(completionHandler: completion) }
+    func finishWriting(completion: @escaping @Sendable () -> Void) {
+        writer.finishWriting(completionHandler: completion)
+    }
     func cancelWriting() { writer.cancelWriting() }
 }
 

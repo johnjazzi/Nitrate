@@ -1375,7 +1375,7 @@ private final class FakeCameraSampleBufferWriter: CameraSampleBufferWriting, @un
     private let url: URL
     private let behavior: FakeWriterBehavior
     private var currentStatus: AVAssetWriter.Status = .unknown
-    private var finishHandler: (() -> Void)?
+    private var finishHandler: (@Sendable () -> Void)?
     private var requestedFinish = false
     private var audioAppendCount = 0
     private var videoAppendCount = 0
@@ -1427,7 +1427,7 @@ private final class FakeCameraSampleBufferWriter: CameraSampleBufferWriting, @un
         markedInputsFinishedCount += 1
     }
 
-    func finishWriting(completion: @escaping () -> Void) {
+    func finishWriting(completion: @escaping @Sendable () -> Void) {
         lock.lock()
         requestedFinish = true
         requestedFinishCount += 1

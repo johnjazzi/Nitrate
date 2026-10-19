@@ -187,12 +187,20 @@ enum CameraCapturePreservationProbe {
                         expectedDimensions: CameraSampleValidationPolicy.CodedDimensions,
                         expectedTransform: CGAffineTransform,
                         requiresAudio: Bool) async throws -> String {
-        try await Task.detached(priority: .utility) {
+        // The reader side of this check uses the provider API added in
+        // iOS/macOS 26. The probe only runs behind a completed take, and the
+        // recorder cannot create its writer below iOS/macOS 27, so this is the
+        // same failure those systems already reached.
+        guard #available(iOS 26.0, macOS 26.0, *) else {
+            throw PreservationError.preservationProbeUnavailable
+        }
+        return try await Task.detached(priority: .utility) {
             try await inspectOffQueue(url: url, source: source, expectedDimensions: expectedDimensions,
                                       expectedTransform: expectedTransform, requiresAudio: requiresAudio)
         }.value
     }
 
+    @available(iOS 26.0, macOS 26.0, *)
     private static func inspectOffQueue(url: URL, source: CameraYUVProbe,
                                         expectedDimensions: CameraSampleValidationPolicy.CodedDimensions,
                                         expectedTransform: CGAffineTransform,
@@ -233,18 +241,44 @@ enum CameraCapturePreservationProbe {
             outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange]
         )
         guard reader.canAdd(decodedOutput) else { throw PreservationError.cannotDecodeVideo }
-        reader.add(decodedOutput)
-        guard reader.startReading() else { throw reader.error ?? PreservationError.cannotDecodeVideo }
-        defer { if reader.status == .reading { reader.cancelReading() } }
-        guard let firstVideoSample = decodedOutput.copyNextSampleBuffer(),
-              let decodedBuffer = CMSampleBufferGetImageBuffer(firstVideoSample) else {
+        // `outputProvider(for:)` replaces `add(_:)`; the provider vends the
+        // sample buffer for a scoped access only, so the frame is measured while
+        // that access is open.
+        let videoProvider = reader.outputProvider(for: decodedOutput)
+        do {
+            try reader.start()
+        } catch {
             throw reader.error ?? PreservationError.cannotDecodeVideo
         }
-        guard CVPixelBufferGetWidth(decodedBuffer) == expectedDimensions.width,
-              CVPixelBufferGetHeight(decodedBuffer) == expectedDimensions.height else {
-            throw PreservationError.invalidVideoFormat
+        defer { if reader.status == .reading { reader.cancelReading() } }
+        let nextVideoSample = try? await videoProvider.next()
+        guard let firstVideoSample = nextVideoSample ?? nil else {
+            throw reader.error ?? PreservationError.cannotDecodeVideo
         }
-        let decoded = try CameraYUVProbe.sample(decodedBuffer)
+        var decodedProbe: CameraYUVProbe?
+        var sampleFailure: Error?
+        var videoPTS = CMTime.invalid
+        firstVideoSample.withUnsafeSampleBuffer { buffer in
+            videoPTS = CMSampleBufferGetPresentationTimeStamp(buffer)
+            guard let decodedBuffer = CMSampleBufferGetImageBuffer(buffer) else {
+                sampleFailure = reader.error ?? PreservationError.cannotDecodeVideo
+                return
+            }
+            guard CVPixelBufferGetWidth(decodedBuffer) == expectedDimensions.width,
+                  CVPixelBufferGetHeight(decodedBuffer) == expectedDimensions.height else {
+                sampleFailure = PreservationError.invalidVideoFormat
+                return
+            }
+            do {
+                decodedProbe = try CameraYUVProbe.sample(decodedBuffer)
+            } catch {
+                sampleFailure = error
+            }
+        }
+        if let sampleFailure { throw sampleFailure }
+        guard let decoded = decodedProbe else {
+            throw reader.error ?? PreservationError.cannotDecodeVideo
+        }
         let difference = source.maximumMeanError(comparedTo: decoded)
         guard difference.maximumLumaMeanError <= lumaTolerance,
               difference.maximumChromaMeanError <= chromaTolerance else {
@@ -253,7 +287,6 @@ enum CameraCapturePreservationProbe {
                 chroma: difference.maximumChromaMeanError
             )
         }
-        let videoPTS = CMSampleBufferGetPresentationTimeStamp(firstVideoSample)
         guard videoPTS.isValid, videoPTS.isNumeric else { throw PreservationError.invalidTimestamps }
 
         let audioTrack = tracks.first(where: { $0.mediaType == .audio })
@@ -272,13 +305,19 @@ enum CameraCapturePreservationProbe {
             let audioReader = try AVAssetReader(asset: asset)
             let audioOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
             guard audioReader.canAdd(audioOutput) else { throw PreservationError.invalidAudioTiming }
-            audioReader.add(audioOutput)
-            guard audioReader.startReading() else { throw audioReader.error ?? PreservationError.invalidAudioTiming }
-            defer { if audioReader.status == .reading { audioReader.cancelReading() } }
-            guard let firstAudioSample = audioOutput.copyNextSampleBuffer() else {
+            let audioProvider = audioReader.outputProvider(for: audioOutput)
+            do {
+                try audioReader.start()
+            } catch {
                 throw audioReader.error ?? PreservationError.invalidAudioTiming
             }
-            let audioPTS = CMSampleBufferGetPresentationTimeStamp(firstAudioSample)
+            defer { if audioReader.status == .reading { audioReader.cancelReading() } }
+            let nextAudioSample = try? await audioProvider.next()
+            guard let firstAudioSample = nextAudioSample ?? nil else {
+                throw audioReader.error ?? PreservationError.invalidAudioTiming
+            }
+            var audioPTS = CMTime.invalid
+            firstAudioSample.withUnsafeSampleBuffer { audioPTS = CMSampleBufferGetPresentationTimeStamp($0) }
             guard audioPTS.isValid, audioPTS.isNumeric else { throw PreservationError.invalidTimestamps }
             let audioSegments = try await audioTrack.load(.segments)
             audioSkew = audioStartSkew(firstAudioPTS: audioPTS, firstVideoPTS: videoPTS, segments: audioSegments)
@@ -330,6 +369,7 @@ enum CameraCapturePreservationProbe {
         case missingAACAudio(String)
         case invalidAudioTiming
         case audioOutOfSync(skew: Double, endDifference: Double)
+        case preservationProbeUnavailable
 
         var errorDescription: String? {
             switch self {
@@ -343,6 +383,8 @@ enum CameraCapturePreservationProbe {
             case .invalidAudioTiming: return "Preservation check failed: the audio track could not be inspected."
             case .audioOutOfSync(let skew, let endDifference):
                 return String(format: "Preservation check failed: A/V first-sample skew %.3fs or end-duration difference %.3fs exceeds %.2fs.", skew, endDifference, synchronizationTolerance)
+            case .preservationProbeUnavailable:
+                return "Preservation check failed: the sample provider this check reads with is unavailable on this system."
             }
         }
     }
