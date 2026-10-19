@@ -72,7 +72,7 @@ final class ExposureManager {
             mode = .auto
         case .isoPriority:
             mode = .manual(shutter: Self.clamped(currentShutter), iso: activeISO ?? Self.defaultISO)
-        case .manual(let shutter, let iso):
+        case .manual(_, let iso):
             mode = .isoPriority(lockedISO: iso)
         }
     }
@@ -97,10 +97,10 @@ final class ExposureManager {
         switch mode {
         case .auto:
             return targetEV
-        case .shutterPriority(let lockedShutter):
+        case .shutterPriority:
             let ratio = Float(meteredISO) / (activeISO ?? meteredISO)
             return targetEV + log2(ratio)
-        case .isoPriority(let lockedISO):
+        case .isoPriority:
             let ratio = Float(meteredShutter) / Float(Self.clamped(meteredShutter))
             return targetEV + log2(ratio)
         case .manual(let shutter, let iso):
