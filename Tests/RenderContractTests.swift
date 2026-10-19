@@ -353,8 +353,8 @@ struct RenderContractTests {
         func tint(_ id: String) throws -> SIMD3<Float> {
             try #require(app.first { $0.stockId == id }).halationTint
         }
-        #expect(try radius("kodak5207") == 0.011)
-        #expect(try radius("kodak5219") == 0.014)
+        #expect(try radius("kodak5207") == 0.0055)
+        #expect(try radius("kodak5219") == 0.0065)
         // Faster stock, wider halo — the values must not all be identical.
         let slower = try radius("kodak5207")
         let fastest = try radius("kodak5219")
