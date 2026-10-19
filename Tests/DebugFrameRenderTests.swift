@@ -171,6 +171,40 @@ struct DebugFrameRenderTests {
                 "halation light must be red-dominant (red \\(redDelta) vs green \\(greenDelta))")
     }
 
+    @Test func debugHalationSliderAllowsAmplificationWithoutChangingOtherDials() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent(
+            "App/Modules/CameraCapture/DebugFrameSheet.swift"), encoding: .utf8)
+        let section = try #require(source.components(separatedBy: "private var halationSection: some View {").last)
+            .components(separatedBy: "private var glowSection: some View {")[0]
+        #expect(section.contains("in: 0...8, step: 0.01"), "Halation strength must allow gain above the old ceiling")
+        #expect(section.contains("in: 0.004...0.05, step: 0.001"), "Radius tuning must remain unchanged")
+        #expect(section.components(separatedBy: "in: 0...1, step: 0.01").count == 4,
+                "The three channel-weight dials must retain their existing range")
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func debugHalationGainAboveOneReachesTheRenderedPixels() throws {
+        let renderer = try makeRenderer()
+        let config = try loadConfig()
+        let frame = try Self.makeSyntheticFrame()
+        var parameters = PipelineRenderer.DebugFrameParameters(config: config)
+        parameters.glowStrength = 0
+        parameters.presenceMultiplier = 0
+        parameters.halationStrength = 1
+        let reference = try #require(renderer.renderDebugFrame(
+            pixelBuffer: frame, config: config, parameters: parameters))
+        let referenceFrame = try read(reference.pixelBuffer)
+        parameters.halationStrength = 8
+        let amplified = try #require(renderer.renderDebugFrame(
+            pixelBuffer: frame, config: config, parameters: parameters))
+        let amplifiedFrame = try read(amplified.pixelBuffer)
+        let referenceBand = mean(referenceFrame, columns: 82..<100, rows: 52..<76)
+        let amplifiedBand = mean(amplifiedFrame, columns: 82..<100, rows: 52..<76)
+        #expect(amplifiedBand.red > referenceBand.red + 10,
+                "Gain above one must visibly increase halation, not be clamped before rendering")
+    }
+
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
     func printGaugeChangesTheGrainOutputPixels() throws {
         let renderer = try makeRenderer()

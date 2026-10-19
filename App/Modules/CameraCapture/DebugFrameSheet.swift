@@ -386,7 +386,7 @@ struct DebugFrameSheet: View {
             labelled(String(format: "Strength %.2f", viewModel.parameters.halationStrength)) {
                 Slider(value: float({ viewModel.parameters.halationStrength },
                                     { viewModel.parameters.halationStrength = $0 }),
-                       in: 0...1, step: 0.01)
+                       in: 0...8, step: 0.01)
             }
             labelled(String(format: "Radius fraction %.4f", viewModel.parameters.halationRadiusFraction)) {
                 Slider(value: float({ viewModel.parameters.halationRadiusFraction },
