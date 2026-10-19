@@ -1095,12 +1095,23 @@ private final class AVCameraSampleBufferWriter: CameraSampleBufferWriting {
         }
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoInput.transform = transform
+        // Required, and deliberately kept despite the iOS 27 deprecation that
+        // says to "use the input receiver's appendImmediately(...) method
+        // instead". Dropping it in favour of appendImmediately alone breaks
+        // recording on device: without real-time mode the input buffers rather
+        // than streams, so appendImmediately refuses a sample once the queue
+        // fills and the recorder fails the take. Measured on an iPhone 18 Pro:
+        // recording failed at a deterministic 28 appended frames with
+        // writerError=none. With this line restored the same take records,
+        // finalizes and saves. Device-verified, not inferred.
+        videoInput.expectsMediaDataInRealTime = true
         guard writer.canAdd(videoInput) else {
             throw CameraSampleBufferRecorderError.unsupportedWriterSettings("HEVC Main10 Apple Log 2")
         }
         let audioInput: AVAssetWriterInput?
         if let audioSettings {
             let candidate = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+            candidate.expectsMediaDataInRealTime = true
             guard writer.canAdd(candidate) else {
                 throw CameraSampleBufferRecorderError.unsupportedWriterSettings("AAC audio")
             }
