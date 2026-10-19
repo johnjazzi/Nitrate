@@ -299,8 +299,7 @@ struct ManualControlsOverlayTests {
     }
 
     private func save(_ image: CGImage, name: String) throws {
-        let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent("build/compact-manual-renders")
+        let directory = TestRepository.artifactDirectory("compact-manual-renders")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(name + ".png")
         let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil))
@@ -374,8 +373,7 @@ struct ManualControlsOverlayTests {
                 let glyphRows = glyphInk.map { ($0 / 4) / image.width }
                 #expect(try #require(glyphRows.min()) >= Int((top + 38) * scale))
                 #expect(try #require(glyphRows.max()) < Int((bottom + 32) * scale))
-                let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-                    .deletingLastPathComponent().appendingPathComponent("build/camera-design-renders")
+                let directory = TestRepository.artifactDirectory("camera-design-renders")
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 let url = directory.appendingPathComponent("manual-\(Int(size.width))-\(degrees).png")
                 let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil))

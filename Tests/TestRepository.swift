@@ -64,6 +64,15 @@ enum TestRepository {
         "App/ContentView.swift"
     ]
 
+    /// Diagnostic renders must not write into the source checkout or signed bundle.
+    static var artifactRoot: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("nitrate-test-artifacts", isDirectory: true)
+    }
+
+    static func artifactDirectory(_ name: String) -> URL {
+        artifactRoot.appendingPathComponent(name, isDirectory: true)
+    }
+
     /// Resolves a repository-relative fixture path against the chosen root.
     static func url(for relativePath: String) -> URL {
         root.appendingPathComponent(relativePath)

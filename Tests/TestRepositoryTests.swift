@@ -31,6 +31,22 @@ struct TestRepositoryTests {
                 "The packaged snapshot must not be the source checkout")
     }
 
+    @Test func diagnosticArtifactsUseTemporaryStorageNotTheCheckoutOrBundle() {
+        let expected = FileManager.default.temporaryDirectory.appendingPathComponent("nitrate-test-artifacts", isDirectory: true)
+        #expect(TestRepository.artifactRoot.standardizedFileURL == expected.standardizedFileURL)
+        #expect(!TestRepository.artifactRoot.path.hasPrefix(TestRepository.checkoutRoot.path + "/"))
+        #expect(!TestRepository.artifactRoot.path.hasPrefix(TestRepository.root.path + "/"))
+    }
+
+    @Test func diagnosticArtifactDirectoryIsWritable() throws {
+        let directory = TestRepository.artifactDirectory("writable-probe-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("probe.txt")
+        try Data("artifact".utf8).write(to: file)
+        #expect(try Data(contentsOf: file) == Data("artifact".utf8))
+    }
+
     @Test func resolvedRootIsAReadableDirectory() {
         let root = TestRepository.root
         var isDirectory: ObjCBool = false

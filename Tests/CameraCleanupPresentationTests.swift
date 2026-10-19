@@ -67,8 +67,7 @@ struct CameraCleanupPresentationTests {
                 let longInk = degrees == 0 ? columns : rows
                 #expect(try #require(longInk.max()) - #require(longInk.min()) > 75,
                         "Landscape must not fit the digits into shallow portrait glyph bounds.")
-                let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-                    .deletingLastPathComponent().appendingPathComponent("build/cleanup-timer-renders")
+                let directory = TestRepository.artifactDirectory("cleanup-timer-renders")
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 let url = directory.appendingPathComponent("cleanup-timer-\(degrees)-\(text.replacingOccurrences(of: ":", with: "-"))-\(stopping).png")
                 let destination = try #require(CGImageDestinationCreateWithURL(
