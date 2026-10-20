@@ -8,11 +8,6 @@ struct ManualControlsPanel: View {
     @Binding var isManualFocus: Bool
     @Binding var expanded: Bool
     let landscape: Bool
-    let daylight60Armed: Bool
-    let daylight60Available: Bool
-    let daylight60UnavailableReason: String?
-    let canChangeFrameRate: Bool
-    let setDaylight60: (Bool) -> Void
     let onDismiss: () -> Void
 
     var body: some View {
@@ -30,11 +25,6 @@ struct ManualControlsPanel: View {
             stabilization: cameraViewModel.recordingStabilization,
             canChangeStabilization: cameraViewModel.canSetRecordingStabilization,
             selectStabilization: cameraViewModel.setRecordingStabilization,
-            daylight60Armed: daylight60Armed,
-            daylight60Available: daylight60Available,
-            daylight60UnavailableReason: daylight60UnavailableReason,
-            canChangeFrameRate: canChangeFrameRate,
-            setDaylight60: setDaylight60,
             dismiss: onDismiss,
             beginZoom: cameraViewModel.beginSlowZoom,
             endZoom: cameraViewModel.endSlowZoom(revision:),

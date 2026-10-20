@@ -1,7 +1,40 @@
 import SwiftUI
 
+/// The face size the enclosing `ManualControlsOverlay` granted. The surface
+/// uses it to pick the compact layout when a requested expanded face cannot
+/// hold every control, so the panel fits its bounds instead of scrolling.
+private struct ManualControlsFaceSizeKey: EnvironmentKey {
+    static let defaultValue: CGSize? = nil
+}
+
+extension EnvironmentValues {
+    /// Granted manual face, or `nil` when the surface is hosted on its own.
+    var manualControlsFaceSize: CGSize? {
+        get { self[ManualControlsFaceSizeKey.self] }
+        set { self[ManualControlsFaceSizeKey.self] = newValue }
+    }
+}
+
+/// The bounded expanded/compact decision, shared by the surface and its tests.
+/// Expanded needs ~326pt upright and ~296pt in the landscape hold; anything
+/// smaller falls back to the compact face rather than scrolling or clipping.
+enum ManualControlsLayout {
+    static let portraitExpandedMinimumHeight: CGFloat = 326
+    static let landscapeExpandedMinimumHeight: CGFloat = 300
+
+    /// Expanded only when the granted height can hold it without scrolling.
+    static func usesExpanded(requested: Bool, landscape: Bool, availableHeight: CGFloat?) -> Bool {
+        guard requested else { return false }
+        guard let availableHeight else { return true }
+        return availableHeight >= (landscape ? landscapeExpandedMinimumHeight
+                                             : portraitExpandedMinimumHeight)
+    }
+}
+
 /// Shared production surface: native controls with no camera/session dependency.
-/// The enclosing overlay owns the single physical-orientation transform.
+/// The enclosing overlay owns the single physical-orientation transform and the
+/// bounded face; this surface fits its controls inside that face with no scroll
+/// viewport, so a lower control is never buried below a fold.
 struct ManualControlsSurface<Aperture: View>: View {
     @Binding var zoom: Double
     @Binding var focus: Double
@@ -17,17 +50,13 @@ struct ManualControlsSurface<Aperture: View>: View {
     let stabilization: CameraStabilizationSnapshot
     let canChangeStabilization: Bool
     let selectStabilization: (CameraStabilizationMode) -> Void
-    var daylight60Armed = false
-    var daylight60Available = false
-    var daylight60UnavailableReason: String? = nil
-    var canChangeFrameRate = false
-    var setDaylight60: (Bool) -> Void = { _ in }
     let dismiss: () -> Void
     var beginZoom: (CameraZoomDirection) -> Void = { _ in }
     var endZoom: (UInt64) -> Void = { _ in }
     var stepZoom: (CameraZoomDirection) -> Void = { _ in }
     @ViewBuilder var aperture: () -> Aperture
     @State private var showingHelp = false
+    @Environment(\.manualControlsFaceSize) private var faceSize
     @AppStorage("camera.manualControlsLastEnabledStabilization")
     private var lastEnabledModeRaw = CameraStabilizationMode.standard.rawValue
 
@@ -36,9 +65,9 @@ struct ManualControlsSurface<Aperture: View>: View {
     }
 
     var body: some View {
-        VStack(spacing: expanded ? 12 : 2) {
+        VStack(spacing: layoutSpacing) {
             HStack(spacing: 4) {
-                if expanded {
+                if expandedLayout {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("MANUAL").font(.caption.weight(.bold))
                         Text(exposure).font(.caption2.monospacedDigit()).lineLimit(1)
@@ -47,7 +76,7 @@ struct ManualControlsSurface<Aperture: View>: View {
                     Text("MANUAL").font(.system(size: 10, weight: .bold)).lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                if !expanded {
+                if !expandedLayout {
                     zoomHold(.out, symbol: "minus", label: "Zoom Out")
                     zoomHold(.in, symbol: "plus", label: "Zoom In")
                     stabilizationHelp
@@ -63,7 +92,7 @@ struct ManualControlsSurface<Aperture: View>: View {
                 }
                 .accessibilityLabel("Close manual controls")
             }
-            HStack(alignment: .top, spacing: expanded ? 10 : 4) {
+            HStack(alignment: .top, spacing: expandedLayout ? 10 : 4) {
                 column(zoomIsPerLens ? "LENS" : "ZOOM", readout: zoomAvailable ? String(format: "%.1fx", zoom) : "—") {
                     track(value: $zoom, range: zoomRange, step: 0.1, label: "Zoom")
                         .disabled(!zoomAvailable || zoomRange.lowerBound == zoomRange.upperBound)
@@ -84,7 +113,7 @@ struct ManualControlsSurface<Aperture: View>: View {
                 stabilizationColumn
                     .frame(width: landscape ? 86 : 72)
             }
-            if expanded {
+            if expandedLayout {
                 HStack(spacing: 8) {
                     Text(zoomIsPerLens ? "LENS ZOOM" : "ZOOM")
                         .font(.system(size: 10, weight: .bold))
@@ -93,44 +122,50 @@ struct ManualControlsSurface<Aperture: View>: View {
                     zoomHold(.in, symbol: "plus", label: "Zoom In")
                 }
                 .frame(height: 44)
-                // Break-glass daylight 60 fps. Expanded only: it is never on the
-                // shooting bar, and the dense compact face keeps its strict height.
-                Daylight60Control(armed: daylight60Armed, available: daylight60Available,
-                                  unavailableReason: daylight60UnavailableReason,
-                                  canChange: canChangeFrameRate, setArmed: setDaylight60)
             }
         }
         .font(.caption2.weight(.semibold))
         .foregroundStyle(.white)
         .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 6))
-        .padding(expanded ? 8 : 4)
+        .padding(contentPadding)
         .onAppear { rememberEnabledMode(stabilization.preferred) }
         .onChange(of: stabilization.preferred) { _, mode in rememberEnabledMode(mode) }
         .popover(isPresented: $showingHelp) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Recording stabilization").font(.headline)
-                        Spacer()
-                        Button("Done") { showingHelp = false }.frame(minHeight: 44)
-                    }
-                    Text(stabilization.statusText)
-                    Text("Recording only. Preview is independent. Stronger modes crop more and can delay confirmation.")
-                    Text("Confirmation takes about 0.3 s (Off/Standard), 0.9 s (Cinematic), or 2.2 s (Extreme), measured on device. Recording begins about 0.2 s after the tap in every mode. Extreme uses Apple extended cinematic stabilization.")
-                    Text("Unavailable modes are not offered. A saved unsupported preference is retained with an Off fallback. Changes are locked during recording and transitions.")
-                }.padding()
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Recording stabilization").font(.headline)
+                    Spacer()
+                    Button("Done") { showingHelp = false }.frame(minHeight: 44)
+                }
+                Text(stabilization.statusText)
+                Text("Recording only. Preview is independent. Stronger modes crop more and can delay confirmation.")
+                Text("Confirmation takes about 0.3 s (Off/Standard), 0.9 s (Cinematic), or 2.2 s (Extreme), measured on device. Recording begins about 0.2 s after the tap in every mode. Extreme uses Apple extended cinematic stabilization.")
+                Text("Unavailable modes are not offered. A saved unsupported preference is retained with an Off fallback. Changes are locked during recording and transitions.")
             }
+            .padding()
             .frame(idealWidth: 320, maxWidth: 360, idealHeight: 330, maxHeight: 420)
+            .fixedSize(horizontal: false, vertical: true)
             .presentationCompactAdaptation(.popover)
         }
     }
 
-    private var trackHeight: CGFloat { landscape ? (expanded ? 100 : 44) : (expanded ? 110 : 44) }
+    /// Effective expanded face. Falls back to the compact layout when the
+    /// granted height cannot hold every expanded control, so nothing scrolls.
+    private var expandedLayout: Bool {
+        ManualControlsLayout.usesExpanded(requested: expanded, landscape: landscape,
+                                          availableHeight: faceSize?.height)
+    }
+
     private var compactTextRowHeight: CGFloat { 18 }
+    private var rowHeight: CGFloat { expandedLayout ? 44 : compactTextRowHeight }
+    private var trackHeight: CGFloat { landscape ? (expandedLayout ? 84 : 44) : (expandedLayout ? 110 : 44) }
+    private var trackLength: CGFloat { expandedLayout ? (landscape ? 100 : 110) : 44 }
+    private var layoutSpacing: CGFloat { expandedLayout ? (landscape ? 10 : 12) : 2 }
+    private var contentPadding: CGFloat { expandedLayout ? 8 : 4 }
 
     private func title(_ text: String) -> some View {
         Text(text).font(.system(size: 10, weight: .bold)).lineLimit(1)
-            .frame(height: expanded ? 44 : compactTextRowHeight).frame(maxWidth: .infinity)
+            .frame(height: rowHeight).frame(maxWidth: .infinity)
     }
 
     private func column<Control: View>(_ name: String, readout: String,
@@ -139,20 +174,20 @@ struct ManualControlsSurface<Aperture: View>: View {
             title(name)
             control()
             Text(readout).monospacedDigit().lineLimit(1)
-                .frame(height: expanded ? 44 : compactTextRowHeight).frame(maxWidth: .infinity)
+                .frame(height: rowHeight).frame(maxWidth: .infinity)
         }.frame(maxWidth: .infinity)
     }
 
     private func track(value: Binding<Double>, range: ClosedRange<Double>, step: Double,
                        label: String) -> some View {
         ManualControlTrack(value: value, range: range, step: step, landscape: landscape,
-                           length: expanded ? 110 : 44, label: label)
+                           length: trackLength, label: label)
             .frame(height: trackHeight)
     }
 
     private var stabilizationColumn: some View {
         VStack(spacing: 0) {
-            if expanded {
+            if expandedLayout {
                 HStack(spacing: 0) {
                     Text("STAB").font(.system(size: 10, weight: .bold))
                     stabilizationHelp
@@ -309,93 +344,5 @@ enum ManualStabilizationSelection {
         guard enabled else { return .off }
         let supported = snapshot.capability.availableModes.filter { $0 != .off }
         return supported.contains(remembered) ? remembered : supported.first
-    }
-}
-
-/// The break-glass daylight 60 fps toggle. Session-only, so it deliberately
-/// carries no persisted state: arm shows a plain-words warning once, disarm is
-/// immediate. Text-only warning — the recording timer never repeats it.
-///
-/// Kept in this file rather than a new `Daylight60Control.swift` so the two
-/// design test targets that compile this surface also compile the control
-/// without a project.yml change.
-struct Daylight60Control: View {
-    let armed: Bool
-    let available: Bool
-    let unavailableReason: String?
-    let canChange: Bool
-    let setArmed: (Bool) -> Void
-
-    /// The single warning copy, shown at confirm and repeated on the active
-    /// badge. Plain words, no aesthetic claim.
-    static let warning = "60 fps video · less cinematic motion · modest exposure headroom — not unlimited. ND still required."
-
-    /// Shown when the active device has no 4K Apple Log 2 10-bit 60 fps format.
-    static let unavailableReason = "No 4K Apple Log 2 10-bit format supports 60 fps on this device."
-
-    @State private var confirming = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Button(action: activate) {
-                HStack(spacing: 8) {
-                    Image(systemName: armed ? "bolt.fill" : "bolt")
-                    Text(armed ? "60 fps DAYLIGHT" : "60 fps")
-                        .font(.system(size: 11, weight: .bold))
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    Text(stateText).font(.system(size: 9, weight: .semibold))
-                }
-                .frame(maxWidth: .infinity, minHeight: 44)
-                .opacity(available ? 1 : 0.5)
-            }
-            .buttonStyle(CameraRaisedButtonStyle(faceColor: armed ? Color(red: 0.95, green: 0.4, blue: 0.15) : nil))
-            .disabled(!available || !canChange)
-            .accessibilityLabel("Daylight 60 fps capture")
-            .accessibilityValue(accessibilityValue)
-            .accessibilityHint("Emergency exposure. Session-only; it resets when the camera screen is left, "
-                               + "and is locked during a take or a lens change.")
-
-            if confirming, available {
-                Text(Self.warning)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityHidden(true)
-            }
-            if !available, let unavailableReason {
-                Text(unavailableReason)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityHidden(true)
-            }
-        }
-    }
-
-    private var stateText: String {
-        guard available else { return "UNAVAILABLE" }
-        guard canChange else { return "LOCKED" }
-        return armed ? "ON" : (confirming ? "CONFIRM" : "OFF")
-    }
-
-    private var accessibilityValue: String {
-        if !available { return unavailableReason ?? "Unavailable on this device" }
-        let state = armed ? "On. " + Self.warning : (confirming ? "Confirming. " + Self.warning : "Off")
-        return canChange ? state : state + ". Locked during recording or a camera transition."
-    }
-
-    /// One confirming tap arms; a second tap confirms. Disarm is immediate.
-    private func activate() {
-        guard available, canChange else { return }
-        if armed {
-            confirming = false
-            setArmed(false)
-        } else if confirming {
-            confirming = false
-            setArmed(true)
-        } else {
-            confirming = true
-        }
     }
 }
