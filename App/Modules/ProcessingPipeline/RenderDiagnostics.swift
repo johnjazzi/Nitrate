@@ -296,7 +296,8 @@ enum RenderDiagnostics {
 enum RenderMovieMetadata {
     static func make(config: FilmStockConfig, bitrate: Int = RenderEncodingContract.averageBitRate,
                      sourceColorProvenance: RenderInputColorProvenance? = nil,
-                     orientation: RenderDeliveryOrientation? = nil) throws -> [AVMetadataItem] {
+                     orientation: RenderDeliveryOrientation? = nil,
+                     capturePolicy: RenderCapturePolicy? = nil) throws -> [AVMetadataItem] {
         try config.validate()
         let snapshot = RenderDiagnosticsManifest.RecipeSnapshot(config: config,
             averageBitRate: bitrate, codec: RenderEncodingContract.codec,

@@ -152,20 +152,22 @@ final class RenderQueueViewModel {
     }
 
     func enqueue(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge? = nil,
-                 deliveryPreferences: RenderDeliveryPreferences? = nil) {
+                 deliveryPreferences: RenderDeliveryPreferences? = nil,
+                 capturePolicy: RenderCapturePolicy? = nil) {
         guard Self.isUsableFile(sourceURL) else {
             reportRenderError("Source video not ready. Try again.")
             return
         }
         if let awaiting = awaitingStockJobs.first(where: { $0.sourceURL == sourceURL }) {
             assignStock(jobId: awaiting.id, stockId: stockId, iso: iso, gauge: gauge,
-                        deliveryPreferences: deliveryPreferences)
+                        deliveryPreferences: deliveryPreferences, capturePolicy: capturePolicy)
             return
         }
         rendererErrorMessage = nil
         jobs.append(RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso,
                               printGauge: gauge, sessionId: sessionId,
-                              deliveryPreferences: deliveryPreferences ?? DeliverySettings.renderPreferences()))
+                              deliveryPreferences: deliveryPreferences ?? DeliverySettings.renderPreferences(),
+                              capturePolicy: capturePolicy))
         // The enqueue must be durable before any render or Photos side effect.
         guard persistJobs() else {
             isPersistenceBlocked = true
@@ -183,7 +185,8 @@ final class RenderQueueViewModel {
     /// discoverable in the queue and resumable with `assignStock` or
     /// `exportOriginal`. It is never rendered until a stock is assigned.
     @discardableResult
-    func enqueueAwaitingStock(sourceURL: URL, deliveryPreferences: RenderDeliveryPreferences? = nil) -> UUID? {
+    func enqueueAwaitingStock(sourceURL: URL, deliveryPreferences: RenderDeliveryPreferences? = nil,
+                              capturePolicy: RenderCapturePolicy? = nil) -> UUID? {
         guard Self.isUsableFile(sourceURL) else {
             reportRenderError("Source video not ready. Try again.")
             return nil
@@ -191,6 +194,7 @@ final class RenderQueueViewModel {
         rendererErrorMessage = nil
         var job = RenderJob(awaitingStockSourceURL: sourceURL, sessionId: sessionId)
         job.deliveryPreferences = deliveryPreferences ?? DeliverySettings.renderPreferences()
+        job.capturePolicy = capturePolicy
         jobs.append(job)
         guard persistJobs() else {
             isPersistenceBlocked = true
@@ -204,13 +208,15 @@ final class RenderQueueViewModel {
 
     /// Assign a stock to an awaiting entry and let it render.
     func assignStock(jobId: UUID, stockId: String, iso: Float, gauge: PrintGauge? = nil,
-                     deliveryPreferences: RenderDeliveryPreferences? = nil) {
+                     deliveryPreferences: RenderDeliveryPreferences? = nil,
+                     capturePolicy: RenderCapturePolicy? = nil) {
         guard let index = jobs.firstIndex(where: { $0.id == jobId }),
               jobs[index].status == .awaitingStock else { return }
         jobs[index].stockId = stockId
         jobs[index].iso = iso
         jobs[index].printGauge = gauge
         if let deliveryPreferences { jobs[index].deliveryPreferences = deliveryPreferences }
+        if let capturePolicy { jobs[index].capturePolicy = capturePolicy }
         jobs[index].status = .pending
         jobs[index].errorMessage = nil
         jobs[index].sessionId = sessionId

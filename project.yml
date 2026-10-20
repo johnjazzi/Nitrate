@@ -241,6 +241,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraPolicies.swift
       - path: App/Modules/CameraCapture/CameraZoomPolicy.swift
       - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
+      - path: App/Modules/CameraCapture/CameraFrameRatePolicy.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
       - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
       - path: App/Modules/CameraCapture/ManualControlsOverlay.swift
