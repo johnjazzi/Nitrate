@@ -1,15 +1,15 @@
 # Daylight 60 fps capture (break-glass, session-only)
 
-Status: **spec, not implemented**. Baseline `76a4de3`, branch `feat/daylight-60fps`.
+Status: **reviewed for implementation**. Baseline `76a4de3`, branch `feat/daylight-60fps`.
 Owner: coordinator. Implementation is a separate, reviewed change.
 
 ## 1. Purpose and position
 
 Daylight 60 fps is an **emergency exposure tool**, not a creative frame-rate
 mode. When the user cannot drive exposure down in daylight — sun at f/1.7 wide,
-ISO already at the floor — doubling the frame rate halves per-frame exposure
-(`1/48 → 1/120`, same 180° angle) and buys roughly **one stop** of highlight
-headroom. It is a fixed-shutter change, not an auto-exposure trick.
+ISO already at the floor — changing the fixed shutter from `1/48 → 1/120`
+(same 180° angle) reduces exposure by a factor of 2.5, roughly **1.32 stops**
+at equal ISO and aperture. It is a fixed-shutter change, not an auto-exposure trick.
 
 Three commitments bound it:
 
@@ -64,7 +64,7 @@ Every place that assumes 24 fps, and how it changes. Line numbers are baseline
 | F7 | `CameraError.appleLog2NotSupported` message (`~2461`) | "4K, 24 fps camera format" | keep 24 wording for the base error; add a distinct 60 error (§7) |
 | F8 | `RenderMovieMetadata.make` (`RenderDiagnostics.swift` 321) | hardcodes `"shutter-speed": "1/48", "shutter-angle": "180"` | emit from the job's persisted capture policy (§8) |
 | F9 | `PipelineRenderer.processFrames` grain `frameIndex` (`PipelineRenderer.swift` 742/807/818) | increments per frame | pass a **grain index** derived from the job policy (§6); PTS append cadence unchanged |
-| F10 | Recorder duration fallback (`CameraSampleBufferRecorder.swift` 518) | `fallbackDuration: CMTime(1, 24)` | used only when a sample carries no duration; keep, but see edge E9 |
+| F10 | Recorder duration fallback (`CameraSampleBufferRecorder.swift` 518) | `fallbackDuration: CMTime(1, 24)` | parameterise from the take snapshot (1/24 or 1/60); never guess 24 for a 60fps take |
 
 Not changed: `StartupSplashTiming.framesPerSecond = 24` (splash animation,
 unrelated); `CameraStorageEstimatePolicy` (bitrate, not frame rate); WB lock, LUT
@@ -174,8 +174,8 @@ enum CameraFrameRate: Int { case standard24 = 24, daylight60 = 60
 
 The exported clip keeps **full 60 fps motion and per-frame PTS**: only the grain
 field's temporal cadence is halved, so pairs `(2k, 2k+1)` share one grain
-realization. This reads as film grain at 30 Hz overlaid on 60 Hz motion, which is
-the standard way to keep grain from shimmering at high frame rates.
+realization. This is an experimental aesthetic choice: 30 Hz grain over 60 Hz
+motion. It is not claimed to be an industry standard or visually approved.
 
 ### 6.1 Precisely what "same grain" means
 
@@ -374,7 +374,7 @@ Preserve, do not re-decide:
 | E10 | User toggles mode off, then records | 24 fps, `1/48`, `perFrame` |
 | E11 | Custom exposure set (manual ISO) in 60 fps mode | Shutter pinned `1/120`; min/max frame duration re-asserted under lock |
 | E12 | Shutter-priority (auto ISO) re-pins in 60 fps mode | Same fixed `1/120`; frame duration re-asserted after each `setExposureModeCustom` |
-| E13 | Lens switch while `.daylight60` armed, not recording | New device's format re-selected at 60; if ineligible, revert to `.standard24` and disable control (never a stale ineligible selection) |
+| E13 | Lens switch while `.daylight60` armed, not recording | New device selected at 60; if ineligible reject the switch and restore the previous working lens/mode atomically, with an explanatory error. No implicit 24fps downgrade. |
 | E14 | Arm eligible, then device becomes ineligible before take | `startRecording` fails prominently with `.daylight60Unsupported`; no wrong-rate recording |
 | E15 | Fractional/rounded fps in receipt | `RenderReceipt.framesPerSecond` reads ~60; presentation (`QueueReceiptViews` 152) shows it without change |
 
@@ -465,14 +465,46 @@ Modified:
   `enqueueAwaitingStock`, `assignStock`, `render`.
 - `Tests/` — the suites in §14.
 
-## 16. Open questions / unresolved
+## 16. Review decisions and remaining device checks
 
-1. **`1/120` and the AD-4 clamp.** AD-4 documents `[1/24, 1/100]`. This spec widens
-   the fast end to `1/120` for `.daylight60` only. Needs explicit product sign-off
-   on the widened range (it is required for the 180° shutter to exist at 60 fps).
-2. **Recorder duration fallback (E9).** Whether the `timescale: 24` fallback can
-   truncate a 60 fps drain when a sample lacks a duration is unverified on device;
-   parameterising it by mode is pending that check.
+Coordinator review (before implementation): these decisions override the
+illustrative APIs above where they conflict.
+
+- Exposure reduction is 2.5× / 1.32 stops, not halving / one stop.
+- Paired grain is experimental; no aesthetic or industry-standard claim.
+- Parameterise the recorder duration fallback by the immutable take policy now.
+- An unsupported lens switch must roll back to the previous lens and mode; do
+  not silently turn off the armed mode. Mode changes themselves are atomic:
+  preflight capability and restore old format/exposure/output state on failure.
+- Guard record, lens and mode actions while a mode transition is pending. Fence
+  completion callbacks against lifecycle generations; a backgrounded transition
+  must not restore 60fps on the next foreground session.
+- Snapshot the policy at take start and associate it with the completed URL,
+  through CameraScreen enqueue / awaiting-stock paths. Do not read current mode
+  when observation of lastRecordedURL fires after reset.
+- Persist a minimal constrained Codable mode rather than three independently
+  mutable values if that eliminates invalid fps/shutter/grain combinations.
+- Do not alter the legacy ExposureManager unless it is actually used by this
+  capture path. Its standalone historical modes are not this feature.
+- Keep frameIndex for diagnostics/failure injection; derive the grain index only
+  at the grain call, not by halving the whole render-loop index.
+- Native integration must exercise a short synthetic 60fps clip through the real
+  renderer and assert output frame count, PTS cadence, metadata and audio. Pure
+  policy tests alone do not prove that output stayed 60fps.
+- Apple docs confirm custom exposure may alter frame durations. Reassert under
+  the existing lock; ensure recording begins only after exposure is applied and
+  the requested rate is verified. Do not assume callback arrival proves timing.
+
+Remaining checks:
+
+
+1. **`1/120` authorization.** The user explicitly requested it; no additional
+   product sign-off is needed. Keep the legacy ExposureManager API unchanged if
+   it is not on the actual hardware control path. The mode-aware capture policy
+   must provide the fixed shutter for both manual and automatic ISO. Do not
+   broaden unrelated legacy exposure modes merely to make this feature compile.
+2. **Recorder duration fallback (E9).** Parameterise by take mode and test missing
+   sample duration without weakening the existing A/V tolerances.
 3. **Frame-rate reassert vs. exposure completion order.** Apple calls the
    `setExposureModeCustom` completion on its own queue; whether a reassert issued
    synchronously after the call (before the completion fires) can be overwritten by
