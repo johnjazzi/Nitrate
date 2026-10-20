@@ -325,18 +325,65 @@ final class CameraViewModel {
     // MARK: - Focal-Length Pinch Zoom
 
     /// Absolute, 35 mm-equivalent focal length the preview is rendering right
-    /// now. Derived from the session's published display factor, which is
-    /// anchored at the wide camera's 1x on iOS 18+ (global multiplier) and at
-    /// each lens's own 1x on iOS 17 (`isPerLens`).
+    /// now. Derived from the session's published display factor and the active
+    /// device's real display multiplier, anchored on the active lens's native
+    /// base focal length.
     var currentFocalLengthMM: Double {
         guard let snapshot = zoomSnapshot,
               let millimeters = CameraFocalZoomPolicy.focalLengthMM(
                   displayFactor: snapshot.displayFactor,
-                  isPerLens: snapshot.isPerLens,
+                  multiplier: snapshot.displayMultiplier,
                   tier: Self.focalTier(for: activeLens)) else {
             return Double(activeLens.focalLengthMM)
         }
         return millimeters
+    }
+
+    /// The focal length the UI should show and drive for a raw pinch target,
+    /// clamped to what the active lens and the installed lenses can actually
+    /// render. Returns nil for non-finite input or when no rear lens exists.
+    ///
+    /// The UI calls this BEFORE `setFocalLengthZoom` and its tick haptics, so
+    /// neither the readout nor the haptic can announce a focal length the
+    /// hardware will not reach: requesting 13 mm without an ultrawide stays at
+    /// the wide lens's floor, and a target past the wide device's ceiling is
+    /// clamped to the ceiling rather than shown past the rail.
+    func normalizedFocalLengthZoom(_ millimeters: Double) -> Double? {
+        guard let requested = CameraFocalZoomPolicy.clampedTarget(millimeters) else { return nil }
+        let activeTier = Self.focalTier(for: activeLens)
+
+        // The front camera never switches away; it only clamps within its own
+        // published window.
+        if activeTier == .front {
+            return clampToActiveZoomWindow(requested, tier: .front) ?? requested
+        }
+
+        let desired = CameraFocalZoomPolicy.tier(forFocalLength: requested)
+        guard let resolved = CameraFocalZoomPolicy.resolvedTier(desired, available: availableLensTiers) else {
+            return nil
+        }
+        // Already on that lens: clamp to the device's real achievable window,
+        // converted with its own multiplier.
+        if resolved == activeTier {
+            return clampToActiveZoomWindow(requested, tier: activeTier) ?? requested
+        }
+        // A switch is required: the new device's ceiling is unknown until it is
+        // installed, so pin the floor to its native base focal length.
+        return max(requested, CameraFocalZoomPolicy.baseFocalLengthMM(for: resolved))
+    }
+
+    /// Clamp `requested` into the active device's real achievable focal-length
+    /// window. Nil when there is no snapshot to convert.
+    private func clampToActiveZoomWindow(_ requested: Double, tier: CameraFocalZoomLensTier) -> Double? {
+        guard let snapshot = zoomSnapshot,
+              let minimum = CameraFocalZoomPolicy.focalLengthMM(
+                  displayFactor: snapshot.minimumDisplayFactor,
+                  multiplier: snapshot.displayMultiplier, tier: tier),
+              let maximum = CameraFocalZoomPolicy.focalLengthMM(
+                  displayFactor: snapshot.maximumDisplayFactor,
+                  multiplier: snapshot.displayMultiplier, tier: tier),
+              minimum <= maximum else { return nil }
+        return min(max(requested, minimum), maximum)
     }
 
     /// Drive the zoom to an absolute focal length. Targets below 24 mm ask for
@@ -348,26 +395,32 @@ final class CameraViewModel {
         // recording or stopping, and none once the session is torn down.
         guard lifecycleGate.isActive, cameraConfigured,
               !isStartingRecording, !isRecording, !isStoppingRecording,
-              let snapshot = zoomSnapshot else { return }
+              let snapshot = zoomSnapshot,
+              let normalized = normalizedFocalLengthZoom(millimeters) else { return }
         if isSwitchingCameraLens {
             // Only the pinch engine's own queued switch keeps collecting updates;
             // a manual switch owns the device and must not be commandeered.
             guard focalSwitchInFlight else { return }
-            _ = focalEngine.request(targetMM: millimeters, available: availableLensTiers)
+            _ = focalEngine.request(targetMM: normalized, available: availableLensTiers)
             return
         }
-        let decision = focalEngine.request(targetMM: millimeters, available: availableLensTiers)
-        performFocal(decision, revision: snapshot.cameraRevision, isPerLens: snapshot.isPerLens)
+        focalEngine.syncActiveTier(Self.focalTier(for: activeLens))
+        let decision = focalEngine.request(targetMM: normalized, available: availableLensTiers)
+        performFocal(decision, revision: snapshot.cameraRevision, multiplier: snapshot.displayMultiplier)
     }
 
+    /// Drive a decision to the session. The target has already been clamped by
+    /// `normalizedFocalLengthZoom`; `multiplier` is the active device's real
+    /// display multiplier, so the display factor is converted on the tier's own
+    /// native base.
     private func performFocal(_ decision: CameraFocalZoomEngine.Decision,
-                              revision: UInt64, isPerLens: Bool) {
+                              revision: UInt64, multiplier: Double) {
         switch decision {
         case .ignore:
             break
         case .adjust(let tier, let targetMM):
             guard let factor = CameraFocalZoomPolicy.displayFactor(
-                forFocalLengthMM: targetMM, isPerLens: isPerLens, tier: tier) else { return }
+                forFocalLengthMM: targetMM, multiplier: multiplier, tier: tier) else { return }
             session.setDisplayZoom(factor, revision: revision)
         case .switchLens(let tier, _):
             beginFocalLensSwitch(to: tier)
@@ -377,8 +430,9 @@ final class CameraViewModel {
     private func beginFocalLensSwitch(to tier: CameraFocalZoomLensTier) {
         guard !focalSwitchInFlight else { return }
         focalSwitchInFlight = true
-        selectLens(Self.cameraLens(for: tier)) { [weak self] error in
-            guard let self else { return }
+        let requestGeneration = cameraLensSwitchGeneration &+ 1
+        selectLens(Self.cameraLens(for: tier), preservingFocalZoom: true) { [weak self] error in
+            guard let self, self.cameraLensSwitchGeneration == requestGeneration else { return }
             self.focalSwitchInFlight = false
             if error != nil {
                 // The switch rolled back: drop the gesture instead of replaying
@@ -402,7 +456,7 @@ final class CameraViewModel {
         }
         let decision = focalEngine.switchCommitted(to: Self.focalTier(for: activeLens),
                                                    available: availableLensTiers)
-        performFocal(decision, revision: snapshot.cameraRevision, isPerLens: snapshot.isPerLens)
+        performFocal(decision, revision: snapshot.cameraRevision, multiplier: snapshot.displayMultiplier)
     }
 
     private static func focalTier(for lens: CameraLens) -> CameraFocalZoomLensTier {
@@ -429,9 +483,11 @@ final class CameraViewModel {
             errorMessage = "Camera is not ready to record."
             return
         }
-        // A lens switch the pinch engine queued must settle first: starting a
-        // take while the session reconfigures the input would race the switch.
-        guard !focalSwitchInFlight else {
+        // Any pending lens switch must settle first: starting a take while the
+        // session reconfigures the input would race the switch. This blocks the
+        // engine's own queued switch (`focalSwitchInFlight`) and a manual lens
+        // switch (`isSwitchingCameraLens`) alike, not only the pinch case.
+        guard !focalSwitchInFlight, !isSwitchingCameraLens else {
             errorMessage = "Wait for the lens to finish switching before recording."
             return
         }
@@ -543,10 +599,13 @@ final class CameraViewModel {
 
     /// Switch the active lens and refresh tap-to-focus for the new device.
     /// Completion runs on the main queue; `nil` error means the swap succeeded.
-    func selectLens(_ lens: CameraLens, completion: @escaping (Error?) -> Void) {
+    func selectLens(_ lens: CameraLens, preservingFocalZoom: Bool = false, completion: @escaping (Error?) -> Void) {
         // A manual lens switch supersedes any in-flight pinch gesture; the
         // engine's own switch keeps its queued target instead.
-        if !focalSwitchInFlight { focalEngine.invalidate() }
+        if !preservingFocalZoom {
+            focalEngine.invalidate()
+            focalSwitchInFlight = false
+        }
         endSlowZoom()
         exposureCommandGeneration &+= 1
         cameraLensSwitchGeneration &+= 1

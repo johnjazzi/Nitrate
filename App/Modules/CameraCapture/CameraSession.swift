@@ -1045,7 +1045,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
                                           isPerLens: {
                                             if #available(iOS 18.0, *) { return false }
                                             return true
-                                          }())
+                                          }(),
+                                          displayMultiplier: bounds.multiplier)
         } else { snapshot = nil }
         if let zoomObserver {
             DispatchQueue.main.async { MainActor.assumeIsolated { zoomObserver(snapshot) } }

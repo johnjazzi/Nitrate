@@ -8,13 +8,8 @@ struct CameraFocalZoomPolicyTests {
     // MARK: - Ruler landmarks and lens boundaries
 
     @Test func majorTicksAreTheSharedRulerLandmarks() {
+        // The policy owns the landmarks; the UI aliases this array for its ruler.
         #expect(CameraFocalZoomPolicy.majorTicks == [13, 24, 35, 50, 75, 96, 110, 150])
-        #expect(CameraFocalZoomPolicy.isMajorTick(96))
-        #expect(CameraFocalZoomPolicy.isMajorTick(96.3))
-        #expect(!CameraFocalZoomPolicy.isMajorTick(97.5))
-        #expect(!CameraFocalZoomPolicy.isMajorTick(.nan))
-        #expect(CameraFocalZoomPolicy.nearestMajorTick(to: 34) == 35)
-        #expect(CameraFocalZoomPolicy.nearestMajorTick(to: .infinity) == nil)
     }
 
     @Test func lensTierSwitchesAtTwentyFourAndNinetySix() {
@@ -42,28 +37,57 @@ struct CameraFocalZoomPolicyTests {
         }
     }
 
-    // MARK: - Display factor conversion (snapshot semantics)
+    // MARK: - Display factor conversion (real device multiplier)
 
-    @Test func nonPerLensDisplayFactorUsesTheWideTwentyFourMillimetreReference() {
-        #expect(CameraFocalZoomPolicy.displayFactor(forFocalLengthMM: 24, isPerLens: false, tier: .wide) == 1)
-        #expect(CameraFocalZoomPolicy.displayFactor(forFocalLengthMM: 96, isPerLens: false, tier: .telephoto) == 4)
-        #expect(CameraFocalZoomPolicy.displayFactor(forFocalLengthMM: 12, isPerLens: false, tier: .ultraWide) == 0.5)
-        #expect(CameraFocalZoomPolicy.focalLengthMM(displayFactor: 5, isPerLens: false, tier: .wide) == 120)
-        #expect(CameraFocalZoomPolicy.focalLengthMM(displayFactor: 0.5, isPerLens: false, tier: .ultraWide) == 12)
+    @Test func ultraWideHalfFactorIsThirteenMillimetresNotTwelve() {
+        // The ultrawide's own 0.5x is its native 13 mm, not 0.5 * 24 = 12 mm.
+        #expect(CameraFocalZoomPolicy.focalLengthMM(displayFactor: 0.5, multiplier: 0.5, tier: .ultraWide) == 13)
+        #expect(CameraFocalZoomPolicy.displayFactor(forFocalLengthMM: 13, multiplier: 0.5, tier: .ultraWide) == 0.5)
     }
 
-    @Test func perLensDisplayFactorUsesEachLensesOwnBase() {
-        #expect(CameraFocalZoomPolicy.displayFactor(forFocalLengthMM: 13, isPerLens: true, tier: .ultraWide) == 1)
-        #expect(CameraFocalZoomPolicy.displayFactor(forFocalLengthMM: 24, isPerLens: true, tier: .wide) == 1)
-        #expect(CameraFocalZoomPolicy.displayFactor(forFocalLengthMM: 96, isPerLens: true, tier: .telephoto) == 1)
-        #expect(CameraFocalZoomPolicy.focalLengthMM(displayFactor: 2, isPerLens: true, tier: .telephoto) == 192)
+    @Test func nativeTelephotoFactorFourIsNinetySixMillimetres() {
+        #expect(CameraFocalZoomPolicy.focalLengthMM(displayFactor: 4, multiplier: 4, tier: .telephoto) == 96)
+        #expect(CameraFocalZoomPolicy.displayFactor(forFocalLengthMM: 96, multiplier: 4, tier: .telephoto) == 4)
     }
 
-    @Test func conversionRejectsNonPositiveAndNonFiniteFactors() {
+    @Test func wideAnchorUsesTheWideNativeBaseAndItsMultiplier() {
+        #expect(CameraFocalZoomPolicy.displayFactor(forFocalLengthMM: 24, multiplier: 1, tier: .wide) == 1)
+        #expect(CameraFocalZoomPolicy.focalLengthMM(displayFactor: 5, multiplier: 1, tier: .wide) == 120)
+    }
+
+    @Test func perLensMultiplierOfOneUsesEachLensesOwnBase() {
+        // iOS 17 (`isPerLens == true`) publishes multiplier 1, so the factor is
+        // the device's own 1x for each lens.
+        #expect(CameraFocalZoomPolicy.displayFactor(forFocalLengthMM: 13, multiplier: 1, tier: .ultraWide) == 1)
+        #expect(CameraFocalZoomPolicy.focalLengthMM(displayFactor: 1, multiplier: 1, tier: .telephoto) == 96)
+    }
+
+    @Test func conversionRoundTripsFractionalFocalLengths() {
+        let cases: [(Double, Double, CameraFocalZoomLensTier)] = [
+            (37.5, 1.3, .wide), (13.0, 0.5, .ultraWide), (145.5, 4.0, .telephoto)
+        ]
+        for (millimeters, multiplier, tier) in cases {
+            let factor = CameraFocalZoomPolicy.displayFactor(
+                forFocalLengthMM: millimeters, multiplier: multiplier, tier: tier)
+            #expect(factor != nil)
+            let roundTripped = factor.flatMap {
+                CameraFocalZoomPolicy.focalLengthMM(displayFactor: $0, multiplier: multiplier, tier: tier)
+            }
+            #expect(roundTripped.map { abs($0 - millimeters) < 1e-9 } == true)
+        }
+    }
+
+    @Test func conversionRejectsNonPositiveOrNonFiniteInputs() {
         for invalid: Double in [0, -1, .nan, .infinity] {
-            #expect(CameraFocalZoomPolicy.focalLengthMM(displayFactor: invalid, isPerLens: false, tier: .wide) == nil)
-            #expect(CameraFocalZoomPolicy.displayFactor(forFocalLengthMM: invalid,
-                                                        isPerLens: false, tier: .wide) == nil)
+            #expect(CameraFocalZoomPolicy.focalLengthMM(
+                displayFactor: invalid, multiplier: 1, tier: .wide) == nil)
+            #expect(CameraFocalZoomPolicy.displayFactor(
+                forFocalLengthMM: invalid, multiplier: 1, tier: .wide) == nil)
+            // A bad or non-finite device multiplier must refuse, not mis-convert.
+            #expect(CameraFocalZoomPolicy.focalLengthMM(
+                displayFactor: 1, multiplier: invalid, tier: .wide) == nil)
+            #expect(CameraFocalZoomPolicy.displayFactor(
+                forFocalLengthMM: 24, multiplier: invalid, tier: .wide) == nil)
         }
     }
 

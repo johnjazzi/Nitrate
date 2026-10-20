@@ -12,25 +12,23 @@ enum CameraFocalZoomLensTier: String, Equatable, Sendable, CaseIterable {
 
 /// The focal-length pinch engine's shared, pure decision layer.
 ///
-/// The capture session's display zoom factor is anchored at the wide-angle
-/// camera's 1x. `CameraLens` publishes `ultraWide` as 13 mm (~0.54x), `wide` as
-/// 24 mm (1x) and `telephoto` as 96 mm (4x); `publishZoom()` multiplies the
-/// device's `videoZoomFactor` by `CameraZoomPolicy`'s multiplier, which is the
-/// device's `displayVideoZoomFactorMultiplier` on iOS 18+ (a global display
-/// zoom, so one 24 mm reference converts any lens) and 1 on iOS 17 where the
-/// snapshot reports `isPerLens == true` (the device's own 1x, so each lens
-/// converts with its own base focal length).
+/// `CameraLens` publishes `ultraWide` as 13 mm, `wide` as 24 mm (1x) and
+/// `telephoto` as 96 mm, so every lens has its own native base. The session
+/// publishes `displayFactor == device.videoZoomFactor * multiplier`, where the
+/// multiplier is the device's real `displayVideoZoomFactorMultiplier` (1 on
+/// iOS 17, where the snapshot reports `isPerLens == true`). Conversion is
+/// anchored on the tier's native base — `displayFactor == multiplier * mm /
+/// base` — never on one global 24 mm reference, because that would report the
+/// ultrawide's native 0.5x as 12 mm instead of its 13 mm.
 enum CameraFocalZoomPolicy {
     /// Ruler landmarks shared with the UI, so haptics land on the same values
-    /// the policy treats as boundaries.
+    /// the policy treats as boundaries. The single shared source the UI may
+    /// alias for its own ruler.
     static let majorTicks: [Double] = [13, 24, 35, 50, 75, 96, 110, 150]
 
     static let minimumFocalLengthMM: Double = 13
     static let maximumFocalLengthMM: Double = 150
 
-    /// The wide (1x) camera's equivalent full-frame focal length. The session's
-    /// non-per-lens display factor is measured against this lens.
-    static let wideReferenceFocalLengthMM: Double = 24
     /// Below this the target prefers the ultrawide camera.
     static let ultraWideUpperBoundMM: Double = 24
     /// Above this the target prefers the telephoto camera.
@@ -75,35 +73,32 @@ enum CameraFocalZoomPolicy {
         }
     }
 
-    /// Session display zoom factor that renders `millimeters` on `tier`.
+    /// Display zoom factor the session publishes to render `millimeters` on
+    /// `tier`: `multiplier * millimeters / tierBase`. `multiplier` is the real
+    /// display multiplier from the zoom snapshot; it must be finite and
+    /// positive, otherwise the request is refused rather than mis-converted.
     static func displayFactor(forFocalLengthMM millimeters: Double,
-                              isPerLens: Bool,
+                              multiplier: Double,
                               tier: CameraFocalZoomLensTier) -> Double? {
-        guard millimeters.isFinite, millimeters > 0 else { return nil }
-        let reference = isPerLens ? baseFocalLengthMM(for: tier) : wideReferenceFocalLengthMM
-        guard reference > 0 else { return nil }
-        return millimeters / reference
+        guard millimeters.isFinite, millimeters > 0,
+              multiplier.isFinite, multiplier > 0 else { return nil }
+        let base = baseFocalLengthMM(for: tier)
+        guard base > 0 else { return nil }
+        return multiplier * (millimeters / base)
     }
 
-    /// Equivalent full-frame focal length of a published display factor.
+    /// Equivalent full-frame focal length a published display factor renders on
+    /// `tier`: `tierBase * displayFactor / multiplier`. Anchoring on the tier's
+    /// own base keeps the ultrawide's native 0.5x at 13 mm instead of the 12 mm
+    /// a global 24 mm reference reports.
     static func focalLengthMM(displayFactor: Double,
-                              isPerLens: Bool,
+                              multiplier: Double,
                               tier: CameraFocalZoomLensTier) -> Double? {
-        guard displayFactor.isFinite, displayFactor > 0 else { return nil }
-        let reference = isPerLens ? baseFocalLengthMM(for: tier) : wideReferenceFocalLengthMM
-        return displayFactor * reference
-    }
-
-    /// Whether `millimeters` sits on a shared ruler landmark, in the frame's own
-    /// units. Used by the UI to fire major-tick haptics.
-    static func isMajorTick(_ millimeters: Double, tolerance: Double = 0.5) -> Bool {
-        guard millimeters.isFinite else { return false }
-        return majorTicks.contains { abs($0 - millimeters) <= tolerance }
-    }
-
-    static func nearestMajorTick(to millimeters: Double) -> Double? {
-        guard millimeters.isFinite else { return nil }
-        return majorTicks.min { abs($0 - millimeters) < abs($1 - millimeters) }
+        guard displayFactor.isFinite, displayFactor > 0,
+              multiplier.isFinite, multiplier > 0 else { return nil }
+        let base = baseFocalLengthMM(for: tier)
+        guard base > 0 else { return nil }
+        return base * (displayFactor / multiplier)
     }
 }
 
