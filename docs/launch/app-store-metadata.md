@@ -56,7 +56,7 @@ Display names fit within 30 characters and both descriptions fit within the
 conservative 45-character IAP description limit. The final subscription-specific
 fields must also be checked in its own App Store Connect form.[3]
 
-The 3.00 / 10.00 values in `StoreKit/Nitrate.storekit` match the owner-approved
+The 5.00 / 10.00 values in `StoreKit/Nitrate.storekit` match the owner-approved
 US base prices and are used for local testing; App Store Connect remains the
 source of truth for every other storefront. No introductory offer is claimed or
 configured by this packet.

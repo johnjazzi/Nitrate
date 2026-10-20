@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// AD-1: Purchase/settings screen — 7-day trial, $3/year, $10 lifetime.
+/// AD-1: Purchase/settings screen — 7-day trial, $5/year, $10 lifetime.
 struct PurchaseView: View {
     @State var viewModel: PurchaseViewModel
     @Binding var showFramedPreview: Bool
