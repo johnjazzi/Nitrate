@@ -12,6 +12,8 @@ struct ContentView: View {
     @State private var showStockSheet = false
     @State private var showQueueSheet = false
     @State private var showSettings = false
+    @State private var showDaylightRescue = false
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("showFramedPreview") private var showFramedPreview = false
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
     @State private var controlBounds: [String: CGRect] = [:]
@@ -103,9 +105,24 @@ struct ContentView: View {
 
                 if let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
                     RecordingStatusOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
-                                           rotationDegrees: statusRotationDegrees) {
+                                           rotationDegrees: statusRotationDegrees,
+                                           isInteractive: canManageDaylightMode) {
                         recordingStatus
                     }
+                }
+
+                // A canvas sibling, not a child painted beyond the shooting bar:
+                // visibility never resizes the preview and the whole button is hittable.
+                if shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
+                   let rect = DaylightExposureRescueGeometry.buttonRect(
+                    above: exposure, in: geometry.size, rotationDegrees: statusRotationDegrees) {
+                    ExposureRescueButton(armed: cameraViewModel.sessionFrameRate == .daylight60,
+                                         enabled: cameraViewModel.canChangeSessionFrameRate,
+                                         action: { showDaylightRescue = true })
+                        .frame(width: 92, height: 44)
+                        .rotationEffect(.degrees(statusRotationDegrees))
+                        .frame(width: rect.width, height: rect.height)
+                        .position(x: rect.midX, y: rect.midY)
                 }
 
                 if showManualControls, let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
@@ -121,11 +138,6 @@ struct ContentView: View {
                             isManualFocus: $isManualFocus,
                             expanded: $manualControlsExpanded,
                             landscape: abs(statusRotationDegrees) == 90,
-                            daylight60Armed: cameraViewModel.sessionFrameRate == .daylight60,
-                            daylight60Available: cameraViewModel.supportsDaylight60,
-                            daylight60UnavailableReason: Daylight60Control.unavailableReason,
-                            canChangeFrameRate: cameraViewModel.canChangeSessionFrameRate,
-                            setDaylight60: cameraViewModel.setDaylight60Enabled,
                             onDismiss: {
                                 cameraViewModel.endSlowZoom()
                                 withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false }
@@ -140,6 +152,20 @@ struct ContentView: View {
             .frame(width: geometry.size.width, height: geometry.size.height)
             .coordinateSpace(name: "cameraCanvas")
             .onPreferenceChange(CameraControlBoundsPreference.self) { controlBounds = $0 }
+        }
+        .sheet(isPresented: $showDaylightRescue) {
+            DaylightExposureRescueModal(
+                armed: cameraViewModel.sessionFrameRate == .daylight60,
+                available: cameraViewModel.supportsDaylight60,
+                canChange: cameraViewModel.canChangeSessionFrameRate,
+                onSelect: { enabled in
+                    cameraViewModel.setDaylight60Enabled(enabled)
+                    showDaylightRescue = false
+                },
+                onCancel: { showDaylightRescue = false }
+            )
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showStockSheet) { stockSheet }
         .sheet(isPresented: $showQueueSheet) { queueSheet }
@@ -191,7 +217,10 @@ struct ContentView: View {
         .onChange(of: showManualControls) { _, shown in
             if !shown { cameraViewModel.endSlowZoom() }
         }
-        .onChange(of: showSettings || showQueueSheet || showStockSheet) { _, shown in
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { showDaylightRescue = false }
+        }
+        .onChange(of: showSettings || showQueueSheet || showStockSheet || showDaylightRescue) { _, shown in
             if shown { cameraViewModel.endSlowZoom() }
         }
         .onChange(of: cameraViewModel.zoomSnapshot?.cameraRevision) { _, _ in
@@ -423,11 +452,25 @@ struct ContentView: View {
         CameraGlyphRotation.degrees(for: orientation.deviceOrientation)
     }
 
+    /// Same target as the live EV indicator: manual ISO targets zero; automatic
+    /// ISO compares against the user's selected EV bias, not an absolute +2 EV.
+    private var shouldOfferDaylightRescue: Bool {
+        DaylightExposureRescuePolicy.shouldOffer(
+            meteredEV: cameraViewModel.liveExposureTargetOffset,
+            targetEV: cameraViewModel.isManualExposure ? 0 : cameraViewModel.liveExposureBias,
+            isAvailable: cameraViewModel.hasExposureMeter)
+    }
+
+    private var canManageDaylightMode: Bool {
+        cameraViewModel.sessionFrameRate == .daylight60 && cameraViewModel.canChangeSessionFrameRate
+    }
+
     private func statusFace(text: String) -> some View {
         RecordingStatusFace(presentation: recordPresentation, text: text,
                             style: RecordingIndicatorStyle.resolved(recordingIndicatorStyle),
                             rotationDegrees: CameraGlyphRotation.degrees(for: orientation.deviceOrientation),
-                            daylight60Active: cameraViewModel.sessionFrameRate == .daylight60)
+                            daylight60Active: cameraViewModel.sessionFrameRate == .daylight60,
+                            onManageDaylight: canManageDaylightMode ? { showDaylightRescue = true } : nil)
     }
 
     private var lensMenu: some View {
@@ -581,14 +624,6 @@ struct ContentView: View {
             guard generation == failureFlashGeneration else { return }
             withAnimation(.easeOut(duration: 0.25)) { showsRecordingFailure = false }
         }
-    }
-}
-
-private struct CameraControlBoundsPreference: PreferenceKey {
-    static let defaultValue: [String: CGRect] = [:]
-
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }
 

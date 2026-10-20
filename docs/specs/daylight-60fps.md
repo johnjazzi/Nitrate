@@ -2,7 +2,8 @@
 
 Status: **implemented; automated checks passed; physical-camera validation open**.
 Baseline `76a4de3`, branch `feat/daylight-60fps`.
-The sections below record the reviewed design; §17 records the delivered implementation.
+The sections below record the reviewed design; §17 records the original delivery.
+**Current UI revision:** §18 replaces the Manual-controls entry with EV-triggered rescue.
 
 ## 1. Purpose and position
 
@@ -601,3 +602,63 @@ approval is claimed.
   defects. Recording reasserts rate after exposure confirmation; a mode change
   submits the fixed shutter under the lock. No visual/physical pass is inferred
   from source-contract assertions.
+
+## 18. EV-triggered rescue and non-scrolling Manual controls
+
+This user-directed revision supersedes §10 and the Manual-controls placement in
+§17. Capture, queue persistence, 60fps motion and paired-grain policy are unchanged.
+
+- Offer a **Too bright?** button immediately above the EV column only when a
+  valid, finite live reading is **at least 2 stops above the selected target**:
+  `meteredEV - targetEV >= 2`. The target is the same as the displayed indicator:
+  selected EV bias in automatic ISO, zero in manual ISO. Invalid/unavailable
+  readings, underexposure and values below the threshold do not offer rescue.
+- The button opens a modal; it never switches capture automatically. Explain that
+  an **ND filter is recommended**, and temporary 60fps / 1/120 has **less cinematic
+  motion**. Explicitly confirm 60fps or cancel/keep 24fps. Unsupported hardware
+  has a visible reason and no enable action. Take/transition gates remain in force.
+- Place the button as a real, hit-testable sibling on the camera canvas, above
+  the measured exposure bounds. It must not enlarge the shooting bar, resize the
+  framed preview, or draw an unclickable control outside a small parent's bounds.
+- The trigger disappears below the threshold even when rescue is armed. The
+  existing active 60FPS status badge opens the same modal while idle so the user
+  can return to 24fps without waiting for another overexposure event. Keep the
+  WAIT/REC/STOP labels and disable management during a take or transition.
+- Dismiss the modal when the app leaves the active scene. Mode is still
+  session-only, resets at the existing boundary and never becomes a stock setting.
+- Remove the old 60fps row from Manual controls. The Manual surface itself must
+  have **no horizontal or vertical scrolling**, including compact/expanded modes.
+  Fit controls responsively; do not hide the last row behind a clipped viewport
+  or shrink touch targets merely to make a screenshot pass. Preserve zoom, focus,
+  iris, stabilization and existing orientation/framed-preview contracts.
+
+Validation before delivery:
+
+1. Threshold tests: exact +2, just below, nonzero/negative targets, missing meter,
+   NaN/infinity, over/under and manual target zero. No absolute-EV shortcut.
+2. Native rescue-button/modal renders and geometry through portrait and both
+   landscape holds; real hit region and no preview/shooting-bar size change.
+3. Native compact/expanded Manual surfaces, including constrained viewports,
+   verify full relevant control visibility with no scroll container.
+4. Source wiring tests distinguish them from actual touch/device evidence.
+5. Full `verify.py verify`, native CameraDesign suite and signed `verify.py device`,
+   then install/read back Nitrate Dev if the connected phone permits it.
+
+Revision verification (2026-10-20):
+
+- Independent code review: no blocking findings. Shared bounds-preference wiring,
+  selected-target semantics, explicit confirmation and active-badge return path
+  were checked against the integrated source.
+- `python3 scripts/verify.py verify`: passed (lint, supporting Python suites,
+  RenderCLI tests, generic unsigned iOS build, diff check).
+- CameraDesign native suite: **62 tests passed**, zero failures; result bundle
+  `build/verification/exposure-rescue-native.xcresult`. Includes threshold policy,
+  rotated rescue-button renders, modal fitting, and non-scrolling Manual surfaces.
+- `python3 scripts/verify.py device`: signed build passed. Installed and read back
+  **Nitrate Dev / com.nitrate.app.dev / 0.1.6 (6)** on the connected iPhone;
+  launch succeeded and its process and live camera screen were observed.
+- Physical bright-scene trigger/tap/confirmation and subjective grain appearance
+  remain hands-on checks; native fixtures are not evidence of those interactions.
+- Extremely short synthetic camera canvases with less than the compact panel's
+  approximately 160pt minimum band can still clip. Tested supported phone-sized
+  portrait-locked viewports fit; touch targets were not shrunk to hide this limit.

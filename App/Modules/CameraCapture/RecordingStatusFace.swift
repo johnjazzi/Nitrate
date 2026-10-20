@@ -19,6 +19,9 @@ struct RecordingStatusFace: View {
     /// Armed daylight 60 fps. Shown whether idle or recording, so the mode is
     /// unmistakable before and during a take.
     var daylight60Active = false
+    /// Existing active badge is the way back to 24fps when rescue has reduced
+    /// exposure below the offer threshold. Never interactive during a take.
+    var onManageDaylight: (() -> Void)? = nil
 
     var stateLabel: String {
         switch presentation {
@@ -80,7 +83,12 @@ struct RecordingStatusFace: View {
         .accessibilityLabel("Recording status")
         .accessibilityValue("\(accessibilityStatus). \(text)"
                             + (daylight60Active ? ". Daylight 60 fps armed." : ""))
-        .allowsHitTesting(false)
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .onTapGesture { onManageDaylight?() }
+        .accessibilityAddTraits(onManageDaylight == nil ? [] : .isButton)
+        .accessibilityHint(onManageDaylight == nil ? "" : "Manage temporary 60fps mode or return to 24fps")
+        .accessibilityAction { onManageDaylight?() }
+        .allowsHitTesting(onManageDaylight != nil)
     }
 
     @ViewBuilder private var statusMark: some View {
@@ -142,6 +150,7 @@ struct RecordingStatusOverlay<Content: View>: View {
     let toolbarBottom: CGFloat
     let controlsTop: CGFloat
     let rotationDegrees: Double
+    var isInteractive = false
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -150,7 +159,7 @@ struct RecordingStatusOverlay<Content: View>: View {
             content()
                 .position(x: rect.midX, y: rect.midY)
                 .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
-                .allowsHitTesting(false)
+                .allowsHitTesting(isInteractive)
         }
     }
 }

@@ -3,6 +3,17 @@ import SwiftUI
 import Testing
 
 struct CameraDesignTests {
+    @Test func daylightRescueUsesAThresholdedCanvasSiblingAndExplicitModal() throws {
+        let screen = try source("App/ContentView.swift")
+        #expect(screen.contains("DaylightExposureRescuePolicy.shouldOffer("))
+        #expect(screen.contains("DaylightExposureRescueGeometry.buttonRect("))
+        #expect(screen.contains("controlBounds[\"exposure\"]"))
+        #expect(screen.contains(".sheet(isPresented: $showDaylightRescue)"))
+        #expect(screen.contains("DaylightExposureRescueModal("))
+        #expect(screen.contains("cameraViewModel.setDaylight60Enabled(enabled)"))
+        #expect(!screen.contains("daylight60UnavailableReason: Daylight60Control"))
+    }
+
     private func source(_ path: String) throws -> String {
         let root = TestRepository.root
         return try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)

@@ -7,13 +7,58 @@ import Testing
 import UniformTypeIdentifiers
 
 struct CameraDesignRenderTests {
-    @Test func daylightIndicatorPreservesRecordingStateBesideTheTimer() {
+    @MainActor @Test func daylightIndicatorPreservesRecordingStateBesideTheTimer() {
         for (state, label) in [(RecordButtonPresentation.idle, "READY"), (.starting, "WAIT"),
                                (.recording, "REC"), (.stopping, "STOP")] {
             let face = RecordingStatusFace(presentation: state, text: "00:01.00", daylight60Active: true)
             #expect(face.modeStatusLabel == label + " · 60FPS")
             let standard = RecordingStatusFace(presentation: state, text: "00:01.00")
             #expect(standard.modeStatusLabel == label)
+        }
+    }
+
+    @MainActor @Test func rescueButtonRendersInsideItsReservedBoundsInEveryHold() throws {
+        let size = CGSize(width: 390, height: 750)
+        let exposure = CGRect(x: 282, y: 560, width: 92, height: 168)
+        for degrees in [0.0, 90.0, -90.0] {
+            let rect = try #require(DaylightExposureRescueGeometry.buttonRect(
+                above: exposure, in: size, rotationDegrees: degrees))
+            let view = ZStack(alignment: .topLeading) {
+                Color.black
+                ExposureRescueButton(armed: false, enabled: true, action: {})
+                    .frame(width: 92, height: 44)
+                    .rotationEffect(.degrees(degrees))
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+            }
+            .frame(width: size.width, height: size.height)
+            let image = try render(view, name: "rescue-button-\(degrees)")
+            let data = try pixels(image)
+            let scale = CGFloat(image.width) / size.width
+            let bright = stride(from: 0, to: data.count, by: 4).filter {
+                data[$0] > 180 && data[$0 + 1] > 180 && data[$0 + 2] > 180
+            }
+            #expect(bright.count > 80, "The real rescue label must be visible in all holds.")
+            #expect(bright.allSatisfy { index in
+                rect.contains(CGPoint(x: CGFloat((index / 4) % image.width) / scale,
+                                      y: CGFloat((index / 4) / image.width) / scale))
+            }, "The complete rotated label must stay inside the reserved button slot.")
+        }
+    }
+
+    @MainActor @Test func rescueModalFitsItsButtonsAndWarningWithoutScrolling() throws {
+        for (armed, available) in [(false, true), (true, true), (false, false)] {
+            let view = DaylightExposureRescueModal(armed: armed, available: available,
+                                                  canChange: true, onSelect: { _ in }, onCancel: {})
+                .frame(width: 320)
+            let host = NSHostingView(rootView: view)
+            #expect(host.fittingSize.height <= 450, "Warning and both actions must fit the large sheet.")
+            let image = try render(view, name: "rescue-modal-\(armed)-\(available)")
+            let data = try pixels(image)
+            let bright = stride(from: 0, to: data.count, by: 4).filter {
+                data[$0] > 180 && data[$0 + 1] > 180 && data[$0 + 2] > 180
+            }
+            #expect(bright.count > 250, "The real warning and confirmation must be rendered.")
         }
     }
 

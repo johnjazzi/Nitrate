@@ -56,8 +56,9 @@ enum DaylightExposureRescueGeometry {
 }
 
 /// The compact "too bright" affordance. Shown above the live EV column only when
-/// `DaylightExposureRescuePolicy.shouldOffer` is true (or the mode is already
-/// armed). Minimum 44pt height, 92pt wide. The face is unrotated: the parent turns
+/// `DaylightExposureRescuePolicy.shouldOffer` is true. Active mode management
+/// below that threshold uses the status badge. Minimum 44pt height, 92pt wide.
+/// The face is unrotated: the parent turns
 /// the whole control with `.rotationEffect` and reserves the bounds from
 /// `DaylightExposureRescueGeometry`, so this view must not also turn it.
 struct ExposureRescueButton: View {
@@ -131,8 +132,8 @@ struct DaylightExposureRescueModal: View {
                 .foregroundStyle(.white)
 
             Text("60 fps drops the fixed shutter to 1/120 — about 1.3 stops less light. "
-                 + "Motion looks less cinematic than 24 fps. For a locked-off bright scene "
-                 + "an ND filter is still the better tool.")
+                 + "Motion looks less cinematic than 24 fps. An ND filter is recommended "
+                 + "to keep 24 fps motion in daylight.")
                 .font(.footnote)
                 .foregroundStyle(.white.opacity(0.85))
                 .fixedSize(horizontal: false, vertical: true)
