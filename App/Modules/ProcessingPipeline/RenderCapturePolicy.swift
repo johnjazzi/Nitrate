@@ -20,8 +20,17 @@ struct RenderCapturePolicy: Codable, Equatable, Sendable {
     /// the rate so the three values cannot disagree. `nil` in a job means legacy
     /// behaviour: 24 fps, per-frame grain, `1/48` shutter metadata.
     init?(_ frameRate: Int) {
-        self.frameRate = frameRate
-        self.grainPairing = .perFrame
-        self.shutterDenominator = 48
+        switch frameRate {
+        case 24:
+            self.frameRate = 24
+            self.grainPairing = .perFrame
+            self.shutterDenominator = 48
+        case 60:
+            self.frameRate = 60
+            self.grainPairing = .pairedAtHalfRate
+            self.shutterDenominator = 120
+        default:
+            return nil
+        }
     }
 }

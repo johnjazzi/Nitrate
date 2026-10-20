@@ -91,7 +91,14 @@ enum CameraCaptureFormatPolicy {
     /// Parallel to `appleLog2CandidateIndexes`, but requires a 60 fps range.
     /// `.standard24` selection is unchanged; `.daylight60` uses this.
     static func appleLog2SixtyCandidateIndexes(in candidates: [Candidate]) -> [Int] {
-        appleLog2CandidateIndexes(in: candidates)
+        let matches = candidates.indices.filter {
+            let candidate = candidates[$0]
+            return candidate.width == 3840 && candidate.height == 2160
+                && candidate.supportsAppleLog2 && candidate.supports60FPS
+                && (candidate.isTenBitBiPlanar420 || candidate.isTenBitBiPlanar422)
+        }
+        return matches.filter { candidates[$0].isTenBitBiPlanar420 }
+            + matches.filter { candidates[$0].isTenBitBiPlanar422 }
     }
 }
 

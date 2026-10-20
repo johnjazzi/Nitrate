@@ -319,13 +319,20 @@ enum RenderMovieMetadata {
             "grain-gauge-amplitude": String(config.effectivePrintGauge.amplitudeMultiplier),
             "grain-algorithm": config.effectiveRecipe.grainAlgorithm,
             "grain-edge-boost-multiplier": String(config.effectiveRecipe.edgeBoostMultiplier),
-            "shutter-speed": "1/48", "shutter-angle": "180",
+            "shutter-speed": capturePolicy.map { "1/\($0.shutterDenominator)" } ?? "1/48",
+            "shutter-angle": "180",
             "encoding-codec": RenderEncodingContract.codec,
             "encoding-bitrate-target": String(bitrate),
             "color-contract-verified": String(config.effectiveRecipe.colorContractVerified),
             "render-settings-schema": "1", "render-settings": json
         ]
         var metadataValues = values
+        if let capturePolicy {
+            // Provenance only: the mode's integer frame rate travels with the
+            // render. Legacy jobs (nil policy) emit no such key and stay
+            // byte-for-byte as before.
+            metadataValues["capture-frame-rate"] = String(capturePolicy.frameRate)
+        }
         if let sourceColorProvenance {
             let sourceData = try JSONEncoder().encode(sourceColorProvenance)
             metadataValues["source-color-validation"] = sourceColorProvenance.validationStatus

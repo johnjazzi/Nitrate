@@ -38,6 +38,6 @@ enum CameraFrameRate: Int, Codable, Equatable, Sendable, CaseIterable, Identifia
 /// allowed while no take is pending, active or draining.
 enum CameraFrameRatePolicy {
     static func canChange(recording: Bool, starting: Bool, finishing: Bool) -> Bool {
-        true
+        !recording && !starting && !finishing
     }
 }

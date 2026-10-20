@@ -21,6 +21,9 @@ enum GrainPairing: String, Codable, Equatable, Sendable {
 enum GrainPairingPolicy {
     /// `pairedAtHalfRate`: 0,0,1,1,2,2,…   `perFrame`: 0,1,2,3,…
     static func grainIndex(frameIndex: UInt32, pairing: GrainPairing) -> UInt32 {
-        frameIndex
+        switch pairing {
+        case .perFrame: return frameIndex
+        case .pairedAtHalfRate: return frameIndex / 2
+        }
     }
 }
