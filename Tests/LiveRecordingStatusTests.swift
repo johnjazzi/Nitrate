@@ -7,11 +7,9 @@ import UniformTypeIdentifiers
 
 /// Correction contract for the live recording indicator. The lamp and timer are
 /// presentation for a confirmed `.recording` take only — never idle, starting or
-/// finalizing. Portrait hands the toolbar's rightmost first-row slot to the
-/// timer and hides the lens; landscape keeps the physical-edge overlay and
-/// leaves a clear 44pt lens slot. Geometry is measured from the natural size of
-/// the slot's occupant, never from a fixed reserve, so idle and recording share
-/// one toolbar height and the framed preview cannot jump.
+/// finalizing. Portrait floats the timer at the toolbar's horizontal centre;
+/// landscape keeps the physical-edge overlay. Timer and diagnostics never
+/// reserve space or resize the framed preview.
 struct LiveRecordingStatusTests {
     private func source(_ path: String) throws -> String {
         try String(contentsOf: TestRepository.url(for: path), encoding: .utf8)
@@ -42,21 +40,17 @@ struct LiveRecordingStatusTests {
 
     // MARK: - Pure geometry (320 / 390 / 430 viewports)
 
-    @Test func portraitTimerOwnsTheRightmostSlotWithoutClipping() {
+    @Test func portraitTimerIsCenteredWithoutReservingAControlSlot() {
         let timer = CGSize(width: 112, height: 40)
         let lens = CGSize(width: 44, height: 44)
         for viewport: CGFloat in [320, 390, 430] {
             let width = viewport - 32
             let geometry = CameraTopPanelGeometry(width: width, statusSize: timer,
                                                   lensSize: lens, diagnosticsHeight: 44)
-            // Right-aligned at its measured width, never clipped by the edge.
+            // Placement is relative to the viewport, not a left/right control slot.
             #expect(geometry.status.width == timer.width)
-            #expect(geometry.status.maxX == width)
-            #expect(geometry.status.minX >= geometry.manual.maxX)
-            #expect(!geometry.status.intersects(geometry.settings))
-            #expect(!geometry.status.intersects(geometry.manual))
-            // The lens slot the timer replaces is hidden.
-            #expect(geometry.lens.isEmpty)
+            #expect(geometry.status.midX == width / 2)
+            #expect(geometry.status.minX >= 0 && geometry.status.maxX <= width)
             // First row keeps its 44pt height; the timer fits inside it.
             #expect(geometry.settings.height == 44)
             #expect(geometry.status.minY >= 0 && geometry.status.maxY <= 44)
@@ -75,9 +69,10 @@ struct LiveRecordingStatusTests {
                 let live = CameraTopPanelGeometry(width: width, statusSize: CGSize(width: 112, height: 40),
                                                   lensSize: lens, diagnosticsHeight: diagnosticsHeight)
                 #expect(idle.height == live.height, "The toolbar must not jump when a take starts.")
+                #expect(idle.height == 50, "Floating diagnostics cannot reserve preview space.")
                 #expect(idle.status.isEmpty)
                 #expect(idle.lens.width == 44 && idle.lens.maxX == width)
-                #expect(live.lens.isEmpty)
+
             }
         }
     }
@@ -91,7 +86,7 @@ struct LiveRecordingStatusTests {
             #expect(geometry.status.isEmpty)
             // A clear 44pt slot is left where the lens sits under the floating timer.
             #expect(geometry.lens.width == 44 && geometry.lens.maxX == width && geometry.lens.maxY <= 44)
-            #expect(geometry.height == CGFloat(142))
+            #expect(geometry.height == CGFloat(50))
         }
     }
 

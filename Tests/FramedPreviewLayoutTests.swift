@@ -2,6 +2,30 @@ import Foundation
 import Testing
 
 struct FramedPreviewLayoutTests {
+    @Test func frameRectIsInvariantAcrossOrientationAndFloatingChrome() {
+        for width: CGFloat in [320, 390, 430] {
+            let canvas = CGRect(x: 0, y: 0, width: width, height: 750)
+            let referenceToolbar = CameraTopPanelGeometry(width: width - 32, statusSize: .zero,
+                                                          diagnosticsHeight: 0)
+            let reference = FramedPreviewLayout.previewRect(in: canvas,
+                topControlsBottom: referenceToolbar.height + 8, bottomControlsTop: 560)
+            for degrees in [0.0, 90.0, -90.0] {
+                for diagnosticsHeight: CGFloat in [0, 44, 92] {
+                    for statusSize in [CGSize.zero, CGSize(width: 112, height: 40), CGSize(width: 40, height: 112)] {
+                        let toolbar = CameraTopPanelGeometry(width: width - 32, statusSize: statusSize,
+                                                             diagnosticsHeight: diagnosticsHeight)
+                        let top = CameraTopPanelGeometry.framingBottom(toolbarBottom: toolbar.height + 8,
+                                                                       rotationDegrees: degrees)
+                        let actual = FramedPreviewLayout.previewRect(in: canvas, topControlsBottom: top,
+                                                                     bottomControlsTop: 560)
+                        #expect(actual == reference,
+                                "Orientation, timer and floating Debug/Fault must not resize or move the preview.")
+                    }
+                }
+            }
+        }
+    }
+
     @Test(arguments: [CGFloat(320), 390, 430])
     func portraitFitsBetweenControlsWithBlackMargins(width: CGFloat) {
         for height: CGFloat in [568, 844, 932] {

@@ -32,21 +32,27 @@ struct CameraDesignRenderTests {
         }
     }
 
-    @Test func topPanelGeometrySeparatesAllControlsIncludingDiagnostics() {
+    @Test func stationaryTopKeysRemainBoundedWithFloatingChrome() {
         for screenWidth: CGFloat in [320, 390, 430] {
             for degrees in [0.0, 90.0, -90.0] {
                 let statusSize = abs(degrees) == 90 ? CGSize(width: 40, height: 112) : CGSize(width: 112, height: 40)
                 for diagnosticsHeight: CGFloat in [0, 44, 92] {
                     let geometry = CameraTopPanelGeometry(width: screenWidth - 32, statusSize: statusSize,
                                                           diagnosticsHeight: diagnosticsHeight)
-                    let faces = [geometry.settings, geometry.manual, geometry.lens, geometry.status, geometry.diagnostics]
+                    let faces = [geometry.settings, geometry.manual, geometry.lens]
                     for (index, face) in faces.enumerated() {
                         #expect(face.minX >= 0 && face.maxX <= screenWidth - 32)
                         #expect(face.minY >= 0 && face.maxY <= geometry.height)
                         for other in faces.dropFirst(index + 1) where !face.isEmpty && !other.isEmpty {
-                            #expect(!face.intersects(other), "Complete rotated status and every key must have disjoint reserved bounds.")
+                            #expect(!face.intersects(other), "Stationary key bounds must remain separate.")
                         }
                     }
+                    if !geometry.status.isEmpty {
+                        #expect(geometry.status.midX == (screenWidth - 32) / 2)
+                        #expect(geometry.status.minY >= 0 && geometry.status.maxY <= geometry.height)
+                    }
+                    #expect(geometry.diagnostics.minY >= geometry.height,
+                            "The floating diagnostic rail cannot reserve toolbar height.")
                 }
             }
         }
@@ -59,7 +65,7 @@ struct CameraDesignRenderTests {
                                                       statusSize: CGSize(width: 40, height: 112),
                                                       diagnosticsHeight: diagnosticsHeight)
                 #expect(geometry.status.isEmpty, "Landscape status belongs to the physical upper edge, not the portrait toolbar.")
-                #expect(geometry.height == 50 + diagnosticsHeight,
+                #expect(geometry.height == 50,
                         "No 112pt ghost row may remain after moving the entire status face.")
             }
         }
@@ -74,7 +80,7 @@ struct CameraDesignRenderTests {
                                                       diagnosticsHeight: diagnosticsHeight)
                     let live = CameraTopPanelGeometry(width: width - 32, statusSize: statusSize,
                                                       diagnosticsHeight: diagnosticsHeight)
-                    #expect(live.height == 50 + diagnosticsHeight)
+                    #expect(live.height == 50)
                     #expect(idle.height == live.height, "Starting capture must not resize the toolbar.")
                     let idleBottom = CameraTopPanelGeometry.framingBottom(toolbarBottom: idle.height + 8,
                                                                           rotationDegrees: degrees)
@@ -207,7 +213,7 @@ struct CameraDesignRenderTests {
         }
     }
 
-    @MainActor @Test func actualTopPanelReservesStatusAndDiagnosticBoundsAtPhoneWidths() throws {
+    @MainActor @Test func actualTopPanelCentersTimerWithoutDiagnosticHeightAtPhoneWidths() throws {
         for width: CGFloat in [320, 390, 430] {
             for degrees in [0.0, 90.0, -90.0] {
                 let view = CameraTopPanel(statusInToolbar: degrees == 0) {
@@ -222,24 +228,21 @@ struct CameraDesignRenderTests {
                 } status: {
                     RecordingStatusFace(presentation: .recording, text: "99:59.99", rotationDegrees: degrees)
                 } diagnostics: {
-                    VStack(spacing: 4) {
-                        Text("DEBUG").font(.system(size: 11, weight: .bold)).frame(width: 64, height: 44).background(.yellow)
-                        Text("FAULT").font(.system(size: 11, weight: .bold)).frame(width: 64, height: 44).background(.red)
-                    }
+                    EmptyView()
                 }
                 .foregroundStyle(.white)
                 .frame(width: width)
                 .padding(8)
                 let image = try render(view, name: "top-\(Int(width))-\(degrees)")
                 #expect(image.width == Int((width + 16) * 2))
-                #expect(image.height == 332, "Landscape status has no duplicate/ghost slot in the toolbar.")
+                #expect(image.height == Int((CGFloat(50) + 8 + 16) * 2),
+                        "Neither landscape status nor diagnostics can add toolbar height.")
                 let panelPixels = try pixels(image)
                 var timerRows: [Int] = []
                 for pixel in 0..<(panelPixels.count / 4) {
-                    let column = pixel % image.width
                     let red = Int(panelPixels[pixel * 4])
                     let green = Int(panelPixels[pixel * 4 + 1])
-                    if column > image.width / 2, red > 160, red > green + 60 {
+                    if red > 160, red > green + 60 {
                         timerRows.append(pixel / image.width)
                     }
                 }

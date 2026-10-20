@@ -60,7 +60,7 @@ struct CameraFloatingChromeTests {
         }
     }
 
-    @Test func framedPreviewRectIsStableAcrossHoldsStatesAndChrome() {
+    @Test func framedPreviewRectIsStableAcrossHoldsStatesAndChrome() throws {
         let viewport = CGRect(x: 0, y: 0, width: 390, height: 844)
         let bottomControlsTop: CGFloat = 620
         var rects: [CGRect] = []
@@ -79,7 +79,8 @@ struct CameraFloatingChromeTests {
                 }
             }
         }
-        #expect(Set(rects).count == 1,
+        let reference = try #require(rects.first)
+        #expect(rects.allSatisfy { $0 == reference },
                 "Portrait, both landscape holds, idle/live and DEBUG/FAULT must share one framed preview rectangle.")
     }
 
