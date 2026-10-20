@@ -276,6 +276,7 @@ final class CameraViewModel {
                   !self.isSwitchingCameraLens,
                   sourceLens == self.activeLens else { return }
             self.errorMessage = error.localizedDescription
+            self.recoverCaptureConfigurationIfNeeded(after: error)
         }
         session.onFinish { [weak self] result in
             Task { @MainActor in
@@ -382,6 +383,7 @@ final class CameraViewModel {
                     self.invalidateRecordingTimers()
                     self.errorMessage = "Failed to start recording: \(error.localizedDescription)"
                     self.failRecordingProminently(error)
+                    self.recoverCaptureConfigurationIfNeeded(after: error)
                     return
                 }
                 self.isRecording = true
@@ -513,6 +515,16 @@ final class CameraViewModel {
         exposure.toggleISOLock(currentISO: currentISO)
     }
 
+    /// A failed rollback/reset invalidates the runtime configuration. Reconnect
+    /// once, rather than leaving the UI marked ready until another scene boundary.
+    private func recoverCaptureConfigurationIfNeeded(after error: Error) {
+        guard let cameraError = error as? CameraError,
+              case .captureRecoveryRequired = cameraError else { return }
+        cameraConfigured = false
+        guard lifecycleGate.isActive else { return }
+        configureAndStart(generation: lifecycleGate.generation)
+    }
+
     // MARK: - Daylight 60 fps (session-only)
 
     /// True when the session-only frame-rate switch can run: the camera is live,
@@ -541,6 +553,7 @@ final class CameraViewModel {
             if let error {
                 // The previous mode is preserved; never a silent downgrade.
                 self.errorMessage = "Failed to set the capture frame rate: \(error.localizedDescription)"
+                self.recoverCaptureConfigurationIfNeeded(after: error)
                 return
             }
             self.sessionFrameRate = target

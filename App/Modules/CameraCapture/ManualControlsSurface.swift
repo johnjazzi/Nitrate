@@ -375,13 +375,14 @@ struct Daylight60Control: View {
 
     private var stateText: String {
         guard available else { return "UNAVAILABLE" }
-        return armed ? "ON" : "OFF"
+        guard canChange else { return "LOCKED" }
+        return armed ? "ON" : (confirming ? "CONFIRM" : "OFF")
     }
 
     private var accessibilityValue: String {
         if !available { return unavailableReason ?? "Unavailable on this device" }
-        if armed { return "On. " + Self.warning }
-        return confirming ? "Confirming. " + Self.warning : "Off"
+        let state = armed ? "On. " + Self.warning : (confirming ? "Confirming. " + Self.warning : "Off")
+        return canChange ? state : state + ". Locked during recording or a camera transition."
     }
 
     /// One confirming tap arms; a second tap confirms. Disarm is immediate.

@@ -533,8 +533,8 @@ Implementation details superseding illustrative API choices above:
   `CameraSession`. Both manual and auto-ISO capture use the mode's fixed shutter.
 - `Daylight60Control` is embedded in the existing `ManualControlsSurface.swift`.
   Open the top-toolbar manual controls and expand them to reach it. Enabling
-  requires a confirmation warning; the status face displays `60 DAYLIGHT` while
-  armed. No preference remembers the mode across camera sessions.
+  requires a confirmation warning; the live timer/status face displays
+  `READY · 60FPS`, `WAIT · 60FPS`, `REC · 60FPS` or `STOP · 60FPS` while armed. No preference remembers the mode across camera sessions.
 - Failed mode changes restore the previous mode/format/output/exposure. Exposure
   writes participate in the transaction and cannot merely log failure then report
   success. A failed foreground reset remains pending and blocks new takes until
@@ -549,7 +549,8 @@ Executed on October 20, 2026:
 
 - `python3 scripts/verify.py verify`: lint, repository helper tests, **547
   RenderCLI tests / 65 suites**, generic unsigned iOS build, `git diff --check`.
-- Native `CameraDesign` suite: **43 tests / 5 suites** passed.
+- Native `CameraDesign` suite: **44 tests / 5 suites** passed (including the
+  armed-mode status-label regression).
 - `python3 scripts/verify.py device`: signed development iOS build passed.
 - Native 60fps export fixture checks real frame count and every presentation
   timestamp, ~60fps track rate, unchanged AAC payload and source bytes, and
@@ -568,7 +569,7 @@ approval is claimed.
    **Product → Destination**, then **Product → Run**. Confirm **Nitrate Dev**, not
    the production app.
 2. Open the manual controls from the top toolbar, expand, enable **Daylight 60 fps**
-   and confirm. Check `60 DAYLIGHT` is visible. If unavailable, retain the
+   and confirm. Check `READY · 60FPS` is visible. If unavailable, retain the
    explanatory message; do not substitute a lower-resolution/non-Log format.
 3. With ISO at its floor in bright daylight, verify `1/120` and record moving
    detail with a clap at the beginning/end. Mode/lens controls must not change
@@ -583,3 +584,20 @@ approval is claimed.
 6. On failure, retain the original and queue metadata, note lens, stabilization,
    ISO and lifecycle sequence, and capture the visible error or device console.
    Do not delete the original to retry validation.
+
+### Independent code review disposition
+
+- Confirmed queue policy, paired grain indexing, capture/export metadata, legacy
+  decoding, and destination-URL binding. No unsupported format downgrade added.
+- The reported permanent reset lockout was not present in the reviewed final
+  path: `startRecording` retries the reset before its pending guard. Nevertheless,
+  invalid configuration now uses an explicit recovery error and notifies the VM
+  to reconnect once, rather than claiming a transition is still in progress.
+- Removed dead additions to the unused `RecordingTimerBadge`. The production
+  timer lives in `RecordingStatusFace`; its mode marker is adjacent to the timer
+  and preserves WAIT/REC/STOP rather than replacing those states. No duplicate
+  recording overlay was introduced.
+- Exposure callback ordering and settling remain real-device checks, not proven
+  defects. Recording reasserts rate after exposure confirmation; a mode change
+  submits the fixed shutter under the lock. No visual/physical pass is inferred
+  from source-contract assertions.

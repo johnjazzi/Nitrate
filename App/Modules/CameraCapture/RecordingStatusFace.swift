@@ -29,6 +29,8 @@ struct RecordingStatusFace: View {
         }
     }
 
+    var modeStatusLabel: String { daylight60Active ? stateLabel + " · 60FPS" : stateLabel }
+
     var accessibilityStatus: String {
         switch presentation {
         case .idle: "Ready, not recording"
@@ -63,7 +65,7 @@ struct RecordingStatusFace: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
-            Text(daylight60Active ? "60 DAYLIGHT" : stateLabel)
+            Text(modeStatusLabel)
                 .font(.system(size: 8, weight: .bold, design: .rounded)).tracking(1)
                 .lineLimit(1).minimumScaleFactor(0.7)
         }

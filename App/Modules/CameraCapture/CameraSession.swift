@@ -331,10 +331,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
     /// Shared synchronous configure body. MUST be called on `sessionQueue`.
     private func performConfigure() -> Error? {
-        guard !isConfigured else { return nil }
-        // A session boundary always begins at the default mode, even when a
-        // previous take was still draining when the reset was queued.
+        // A pending reset is retried even when the session was already configured.
         applyDeferredFrameRateReset()
+        guard !isConfigured else { return nil }
         var configError: Error?
 
         session.beginConfiguration()
@@ -1915,7 +1914,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
             if let error = applyFrameRateMode(.standard24) {
                 // Keep the reset pending. A failed reset must never admit a new
                 // take at 60fps while the foreground UI has already reset to 24.
-                reportCameraError(error)
+                isConfigured = false
+                acceptedPixelFormats = []
+                acceptedVideoSettings = [:]
+                reportCameraError(CameraError.captureRecoveryRequired(error.localizedDescription))
                 return
             }
         } else {
@@ -1999,7 +2001,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             isConfigured = false
             acceptedPixelFormats = []
             acceptedVideoSettings = [:]
-            reportCameraError(error)
+            reportCameraError(CameraError.captureRecoveryRequired(error.localizedDescription))
             return
         }
         do {
@@ -2016,7 +2018,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             isConfigured = false
             acceptedPixelFormats = []
             acceptedVideoSettings = [:]
-            reportCameraError(error)
+            reportCameraError(CameraError.captureRecoveryRequired(error.localizedDescription))
             return
         }
         if let rejection = configureDataOutputForActiveFormat(activeFormat: snapshot.format) {
@@ -2024,7 +2026,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             isConfigured = false
             acceptedPixelFormats = []
             acceptedVideoSettings = [:]
-            reportCameraError(CameraError.writerUnavailable(rejection))
+            reportCameraError(CameraError.captureRecoveryRequired(rejection))
         }
         applyRecordingStabilization()
         refreshPreviewFormat()
@@ -2095,8 +2097,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 return
             }
             self.applyDeferredFrameRateReset()
-            guard !self.frameRateTransitionPending, !self.pendingFrameRateReset, self.isConfigured else {
+            guard !self.frameRateTransitionPending else {
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.frameRateTransitionInProgress) } }
+                return
+            }
+            guard !self.pendingFrameRateReset, self.isConfigured else {
+                DispatchQueue.main.async { MainActor.assumeIsolated {
+                    completion(CameraError.captureRecoveryRequired("the capture configuration is not ready"))
+                } }
                 return
             }
             guard !FileManager.default.fileExists(atPath: url.path) else {
@@ -2809,6 +2817,7 @@ enum CameraError: LocalizedError {
     case daylight60Unsupported(String)
     case frameRateTransitionInProgress
     case frameRateTransitionSuperseded
+    case captureRecoveryRequired(String)
 
     /// Plain-words reason carried by `.daylight60Unsupported`.
     static let daylight60Reason =
@@ -2850,6 +2859,8 @@ enum CameraError: LocalizedError {
             return "A frame-rate change is already in progress."
         case .frameRateTransitionSuperseded:
             return "The frame-rate change was superseded by the end of the camera session."
+        case .captureRecoveryRequired(let detail):
+            return "Camera configuration needs recovery: \(detail). Try recording again after the camera reconnects."
         }
     }
 }

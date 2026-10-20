@@ -7,6 +7,16 @@ import Testing
 import UniformTypeIdentifiers
 
 struct CameraDesignRenderTests {
+    @Test func daylightIndicatorPreservesRecordingStateBesideTheTimer() {
+        for (state, label) in [(RecordButtonPresentation.idle, "READY"), (.starting, "WAIT"),
+                               (.recording, "REC"), (.stopping, "STOP")] {
+            let face = RecordingStatusFace(presentation: state, text: "00:01.00", daylight60Active: true)
+            #expect(face.modeStatusLabel == label + " · 60FPS")
+            let standard = RecordingStatusFace(presentation: state, text: "00:01.00")
+            #expect(standard.modeStatusLabel == label)
+        }
+    }
+
     private let states: [RecordButtonPresentation] = [.idle, .starting, .recording, .stopping]
 
     @Test func geometryKeepsFullHeightCenteredAndSeparated() {
