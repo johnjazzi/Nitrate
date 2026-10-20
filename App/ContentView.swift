@@ -137,7 +137,7 @@ struct ContentView: View {
                 }
 
                 if !showFramedPreview, let top = controlBounds["top"] {
-                    RecordingTallyLight(isRecording: cameraViewModel.isRecording && !cameraViewModel.isStoppingRecording)
+                    RecordingTallyLight(isRecording: recordPresentation == .recording)
                         .position(x: geometry.size.width - 24, y: top.maxY + 20)
                 }
 
@@ -304,7 +304,7 @@ struct ContentView: View {
             }
             .overlay(alignment: .topTrailing) {
                 if showFramedPreview {
-                    RecordingTallyLight(isRecording: cameraViewModel.isRecording && !cameraViewModel.isStoppingRecording)
+                    RecordingTallyLight(isRecording: recordPresentation == .recording)
                         .padding(12)
                 }
             }
@@ -322,7 +322,12 @@ struct ContentView: View {
         } manual: {
             manualButton
         } lens: {
+            // The lens keeps the rightmost first-row slot except while a take is
+            // live: the timer then replaces it in portrait, and in landscape the
+            // slot stays a clear 44pt spacer while the timer floats on the edge.
             lensMenu
+                .opacity(recordPresentation == .recording ? 0 : 1)
+                .allowsHitTesting(recordPresentation != .recording)
         } status: {
             recordingStatus
         } diagnostics: {
@@ -404,17 +409,21 @@ struct ContentView: View {
         )
     }
 
+    /// The timer and its tally dot exist only for a confirmed take. Idle,
+    /// starting and finalizing render nothing at all — no placeholder, no dot.
     @ViewBuilder private var recordingStatus: some View {
-        if let origin = cameraViewModel.recordingTimerOrigin {
-            if let stoppedAt = cameraViewModel.recordingStoppedAt {
-                statusFace(text: RecordingDurationText.format(seconds: stoppedAt.timeIntervalSince(origin)))
-            } else {
-                TimelineView(.animation) { context in
-                    statusFace(text: RecordingDurationText.format(seconds: context.date.timeIntervalSince(origin)))
+        if recordPresentation == .recording {
+            if let origin = cameraViewModel.recordingTimerOrigin {
+                if let stoppedAt = cameraViewModel.recordingStoppedAt {
+                    statusFace(text: RecordingDurationText.format(seconds: stoppedAt.timeIntervalSince(origin)))
+                } else {
+                    TimelineView(.animation) { context in
+                        statusFace(text: RecordingDurationText.format(seconds: context.date.timeIntervalSince(origin)))
+                    }
                 }
+            } else {
+                statusFace(text: "00:00.00")
             }
-        } else {
-            statusFace(text: recordPresentation == .idle ? "--:--.--" : "00:00.00")
         }
     }
 
