@@ -63,8 +63,18 @@ final class PurchaseViewModel {
 
     var trialDaysRemaining: Int { access.trialDaysRemaining }
 
-    /// A locally signed build that did not come from the App Store.
-    var isDevelopmentAccess: Bool { distribution == .development }
+    /// A build that did not come from the App Store: a normal Debug run
+    /// (`.debug`) or a locally signed development install (`.development`).
+    /// Both are unrestricted, so Settings labels them "Development Build"
+    /// instead of a trial that never existed.
+    var isDevelopmentBuild: Bool { distribution == .debug || distribution == .development }
+
+    /// The non-purchasable US launch-pricing block, or `nil` on a checkout
+    /// channel (production or the local StoreKit-testing harness) where the live
+    /// StoreKit `displayPrice` belongs.
+    var launchPricingPreview: LaunchPricingPreview? {
+        LaunchPricingPresentation.preview(for: distribution)
+    }
 
     /// Products have not loaded, so prices must render as unavailable.
     var pricesUnavailable: Bool {

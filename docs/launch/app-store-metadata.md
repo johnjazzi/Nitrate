@@ -124,14 +124,21 @@ made in this documentation pass.
 1. **Missing policy/terms links.** No external link or URL was found in the Swift
    source. Policy hosting and an accessible in-app policy link remain unfinished.
    Review subscription disclosures and applicable terms before submission.[5]
-2. **Purchase wording contradicts the render-only gate.** `PurchaseView.swift`
-   says “Unlock to continue using Nitrate” and “All features unlocked forever”.
-   Recording is actually ungated, and an annual subscriber must not be described
-   as permanently unlocked. Update UI wording and verify both purchase states.
-3. **Local StoreKit testing is not proven.** `StoreManager.resolveDistribution()`
-   returns `.debug` before consulting StoreKit in Debug; the scheme runs Debug.
-   The new `.storeKitTesting` policy test alone does not prove the local fixture
-   can reach the real paywall. Fix and execute the flow separately.
+2. **Purchase wording now matches the render-only gate.** `PurchaseView.swift` no
+   longer says “Unlock to continue using Nitrate” or “All features unlocked
+   forever”. The paid feature is named as film rendering throughout, an annual
+   subscriber is described as “subscription active” rather than permanently
+   unlocked, and recording is stated to stay free. An unrestricted channel
+   (development/DEBUG and the beta) shows a non-purchasable “US launch pricing”
+   block instead of a checkout, with no fallback purchase price.
+3. **Local StoreKit testing now resolves the paywall directly.**
+   `StoreManager.resolveDistribution()` returns `.debug` before consulting
+   StoreKit in a normal Debug build, so the paywall is invisible; the
+   `-NitrateStoreKitTesting` opt-in now resolves straight to `.storeKitTesting`,
+   bypassing the receipt guard that would otherwise return `.development`.
+   Purchases and entitlements still run through real StoreKit. The remaining
+   step is an actual run of that flow (build and capture the UI), which is owned
+   by the coordinating agent.
 4. **Evaluation policy needs review.** Earlier guidance that Apple only permits
    “free trial” to mean an introductory subscription offer was too broad. The
    guidelines also describe a non-subscription time-based-trial mechanism. That

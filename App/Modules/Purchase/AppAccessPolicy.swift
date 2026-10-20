@@ -33,11 +33,11 @@ enum AccessDistribution: String, Sendable, CaseIterable {
 
 // MARK: - Debug StoreKit testing mode
 
-/// The explicit opt-in that lets a Debug build exercise the real StoreKit
-/// paywall against the local configuration file, instead of the free debug
-/// unlock. Only the dedicated `NitrateStoreKitTest` scheme passes this launch
-/// argument; normal Debug runs and every Release build never do, so development,
-/// TestFlight and production are all unaffected.
+/// The explicit opt-in that routes a Debug build to the real StoreKit paywall
+/// instead of the free debug unlock. Only the dedicated `NitrateStoreKitTest`
+/// scheme passes this launch argument; normal Debug runs and every Release build
+/// never do, so development, TestFlight and production are all unaffected.
+/// `StoreManager` resolves it straight to `AccessDistribution.storeKitTesting`.
 enum StoreKitTestingLaunchMode {
     /// Launch argument added by the `NitrateStoreKitTest` scheme's run action.
     static let launchArgument = "-NitrateStoreKitTesting"
@@ -132,19 +132,24 @@ enum AppAccessPolicy {
         distribution == .appStore || distribution == .storeKitTesting
     }
 
-    /// The compile-time Debug unlock, made explicit and testable.
+    /// The compile-time Debug channel override, made explicit and testable.
     ///
     /// A Debug build is unrestricted by default so a developer is never blocked
-    /// by the paywall. A Debug build that explicitly opts into local StoreKit
-    /// testing returns `nil` so `StoreManager` proceeds to the real StoreKit
-    /// evaluation (which resolves a local configuration file to
-    /// `.storeKitTesting` — a customer-like channel). A non-Debug build never
-    /// honours the override, so Release always reaches StoreKit and a production
-    /// receipt or an offline grant is decided by the store exactly as before.
+    /// by the paywall and no checkout is shown. A Debug build launched with the
+    /// explicit StoreKit-testing argument (the dedicated `NitrateStoreKitTest`
+    /// scheme) resolves straight to `.storeKitTesting`, so the real local StoreKit
+    /// configuration drives every `Product.purchase` and `Transaction` call and
+    /// the gated paywall becomes reachable. It must resolve directly: the
+    /// fall-through path cannot reach the fixture, because a Debug build has no
+    /// App Store receipt and would resolve to `.development` — a free unlock that
+    /// leaves the paywall invisible and the fixture inert. A non-Debug build
+    /// never honours the override: Release always reaches StoreKit, so a
+    /// production receipt or an offline grant is decided by the store exactly as
+    /// before.
     static func debugChannelOverride(isDebugBuild: Bool,
                                      storeKitTestingRequested: Bool) -> AccessDistribution? {
         guard isDebugBuild else { return nil }
-        return storeKitTestingRequested ? nil : .debug
+        return storeKitTestingRequested ? .storeKitTesting : .debug
     }
 
     static func evaluate(distribution: AccessDistribution,

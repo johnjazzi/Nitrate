@@ -65,10 +65,12 @@ final class StoreManager {
     ///
     /// A Debug build is unrestricted by default. A Debug build launched with the
     /// explicit StoreKit-testing argument (the dedicated `NitrateStoreKitTest`
-    /// scheme) skips the debug unlock and evaluates StoreKit for real, so the
-    /// gated paywall — evaluation, purchase, expiry, refund — can be exercised
-    /// against the local configuration file. A Release build never honours that
-    /// override: the store decides, exactly as before.
+    /// scheme) is resolved straight to `.storeKitTesting` — bypassing the
+    /// receipt-guard fall-through, which would otherwise return `.development`
+    /// (a free unlock) because a Debug build has no App Store receipt. The real
+    /// local StoreKit configuration then drives purchase and entitlement reads,
+    /// so evaluation, purchase, expiry and refund can be exercised. A Release
+    /// build never honours that override: the store decides, exactly as before.
     func resolveDistribution() async -> AccessDistribution {
         #if DEBUG
         if let debugOverride = AppAccessPolicy.debugChannelOverride(

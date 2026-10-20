@@ -11,9 +11,17 @@ StoreKit configuration file at `StoreKit/Nitrate.storekit`.
 every Debug build, so a normal run never reaches StoreKit and the paywall stays
 invisible. To reach it, the `NitrateStoreKitTest` scheme launches a Debug build
 with the launch argument `-NitrateStoreKitTesting`. `StoreManager` sees that
-argument and skips the debug unlock, so StoreKit is evaluated for real and the
-active configuration file resolves to `AppStore.Environment.xcode` →
-`AccessDistribution.storeKitTesting`.
+argument and resolves the channel straight to `AccessDistribution.storeKitTesting`,
+which `AppAccessPolicy` treats exactly like the App Store (an evaluation, then a
+verified purchase).
+
+The opt-in must resolve the channel directly. The ordinary fall-through path
+cannot reach the fixture: it first checks for an App Store receipt, and a Debug
+build has none, so it returns `.development` — a free unlock that leaves the
+paywall invisible and the fixture inert. Resolving `.storeKitTesting` directly
+skips that receipt guard, while every `Product.purchase` and `Transaction` call
+still goes through real StoreKit against the active configuration file. Nothing
+is fabricated.
 
 - Normal development (`Nitrate`, `NitrateDev`) never passes the argument and
   stays unrestricted — no paywall, no checkout. They still carry the fixture for
@@ -37,9 +45,12 @@ Store binary.
 | `com.nitrate.subscription.yearly` | Recurring subscription, `P1Y` | 3.00 |
 | `com.nitrate.lifetime` | Non-consumable | 10.00 |
 
-These are the owner-approved US base prices. The app never hardcodes them — the
-UI shows `Product.displayPrice` from StoreKit, and App Store Connect is the
-source of truth for other storefronts.
+These are the owner-approved US base prices. The live checkout never hardcodes
+them: a purchase button shows `Product.displayPrice` from StoreKit and stays
+disabled until the product loads. The only fixed amounts are the non-purchasable
+**US launch pricing** preview shown on unrestricted channels (normal Debug, a
+development install, and the beta), which is display-only and never drives a
+purchase. App Store Connect remains the source of truth for other storefronts.
 
 These IDs must match `PaidProduct` in
 `App/Modules/Purchase/AppAccessPolicy.swift`, which is pinned by
