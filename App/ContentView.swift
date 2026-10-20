@@ -141,6 +141,8 @@ struct ContentView: View {
                         .position(x: geometry.size.width - 24, y: top.maxY + 20)
                 }
 
+                debugControlsOverlay(in: geometry)
+
                 errorOverlays
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -323,8 +325,10 @@ struct ContentView: View {
             manualButton
         } lens: {
             // The lens keeps the rightmost first-row slot except while a take is
-            // live: the timer then replaces it in portrait, and in landscape the
-            // slot stays a clear 44pt spacer while the timer floats on the edge.
+            // live: the timer then owns that row in portrait — but centered on
+            // the toolbar, not right-aligned into the lens slot — and in
+            // landscape the slot stays hidden while the timer floats on the
+            // physical edge. Either way the toolbar height never changes.
             lensMenu
                 .opacity(recordPresentation == .recording ? 0 : 1)
                 .allowsHitTesting(recordPresentation != .recording)
@@ -332,7 +336,27 @@ struct ContentView: View {
         } status: {
             recordingStatus
         } diagnostics: {
-            VStack(spacing: 4) { diagnosticButtons }
+            // The DEBUG/FAULT rail does not belong to the measured top bar: its
+            // height used to reserve toolbar space and shrink the framed preview.
+            // It renders in a non-sizing sibling overlay instead (see
+            // `debugControlsOverlay`), while this fifth slot stays concrete.
+            EmptyView()
+        }
+    }
+
+    /// DEBUG/FAULT render in a non-sizing sibling overlay on the full camera
+    /// canvas, outside the measured top bar. They keep their real round 44pt
+    /// buttons and their actions, so they stay tappable, yet they never reserve
+    /// a toolbar height or shrink the framed preview. The rail sits at its
+    /// historic spot: just below the stationary key row, inset 16pt from the
+    /// leading edge of the canvas.
+    @ViewBuilder private func debugControlsOverlay(in geometry: GeometryProxy) -> some View {
+        if let top = controlBounds["top"] {
+            VStack(alignment: .leading, spacing: 4) { diagnosticButtons }
+                .padding(.leading, 16)
+                .padding(.top, top.maxY)
+                .frame(width: geometry.size.width, height: geometry.size.height,
+                       alignment: .topLeading)
         }
     }
 
