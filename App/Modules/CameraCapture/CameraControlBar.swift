@@ -104,6 +104,18 @@ struct CameraControlBar: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 6)
         .modifier(CameraRaisedSurface(cornerRadius: 14))
+        // Measurement anchor only: publishes the exposure column's frame in the
+        // shared `cameraCanvas` space so the parent can float the daylight rescue
+        // button above it. A background never changes the bar's measured footprint.
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: ExposureRescueBoundsPreference.self,
+                    value: ["exposure": geometry.frame(in: .named("cameraCanvas"))]
+                )
+            }
+            .allowsHitTesting(false)
+        }
     }
 
     /// One setting, two modes. Auto drives the scene's auto-exposure target bias
@@ -353,6 +365,19 @@ struct CameraControlBar: View {
             videoBitRate: DeliverySettings.averageBitRate,
             audioBitRate: DeliverySettings.aacAverageBitRate
         )
+    }
+}
+
+/// Publishes per-control frames in the shared `cameraCanvas` space. The control bar
+/// contributes the exposure column so the parent can float the daylight rescue
+/// button above it without altering any measured footprint. Named apart from
+/// `ContentView`'s private `CameraControlBoundsPreference`; Swift forbids a
+/// module-level type reusing a name that a file already declares private.
+struct ExposureRescueBoundsPreference: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }
 
