@@ -547,7 +547,7 @@ Implementation details superseding illustrative API choices above:
 
 Executed on October 20, 2026:
 
-- `python3 scripts/verify.py verify`: lint, repository helper tests, **547
+- `python3 scripts/verify.py verify`: lint, repository helper tests, **548
   RenderCLI tests / 65 suites**, generic unsigned iOS build, `git diff --check`.
 - Native `CameraDesign` suite: **44 tests / 5 suites** passed (including the
   armed-mode status-label regression).
