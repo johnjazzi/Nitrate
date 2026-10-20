@@ -133,6 +133,7 @@ struct RulerSlider: View {
     }
 
     private func fireHaptic() {
+        CameraHaptics.prepareForCaptureFeedback()
         feedbackTrigger &+= 1
     }
 

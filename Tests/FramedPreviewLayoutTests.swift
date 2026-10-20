@@ -17,7 +17,7 @@ struct FramedPreviewLayoutTests {
                     #expect(rect.maxX <= canvas.maxX - 8)
                     #expect(rect.minY >= top + 8)
                     #expect(rect.maxY <= bottom - 8)
-                    #expect(abs(rect.width / rect.height - 9.0 / 16.0) < 0.000_001)
+                    #expect(abs(rect.width / rect.height - 2.0 / 3.0) < 0.000_001)
                     #expect(abs(rect.midX - canvas.midX) < 0.000_001)
                     #expect(abs(rect.midY - (top + bottom) / 2) < 0.000_001)
                 }
@@ -48,7 +48,7 @@ struct FramedPreviewLayoutTests {
         #expect(rect.maxX == 314)
         #expect(rect.minY > 80)
         #expect(rect.maxY < 872)
-        #expect(abs(rect.height - 512) < 0.000_001)
+        #expect(abs(rect.height - 432) < 0.000_001)
     }
 
     @Test func tooSmallOrOverlappingControlSpaceClampsToEmptyPreview() {

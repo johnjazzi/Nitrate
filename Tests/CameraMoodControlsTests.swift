@@ -112,7 +112,7 @@ struct CameraMoodControlsTests {
         #expect(bar.components(separatedBy: "trigger: cameraViewModel.isManualExposure").count == 2)
         #expect(bar.contains("ManualExposureLockFeedback.sensory(isManual: isManual)"))
         // Distinct lock and release feedback.
-        #expect(bar.contains("weight: .rigid") && bar.contains("weight: .soft"))
+        #expect(bar.contains("flexibility: .rigid") && bar.contains("flexibility: .soft"))
     }
 
     // MARK: - Helpers

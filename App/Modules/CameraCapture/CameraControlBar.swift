@@ -69,6 +69,7 @@ struct CameraControlBar: View {
                     Image(systemName: "film").font(.title3)
                     .foregroundStyle(.white)
                     .frame(width: faceSize, height: faceSize)
+                    .frame(minWidth: 44, minHeight: 44)
                 }
                 .buttonStyle(CameraRaisedButtonStyle())
             }
@@ -85,6 +86,7 @@ struct CameraControlBar: View {
         } label: {
             CameraFilmStockFace(primary: stock.primaryColor, secondary: stock.secondaryColor,
                                 isoLight: "\(Int(currentISO))\(stock.lightType)", faceSize: faceSize)
+                .frame(minWidth: 44, minHeight: 44)
         }
         .buttonStyle(CameraRaisedButtonStyle(faceColor: stock.primaryColor))
     }
@@ -181,7 +183,8 @@ struct CameraControlBar: View {
         // change is felt once however it was requested. The periodic exposure
         // poll never writes this flag, so polling cannot fire it.
         .sensoryFeedback(trigger: cameraViewModel.isManualExposure) { _, isManual in
-            ManualExposureLockFeedback.sensory(isManual: isManual)
+            CameraHaptics.prepareForCaptureFeedback()
+            return ManualExposureLockFeedback.sensory(isManual: isManual)
         }
     }
 
@@ -261,8 +264,8 @@ struct CameraControlBar: View {
     /// distinguishable by feel alone.
     enum ManualExposureLockFeedback {
         static func sensory(isManual: Bool) -> SensoryFeedback {
-            isManual ? .impact(weight: .rigid, intensity: 0.9)
-                     : .impact(weight: .soft, intensity: 0.6)
+            isManual ? .impact(flexibility: .rigid, intensity: 0.9)
+                     : .impact(flexibility: .soft, intensity: 0.6)
         }
     }
 

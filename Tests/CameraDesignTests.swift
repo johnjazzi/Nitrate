@@ -47,9 +47,11 @@ struct CameraDesignTests {
         #expect(screen.contains("isStopping: cameraViewModel.isStoppingRecording"))
     }
 
-    @Test func lensUsesSharedStackForTriggerAndKeys() throws {
+    @Test func lensUsesRoundTriggerAndReadableSharedPopoutKeys() throws {
         let selector = try source("App/Modules/CameraCapture/CameraLensSelector.swift")
-        #expect(selector.components(separatedBy: "CameraLensFace(").count == 3)
+        #expect(selector.components(separatedBy: "CameraLensFace(").count == 2)
+        #expect(selector.contains("CameraRoundButtonStyle()"))
+        #expect(selector.contains(".frame(width: 44, height: 44)"))
         #expect(!selector.contains("isLandscape && selectedLens == .front"))
         #expect(!selector.contains("isLandscape && lens == .front"))
         #expect(selector.contains(".accessibilityAddTraits(isSelected ? [.isSelected] : [])"))

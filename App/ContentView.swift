@@ -46,8 +46,8 @@ struct ContentView: View {
     @State private var availableLenses: [CameraLens] = []
 
     /// Pinch-zoom baseline (ISO/EV controls live in `CameraControlBar`).
-    @State private var pinchBaseZoom: Double = 1.0
     @State private var pinchIsActive = false
+    @State private var pinchFocalLength = 24.0
 
     /// Physical orientation source for the `.cameraUpright()` chrome modifier.
     /// Every icon/text glyph in the camera UI rotates to stay readable in
@@ -130,6 +130,17 @@ struct ContentView: View {
                     .transition(.opacity)
                 }
 
+                if pinchIsActive, let bottom = controlBounds["bottom"] {
+                    FocalLengthRuler(millimeters: pinchFocalLength)
+                        .frame(width: max(0, geometry.size.width - 32))
+                        .position(x: geometry.size.width / 2, y: max(34, bottom.minY - 42))
+                }
+
+                if !showFramedPreview, let top = controlBounds["top"] {
+                    RecordingTallyLight(isRecording: cameraViewModel.isRecording && !cameraViewModel.isStoppingRecording)
+                        .position(x: geometry.size.width - 24, y: top.maxY + 20)
+                }
+
                 errorOverlays
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -188,9 +199,18 @@ struct ContentView: View {
         .onChange(of: showSettings || showQueueSheet || showStockSheet) { _, shown in
             if shown { cameraViewModel.endSlowZoom() }
         }
-        .onChange(of: cameraViewModel.zoomSnapshot?.cameraRevision) { _, _ in
-            pinchIsActive = false
-            pinchBaseZoom = cameraViewModel.zoomSnapshot?.displayFactor ?? 1
+        .onChange(of: cameraViewModel.activeLens) { _, lens in
+            selectedLens = lens
+            focusReadGeneration &+= 1
+            let focusRequest = focusReadGeneration
+            cameraViewModel.session.readManualFocusSnapshot { snapshot in
+                guard focusRequest == focusReadGeneration else { return }
+                if !snapshot.isSupported {
+                    isManualFocus = false
+                } else if isManualFocus, let position = snapshot.lensPosition {
+                    manualFocusPosition = Double(position)
+                }
+            }
         }
     }
 
@@ -272,7 +292,7 @@ struct ContentView: View {
     private func cameraLayer(in rect: CGRect) -> some View {
         // One structural identity in both modes: no camera lifecycle transition.
         CameraView(viewModel: cameraViewModel,
-                   videoGravity: showFramedPreview ? .resizeAspect : .resizeAspectFill,
+                   videoGravity: .resizeAspectFill,
                    selectedStockLUTName: selectedStock?.lutName)
             .frame(width: rect.width, height: rect.height)
             .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
@@ -282,23 +302,13 @@ struct ContentView: View {
                         .strokeBorder(.white.opacity(0.25), lineWidth: 2)
                 }
             }
-            .simultaneousGesture(
-                MagnificationGesture()
-                    .onChanged { value in
-                        guard let snapshot = cameraViewModel.zoomSnapshot else { return }
-                        if !pinchIsActive {
-                            pinchBaseZoom = snapshot.displayFactor
-                            pinchIsActive = true
-                        }
-                        // Damped (0.45) so a small pinch doesn't jump the zoom.
-                        let damped = 1.0 + (value - 1.0) * 0.45
-                        cameraViewModel.setDisplayZoom(pinchBaseZoom * damped)
-                    }
-                    .onEnded { _ in
-                        pinchIsActive = false
-                        pinchBaseZoom = cameraViewModel.zoomSnapshot?.displayFactor ?? pinchBaseZoom
-                    }
-            )
+            .overlay(alignment: .topTrailing) {
+                if showFramedPreview {
+                    RecordingTallyLight(isRecording: cameraViewModel.isRecording && !cameraViewModel.isStoppingRecording)
+                        .padding(12)
+                }
+            }
+            .modifier(FocalPinchZoom(camera: cameraViewModel, isActive: $pinchIsActive, millimeters: $pinchFocalLength))
             .position(x: rect.midX, y: rect.midY)
     }
 
@@ -330,7 +340,7 @@ struct ContentView: View {
                 .cameraUpright()
                 .frame(width: 44, height: 44)
         }
-        .buttonStyle(CameraRaisedButtonStyle())
+        .buttonStyle(CameraRoundButtonStyle())
     }
 
     private var manualButton: some View {
@@ -343,7 +353,7 @@ struct ContentView: View {
                 .cameraUpright()
                 .frame(width: 44, height: 44)
         }
-        .buttonStyle(CameraRaisedButtonStyle(faceColor: showManualControls ? .yellow : Color(red: 0.16, green: 0.17, blue: 0.19)))
+        .buttonStyle(CameraRoundButtonStyle(faceColor: showManualControls ? .yellow : nil))
 
     }
 
@@ -356,15 +366,13 @@ struct ContentView: View {
                 openDebugFrame()
             } label: {
                 Text("DEBUG")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(.black)
                     .fixedSize()
-                    .cameraUpright(in: CGSize(width: 43, height: 27))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(.yellow)
-                    .clipShape(Capsule())
+                    .cameraUpright()
+                    .frame(width: 44, height: 44)
             }
+            .buttonStyle(CameraRoundButtonStyle(faceColor: .yellow))
         }
 
         // Preview the "recording never started" treatment without provoking a
@@ -377,15 +385,13 @@ struct ContentView: View {
                 flashRecordingFailure()
             } label: {
                 Text("FAULT")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(.white)
                     .fixedSize()
-                    .cameraUpright(in: CGSize(width: 43, height: 27))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(.red)
-                    .clipShape(Capsule())
+                    .cameraUpright()
+                    .frame(width: 44, height: 44)
             }
+            .buttonStyle(CameraRoundButtonStyle(faceColor: .red))
         }
 #endif
     }

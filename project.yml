@@ -93,8 +93,15 @@ targets:
       - path: Tests/CameraDesignRenderTests.swift
       - path: Tests/ManualControlsOverlayTests.swift
       - path: Tests/CameraZoomPolicyTests.swift
+      - path: Tests/CameraFocalZoomPolicyTests.swift
+      - path: Tests/CameraMoodControlsTests.swift
+      - path: Tests/CameraMoodLayoutTests.swift
+      - path: Tests/CameraMoodRenderTests.swift
+      - path: Tests/FocalLengthRulerTests.swift
+      - path: Tests/FramedPreviewLayoutTests.swift
       - path: Tests/TestRepository.swift
       - path: App/Modules/CameraCapture/CameraZoomPolicy.swift
+      - path: App/Modules/CameraCapture/CameraFocalZoomPolicy.swift
       - path: App/Modules/ProcessingPipeline/GrainModel.swift
       - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
       - path: Tests/CameraCleanupPresentationTests.swift
@@ -110,6 +117,8 @@ targets:
       - path: App/Modules/CameraCapture/CameraLensFace.swift
       - path: App/Modules/CameraCapture/CameraRaisedButtonStyle.swift
       - path: App/Modules/CameraCapture/RecordingTimeLCD.swift
+      - path: App/Modules/CameraCapture/RecordingTallyLight.swift
+      - path: App/Modules/CameraCapture/FocalLengthRuler.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
     settings:
       SWIFT_VERSION: "6.0"
@@ -240,6 +249,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraPreviewTap.swift
       - path: App/Modules/CameraCapture/CameraPolicies.swift
       - path: App/Modules/CameraCapture/CameraZoomPolicy.swift
+      - path: App/Modules/CameraCapture/CameraFocalZoomPolicy.swift
       - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
       - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
@@ -258,6 +268,8 @@ targets:
       - path: App/Modules/CameraCapture/CameraLensFace.swift
       - path: App/Modules/CameraCapture/CameraRaisedButtonStyle.swift
       - path: App/Modules/CameraCapture/RecordingTimeLCD.swift
+      - path: App/Modules/CameraCapture/RecordingTallyLight.swift
+      - path: App/Modules/CameraCapture/FocalLengthRuler.swift
       - path: App/Modules/CameraCapture/RecordingFeedbackPolicy.swift
       - path: Resources/Shaders/
         type: metal
