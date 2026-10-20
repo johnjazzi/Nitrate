@@ -11,10 +11,27 @@ import Foundation
 /// cannot be constructed.
 struct RenderCapturePolicy: Codable, Equatable, Sendable {
     /// 24 or 60.
-    var frameRate: Int
-    var grainPairing: GrainPairing
+    let frameRate: Int
+    let grainPairing: GrainPairing
     /// 180° fixed shutter denominator: 48 or 120.
-    var shutterDenominator: Int
+    let shutterDenominator: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case frameRate, grainPairing, shutterDenominator
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let rate = try values.decode(Int.self, forKey: .frameRate)
+        guard let policy = Self(rate),
+              try values.decode(GrainPairing.self, forKey: .grainPairing) == policy.grainPairing,
+              try values.decode(Int.self, forKey: .shutterDenominator) == policy.shutterDenominator else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Capture policy must be 24fps/1⁄48/per-frame or 60fps/1⁄120/paired grain."))
+        }
+        self = policy
+    }
 
     /// Nil unless `frameRate` is 24 or 60. Derives the pairing and shutter from
     /// the rate so the three values cannot disagree. `nil` in a job means legacy

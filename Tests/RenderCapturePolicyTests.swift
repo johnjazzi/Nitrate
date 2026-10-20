@@ -24,6 +24,24 @@ struct RenderCapturePolicyTests {
         #expect(RenderCapturePolicy(-24) == nil)
     }
 
+    @Test func decodingRejectsAnUnsupportedRate() {
+        let data = Data(#"{"frameRate":30,"grainPairing":"perFrame","shutterDenominator":48}"#.utf8)
+        #expect(throws: (any Error).self) {
+            try JSONDecoder().decode(RenderCapturePolicy.self, from: data)
+        }
+    }
+
+    @Test func decodingRejectsContradictoryShutterOrGrain() {
+        for json in [
+            #"{"frameRate":60,"grainPairing":"perFrame","shutterDenominator":120}"#,
+            #"{"frameRate":60,"grainPairing":"pairedAtHalfRate","shutterDenominator":48}"#
+        ] {
+            #expect(throws: (any Error).self) {
+                try JSONDecoder().decode(RenderCapturePolicy.self, from: Data(json.utf8))
+            }
+        }
+    }
+
     @Test func policyRoundTripsThroughJSON() throws {
         let source = try #require(RenderCapturePolicy(60))
         let data = try JSONEncoder().encode(source)

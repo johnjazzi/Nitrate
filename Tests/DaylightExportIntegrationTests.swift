@@ -48,12 +48,14 @@ struct DaylightExportIntegrationTests {
         let tracks = try await outputAsset.load(.tracks)
         let videoTrack = try #require(tracks.first(where: { $0.mediaType == .video }))
         #expect(tracks.contains(where: { $0.mediaType == .audio }))
+        #expect(try Self.audioPackets(of: output) == Self.audioPackets(of: source))
 
         // 60 fps cadence: read every video sample and measure the mean step.
         let sourceTimes = try Self.presentationTimes(of: source)
         let outputTimes = try Self.presentationTimes(of: output)
         // The renderer copies the source PTS verbatim — no retiming, no dropped
         // or doubled frames. Motion transport is preserved 1:1.
+        #expect(sourceTimes.count == frameCount)
         #expect(outputTimes.count == sourceTimes.count, "src=\(sourceTimes.count) out=\(outputTimes.count)")
         // Same set of presentation times: no retiming, no dropped or doubled
         // frames. (Sample *order* differs because the HEVC output is stored in
@@ -171,6 +173,21 @@ struct DaylightExportIntegrationTests {
                     guard status == kCVReturnSuccess, let pixelBuffer else {
                         throw FixtureError.writerStart(writer.error)
                     }
+                    // Deterministic nonblank, moving input, never uninitialized pool memory.
+                    CVPixelBufferLockBaseAddress(pixelBuffer, [])
+                    if let base = CVPixelBufferGetBaseAddress(pixelBuffer) {
+                        let stride = CVPixelBufferGetBytesPerRow(pixelBuffer)
+                        for row in 0..<64 {
+                            let bytes = base.advanced(by: row * stride).assumingMemoryBound(to: UInt8.self)
+                            for column in 0..<64 {
+                                bytes[column * 4] = UInt8((column + index) % 128 + 64)
+                                bytes[column * 4 + 1] = UInt8(row + 64)
+                                bytes[column * 4 + 2] = 128
+                                bytes[column * 4 + 3] = 255
+                            }
+                        }
+                    }
+                    CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
                     // 60 fps cadence: PTS in 1/60 s ticks.
                     guard adaptor.append(pixelBuffer, withPresentationTime: CMTime(value: Int64(index), timescale: 60)) else {
                         throw writer.error ?? FixtureError.writerStart(nil)
@@ -229,16 +246,37 @@ struct DaylightExportIntegrationTests {
         guard reader.startReading() else { return [] }
         var times: [Double] = []
         while let sample = output.copyNextSampleBuffer() {
+            guard CMSampleBufferGetTotalSampleSize(sample) > 0 else { continue }
             times.append(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample)))
         }
+        #expect(reader.status == .completed)
         reader.cancelReading()
         return times
     }
 
-    private static func meanStep(_ times: [Double]) -> Double {
-        guard times.count > 1 else { return .nan }
-        let steps = zip(times.dropFirst(), times).map { $0 - $1 }
-        return steps.reduce(0, +) / Double(steps.count)
+    private static func audioPackets(of url: URL) throws -> [Data] {
+        let asset = AVURLAsset(url: url)
+        let track = try #require(asset.tracks(withMediaType: .audio).first)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        reader.add(output)
+        #expect(reader.startReading())
+        var packets: [Data] = []
+        while let sample = output.copyNextSampleBuffer() {
+            // AVAssetReader can also emit zero-payload timing/trim marker samples.
+            guard CMSampleBufferGetTotalSampleSize(sample) > 0 else { continue }
+            let block = try #require(CMSampleBufferGetDataBuffer(sample))
+            var data = Data(count: CMBlockBufferGetDataLength(block))
+            let status = data.withUnsafeMutableBytes { bytes in
+                CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: bytes.count,
+                                           destination: bytes.baseAddress!)
+            }
+            #expect(status == kCMBlockBufferNoErr)
+            packets.append(data)
+        }
+        #expect(reader.status == .completed)
+        #expect(!packets.isEmpty)
+        return packets
     }
 
     private var testBundle: Bundle { Bundle(for: BundleToken.self) }
