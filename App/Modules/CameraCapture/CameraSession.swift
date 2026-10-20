@@ -1825,6 +1825,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
         let acceptedVideoSettings: [String: Any]
         let isShutterPriority: Bool
         let pinnedExposure: ExposureStabilizer.Pin?
+        let exposureMode: AVCaptureDevice.ExposureMode
+        let exposureDuration: CMTime
+        let iso: Float
     }
 
     /// Arm or disarm the session-only frame-rate mode.
@@ -1904,13 +1907,21 @@ final class CameraSession: NSObject, @unchecked Sendable {
         guard CameraFrameRatePolicy.canChange(recording: recordingActive,
                                               starting: recordingStartPending,
                                               finishing: recordingFinishing) else { return }
-        pendingFrameRateReset = false
-        guard frameRate != .standard24 else { return }
+        guard frameRate != .standard24 else {
+            pendingFrameRateReset = false
+            return
+        }
         if isConfigured, activeDevice != nil {
-            if let error = applyFrameRateMode(.standard24) { reportCameraError(error) }
+            if let error = applyFrameRateMode(.standard24) {
+                // Keep the reset pending. A failed reset must never admit a new
+                // take at 60fps while the foreground UI has already reset to 24.
+                reportCameraError(error)
+                return
+            }
         } else {
             frameRate = .standard24
         }
+        pendingFrameRateReset = false
     }
 
     /// Apply `mode` to the active device. MUST run on `sessionQueue` with no take
@@ -1926,23 +1937,30 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 : CameraError.appleLog2NotSupported
         }
         let snapshot = makeFrameRateSnapshot()
-        let wasCustomExposure = device.exposureMode == .custom
         do {
-            try applyCaptureFormat(format, to: device, mode: mode)
-        } catch {
-            restoreFrameRateSnapshot(snapshot)
-            return error
-        }
-        acceptedPixelFormats = []
-        acceptedVideoSettings = [:]
-        if let rejection = configureDataOutputForActiveFormat(activeFormat: format) {
-            restoreFrameRateSnapshot(snapshot)
-            return CameraError.writerUnavailable(rejection)
-        }
-        frameRate = mode
-        // Re-pin the fixed shutter for the new rate so the change is visible at
-        // once and the take (which snapshots the mode) starts on it.
-        repinExposureForCurrentMode(wasCustomExposure: wasCustomExposure)
+            try CameraFrameRatePolicy.applyTransition(format: {
+                try applyCaptureFormat(format, to: device, mode: mode)
+                acceptedPixelFormats = []
+                acceptedVideoSettings = [:]
+                if let rejection = configureDataOutputForActiveFormat(activeFormat: format) {
+                    throw CameraError.writerUnavailable(rejection)
+                }
+                frameRate = mode
+            }, exposure: {
+                // Exposure is part of the transaction, not fire-and-forget AE.
+                // Keep the currently metered/manual ISO and pin the new shutter;
+                // the ordinary shutter-priority loop can then correct held ISO.
+                try repinExposureForCurrentMode()
+                try device.lockForConfiguration()
+                applyWhiteBalanceLock(device)
+                device.unlockForConfiguration()
+            }, rollback: {
+                restoreFrameRateSnapshot(snapshot)
+            })
+        } catch { return error }
+        applyRecordingStabilization()
+        refreshPreviewFormat()
+        updatePreviewConnection()
         return nil
     }
 
@@ -1954,7 +1972,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
                                  acceptedPixelFormats: acceptedPixelFormats,
                                  acceptedVideoSettings: acceptedVideoSettings,
                                  isShutterPriority: isShutterPriority,
-                                 pinnedExposure: pinnedExposure)
+                                 pinnedExposure: pinnedExposure,
+                                 exposureMode: device.exposureMode,
+                                 exposureDuration: device.exposureDuration,
+                                 iso: device.iso)
     }
 
     /// Restore a saved capture state after a failed transition. MUST run on
@@ -1973,32 +1994,61 @@ final class CameraSession: NSObject, @unchecked Sendable {
             device.activeFormat = snapshot.format
             device.activeColorSpace = snapshot.colorSpace
             try reassertFrameDuration(on: device, mode: snapshot.mode)
-        } catch { reportCameraError(error) }
+            applyWhiteBalanceLock(device)
+        } catch {
+            isConfigured = false
+            acceptedPixelFormats = []
+            acceptedVideoSettings = [:]
+            reportCameraError(error)
+            return
+        }
+        do {
+            if snapshot.exposureMode == .custom {
+                try setExposureLocked(iso: snapshot.iso, shutter: snapshot.exposureDuration,
+                                      on: device, mode: .manual)
+            } else {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                device.exposureMode = snapshot.exposureMode
+                try reassertFrameDuration(on: device, mode: snapshot.mode)
+            }
+        } catch {
+            isConfigured = false
+            acceptedPixelFormats = []
+            acceptedVideoSettings = [:]
+            reportCameraError(error)
+            return
+        }
         if let rejection = configureDataOutputForActiveFormat(activeFormat: snapshot.format) {
-            acceptedPixelFormats = snapshot.acceptedPixelFormats
-            acceptedVideoSettings = snapshot.acceptedVideoSettings
+            // Negotiation really failed: don't resurrect stale accepted settings.
+            isConfigured = false
+            acceptedPixelFormats = []
+            acceptedVideoSettings = [:]
             reportCameraError(CameraError.writerUnavailable(rejection))
         }
+        applyRecordingStabilization()
+        refreshPreviewFormat()
+        updatePreviewConnection()
     }
 
     /// Re-pin the fixed 180° shutter for the current mode after a format change.
-    /// Shutter priority re-meters; a held custom exposure is rewritten at the
-    /// mode's rate; continuous auto exposure is left to the device.
-    private func repinExposureForCurrentMode(wasCustomExposure: Bool) {
-        guard let device = activeDevice else { return }
+    /// Both auto-ISO and manual-ISO use the fixed shutter. Failures propagate to
+    /// the transition so its completion cannot publish a false success.
+    private func repinExposureForCurrentMode() throws {
+        guard let device = activeDevice else { throw CameraError.noCameraAvailable }
         invalidateMetering()
-        if isShutterPriority {
-            pinShutterToFilm()
-            return
+        let shutter = filmShutterDuration
+        guard shutter >= device.activeFormat.minExposureDuration,
+              shutter <= device.activeFormat.maxExposureDuration else {
+            throw CameraError.writerUnavailable("the format cannot provide the requested 180° shutter")
         }
-        guard wasCustomExposure else { return }
-        let shutter = min(max(filmShutterDuration, device.activeFormat.minExposureDuration),
-                          device.activeFormat.maxExposureDuration)
         let iso = min(max(device.iso, device.activeFormat.minISO), device.activeFormat.maxISO)
-        do {
-            try setExposureLocked(iso: iso, shutter: shutter, on: device, mode: .manual)
+        try setExposureLocked(iso: iso, shutter: shutter, on: device, mode: .manual)
+        if isShutterPriority {
+            pinnedExposure = ExposureStabilizer.Pin(iso: iso, ev: exposureBiasEV, meteredISO: iso)
+        } else {
             manualExposureISO = iso
-        } catch { reportCameraError(error) }
+        }
     }
 
     /// Fence a transition's completion against a later session-boundary reset: a
@@ -2044,7 +2094,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.recordingInProgress) } }
                 return
             }
-            guard !self.frameRateTransitionPending else {
+            self.applyDeferredFrameRateReset()
+            guard !self.frameRateTransitionPending, !self.pendingFrameRateReset, self.isConfigured else {
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.frameRateTransitionInProgress) } }
                 return
             }

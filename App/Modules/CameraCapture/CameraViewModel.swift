@@ -66,9 +66,6 @@ final class CameraViewModel {
     /// transition that was in flight when the app backgrounded can never restore
     /// 60 fps on the following foreground session.
     private var frameRateGeneration: UInt64 = 0
-    /// The mode captured when the current take started, tagged with its capture
-    /// generation so a stale/failed finish cannot adopt a newer take's mode.
-    private var takeStartFrameRate: (generation: UInt64, mode: CameraFrameRate)?
     /// Capture policies keyed by the completed source URL. The screen and the
     /// queue read the policy from here, never from the live mode, so a boundary
     /// reset cannot mislabel a queued job.
@@ -339,7 +336,8 @@ final class CameraViewModel {
     func startRecording() {
         // A frame-rate transition owns the device configuration and exposure;
         // do not start a take on a rate that is still changing.
-        guard !isStartingRecording, !isRecording, !isChangingFrameRate else { return }
+        guard !isStartingRecording, !isRecording, !isStoppingRecording,
+              !isSwitchingCameraLens, !isChangingFrameRate else { return }
         guard lifecycleGate.isActive, cameraConfigured else {
             errorMessage = "Camera is not ready to record."
             return
@@ -355,15 +353,16 @@ final class CameraViewModel {
         recordingWarning = nil
         captureGeneration &+= 1
         let generation = captureGeneration
-        // Snapshot the session-only mode at take start. The finished take is
-        // associated with this policy, never with the live mode.
-        takeStartFrameRate = (generation, sessionFrameRate)
         // The counter starts at the tap: capture begins about 0.2 s later, and the
         // writer may not confirm that for another two seconds.
         recordingTimerOrigin = RecordButtonTimingPolicy.timerOrigin(tapAt: Date())
         recordingStoppedAt = nil
         do {
             let outputURL = try originalStorage.makeDestination()
+            // Bind policy to the actual destination before any async work.
+            // Cancellation advances captureGeneration, and a foreground reset
+            // changes sessionFrameRate; neither can relabel this take's URL.
+            capturePolicies.record(sourceURL: outputURL, mode: sessionFrameRate)
             captureJournal.markPending(outputURL)
             session.startRecording(to: outputURL) { [weak self] error in
                 guard let self else { return }
@@ -581,12 +580,7 @@ final class CameraViewModel {
         isChangingFrameRate = false
         sessionFrameRate = .standard24
         supportsDaylight60 = false
-        // A draining take still needs the mode captured at its start, so the
-        // snapshot is only discarded when no take is pending/active/draining.
-        if CameraFrameRatePolicy.resetAction(recording: isRecording, starting: isStartingRecording,
-                                             finishing: isStoppingRecording) == .resetImmediately {
-            takeStartFrameRate = nil
-        }
+        // Per-URL take policies survive this reset until the queue snapshots them.
         session.resetFrameRateForNextSession()
     }
 
@@ -858,12 +852,6 @@ final class CameraViewModel {
 
     private func handleRecordingFinished(_ result: Result<RecordingCompletion, Error>) async {
         let generation = captureGeneration
-        // Resolve this take's captured mode before any await. The policy is
-        // immutable through the take and is never the live mode (which may have
-        // reset at a session boundary while the take drained).
-        let takeMode = takeStartFrameRate.flatMap { $0.generation == generation ? $0.mode : nil }
-            ?? sessionFrameRate
-        takeStartFrameRate = nil
         isRecording = false
         isStoppingRecording = false
         refreshRecordingStabilization()
@@ -877,10 +865,8 @@ final class CameraViewModel {
         case .success(let completion):
             switch RecordingFinishPresentationPolicy.plan(for: completion) {
             case .render(let url):
-                // Associate the take's policy with the completed URL BEFORE
-                // publishing it, so the screen and the awaiting-stock path read
-                // the take's policy even after a live-mode reset.
-                capturePolicies.record(sourceURL: url, mode: takeMode)
+                // The destination's immutable policy was bound before capture;
+                // publishing this URL never consults the live/reset frame rate.
                 lastRecordedURL = url
                 if let warning = completion.warning {
                     let warningMessage = warning.localizedDescription

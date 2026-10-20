@@ -37,6 +37,18 @@ enum CameraFrameRate: Int, Codable, Equatable, Sendable, CaseIterable, Identifia
 /// Mirrors `CameraStabilizationPolicy.canChange`: a frame-rate change is only
 /// allowed while no take is pending, active or draining.
 enum CameraFrameRatePolicy {
+    /// Synchronous transaction seam shared by device configuration and tests.
+    static func applyTransition(format: () throws -> Void, exposure: () throws -> Void,
+                                rollback: () -> Void) throws {
+        do {
+            try format()
+            try exposure()
+        } catch {
+            rollback()
+            throw error
+        }
+    }
+
     static func canChange(recording: Bool, starting: Bool, finishing: Bool) -> Bool {
         !recording && !starting && !finishing
     }

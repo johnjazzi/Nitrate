@@ -5,6 +5,33 @@ import CoreMedia
 /// Session-only frame-rate mode and its transition gate. Mirrors
 /// `CameraStabilizationPolicy.canChange`.
 struct CameraFrameRatePolicyTests {
+    private enum TransitionError: Error, Equatable { case format, exposure }
+
+    @Test(arguments: [false, true])
+    func failedFormatOrExposureRestoresPreviousMode(exposureFails: Bool) {
+        var mode = CameraFrameRate.standard24
+        var rollbackCount = 0
+        var exposureApplied = false
+        do {
+            try CameraFrameRatePolicy.applyTransition(format: {
+                mode = .daylight60
+                if !exposureFails { throw TransitionError.format }
+            }, exposure: {
+                exposureApplied = true
+                throw TransitionError.exposure
+            }, rollback: {
+                mode = .standard24
+                rollbackCount += 1
+            })
+            Issue.record("A failed transition must not return success")
+        } catch {
+            #expect(error as? TransitionError == (exposureFails ? .exposure : .format))
+        }
+        #expect(mode == .standard24)
+        #expect(rollbackCount == 1)
+        #expect(exposureApplied == exposureFails)
+    }
+
     @Test func changeIsRejectedWhileRecordingStartingOrFinishing() {
         #expect(!CameraFrameRatePolicy.canChange(recording: true, starting: false, finishing: false))
         #expect(!CameraFrameRatePolicy.canChange(recording: false, starting: true, finishing: false))

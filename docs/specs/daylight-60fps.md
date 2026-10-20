@@ -1,7 +1,8 @@
 # Daylight 60 fps capture (break-glass, session-only)
 
-Status: **reviewed for implementation**. Baseline `76a4de3`, branch `feat/daylight-60fps`.
-Owner: coordinator. Implementation is a separate, reviewed change.
+Status: **implemented; automated checks passed; physical-camera validation open**.
+Baseline `76a4de3`, branch `feat/daylight-60fps`.
+The sections below record the reviewed design; §17 records the delivered implementation.
 
 ## 1. Purpose and position
 
@@ -516,3 +517,69 @@ Remaining checks:
 5. **Apple Log 2 60 fps availability.** Whether the reference device's 4K Apple
    Log 2 format advertises a 60 fps range at all is unverified here; E1/E2 cover
    the unsupported path and the UI must degrade to `unavailable` cleanly.
+
+## 17. Delivered implementation and validation
+
+Implementation details superseding illustrative API choices above:
+
+- `CameraFrameRatePolicy.swift` contains the constrained session mode, transition
+  transaction seam, and bounded destination-URL policy ledger. Policy is bound
+  to the original destination **before capture starts**, not reconstructed from
+  the live mode or the current generation when a completion arrives.
+- `RenderCapturePolicy.swift` lives under ProcessingPipeline; all fields are
+  immutable and decoding rejects invalid or contradictory rate/shutter/grain
+  combinations. Legacy jobs with no policy retain legacy rendering.
+- Legacy `ExposureManager` is unchanged: actual hardware shutter control is in
+  `CameraSession`. Both manual and auto-ISO capture use the mode's fixed shutter.
+- `Daylight60Control` is embedded in the existing `ManualControlsSurface.swift`.
+  Open the top-toolbar manual controls and expand them to reach it. Enabling
+  requires a confirmation warning; the status face displays `60 DAYLIGHT` while
+  armed. No preference remembers the mode across camera sessions.
+- Failed mode changes restore the previous mode/format/output/exposure. Exposure
+  writes participate in the transaction and cannot merely log failure then report
+  success. A failed foreground reset remains pending and blocks new takes until
+  resolved. Rollback negotiation failures invalidate capture rather than reviving
+  stale accepted writer settings.
+- `CameraSampleBufferRecorder` receives the take's frame duration. The regression
+  uses genuinely missing video duration and an audio endpoint between 1/60 and
+  1/24: it must wait for the second video frame. Restoring the old 1/24 fallback
+  was exercised as a negative control and caused the expected assertion failure.
+
+Executed on October 20, 2026:
+
+- `python3 scripts/verify.py verify`: lint, repository helper tests, **547
+  RenderCLI tests / 65 suites**, generic unsigned iOS build, `git diff --check`.
+- Native `CameraDesign` suite: **43 tests / 5 suites** passed.
+- `python3 scripts/verify.py device`: signed development iOS build passed.
+- Native 60fps export fixture checks real frame count and every presentation
+  timestamp, ~60fps track rate, unchanged AAC payload and source bytes, and
+  `1/120`/180° metadata. This is synthetic transport evidence, not real-camera or
+  visual grain approval. Grain index policy tests prove pair mapping; source
+  contract tests prove wiring only.
+
+### Physical-device acceptance (still open)
+
+The paired iPhone was reported **unavailable** by `xcrun devicectl list devices`.
+No device installation, real capture, outdoor exposure test or subjective grain
+approval is claimed.
+
+1. Connect, trust and unlock the iPhone. In this worktree open `Nitrate.xcodeproj`,
+   choose **Product → Scheme → NitrateDev**, choose the physical iPhone under
+   **Product → Destination**, then **Product → Run**. Confirm **Nitrate Dev**, not
+   the production app.
+2. Open the manual controls from the top toolbar, expand, enable **Daylight 60 fps**
+   and confirm. Check `60 DAYLIGHT` is visible. If unavailable, retain the
+   explanatory message; do not substitute a lower-resolution/non-Log format.
+3. With ISO at its floor in bright daylight, verify `1/120` and record moving
+   detail with a clap at the beginning/end. Mode/lens controls must not change
+   capture during start, recording or finish. Inspect the delivered movie/queue
+   metadata for ~60fps and `1/120`; check beginning/end sound and motion normally.
+4. Background during a 60fps take, return after it finishes, and confirm live
+   capture is back to 24fps / `1/48`. The queued 60fps take must retain its policy.
+   Repeat by backgrounding immediately after arming, then cold-launch once.
+5. Compare the rendered 60fps clip with a normal 24fps clip for grain cadence,
+   motion, exposure stability, and thermal/drop behavior at 4K. The paired field
+   is an experiment; keep visual approval separate from the automated pass.
+6. On failure, retain the original and queue metadata, note lens, stabilization,
+   ISO and lifecycle sequence, and capture the visible error or device console.
+   Do not delete the original to retry validation.

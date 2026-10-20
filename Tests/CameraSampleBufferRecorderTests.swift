@@ -1079,7 +1079,8 @@ struct CameraSampleBufferRecorderTests {
 
     @available(macOS 14.2, iOS 17.2, *)
     private static func log2Sample(width: Int = 3840, height: Int = 2160,
-                                   pts: Double = 1) throws -> CMSampleBuffer {
+                                   pts: Double = 1,
+                                   duration: CMTime = CMTime(value: 1, timescale: 24)) throws -> CMSampleBuffer {
         var optionalBuffer: CVPixelBuffer?
         let attributes = [kCVPixelBufferIOSurfacePropertiesKey as String: [:]] as CFDictionary
         let status = CVPixelBufferCreate(kCFAllocatorDefault, width, height,
@@ -1096,7 +1097,7 @@ struct CameraSampleBufferRecorderTests {
             allocator: kCFAllocatorDefault, imageBuffer: buffer, formatDescriptionOut: &description
         )
         guard formatStatus == noErr, let description else { throw RecorderTestError.formatDescription(formatStatus) }
-        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 24),
+        var timing = CMSampleTimingInfo(duration: duration,
             presentationTimeStamp: CMTime(seconds: pts, preferredTimescale: 600), decodeTimeStamp: .invalid)
         var sample: CMSampleBuffer?
         let sampleStatus = CMSampleBufferCreateReadyWithImageBuffer(
@@ -1245,15 +1246,22 @@ struct CameraSampleBufferRecorderTests {
         // is taken from the immutable take mode, so a sample that carries no
         // duration still advances the video clock by one 1/60 tick and the
         // normal drain/finish path is unaffected.
-        let rig = makeRig(FakeWriterBehavior())
-        let url = try begin(rig.recorder, events: rig.events,
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"],
                             videoFrameDuration: CameraFrameRate.daylight60.fallbackVideoSampleDuration)
         defer { try? FileManager.default.removeItem(at: url) }
-        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 1))
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 1, duration: .invalid))
         #expect(await rig.events.nextStarted() == nil)
+        // Audio ends between one 60fps frame and one legacy 24fps frame.
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmPacket(pts: 1, frames: 1_440))
         rig.recorder.stop()
+        await rig.drainSubmittedWork()
         let writer = try #require(rig.control.current)
-        await rig.waitForFinishToBeRequested(on: writer)
+        #expect(!writer.finishWasRequested, "A 1/24 fallback would incorrectly finish before delayed frame two")
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 1 + 1.0 / 60, duration: .invalid))
+        await rig.drainSubmittedWork()
+        #expect(writer.appendedVideoCount == 2)
+        #expect(writer.finishWasRequested)
         writer.completeFinalization(success: true)
         #expect(await rig.events.nextFinished() == nil)
         #expect(FileManager.default.fileExists(atPath: url.path))
