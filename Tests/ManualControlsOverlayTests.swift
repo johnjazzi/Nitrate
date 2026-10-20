@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 
 struct ManualControlsOverlayTests {
     @Test func manualPanelBouncesOnlyWhenContentActuallyOverflows() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let source = try String(contentsOf: root.appendingPathComponent(
             "App/Modules/CameraCapture/ManualControlsOverlay.swift"), encoding: .utf8)
         #expect(source.contains("ScrollView([.horizontal, .vertical])"),
@@ -43,7 +43,7 @@ struct ManualControlsOverlayTests {
         #expect(host.fittingSize.height <= 170, "Native compact content must fit without scrolling at its normal width.")
 
         // Inspect the actual label/readout declarations, not only a smaller clipping viewport.
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let source = try String(contentsOf: root.appendingPathComponent(
             "App/Modules/CameraCapture/ManualControlsSurface.swift"), encoding: .utf8)
         #expect(source.contains("private var compactTextRowHeight: CGFloat { 18 }"))
@@ -79,7 +79,7 @@ struct ManualControlsOverlayTests {
     }
 
     @Test func productionPanelKeepsHardwareBindingsAndSingleOuterRotation() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         func source(_ path: String) throws -> String {
             try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
         }
@@ -299,8 +299,7 @@ struct ManualControlsOverlayTests {
     }
 
     private func save(_ image: CGImage, name: String) throws {
-        let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent("build/compact-manual-renders")
+        let directory = TestRepository.artifactDirectory("compact-manual-renders")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(name + ".png")
         let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil))
@@ -374,8 +373,7 @@ struct ManualControlsOverlayTests {
                 let glyphRows = glyphInk.map { ($0 / 4) / image.width }
                 #expect(try #require(glyphRows.min()) >= Int((top + 38) * scale))
                 #expect(try #require(glyphRows.max()) < Int((bottom + 32) * scale))
-                let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-                    .deletingLastPathComponent().appendingPathComponent("build/camera-design-renders")
+                let directory = TestRepository.artifactDirectory("camera-design-renders")
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 let url = directory.appendingPathComponent("manual-\(Int(size.width))-\(degrees).png")
                 let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil))

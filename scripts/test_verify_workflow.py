@@ -225,25 +225,34 @@ class VerifyCommandTests(unittest.TestCase):
             self.assertEqual(verify.resolve_timeout("test", None), 600)
 
 
-class WorkflowPolicyTests(unittest.TestCase):
+class CloudBuildCoverageTests(unittest.TestCase):
+    """The retired native job's lint + iOS build now live inside the Cloud action.
+
+    The macOS GitHub job (and its diagnostics env) is gone; the iOS compile
+    coverage it provided is restored by ci_scripts/ci_post_xcodebuild.sh during
+    the source-available build-for-testing phase. verify.py check is the shared
+    lint + unsigned generic iOS build entry point.
+    """
+
+    hook = (REPO_ROOT / "ci_scripts" / "ci_post_xcodebuild.sh").read_text()
     workflow = (REPO_ROOT / ".github" / "workflows" / "xcode.yml").read_text()
 
-    def test_enables_opt_in_diagnostics_with_ten_minute_test_budget(self):
-        self.assertIn('NITRATE_VERIFY_DIAGNOSTICS: "1"', self.workflow)
-        self.assertIn('NITRATE_VERIFY_TEST_TIMEOUT_SECONDS: "600"', self.workflow)
-        self.assertIn('NITRATE_VERIFY_COMMAND_TIMEOUT_SECONDS: "600"', self.workflow)
-        self.assertIn("python3 scripts/verify.py verify", self.workflow)
+    def test_hook_only_runs_for_the_source_available_phase(self):
+        self.assertIn("CI_XCODEBUILD_ACTION", self.hook)
+        self.assertIn("build-for-testing", self.hook)
+        # It must be skipped for the source-unavailable test-without-building phase.
+        self.assertIn('[ "$ACTION" != "build-for-testing" ]', self.hook)
 
-    def test_uploads_diagnostics_on_always_without_unbounded_bundles(self):
-        self.assertIn("if: always()", self.workflow)
-        self.assertIn("build/verification/*.diagnostics.txt", self.workflow)
-        self.assertIn("build/verification/*.sample.txt", self.workflow)
-        self.assertIn("build/verification/partial-xcresult.txt", self.workflow)
-        self.assertNotIn("DerivedData/**", self.workflow)
-        self.assertNotIn(".xcresult\n", self.workflow)
+    def test_hook_runs_the_shared_lint_and_ios_build(self):
+        self.assertIn("python3 scripts/verify.py check", self.hook)
 
-    def test_job_timeout_leaves_room_but_is_not_the_test_budget(self):
-        self.assertIn("timeout-minutes: 45", self.workflow)
+    def test_hook_re_enables_diagnostics_and_the_tool_path(self):
+        self.assertIn("NITRATE_VERIFY_DIAGNOSTICS", self.hook)
+        self.assertIn("build/ci-tools", self.hook)
+
+    def test_automatic_monitor_preserves_the_required_check(self):
+        self.assertIn("name: Xcode build and tests", self.workflow)
+        self.assertIn("runs-on: ubuntu-latest", self.workflow)
 
     def test_verify_wires_the_diagnostics_test_script(self):
         source = (REPO_ROOT / "scripts" / "verify.py").read_text()

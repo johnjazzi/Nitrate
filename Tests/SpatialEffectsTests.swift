@@ -176,9 +176,7 @@ struct SpatialEffectsTests {
     /// Compile `Resources/Shaders/spatial.metal` at runtime so the test exercises
     /// the shader that actually ships.
     private static func shaderLibrary(device: MTLDevice) throws -> MTLLibrary {
-        let shaderURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()          // Tests/
-            .deletingLastPathComponent()          // repo root
+        let shaderURL = TestRepository.root
             .appendingPathComponent("Resources/Shaders/spatial.metal")
         let source = try String(contentsOf: shaderURL, encoding: .utf8)
         return try device.makeLibrary(source: source, options: nil)

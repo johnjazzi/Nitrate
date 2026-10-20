@@ -373,6 +373,47 @@ struct MovieWritingReliabilityTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["source.mov"])
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func cancelWhileVideoAppendIsBlockedReleasesTheRender() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("source.mov")
+        try await makeFixture(at: source, videoFrameCount: 60, audioSampleCount: 64)
+        let sourceData = try Data(contentsOf: source)
+        let entered = AppendEnteredBox()
+        let renderer = try PipelineRenderer(
+            resourceBundle: testBundle,
+            outputDirectory: directory,
+            allowsSyntheticInputForTests: true,
+            videoAppendOverride: { _, _ in
+                entered.markEntered()
+                // Stands in for writer backpressure a cancelled writer never
+                // releases: the append does not return on its own. Only the
+                // raced append can release the frame loop from here.
+                try await Task.sleep(for: .seconds(3600))
+            }
+        )
+        let task = Task { try await renderer.render(sourceURL: source, config: loadConfig(), bitrate: 2_000_000) }
+
+        let deadline = ContinuousClock.now + .seconds(30)
+        while !entered.isEntered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(entered.isEntered, "the video append was never entered")
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("A render whose append was blocked unexpectedly completed after cancel")
+        } catch {
+            #expect(error is CancellationError,
+                    "expected CancellationError, got \(type(of: error)): \(error.localizedDescription)")
+        }
+        #expect(try Data(contentsOf: source) == sourceData)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["source.mov"])
+    }
+
     @Test func emptyTrimFailsAtVideoEOFAndRemovesOutput() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -645,7 +686,7 @@ struct MovieWritingReliabilityTests {
 
     private func loadConfig() throws -> FilmStockConfig {
         let configURL = testBundle.url(forResource: "stocks", withExtension: "json")
-            ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../App/Resources/stocks.json").standardizedFileURL
+            ?? TestRepository.root.appendingPathComponent("App/Resources/stocks.json")
         let stockContainer = try JSONDecoder().decode(StockContainer.self, from: Data(contentsOf: configURL))
         guard let config = stockContainer.stocks.first(where: { $0.stockId == "kodak5219" }) else {
             throw FixtureError.missingResource("kodak5219 stock configuration")
@@ -667,6 +708,25 @@ struct MovieWritingReliabilityTests {
             lock.lock()
             defer { lock.unlock() }
             return storedError
+        }
+    }
+
+    /// One-shot flag the video-append override sets so the test can wait until
+    /// the append is actually parked before cancelling.
+    private final class AppendEnteredBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var entered = false
+
+        func markEntered() {
+            lock.lock()
+            entered = true
+            lock.unlock()
+        }
+
+        var isEntered: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return entered
         }
     }
 

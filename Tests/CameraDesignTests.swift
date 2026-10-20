@@ -4,7 +4,7 @@ import Testing
 
 struct CameraDesignTests {
     private func source(_ path: String) throws -> String {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         return try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
     }
 

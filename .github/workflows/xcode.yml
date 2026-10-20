@@ -1,141 +1,121 @@
 name: Xcode checks
 
+# Automatic Xcode Cloud test monitor (the CI cutover).
+#
+# This workflow replaces the former native macOS job. It does not compile on a
+# GitHub macOS runner; it starts a Cloud RenderCLI TEST run through the App Store
+# Connect API and monitors it to completion. The job name stays
+# "Xcode build and tests" so the required main-branch status-check context is
+# unchanged and no branch-protection setting has to move.
+#
+# Why Ubuntu: the App Store Connect API is plain HTTPS; orchestrating a Cloud
+# build needs no macOS minutes. The iOS build coverage the native job used to
+# provide is restored *inside* Cloud by ci_scripts/ci_post_xcodebuild.sh, which
+# lints and compiles the iOS app during the source-available build-for-testing
+# phase of the TEST action (Apple: "In the first phase, Xcode Cloud accesses your
+# source code ... using the xcodebuild build-for-testing command").
+#
+# Fork safety: a fork pull request must FAIL this check, never silently pass.
+# Fork PRs never receive the App Store Connect secrets and a fork's head branch
+# is not in this repository, so the monitor cannot start a run. The explicit
+# refusal step below makes that failure legible instead of an opaque config error.
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to test (defaults to the dispatched ref when empty)
+        type: string
+        required: false
+        default: ""
+      expected_sha:
+        description: Exact commit SHA Cloud must build (required when branch is given)
+        type: string
+        required: false
+        default: ""
 
+# Read the repository; write pull-request comments for the deadline/launch
+# alerts. Nothing here rewrites, pushes, or merges.
 permissions:
   contents: read
+  pull-requests: write
 
 concurrency:
-  group: xcode-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # One orchestration group for the whole product, shared with the manual
+  # release monitor in cloud.yml: a second monitor must not run in parallel.
+  # cancel-in-progress is FALSE because a cancelled monitor cannot cancel the
+  # Cloud run it started.
+  group: cloud-monitor
+  cancel-in-progress: false
 
 jobs:
   xcode:
     name: Xcode build and tests
-    # Explicit Xcode 27 image: the app's deployment target is iOS 27.
-    runs-on: xcode-27
-    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    # Longer than the 600 s alert deadline so the monitor's own deadline failure
+    # fires before the runner is killed.
+    timeout-minutes: 15
     env:
-      # Opt-in diagnostics: stream command output live (no `xcodebuild -quiet`)
-      # and watchdog each invocation so a hung test is stopped with evidence
-      # instead of running out the whole job timeout. The RenderCLI test
-      # invocation gets a ~10 minute budget, not the 45 minute job cap.
-      NITRATE_VERIFY_DIAGNOSTICS: "1"
-      NITRATE_VERIFY_TEST_TIMEOUT_SECONDS: "600"
-      NITRATE_VERIFY_COMMAND_TIMEOUT_SECONDS: "600"
-      NITRATE_VERIFY_SAMPLE_SECONDS: "10"
+      XCODE_CLOUD_WORKFLOW_ID: ${{ vars.XCODE_CLOUD_TEST_WORKFLOW_ID }}
+      APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CLOUD_ROLE: test
     steps:
-      - name: Check out source
-        timeout-minutes: 3
-        # Official actions/checkout v4.3.1, matching the release-version gate.
+      - name: Check out the trusted monitor helper at the reviewed commit
+        # Official actions/checkout v4.3.1, the pin the release-version gate uses.
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          # Never the PR head: a pull request can change any file in this
+          # repository, so the helper is pinned to the reviewed commit
+          # (git rev-parse 05993dd on dev). Advance this pin deliberately.
+          ref: 05993dd3ef90ff19d38440a49cc462f8f5ead2c3
           persist-credentials: false
-      - name: Report runner toolchain and Metal availability
-        timeout-minutes: 3
+          fetch-depth: 1
+      - name: Refuse fork pull requests
+        # A fork must fail the required check, not pass by being skipped. The
+        # guard runs before any step that reads a secret.
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
-          swift -e 'import Metal; print("Metal device:", MTLCreateSystemDefaultDevice()?.name ?? "unavailable; GPU-dependent tests may skip")'
-      - name: Bootstrap pinned build tools and generate project
-        timeout-minutes: 5
+          echo "::error::Fork pull requests are not monitored: the App Store Connect secrets must never reach a fork, and a fork branch does not exist in this repository. Push the change to a same-repo branch and open the pull request from it."
+          exit 1
+      - name: Resolve the Cloud target
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          INPUT_BRANCH: ${{ inputs.branch }}
+          INPUT_SHA: ${{ inputs.expected_sha }}
         run: |
-          sh ci_scripts/ci_post_clone.sh
-          printf '%s\n' "$GITHUB_WORKSPACE/build/ci-tools/xcodegen-2.46.0/xcodegen/bin" "$GITHUB_WORKSPACE/build/ci-tools/swiftlint-0.65.1" >> "$GITHUB_PATH"
-      - name: Install the Metal toolchain
-        timeout-minutes: 10
-        run: |
-          # Hosted macOS images ship Xcode without the downloadable Metal
-          # toolchain; shader compilation fails with "cannot execute tool
-          # 'metal'" until it is installed.
-          if ! xcodebuild -downloadComponent MetalToolchain; then
-            printf 'MetalToolchain download did not succeed; verifying whether metal is usable anyway\n' >&2
+          # Values are passed through the environment and quoted: a branch name
+          # is never interpolated into shell source.
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            printf 'CLOUD_BRANCH=%s\n' "$PR_HEAD_REF" >> "$GITHUB_ENV"
+            printf 'CLOUD_EXPECTED_SHA=%s\n' "$PR_HEAD_SHA" >> "$GITHUB_ENV"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_BRANCH" ]; then
+            printf 'CLOUD_BRANCH=%s\n' "$INPUT_BRANCH" >> "$GITHUB_ENV"
+            printf 'CLOUD_EXPECTED_SHA=%s\n' "$INPUT_SHA" >> "$GITHUB_ENV"
+          else
+            printf 'CLOUD_BRANCH=%s\n' "$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+            printf 'CLOUD_EXPECTED_SHA=%s\n' "$GITHUB_SHA" >> "$GITHUB_ENV"
           fi
-          xcrun --find metal
-      - name: Lint, run tests, and build iOS without signing
-        run: python3 scripts/verify.py verify
-      - name: Summarize any partial test results
-        if: always()
-        # Bounded: reads xcresult metadata only and never uploads the bundle.
+      - name: Install the monitor dependencies in an isolated venv
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import subprocess
-
-          out = Path('build/verification/partial-xcresult.txt')
-          out.parent.mkdir(parents=True, exist_ok=True)
-          bundles = sorted(Path('build/verification/DerivedData/Logs/Test').glob('*.xcresult'))
-          if not bundles:
-              out.write_text('No xcresult bundle was produced before the step ended.\n')
-          else:
-              bundle = max(bundles, key=lambda path: path.stat().st_mtime)
-              try:
-                  summary = subprocess.run(
-                      ['xcrun', 'xcresulttool', 'get', 'test-results', 'summary', '--path', str(bundle)],
-                      capture_output=True, text=True, timeout=60,
-                  )
-                  out.write_text(f'bundle: {bundle}\n{summary.stdout}{summary.stderr}')
-              except subprocess.TimeoutExpired:
-                  out.write_text(f'bundle: {bundle}\nxcresulttool summary timed out after 60s\n')
-          print(out.read_text(errors='replace'))
-          PY
-      - name: Report actual test counts and skips
-        timeout-minutes: 2
-        if: always()
+          python3 -m venv "$RUNNER_TEMP/cloud-monitor-venv"
+          "$RUNNER_TEMP/cloud-monitor-venv/bin/pip" install --disable-pip-version-check \
+            --require-hashes -r scripts/cloud-monitor-requirements.txt
+      - name: Run the monitor unit tests
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          import subprocess
-          import sys
-
-          bundles = list(Path('build/verification/DerivedData/Logs/Test').glob('*.xcresult'))
-          if not bundles:
-              sys.exit('No test result bundle was produced; see earlier step failures.')
-          bundle = max(bundles, key=lambda path: path.stat().st_mtime)
-          summary = json.loads(subprocess.check_output([
-              'xcrun', 'xcresulttool', 'get', 'test-results', 'summary', '--path', str(bundle)
-          ], text=True))
-          counts = {key: summary[key] for key in ('totalTestCount', 'passedTests', 'failedTests', 'skippedTests')}
-          print(json.dumps(counts, indent=2))
-          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as output:
-              output.write('## RenderCLI test results\n\n')
-              for key, count in counts.items():
-                  output.write(f'- {key}: {count}\n')
-              output.write('\nSkipped tests are not passed tests. Device-only behavior still needs an iPhone.\n')
-          if counts['skippedTests']:
-              print('::warning::Some tests were skipped; inspect runner capabilities before claiming rendering coverage.')
-          if summary.get('result') != 'Passed' or not counts['passedTests'] or counts['failedTests']:
-              sys.exit('Test results were not a successful nonempty run.')
-          PY
-      - name: Report verification log summaries
-        if: always()
+          "$RUNNER_TEMP/cloud-monitor-venv/bin/python" scripts/test_cloud_monitor.py -v
+      - name: Start and monitor the Cloud test run
+        # The App Store Connect private key is only exposed to the one step that
+        # actually needs it. Dependency install and unit tests run without it.
+        env:
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          for path in sorted(Path('build/verification').glob('*.log')):
-              print(f'::group::{path.name}')
-              print('\n'.join(path.read_text(errors='replace').splitlines()[-30:]))
-              print('::endgroup::')
-          PY
-      - name: Retain verification logs and diagnostics
-        if: always()
-        # Official actions/upload-artifact v4, resolved from its GitHub tag.
-        # Bounded set: logs, watchdog diagnostics/samples, and a small partial
-        # xcresult summary. The DerivedData bundle is never uploaded.
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: xcode-verification-diagnostics
-          path: |
-            build/verification/*.log
-            build/verification/*.diagnostics.txt
-            build/verification/*.sample.txt
-            build/verification/partial-xcresult.txt
-          if-no-files-found: ignore
-          retention-days: 3
+          "$RUNNER_TEMP/cloud-monitor-venv/bin/python" scripts/cloud_monitor.py start \
+            --role test \
+            --expected-sha "$CLOUD_EXPECTED_SHA" \
+            --branch "$CLOUD_BRANCH" \
+            --alert-deadline 600

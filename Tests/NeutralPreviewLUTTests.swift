@@ -86,8 +86,7 @@ struct NeutralPreviewLUTTests {
 
     private var assetURL: URL {
         get throws {
-            let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            let source = root.appendingPathComponent("App/Resources/Preview/AppleLog2ToRec709.cube")
+            let source = TestRepository.root.appendingPathComponent("App/Resources/Preview/AppleLog2ToRec709.cube")
             if FileManager.default.fileExists(atPath: source.path) { return source }
             if let bundled = Bundle.main.url(forResource: "AppleLog2ToRec709", withExtension: "cube",
                                               subdirectory: "Preview") { return bundled }

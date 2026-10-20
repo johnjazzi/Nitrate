@@ -3,7 +3,7 @@ import Testing
 
 struct PrivacyManifestTests {
     @Test func appManifestDeclaresOnlyObservedAccessAndNoTracking() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let url = root.appendingPathComponent("App/PrivacyInfo.xcprivacy")
         let data = try Data(contentsOf: url)
         let plist = try #require(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])

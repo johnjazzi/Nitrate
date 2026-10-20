@@ -370,8 +370,7 @@ struct CameraDesignRenderTests {
             renderer.scale = 2
             image = try #require(renderer.cgImage)
         }
-        let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent("build/camera-design-renders")
+        let directory = TestRepository.artifactDirectory("camera-design-renders")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("\(name).png")
         let destination = try #require(CGImageDestinationCreateWithURL(

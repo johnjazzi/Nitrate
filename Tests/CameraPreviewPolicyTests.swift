@@ -70,7 +70,7 @@ struct CameraPreviewPolicyTests {
     }
 
     @Test func productionParserReadsBundledNeutralCubeWithoutReordering() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let text = try String(contentsOf: root.appendingPathComponent(
             "App/Resources/Preview/AppleLog2ToRec709.cube"), encoding: .utf8)
         let cube = try CameraPreviewCube.parse(text)
@@ -236,7 +236,7 @@ struct CameraPreviewPolicyTests {
 
     @Test func shaderMatchesCodeValueAndDisplayContracts() throws {
         // Source-level regression guard only; this does not exercise the GPU.
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let source = try String(contentsOf: root.appendingPathComponent("Resources/Shaders/camera-preview.metal"), encoding: .utf8)
         #expect(source.contains("65535.0 / 64.0"))
         #expect(source.contains("(yCode - 64.0) / 876.0"))
@@ -252,7 +252,7 @@ struct CameraPreviewPolicyTests {
     }
 
     @Test func independentPreviewDoesNotReplaceTheWriter() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let recorder = try String(contentsOf: root.appendingPathComponent(
             "App/Modules/CameraCapture/CameraSampleBufferRecorder.swift"), encoding: .utf8)
         #expect(!recorder.contains("CameraPreviewFrame"))
@@ -276,7 +276,7 @@ struct CameraPreviewPolicyTests {
     }
 
     @Test func previewOutputNegotiatesOnlyItsOwnAdvertisedTenBitSource() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let session = try String(contentsOf: root.appendingPathComponent(
             "App/Modules/CameraCapture/CameraSession.swift"), encoding: .utf8)
         let attachStart = try #require(session.range(of: "private func attachPreviewOutput()"))
@@ -341,7 +341,7 @@ struct CameraPreviewPolicyTests {
     }
 
     @Test func productionParserPreservesAllShippedStockCubeRows() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let urls = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("Resources/LUTs"),
                                                                includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "cube" }
@@ -386,7 +386,7 @@ struct CameraPreviewPolicyTests {
 
     @Test func selectedStockNameReachesQueueOwnedRendererWithoutEffects() throws {
         // Wiring/lifetime source guards complement the pure token/parser tests.
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let root = TestRepository.root
         let content = try String(contentsOf: root.appendingPathComponent("App/ContentView.swift"), encoding: .utf8)
         let view = try String(contentsOf: root.appendingPathComponent("App/Modules/CameraCapture/CameraView.swift"), encoding: .utf8)
         let renderer = try String(contentsOf: root.appendingPathComponent("App/Modules/CameraCapture/CameraPreviewRenderer.swift"), encoding: .utf8)
