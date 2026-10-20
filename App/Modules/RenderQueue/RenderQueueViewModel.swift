@@ -635,9 +635,11 @@ final class RenderQueueViewModel {
         guard let config = library?.config(for: job.stockId, iso: job.iso, gauge: job.printGauge) else {
             throw QueueError.stockUnavailable(job.stockId)
         }
+        // The render reads only the job's persisted policy, never live UI.
         return try await renderer.render(sourceURL: job.sourceURL, config: config,
                                          trimRange: job.trimRange,
-                                         bitrate: job.deliveryPreferences?.quality.averageBitRate ?? DeliverySettings.averageBitRate)
+                                         bitrate: job.deliveryPreferences?.quality.averageBitRate ?? DeliverySettings.averageBitRate,
+                                         capturePolicy: job.capturePolicy)
     }
 
     private func failRender(_ jobId: UUID, error: Error) async {

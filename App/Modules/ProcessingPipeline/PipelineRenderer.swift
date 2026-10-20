@@ -90,13 +90,19 @@ final class PipelineRenderer: @unchecked Sendable {
     // MARK: - Public API
 
     /// Render a source clip with the given film stock configuration.
+    ///
+    /// `capturePolicy` is the job's persisted enqueue-time policy. It selects the
+    /// grain temporal cadence and the shutter metadata; `nil` is the legacy path
+    /// (per-frame grain, `1/48`). It is never read from live UI.
     func render(
         sourceURL: URL,
         config: FilmStockConfig,
         trimRange: CMTimeRange? = nil,
-        bitrate: Int = RenderEncodingContract.averageBitRate
+        bitrate: Int = RenderEncodingContract.averageBitRate,
+        capturePolicy: RenderCapturePolicy? = nil
     ) async throws -> URL {
-        (try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange, bitrate: bitrate)).outputURL
+        (try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange,
+                                    bitrate: bitrate, capturePolicy: capturePolicy)).outputURL
     }
 
     private static func captureColorSpace(from asset: AVAsset) async throws -> String? {
@@ -113,6 +119,7 @@ final class PipelineRenderer: @unchecked Sendable {
         config: FilmStockConfig,
         trimRange: CMTimeRange? = nil,
         bitrate: Int = RenderEncodingContract.averageBitRate,
+        capturePolicy: RenderCapturePolicy? = nil,
         collectDecodedBufferEvidence: Bool = false
     ) async throws -> (outputURL: URL, counters: RenderDiagnosticsManifest.Counters,
                        sourceColorProvenance: RenderInputColorProvenance,
@@ -265,7 +272,7 @@ final class PipelineRenderer: @unchecked Sendable {
         )
         writer.metadata = try RenderMovieMetadata.make(
             config: config, bitrate: bitrate, sourceColorProvenance: sourceColorProvenance,
-            orientation: deliveryOrientation
+            orientation: deliveryOrientation, capturePolicy: capturePolicy
         )
 
         // Audio passthrough writer input
@@ -311,6 +318,7 @@ final class PipelineRenderer: @unchecked Sendable {
                 audioProvider: audioProvider,
                 audioReceiver: audioReceiver,
                 cancellationHandle: cancellationHandle,
+                grainPairing: capturePolicy?.grainPairing ?? .perFrame,
                 captureFirstBufferEvidence: collectDecodedBufferEvidence
             )
             try Task.checkCancellation()
@@ -707,6 +715,7 @@ final class PipelineRenderer: @unchecked Sendable {
         audioProvider: sending ReadySampleProvider?,
         audioReceiver: sending AVAssetWriterInput.SampleBufferReceiver?,
         cancellationHandle: RenderCancellationHandle,
+        grainPairing: GrainPairing,
         captureFirstBufferEvidence: Bool
     ) async throws -> (counters: RenderDiagnosticsManifest.Counters,
                        firstBufferEvidence: RenderDiagnosticsManifest.DecodedBufferEvidence?) {
@@ -796,6 +805,12 @@ final class PipelineRenderer: @unchecked Sendable {
 
                 // Process: input → pass1 (LUT) → spatial halation/glow → pass2 (grain) → output
                 do {
+                    // frameIndex stays the render-loop index (diagnostics and
+                    // failure injection); only the grain kernel sees the derived
+                    // grain index, so an .daylight60 take shares one realization
+                    // per pair while motion and PTS stay 60 fps.
+                    let grainIndex = GrainPairingPolicy.grainIndex(frameIndex: frameIndex,
+                                                                   pairing: grainPairing)
                     let evidence = try await renderFrame(
                         sample: sample,
                         context: FrameRenderContext(
@@ -805,6 +820,7 @@ final class PipelineRenderer: @unchecked Sendable {
                             cancellationHandle: cancellationHandle
                         ),
                         frameIndex: frameIndex,
+                        grainIndex: grainIndex,
                         captureEvidence: captureFirstBufferEvidence && isFirstFrame
                     )
                     if let evidence { firstBufferEvidence = evidence }
@@ -908,6 +924,7 @@ final class PipelineRenderer: @unchecked Sendable {
         sample: CMReadySampleBuffer<CMSampleBuffer.DynamicContent>,
         context: FrameRenderContext,
         frameIndex: UInt32,
+        grainIndex: UInt32,
         captureEvidence: Bool
     ) async throws -> RenderDiagnosticsManifest.DecodedBufferEvidence? {
         if let renderFailureAfterFrames, frameIndex >= renderFailureAfterFrames {
@@ -996,7 +1013,7 @@ final class PipelineRenderer: @unchecked Sendable {
                         guard self.runPass2(
                             inputTexture: glowed,
                             outputPixelBuffer: destination,
-                            frameIndex: frameIndex,
+                            frameIndex: grainIndex,
                             iso: config.defaultISO,
                             grainSize: GrainModel.effectiveSize(stockGrainSize: config.grainSize, gauge: gauge),
                             edgeBoostMultiplier: config.effectiveRecipe.edgeBoostMultiplier,
