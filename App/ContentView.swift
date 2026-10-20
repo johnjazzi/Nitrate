@@ -642,19 +642,30 @@ private struct StockSheetView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
-                stockPicker
-                if localSelection != nil { gaugePicker }
+            // The example preview is tall, so the sheet scrolls vertically:
+            // a short phone at 320pt can still reach the gauge and Render.
+            GeometryReader { geometry in
+                ScrollView(.vertical) {
+                    VStack(spacing: 20) {
+                        StockSamplePreview(stock: localSelection)
+                            .frame(height: previewHeight(for: geometry.size))
+                            .frame(maxWidth: .infinity)
 
-                if let url = sourceURL {
-                    renderButton(sourceURL: url)
-                } else {
-                    Text("Record a video to render.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        if !stocks.isEmpty { stockCarousel }
+
+                        if localSelection != nil { gaugePicker }
+
+                        if let url = sourceURL {
+                            renderButton(sourceURL: url)
+                        } else {
+                            Text("Record a video to render.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding()
                 }
             }
-            .padding()
             .navigationTitle("Film Stock")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -680,27 +691,46 @@ private struct StockSheetView: View {
                 }
             }
             .onChange(of: localSelection) { _, _ in persistPreferences() }
+            .onChange(of: gauge) { _, _ in persistPreferences() }
         }
     }
 
-    private var stockPicker: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Select Stock").font(.headline)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(stocks, id: \.stockId) { stock in
-                        DuotoneStockCard(
-                            stock: stock,
-                            isSelected: localSelection?.stockId == stock.stockId,
-                            action: {
-                                localSelection = stock
-                                currentISO = stock.defaultISO
-                                gauge = library.lastGauge(for: stock.stockId) ?? .thirtyFiveMillimetre
-                            }
-                        )
-                    }
-                }
+    /// Tall example preview, bounded so the stock strip stays visible on a short
+    /// phone. The preview owns its own swipeable example-photo selection.
+    private func previewHeight(for size: CGSize) -> CGFloat {
+        min(max(size.height * 0.42, 280), 360)
+    }
+
+    private var stockCarousel: some View {
+        StockCarousel(stocks: stocks, selectedStockId: selectedStockIdBinding)
+    }
+
+    /// The carousel and the sheet share one selection: the carousel writes the
+    /// id of the stock it centred through the binding, and the sheet resolves it
+    /// back to a config (ISO + remembered gauge).
+    private var selectedStockIdBinding: Binding<String?> {
+        Binding(
+            get: { localSelection?.stockId },
+            set: { newValue in
+                guard let newValue, let stock = stocks.first(where: { $0.stockId == newValue }) else { return }
+                select(stock)
             }
+        )
+    }
+
+    /// Adopt a stock as the local selection. ISO follows the stock; the remembered
+    /// gauge is only restored when the selection actually changes, so re-tapping
+    /// the centred stock never resets a gauge the user dialled in.
+    private func select(_ stock: FilmStockConfig) {
+        let previous = localSelection
+        localSelection = stock
+        currentISO = stock.defaultISO
+        if let restored = StockCarouselSelection.gauge(
+            onSelecting: stock.stockId,
+            from: previous?.stockId,
+            remembered: library.lastGauge(for: stock.stockId)
+        ) {
+            gauge = restored
         }
     }
 
@@ -758,51 +788,6 @@ private struct StockSheetView: View {
             .background(Color.accentColor)
             .foregroundStyle(.white)
             .clipShape(RoundedRectangle(cornerRadius: 12))
-        }
-    }
-}
-
-// MARK: - Duotone Stock Card
-
-private struct DuotoneStockCard: View {
-    let stock: FilmStockConfig
-    let isSelected: Bool
-    var action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 6) {
-                // Duotone swatch
-                GeometryReader { geo in
-                    VStack(spacing: 0) {
-                        ForEach(0..<5) { index in
-                            let isPrimary = index == 0 || index == 1 || index == 4
-                            (isPrimary ? stock.primaryColor : stock.secondaryColor)
-                                .frame(height: geo.size.height / 5.0)
-                        }
-                    }
-                }
-                .frame(width: 48, height: 60)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(isSelected ? .white : .clear, lineWidth: 2)
-                }
-
-                Text(stock.displayName)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(isSelected ? .white : .secondary)
-                    .lineLimit(1)
-
-                Text(stock.lightType)
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(isSelected ? stock.primaryColor : .secondary.opacity(0.3))
-                    .clipShape(RoundedRectangle(cornerRadius: 3))
-            }
-            .frame(width: 72)
         }
     }
 }
