@@ -91,7 +91,7 @@ struct LiveRecordingStatusTests {
             #expect(geometry.status.isEmpty)
             // A clear 44pt slot is left where the lens sits under the floating timer.
             #expect(geometry.lens.width == 44 && geometry.lens.maxX == width && geometry.lens.maxY <= 44)
-            #expect(geometry.height == 50 + 92)
+            #expect(geometry.height == CGFloat(142))
         }
     }
 

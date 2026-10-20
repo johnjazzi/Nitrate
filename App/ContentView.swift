@@ -328,6 +328,7 @@ struct ContentView: View {
             lensMenu
                 .opacity(recordPresentation == .recording ? 0 : 1)
                 .allowsHitTesting(recordPresentation != .recording)
+                .accessibilityHidden(recordPresentation == .recording)
         } status: {
             recordingStatus
         } diagnostics: {

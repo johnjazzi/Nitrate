@@ -97,6 +97,7 @@ targets:
       - path: Tests/CameraMoodControlsTests.swift
       - path: Tests/CameraMoodLayoutTests.swift
       - path: Tests/CameraMoodRenderTests.swift
+      - path: Tests/LiveRecordingStatusTests.swift
       - path: Tests/FocalLengthRulerTests.swift
       - path: Tests/FramedPreviewLayoutTests.swift
       - path: Tests/TestRepository.swift

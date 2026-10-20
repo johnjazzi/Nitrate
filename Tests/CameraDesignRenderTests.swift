@@ -65,22 +65,25 @@ struct CameraDesignRenderTests {
         }
     }
 
-    @Test func relocatingStatusPreservesExistingFramedPreviewRectangle() {
+    @Test func recordingStatusReusesTopRowWithoutChangingFramedPreviewOnStart() {
         for width: CGFloat in [320, 390, 430] {
             for degrees in [0.0, 90.0, -90.0] {
                 for diagnosticsHeight: CGFloat in [0, 44, 92, 140] {
                     let statusSize = degrees == 0 ? CGSize(width: 112, height: 40) : .zero
-                    let toolbar = CameraTopPanelGeometry(width: width - 32, statusSize: statusSize,
-                                                         diagnosticsHeight: diagnosticsHeight)
-                    let legacyBottom = 8 + 50 + max(degrees == 0 ? 40 : 112, diagnosticsHeight)
-                    let frameBottom = CameraTopPanelGeometry.framingBottom(toolbarBottom: toolbar.height + 8,
-                                                                           rotationDegrees: degrees)
-                    #expect(frameBottom == legacyBottom,
-                            "Moving status must not enlarge, move or refocus the existing framed preview.")
+                    let idle = CameraTopPanelGeometry(width: width - 32, statusSize: .zero,
+                                                      diagnosticsHeight: diagnosticsHeight)
+                    let live = CameraTopPanelGeometry(width: width - 32, statusSize: statusSize,
+                                                      diagnosticsHeight: diagnosticsHeight)
+                    #expect(live.height == 50 + diagnosticsHeight)
+                    #expect(idle.height == live.height, "Starting capture must not resize the toolbar.")
+                    let idleBottom = CameraTopPanelGeometry.framingBottom(toolbarBottom: idle.height + 8,
+                                                                          rotationDegrees: degrees)
+                    let liveBottom = CameraTopPanelGeometry.framingBottom(toolbarBottom: live.height + 8,
+                                                                          rotationDegrees: degrees)
                     let viewport = CGRect(x: 0, y: 0, width: width, height: 750)
-                    #expect(FramedPreviewLayout.previewRect(in: viewport, topControlsBottom: frameBottom,
+                    #expect(FramedPreviewLayout.previewRect(in: viewport, topControlsBottom: liveBottom,
                                                             bottomControlsTop: 560) ==
-                            FramedPreviewLayout.previewRect(in: viewport, topControlsBottom: legacyBottom,
+                            FramedPreviewLayout.previewRect(in: viewport, topControlsBottom: idleBottom,
                                                             bottomControlsTop: 560))
                 }
             }
@@ -214,6 +217,8 @@ struct CameraDesignRenderTests {
                     Image(systemName: "slider.vertical.3").frame(width: 44, height: 44)
                 } lens: {
                     CameraLensFace(title: "120 mm", focalLength: "120", rotationDegrees: degrees)
+                        .frame(width: 44, height: 44)
+                        .opacity(0) // The production lens switch is hidden during a live take.
                 } status: {
                     RecordingStatusFace(presentation: .recording, text: "99:59.99", rotationDegrees: degrees)
                 } diagnostics: {
@@ -228,6 +233,23 @@ struct CameraDesignRenderTests {
                 let image = try render(view, name: "top-\(Int(width))-\(degrees)")
                 #expect(image.width == Int((width + 16) * 2))
                 #expect(image.height == 332, "Landscape status has no duplicate/ghost slot in the toolbar.")
+                let panelPixels = try pixels(image)
+                var timerRows: [Int] = []
+                for pixel in 0..<(panelPixels.count / 4) {
+                    let column = pixel % image.width
+                    let red = Int(panelPixels[pixel * 4])
+                    let green = Int(panelPixels[pixel * 4 + 1])
+                    if column > image.width / 2, red > 160, red > green + 60 {
+                        timerRows.append(pixel / image.width)
+                    }
+                }
+                if degrees == 0 {
+                    #expect(timerRows.count > 150)
+                    #expect(timerRows.allSatisfy { $0 < 120 },
+                            "The actual shared portrait timer must stay in the first toolbar row.")
+                } else {
+                    #expect(timerRows.isEmpty, "Landscape must not duplicate its floating timer in the toolbar.")
+                }
                 let face = RecordingStatusFace(presentation: .recording, text: "999:59.99", rotationDegrees: degrees)
                 let faceImage = try render(face.padding(8), name: "status-rotation-\(degrees)")
                 #expect(faceImage.width == (degrees == 0 ? 256 : 112))

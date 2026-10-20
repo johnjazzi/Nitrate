@@ -8,8 +8,13 @@ struct CameraMoodRenderTests {
     @MainActor @Test func tallyRendersBrightRedOnlyWhileRecording() throws {
         var redCounts: [Int] = []
         for active in [false, true] {
-            let image = try render(RecordingTallyLight(isRecording: active).padding(8), name: "tally-\(active)")
+            let image = try render(RecordingTallyLight(isRecording: active)
+                .frame(width: 24, height: 24).padding(8), name: "tally-\(active)")
             let data = try pixels(image)
+            if !active {
+                #expect(stride(from: 3, to: data.count, by: 4).allSatisfy { data[$0] == 0 },
+                        "Idle recording light must leave no dot, bezel, or shadow.")
+            }
             redCounts.append(stride(from: 0, to: data.count, by: 4).filter {
                 data[$0] > 200 && data[$0 + 1] < 100 && data[$0 + 2] < 100 && data[$0 + 3] > 220
             }.count)

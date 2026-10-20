@@ -8,6 +8,7 @@
 - During a pinch, a horizontal ruler appears above the bottom controls. Major marks are **13, 24, 35, 50, 75, 96, 110, 150 mm**; crossing a major mark requests a selection haptic. Manual-panel slow zoom remains per-device and retains its separate bounds.
 - EV and ISO ruler detents request selection feedback. Successfully locking manual ISO gives rigid feedback; unlocking gives softer feedback. Capture audio explicitly permits control haptics without changing audio routing.
 - The LCD sits above a recessed stock/gauge well. A confirmed live take shows **RECORDING** on the LCD and lights a red tally at the top-right of the preview area. Pending start and finalization do not claim live recording. Queue/storage access remains available during a take.
+- The dot and elapsed timer are absent when not actively recording. In portrait, the timer replaces the lens selector in the top bar. In landscape, it floats over the preview at the physical top edge; the lens selector remains hidden during the take.
 
 ## Automated checks
 
@@ -27,6 +28,6 @@ Open **Nitrate Dev**, not the TestFlight Nitrate app. Dismiss the Debug Single F
 1. Enable **Settings → Frame Mode**. Check the 2:3 preview, round toolbar keys, LCD above the stock/gauge well, and legibility in portrait and both landscape holds.
 2. While idle, pinch outward/inward across 24 and 96 mm and back. Check the selected physical lens, continuous focal ruler, requested major marks, and haptic ticks. Reach 13 and 150 mm where the installed lenses support them; repeat on front and verify it stays front.
 3. Move EV, long-press to lock ISO, move ISO, then unlock. Check detent feedback and distinct lock/unlock feedback with capture audio active.
-4. Start a short take. Confirm the LCD reads RECORDING and the top-right tally lights only after capture starts; pinch must not change zoom. Stop and confirm both live indicators turn off while finalizing. Check the clip plays and queue/storage access still works.
+4. Before recording, confirm there is no dot or elapsed timer. Start a short take: the LCD reads RECORDING, the top-right tally lights, and the portrait top-bar timer replaces the lens selector. In landscape, the timer floats over the preview. Pinch must not change zoom. Stop: dot and timer disappear immediately while finalizing, and the lens selector returns. Check the clip plays and queue/storage access still works.
 
 Record the hold, lens, displayed focal length, action, and a screen recording if a transition fails. Visual preference, haptic feel, and physical camera transitions require hands-on acceptance; passing builds and policy tests do not establish those.
