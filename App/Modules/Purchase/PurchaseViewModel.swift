@@ -28,6 +28,9 @@ final class PurchaseViewModel {
 
     var isTrialActive = false
     var isPurchased = false
+    /// True only for a verified lifetime purchase. A yearly subscription is a
+    /// renewal, so its copy must not claim "forever".
+    var isLifetimePurchased = false
     var daysRemaining = 0
     var subscriptionPrice: String?
     var lifetimePrice: String?
@@ -169,6 +172,7 @@ final class PurchaseViewModel {
         // Mirror into the existing settings-facing fields.
         isTrialActive = access.trialActive
         isPurchased = access.hasVerifiedPurchase
+        isLifetimePurchased = access.hasLifetimePurchase
         daysRemaining = access.trialDaysRemaining
 
         // One line per resolution: the app has no log file, so this is how the

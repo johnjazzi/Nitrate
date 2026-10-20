@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// AD-1: Purchase/settings screen — 7-day trial, $5/year, $10 lifetime.
+/// AD-1: Purchase/settings screen — 7-day trial, $3/year, $10 lifetime.
 struct PurchaseView: View {
     @State var viewModel: PurchaseViewModel
     @Binding var showFramedPreview: Bool
@@ -100,7 +100,7 @@ struct PurchaseView: View {
                     .foregroundStyle(.secondary)
                 Text("Trial Expired")
                     .font(.title2.bold())
-                Text("Unlock to continue using \(AppIdentity.name).")
+                Text("Unlock film rendering to continue. Recording stays free.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -290,7 +290,9 @@ struct PurchaseView: View {
         HStack {
             Image(systemName: "infinity.circle.fill")
                 .foregroundStyle(.green)
-            Text("All features unlocked forever")
+            Text(viewModel.isLifetimePurchased
+                 ? "All features unlocked forever"
+                 : "All features unlocked — subscription active")
                 .foregroundStyle(.secondary)
         }
     }

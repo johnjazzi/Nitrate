@@ -31,6 +31,24 @@ enum AccessDistribution: String, Sendable, CaseIterable {
     var isCacheable: Bool { self == .testFlight || self == .appStore }
 }
 
+// MARK: - Debug StoreKit testing mode
+
+/// The explicit opt-in that lets a Debug build exercise the real StoreKit
+/// paywall against the local configuration file, instead of the free debug
+/// unlock. Only the dedicated `NitrateStoreKitTest` scheme passes this launch
+/// argument; normal Debug runs and every Release build never do, so development,
+/// TestFlight and production are all unaffected.
+enum StoreKitTestingLaunchMode {
+    /// Launch argument added by the `NitrateStoreKitTest` scheme's run action.
+    static let launchArgument = "-NitrateStoreKitTesting"
+
+    /// True only when the exact argument is present. A near-miss such as
+    /// `-NitrateStoreKitTestingOff` must not enable the mode.
+    static func isRequested(arguments: [String]) -> Bool {
+        arguments.contains(launchArgument)
+    }
+}
+
 // MARK: - Products
 
 /// The two paid products the app can grant. Raw values are the shipped App Store
@@ -76,6 +94,9 @@ struct AppAccessState: Equatable, Sendable {
     let trialActive: Bool
     let trialDaysRemaining: Int
     let hasVerifiedPurchase: Bool
+    /// True only for a verified, non-revoked lifetime purchase. Drives the
+    /// "unlocked forever" copy, which is false for a renewal subscription.
+    let hasLifetimePurchase: Bool
 
     static let locked = AppAccessState(
         canUsePaidFeatures: false,
@@ -83,7 +104,8 @@ struct AppAccessState: Equatable, Sendable {
         isUnrestricted: false,
         trialActive: false,
         trialDaysRemaining: 0,
-        hasVerifiedPurchase: false)
+        hasVerifiedPurchase: false,
+        hasLifetimePurchase: false)
 }
 
 // MARK: - Policy
@@ -110,6 +132,21 @@ enum AppAccessPolicy {
         distribution == .appStore || distribution == .storeKitTesting
     }
 
+    /// The compile-time Debug unlock, made explicit and testable.
+    ///
+    /// A Debug build is unrestricted by default so a developer is never blocked
+    /// by the paywall. A Debug build that explicitly opts into local StoreKit
+    /// testing returns `nil` so `StoreManager` proceeds to the real StoreKit
+    /// evaluation (which resolves a local configuration file to
+    /// `.storeKitTesting` — a customer-like channel). A non-Debug build never
+    /// honours the override, so Release always reaches StoreKit and a production
+    /// receipt or an offline grant is decided by the store exactly as before.
+    static func debugChannelOverride(isDebugBuild: Bool,
+                                     storeKitTestingRequested: Bool) -> AccessDistribution? {
+        guard isDebugBuild else { return nil }
+        return storeKitTestingRequested ? nil : .debug
+    }
+
     static func evaluate(distribution: AccessDistribution,
                          firstLaunch: Date?,
                          now: Date,
@@ -128,6 +165,13 @@ enum AppAccessPolicy {
             } else if let expiration = entitlement.expirationDate, expiration <= now {
                 return false
             }
+            return true
+        }
+
+        let hasLifetimePurchase = verifiedEntitlements.contains { entitlement in
+            guard PaidProduct.expected(for: entitlement.productID) == .lifetime,
+                  entitlement.revocationDate == nil else { return false }
+            if let expiration = entitlement.expirationDate, expiration <= now { return false }
             return true
         }
 
@@ -156,7 +200,8 @@ enum AppAccessPolicy {
             isUnrestricted: isUnrestricted,
             trialActive: trialActive,
             trialDaysRemaining: daysRemaining,
-            hasVerifiedPurchase: hasVerifiedPurchase)
+            hasVerifiedPurchase: hasVerifiedPurchase,
+            hasLifetimePurchase: hasLifetimePurchase)
     }
 }
 

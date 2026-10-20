@@ -289,6 +289,110 @@ struct AppAccessPolicyTests {
             now: reference,
             verifiedEntitlements: []))
     }
+
+    // MARK: - Lifetime vs subscription copy
+
+    @Test func verifiedLifetimePurchaseIsFlaggedForTheForeverCopy() {
+        let state = AppAccessPolicy.evaluate(
+            distribution: .appStore,
+            firstLaunch: reference.addingTimeInterval(-30 * day),
+            now: reference,
+            verifiedEntitlements: [entitlement(.lifetime)])
+        #expect(state.hasLifetimePurchase)
+    }
+
+    @Test func yearlySubscriptionIsNotFlaggedAsALifetimePurchase() {
+        // A renewal must not claim "unlocked forever".
+        let state = AppAccessPolicy.evaluate(
+            distribution: .appStore,
+            firstLaunch: reference.addingTimeInterval(-30 * day),
+            now: reference,
+            verifiedEntitlements: [entitlement(.yearlySubscription, expiresIn: 5 * day)])
+        #expect(!state.hasLifetimePurchase)
+    }
+
+    @Test func revokedLifetimePurchaseIsNotFlagged() {
+        let state = AppAccessPolicy.evaluate(
+            distribution: .appStore,
+            firstLaunch: reference.addingTimeInterval(-30 * day),
+            now: reference,
+            verifiedEntitlements: [entitlement(.lifetime, revoked: true)])
+        #expect(!state.hasLifetimePurchase)
+    }
+}
+
+/// The Debug StoreKit-testing routing contract. The paywall is gated behind
+/// `AppAccessPolicy.debugChannelOverride`, which `StoreManager.resolveDistribution`
+/// consults inside `#if DEBUG`. These tests pin the routing decision and the
+/// customer-like behaviour of the channel it unlocks.
+struct StoreKitTestingRoutingTests {
+    private let reference = Date(timeIntervalSince1970: 1_000_000)
+    private let day: TimeInterval = 24 * 60 * 60
+
+    @Test func debugBuildWithoutTheTestingOptInIsAFreeDebugUnlock() {
+        // Normal development must stay unrestricted: no paywall, no checkout.
+        let override = AppAccessPolicy.debugChannelOverride(
+            isDebugBuild: true, storeKitTestingRequested: false)
+        #expect(override == .debug)
+    }
+
+    @Test func debugBuildWithTheTestingOptInReachesRealStoreKitEvaluation() {
+        // `nil` means StoreManager falls through to StoreKit, which resolves the
+        // active local configuration file to `.storeKitTesting` — a channel that
+        // is NOT unrestricted, so the gated paywall becomes reachable.
+        let override = AppAccessPolicy.debugChannelOverride(
+            isDebugBuild: true, storeKitTestingRequested: true)
+        #expect(override == nil)
+        #expect(!AppAccessPolicy.isProductionLike(.debug))
+    }
+
+    @Test func releaseBuildNeverHonoursTheDebugUnlock() {
+        // Production and TestFlight must be unaffected by the debug override, no
+        // matter what launch arguments are present.
+        #expect(AppAccessPolicy.debugChannelOverride(
+            isDebugBuild: false, storeKitTestingRequested: true) == nil)
+        #expect(AppAccessPolicy.debugChannelOverride(
+            isDebugBuild: false, storeKitTestingRequested: false) == nil)
+    }
+
+    @Test func storeKitTestingLaunchArgumentMatchesOnlyTheExactArgument() {
+        #expect(StoreKitTestingLaunchMode.isRequested(
+            arguments: ["/path/Nitrate", "-NitrateStoreKitTesting"]))
+        #expect(!StoreKitTestingLaunchMode.isRequested(arguments: ["/path/Nitrate"]))
+        // A near-miss must not enable the mode.
+        #expect(!StoreKitTestingLaunchMode.isRequested(
+            arguments: ["/path/Nitrate", "-NitrateStoreKitTestingOff"]))
+    }
+
+    @Test func storeKitTestingChannelEvaluatesThenExpiresThenPurchases() {
+        // The channel the opt-in reaches behaves exactly like a real customer:
+        // a live evaluation, a lock once it expires, and a verified purchase.
+        let evaluation = AppAccessPolicy.evaluate(
+            distribution: .storeKitTesting,
+            firstLaunch: reference.addingTimeInterval(-2 * day),
+            now: reference,
+            verifiedEntitlements: [])
+        #expect(evaluation.trialActive)
+        #expect(evaluation.canUsePaidFeatures)
+        #expect(!evaluation.isUnrestricted)
+
+        let expired = AppAccessPolicy.evaluate(
+            distribution: .storeKitTesting,
+            firstLaunch: reference.addingTimeInterval(-8 * day),
+            now: reference,
+            verifiedEntitlements: [])
+        #expect(!expired.canUsePaidFeatures)
+
+        let purchased = AppAccessPolicy.evaluate(
+            distribution: .storeKitTesting,
+            firstLaunch: reference.addingTimeInterval(-8 * day),
+            now: reference,
+            verifiedEntitlements: [VerifiedEntitlement(
+                productID: PaidProduct.yearlySubscription.rawValue,
+                expirationDate: reference.addingTimeInterval(5 * day))])
+        #expect(purchased.canUsePaidFeatures)
+        #expect(purchased.hasVerifiedPurchase)
+    }
 }
 
 struct PurchasePriceTextTests {

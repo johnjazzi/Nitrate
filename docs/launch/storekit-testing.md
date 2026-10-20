@@ -5,33 +5,41 @@ gated. To exercise the real paywall — evaluation, purchase, restore, expiry,
 refund — without an App Store Connect product, run the app against the local
 StoreKit configuration file at `StoreKit/Nitrate.storekit`.
 
-The configuration is already wired into the `Nitrate` scheme's run action by
-`project.yml`, so running the scheme from Xcode uses it with no setup. It is kept
-outside `App/` deliberately: anything under `App/` is compiled or bundled, and a
-test fixture must never ship in the App Store binary.
+## Why a dedicated scheme
 
-## Why this works
+`StoreManager.resolveDistribution()` short-circuits to `.debug` (unrestricted) in
+every Debug build, so a normal run never reaches StoreKit and the paywall stays
+invisible. To reach it, the `NitrateStoreKitTest` scheme launches a Debug build
+with the launch argument `-NitrateStoreKitTesting`. `StoreManager` sees that
+argument and skips the debug unlock, so StoreKit is evaluated for real and the
+active configuration file resolves to `AppStore.Environment.xcode` →
+`AccessDistribution.storeKitTesting`.
 
-When a StoreKit configuration file is active, `AppTransaction.shared` reports
-`AppStore.Environment.xcode`. `StoreManager` maps that to
-`AccessDistribution.storeKitTesting`, which `AppAccessPolicy` treats exactly like
-`.appStore`: an evaluation, then a verified purchase. Without the file, a
-locally signed build has no receipt and resolves to `.development`, which is
-unrestricted — so the paywall is invisible. That is why the fixture is needed to
-see it at all.
+- Normal development (`Nitrate`, `NitrateDev`) never passes the argument and
+  stays unrestricted — no paywall, no checkout. They still carry the fixture for
+  local StoreKit runs, but without the argument it is inert: the debug unlock
+  short-circuits before StoreKit is consulted.
+- Release never honours the argument: the debug override is compiled out of a
+  Release build, so a production receipt or an offline grant is decided by the
+  store exactly as before.
+- `storeKitTesting` is not cacheable, so a testing channel is never remembered as
+  a real install.
 
-`storeKitTesting` is not cacheable, so a testing channel can never be remembered
-as a real install.
+The configuration lives at `StoreKit/Nitrate.storekit` and is wired into the run
+actions by `project.yml`. It is kept outside `App/` deliberately: anything under
+`App/` is compiled or bundled, and a test fixture must never ship in the App
+Store binary.
 
 ## Products in the fixture
 
-| Product ID | Type | Fixture price |
+| Product ID | Type | Fixture price (USD) |
 | --- | --- | --- |
-| `com.nitrate.subscription.yearly` | Recurring subscription, `P1Y` | 4.99 |
-| `com.nitrate.lifetime` | Non-consumable | 9.99 |
+| `com.nitrate.subscription.yearly` | Recurring subscription, `P1Y` | 3.00 |
+| `com.nitrate.lifetime` | Non-consumable | 10.00 |
 
-The fixture prices are placeholders. Real prices come from App Store Connect, and
-the app never hardcodes them.
+These are the owner-approved US base prices. The app never hardcodes them — the
+UI shows `Product.displayPrice` from StoreKit, and App Store Connect is the
+source of truth for other storefronts.
 
 These IDs must match `PaidProduct` in
 `App/Modules/Purchase/AppAccessPolicy.swift`, which is pinned by
@@ -39,17 +47,22 @@ These IDs must match `PaidProduct` in
 
 ## Running the flows
 
-Build and run the `Nitrate` scheme in a simulator. The camera screen needs Apple
-Log 2 hardware, so use **Settings** for the purchase UI.
+Run the **`NitrateStoreKitTest`** scheme in a simulator. The camera screen needs
+Apple Log 2 hardware, so use **Settings** for the purchase UI. Every run must go
+through this scheme — the plain `Nitrate` scheme carries no configuration file
+and no argument, so it never shows the paywall.
+
+The Debug configuration's bundle id is `com.nitrate.app.dev` (Release uses
+`com.nitrate.app`). The `simctl` command below targets the Debug id.
 
 **Evaluation active.** Delete the app, then run. The evaluation starts at first
 launch and Settings shows the days remaining.
 
-**Evaluation expired.** The anchor is `install_date` in the app's
-`UserDefaults`. Push it into the past and relaunch:
+**Evaluation expired.** The anchor is `install_date` in the app's `UserDefaults`.
+Write it into the past before launching (or relaunch after writing):
 
 ```sh
-xcrun simctl spawn booted defaults write com.nitrate.app install_date -date "2020-01-01 00:00:00 +0000"
+xcrun simctl spawn booted defaults write com.nitrate.app.dev install_date -date "2020-01-01 00:00:00 +0000"
 ```
 
 Now rendering is held: capture still works, the take is durably queued, and
@@ -63,8 +76,13 @@ because the anchor is gone, but a purchase made under the fixture persists for
 the simulator, so **Restore Purchases** returns the entitlement.
 
 **Expiry and renewal.** Use Xcode's **Debug → StoreKit → Manage Transactions**
-to expire, renew, or refund the subscription, then foreground the app. Expiring
-removes access; a refund revokes it. Neither deletes footage.
+to expire, renew, or refund the subscription, then foreground the app.
+
+The evaluation must already be expired for expiry/refund to be observable: a
+lapsed subscription or a refunded purchase falls back to a still-active
+evaluation, so access would stay unlocked. Set `install_date` past the seven-day
+window (as above) *before* purchasing, then expire or refund. Access then drops
+and the held render stays queued; neither deletes footage.
 
 **Failure paths.** The fixture's `settings` block can enable failed transactions
 so the error and retry UI can be exercised.
@@ -74,5 +92,8 @@ so the error and retry UI can be exercised.
 - Real App Store receipt validation. The fixture signs its own transactions.
 - Sandbox behaviour, which differs from both the fixture and production.
 - Anything that depends on the products existing in App Store Connect.
+- The `AppTransaction.shared` / `appStoreReceiptURL` migration path, which is
+  guarded by `#if DEBUG` and can only be verified against a real App Store
+  install.
 
 Those are covered by TestFlight once the products are registered.
