@@ -6,16 +6,21 @@ struct RecordingTimerBadge: View {
     let text: String
     let isStopping: Bool
     let rotationDegrees: Double
+    /// Compact armed marker only; the long warning stays on the manual control
+    /// and never repeats on the ticking timer.
+    var daylight60Active: Bool = false
 
     var body: some View {
-        Text(text)
+        Text(daylight60Active ? "60 · " + text : text)
+            .lineLimit(1)
             .font(.caption.monospacedDigit())
             .foregroundStyle(.white)
             .fixedSize()
             .padding(.horizontal, 8)
             .padding(.vertical, 2)
             .frame(width: 84, height: 24)
-            .background(isStopping ? Color.gray.opacity(0.85) : Color.red.opacity(0.8))
+            .background(isStopping ? Color.gray.opacity(0.85)
+                        : (daylight60Active ? Color.orange.opacity(0.9) : Color.red.opacity(0.8)))
             .clipShape(Capsule())
             .rotationEffect(.degrees(rotationDegrees))
             // Reserve the swapped bounds so the capsule never crosses REC.

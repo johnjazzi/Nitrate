@@ -80,4 +80,58 @@ struct DaylightCapturePolicyQueueTests {
         relaunched.onAppear()
         #expect(relaunched.jobs.first?.capturePolicy == RenderCapturePolicy(60))
     }
+
+    @Test func assignStockDoesNotOverwriteTheEnqueueTimePolicy() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { _ in files.output })
+
+        let jobId = try #require(model.enqueueAwaitingStock(sourceURL: files.source,
+                                                            capturePolicy: RenderCapturePolicy(60)))
+        // The policy was snapshotted at take start. Assigning a stock must not
+        // overwrite it, even if a (stale) policy is supplied.
+        model.assignStock(jobId: jobId, stockId: "kodak5219", iso: 600,
+                          capturePolicy: RenderCapturePolicy(24))
+        #expect(model.jobs.first?.capturePolicy == RenderCapturePolicy(60))
+    }
+
+    @Test func retryAfterAFailedRenderReusesThePersistedPolicy() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        // The retry needs a usable rendered output to complete.
+        try Data([4, 5, 6]).write(to: files.output)
+        var received: [RenderCapturePolicy?] = []
+        var shouldFail = true
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { job in
+            received.append(job.capturePolicy)
+            if shouldFail {
+                shouldFail = false
+                throw DaylightQueueTestError.render
+            }
+            return files.output
+        }, save: { _ in })
+
+        model.enqueue(sourceURL: files.source, stockId: "kodak5219", iso: 600,
+                      capturePolicy: RenderCapturePolicy(60))
+        try await waitUntil { model.jobs.first?.status == .failed }
+        let jobId = try #require(model.jobs.first?.id)
+        #expect(model.jobs.first?.capturePolicy == RenderCapturePolicy(60))
+
+        model.retry(jobId: jobId)
+        try await waitUntil { model.jobs.first?.status == .completed }
+        #expect(received == [RenderCapturePolicy(60), RenderCapturePolicy(60)],
+                "A retry must reuse the persisted policy, never the live mode.")
+    }
+
+    private func waitUntil(_ condition: @MainActor () -> Bool) async throws {
+        for _ in 0..<400 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        Issue.record("Timed out waiting for queue state")
+    }
+}
+
+private enum DaylightQueueTestError: Error {
+    case render
 }

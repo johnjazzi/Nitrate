@@ -216,7 +216,12 @@ final class RenderQueueViewModel {
         jobs[index].iso = iso
         jobs[index].printGauge = gauge
         if let deliveryPreferences { jobs[index].deliveryPreferences = deliveryPreferences }
-        if let capturePolicy { jobs[index].capturePolicy = capturePolicy }
+        // The capture policy is snapshotted at enqueue/take start and read by the
+        // renderer, never re-read from live UI. Assigning a stock must not
+        // overwrite it; a policy argument is only adopted when none was captured.
+        if jobs[index].capturePolicy == nil, let capturePolicy {
+            jobs[index].capturePolicy = capturePolicy
+        }
         jobs[index].status = .pending
         jobs[index].errorMessage = nil
         jobs[index].sessionId = sessionId

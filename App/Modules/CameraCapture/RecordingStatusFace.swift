@@ -16,6 +16,9 @@ struct RecordingStatusFace: View {
     let text: String
     var style: RecordingIndicatorStyle = .red
     var rotationDegrees: Double = 0
+    /// Armed daylight 60 fps. Shown whether idle or recording, so the mode is
+    /// unmistakable before and during a take.
+    var daylight60Active = false
 
     var stateLabel: String {
         switch presentation {
@@ -33,6 +36,12 @@ struct RecordingStatusFace: View {
         case .recording: "Recording, capture confirmed"
         case .stopping: "Stopping, timer frozen, finalizing recording"
         }
+    }
+
+    /// Hazard tint while armed; otherwise the presentation tint.
+    private var displayTint: Color {
+        guard daylight60Active else { return tint }
+        return style == .monochrome ? .white : Color(red: 0.95, green: 0.45, blue: 0.12)
     }
 
     private var tint: Color {
@@ -54,9 +63,11 @@ struct RecordingStatusFace: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
-            Text(stateLabel).font(.system(size: 8, weight: .bold, design: .rounded)).tracking(1)
+            Text(daylight60Active ? "60 DAYLIGHT" : stateLabel)
+                .font(.system(size: 8, weight: .bold, design: .rounded)).tracking(1)
+                .lineLimit(1).minimumScaleFactor(0.7)
         }
-        .foregroundStyle(tint)
+        .foregroundStyle(displayTint)
         .frame(width: 112, height: 40)
         .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 10))
         .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.15), lineWidth: 1) }
@@ -65,7 +76,8 @@ struct RecordingStatusFace: View {
                height: abs(rotationDegrees) == 90 ? 112 : 40)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Recording status")
-        .accessibilityValue("\(accessibilityStatus). \(text)")
+        .accessibilityValue("\(accessibilityStatus). \(text)"
+                            + (daylight60Active ? ". Daylight 60 fps armed." : ""))
         .allowsHitTesting(false)
     }
 

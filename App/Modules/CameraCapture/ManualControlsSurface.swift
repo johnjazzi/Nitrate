@@ -17,6 +17,11 @@ struct ManualControlsSurface<Aperture: View>: View {
     let stabilization: CameraStabilizationSnapshot
     let canChangeStabilization: Bool
     let selectStabilization: (CameraStabilizationMode) -> Void
+    var daylight60Armed = false
+    var daylight60Available = false
+    var daylight60UnavailableReason: String? = nil
+    var canChangeFrameRate = false
+    var setDaylight60: (Bool) -> Void = { _ in }
     let dismiss: () -> Void
     var beginZoom: (CameraZoomDirection) -> Void = { _ in }
     var endZoom: (UInt64) -> Void = { _ in }
@@ -88,6 +93,11 @@ struct ManualControlsSurface<Aperture: View>: View {
                     zoomHold(.in, symbol: "plus", label: "Zoom In")
                 }
                 .frame(height: 44)
+                // Break-glass daylight 60 fps. Expanded only: it is never on the
+                // shooting bar, and the dense compact face keeps its strict height.
+                Daylight60Control(armed: daylight60Armed, available: daylight60Available,
+                                  unavailableReason: daylight60UnavailableReason,
+                                  canChange: canChangeFrameRate, setArmed: setDaylight60)
             }
         }
         .font(.caption2.weight(.semibold))
@@ -299,5 +309,92 @@ enum ManualStabilizationSelection {
         guard enabled else { return .off }
         let supported = snapshot.capability.availableModes.filter { $0 != .off }
         return supported.contains(remembered) ? remembered : supported.first
+    }
+}
+
+/// The break-glass daylight 60 fps toggle. Session-only, so it deliberately
+/// carries no persisted state: arm shows a plain-words warning once, disarm is
+/// immediate. Text-only warning — the recording timer never repeats it.
+///
+/// Kept in this file rather than a new `Daylight60Control.swift` so the two
+/// design test targets that compile this surface also compile the control
+/// without a project.yml change.
+struct Daylight60Control: View {
+    let armed: Bool
+    let available: Bool
+    let unavailableReason: String?
+    let canChange: Bool
+    let setArmed: (Bool) -> Void
+
+    /// The single warning copy, shown at confirm and repeated on the active
+    /// badge. Plain words, no aesthetic claim.
+    static let warning = "60 fps video · less cinematic motion · modest exposure headroom — not unlimited. ND still required."
+
+    /// Shown when the active device has no 4K Apple Log 2 10-bit 60 fps format.
+    static let unavailableReason = "No 4K Apple Log 2 10-bit format supports 60 fps on this device."
+
+    @State private var confirming = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button(action: activate) {
+                HStack(spacing: 8) {
+                    Image(systemName: armed ? "bolt.fill" : "bolt")
+                    Text(armed ? "60 fps DAYLIGHT" : "60 fps")
+                        .font(.system(size: 11, weight: .bold))
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Text(stateText).font(.system(size: 9, weight: .semibold))
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .opacity(available ? 1 : 0.5)
+            }
+            .buttonStyle(CameraRaisedButtonStyle(faceColor: armed ? Color(red: 0.95, green: 0.4, blue: 0.15) : nil))
+            .disabled(!available || !canChange)
+            .accessibilityLabel("Daylight 60 fps capture")
+            .accessibilityValue(accessibilityValue)
+            .accessibilityHint("Emergency exposure. Session-only; it resets when the camera screen is left, "
+                               + "and is locked during a take or a lens change.")
+
+            if confirming, available {
+                Text(Self.warning)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityHidden(true)
+            }
+            if !available, let unavailableReason {
+                Text(unavailableReason)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityHidden(true)
+            }
+        }
+    }
+
+    private var stateText: String {
+        guard available else { return "UNAVAILABLE" }
+        return armed ? "ON" : "OFF"
+    }
+
+    private var accessibilityValue: String {
+        if !available { return unavailableReason ?? "Unavailable on this device" }
+        if armed { return "On. " + Self.warning }
+        return confirming ? "Confirming. " + Self.warning : "Off"
+    }
+
+    /// One confirming tap arms; a second tap confirms. Disarm is immediate.
+    private func activate() {
+        guard available, canChange else { return }
+        if armed {
+            confirming = false
+            setArmed(false)
+        } else if confirming {
+            confirming = false
+            setArmed(true)
+        } else {
+            confirming = true
+        }
     }
 }

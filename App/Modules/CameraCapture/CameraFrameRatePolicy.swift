@@ -40,4 +40,65 @@ enum CameraFrameRatePolicy {
     static func canChange(recording: Bool, starting: Bool, finishing: Bool) -> Bool {
         !recording && !starting && !finishing
     }
+
+    /// How a foreground-session boundary resolves the capture frame rate.
+    ///
+    /// The mode is session-only, so the boundary resets it to `.standard24`. When
+    /// a take is still pending or draining, the device reset has to wait for the
+    /// take to finish; otherwise the recorder would end on a different rate than
+    /// it started. Deferring loses nothing because the enqueued job keeps the
+    /// policy captured at take start.
+    static func resetAction(recording: Bool, starting: Bool, finishing: Bool) -> CameraFrameRateResetAction {
+        canChange(recording: recording, starting: starting, finishing: finishing)
+            ? .resetImmediately
+            : .deferUntilTakeFinishes
+    }
+}
+
+/// The boundary reset decision. See `CameraFrameRatePolicy.resetAction`.
+enum CameraFrameRateResetAction: Equatable {
+    /// No take is pending, active or draining: reset at once.
+    case resetImmediately
+    /// A take is pending or draining: reset once it finishes.
+    case deferUntilTakeFinishes
+}
+
+/// Associates the capture policy taken at take start with the completed source
+/// URL. The screen and the queue read the policy from here, never from the live
+/// mode, so a session-boundary reset cannot mislabel a queued job.
+///
+/// Bounded so a long session cannot grow it without limit; the most recent takes
+/// are kept. A failed or cancelled take is simply never recorded, so it cannot
+/// corrupt an earlier take's mapping.
+struct DaylightCapturePolicyLedger: Equatable {
+    private(set) var policies: [URL: RenderCapturePolicy] = [:]
+    private var order: [URL] = []
+    private let limit: Int
+
+    init(limit: Int = 8) {
+        self.limit = max(1, limit)
+    }
+
+    /// Record the mode captured when a take started, before the screen observes
+    /// the completed URL.
+    mutating func record(sourceURL: URL, mode: CameraFrameRate) {
+        guard let policy = RenderCapturePolicy(mode.fps) else { return }
+        let key = sourceURL.standardizedFileURL
+        policies[key] = policy
+        order.removeAll { $0 == key }
+        order.append(key)
+        while order.count > limit {
+            policies[order.removeFirst()] = nil
+        }
+    }
+
+    /// The policy for a completed take, or nil if it is unknown/legacy.
+    func policy(for sourceURL: URL) -> RenderCapturePolicy? {
+        policies[sourceURL.standardizedFileURL]
+    }
+
+    mutating func clear() {
+        policies.removeAll()
+        order.removeAll()
+    }
 }

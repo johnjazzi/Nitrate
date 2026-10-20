@@ -49,6 +49,31 @@ final class CameraViewModel {
     /// The screen saves it to Photos unchanged; it is never rendered.
     private(set) var retainedOriginal: RetainedOriginal?
 
+    // MARK: - Daylight 60 fps (session-only)
+
+    /// Live capture frame rate. Session-only: it resets to `.standard24` at every
+    /// foreground-session boundary (background, disappear, cold launch) and is
+    /// never persisted.
+    private(set) var sessionFrameRate: CameraFrameRate = .standard24
+    /// Whether the active device/format advertises a 4K Apple Log 2 10-bit 60 fps
+    /// range. Refreshed after configuration and lens switches; drives the
+    /// control's unavailable state. It never silently disarms the mode.
+    private(set) var supportsDaylight60 = false
+    /// True while an arm/disarm is in flight. Record, lens and exposure actions
+    /// are held until the transition settles, mirroring the stabilizer gate.
+    private(set) var isChangingFrameRate = false
+    /// Guards frame-rate callbacks against lifecycle/generation changes, so a
+    /// transition that was in flight when the app backgrounded can never restore
+    /// 60 fps on the following foreground session.
+    private var frameRateGeneration: UInt64 = 0
+    /// The mode captured when the current take started, tagged with its capture
+    /// generation so a stale/failed finish cannot adopt a newer take's mode.
+    private var takeStartFrameRate: (generation: UInt64, mode: CameraFrameRate)?
+    /// Capture policies keyed by the completed source URL. The screen and the
+    /// queue read the policy from here, never from the live mode, so a boundary
+    /// reset cannot mislabel a queued job.
+    private var capturePolicies = DaylightCapturePolicyLedger()
+
     // Exposure (live from the device, polled every 0.5s)
     var liveISO: Float = 0
     var liveShutterSeconds: Double = 0
@@ -145,6 +170,7 @@ final class CameraViewModel {
         endSlowZoom()
         guard lifecycleGate.isActive else { return }
         lifecycleGate.deactivate()
+        resetFrameRateForSessionBoundary()
         exposureCommandGeneration &+= 1
         cameraLensSwitchGeneration &+= 1
         apertureCommandGeneration &+= 1
@@ -241,6 +267,7 @@ final class CameraViewModel {
                 return
             }
             self.cameraConfigured = true
+            self.refreshDaylight60Eligibility()
             self.startSession()
         }
     }
@@ -310,7 +337,9 @@ final class CameraViewModel {
     }
 
     func startRecording() {
-        guard !isStartingRecording, !isRecording else { return }
+        // A frame-rate transition owns the device configuration and exposure;
+        // do not start a take on a rate that is still changing.
+        guard !isStartingRecording, !isRecording, !isChangingFrameRate else { return }
         guard lifecycleGate.isActive, cameraConfigured else {
             errorMessage = "Camera is not ready to record."
             return
@@ -326,6 +355,9 @@ final class CameraViewModel {
         recordingWarning = nil
         captureGeneration &+= 1
         let generation = captureGeneration
+        // Snapshot the session-only mode at take start. The finished take is
+        // associated with this policy, never with the live mode.
+        takeStartFrameRate = (generation, sessionFrameRate)
         // The counter starts at the tap: capture begins about 0.2 s later, and the
         // writer may not confirm that for another two seconds.
         recordingTimerOrigin = RecordButtonTimingPolicy.timerOrigin(tapAt: Date())
@@ -420,6 +452,9 @@ final class CameraViewModel {
     /// Completion runs on the main queue; `nil` error means the swap succeeded.
     func selectLens(_ lens: CameraLens, completion: @escaping (Error?) -> Void) {
         endSlowZoom()
+        // A frame-rate transition owns the device configuration; a lens switch
+        // must wait for it to settle rather than race it.
+        guard !isChangingFrameRate else { return }
         exposureCommandGeneration &+= 1
         cameraLensSwitchGeneration &+= 1
         pendingLensSwitchCount += 1
@@ -446,6 +481,9 @@ final class CameraViewModel {
                 } else {
                     self.invalidateApertureUIState()
                 }
+                // A lens switch can change 60 fps eligibility. Refresh it, but
+                // never silently disarm an armed mode on a failed switch.
+                self.refreshDaylight60Eligibility()
             }
             // Resolve every caller. ContentView commits each successful lens;
             // failures remain visible while they never replace the committed
@@ -476,6 +514,82 @@ final class CameraViewModel {
         exposure.toggleISOLock(currentISO: currentISO)
     }
 
+    // MARK: - Daylight 60 fps (session-only)
+
+    /// True when the session-only frame-rate switch can run: the camera is live,
+    /// no lens/mode transition is in flight, and no take is pending, active or
+    /// draining. Mirrors the recording-stabilization gate.
+    var canChangeSessionFrameRate: Bool {
+        lifecycleGate.isActive && cameraConfigured && !isSwitchingCameraLens && !isChangingFrameRate
+            && CameraFrameRatePolicy.canChange(recording: isRecording, starting: isStartingRecording,
+                                               finishing: isStoppingRecording)
+    }
+
+    /// Arm or disarm the break-glass daylight 60 fps mode. Refused while a take
+    /// is pending/active/draining, during a transition, or when the device is
+    /// ineligible (the control disables itself in that case). Never persisted.
+    func setDaylight60Enabled(_ enabled: Bool) {
+        let target: CameraFrameRate = enabled ? .daylight60 : .standard24
+        guard target != sessionFrameRate, canChangeSessionFrameRate else { return }
+        guard target == .standard24 || supportsDaylight60 else { return }
+        isChangingFrameRate = true
+        frameRateGeneration &+= 1
+        let generation = frameRateGeneration
+        session.setFrameRate(target) { [weak self] error in
+            guard let self, self.frameRateGeneration == generation,
+                  self.lifecycleGate.isActive else { return }
+            self.isChangingFrameRate = false
+            if let error {
+                // The previous mode is preserved; never a silent downgrade.
+                self.errorMessage = "Failed to set the capture frame rate: \(error.localizedDescription)"
+                return
+            }
+            self.sessionFrameRate = target
+        }
+    }
+
+    /// The capture policy snapshotted for a completed take. The screen reads this
+    /// instead of the live mode, so a session-boundary reset cannot mislabel it.
+    func capturePolicy(for sourceURL: URL) -> RenderCapturePolicy? {
+        capturePolicies.policy(for: sourceURL)
+    }
+
+    /// Refresh the daylight-60 eligibility from the active device. Called after
+    /// the camera configures and after a lens switch settles. It never silently
+    /// disarms an armed mode.
+    private func refreshDaylight60Eligibility() {
+        guard lifecycleGate.isActive, cameraConfigured, !isSwitchingCameraLens else {
+            supportsDaylight60 = false
+            return
+        }
+        let generation = frameRateGeneration
+        session.supportsDaylight60 { [weak self] supported in
+            guard let self, self.frameRateGeneration == generation,
+                  self.lifecycleGate.isActive, self.cameraConfigured else { return }
+            self.supportsDaylight60 = supported
+        }
+    }
+
+    /// A foreground-session boundary always resets the session-only mode. The
+    /// runtime owns the device reset and defers it through any draining take; the
+    /// UI resets immediately, which is safe because the enqueued job reads the
+    /// policy captured at take start, not the live mode.
+    private func resetFrameRateForSessionBoundary() {
+        // Invalidate any in-flight transition: a backgrounded mode change must
+        // not restore 60 fps on the next foreground session.
+        frameRateGeneration &+= 1
+        isChangingFrameRate = false
+        sessionFrameRate = .standard24
+        supportsDaylight60 = false
+        // A draining take still needs the mode captured at its start, so the
+        // snapshot is only discarded when no take is pending/active/draining.
+        if CameraFrameRatePolicy.resetAction(recording: isRecording, starting: isStartingRecording,
+                                             finishing: isStoppingRecording) == .resetImmediately {
+            takeStartFrameRate = nil
+        }
+        session.resetFrameRateForNextSession()
+    }
+
     // MARK: - Manual Exposure
 
     func setManualISO(_ iso: Float) {
@@ -483,6 +597,8 @@ final class CameraViewModel {
         // (`exposureChangeDuringRecording`), so an optimistic write here would
         // display an ISO the hardware never took. Refuse before mutating, matching
         // the silent gating the other transition-limited controls use.
+        // A frame-rate transition owns the exposure path; hold ISO changes too.
+        guard !isChangingFrameRate else { return }
         guard CameraManualExposureSelectionPolicy.canChangeISO(
             isStartingRecording: isStartingRecording, isRecording: isRecording,
             isStoppingRecording: isStoppingRecording) else { return }
@@ -511,7 +627,7 @@ final class CameraViewModel {
     }
 
     func setLensAperture(_ aperture: Float?) {
-        guard canSelectAperture else { return }
+        guard canSelectAperture, !isChangingFrameRate else { return }
         apertureCommandGeneration &+= 1
         let commandGeneration = apertureCommandGeneration
         let switchGeneration = cameraLensSwitchGeneration
@@ -612,6 +728,7 @@ final class CameraViewModel {
     /// lock uses custom exposure mode, where the device's own bias is always 0,
     /// and the shutter-priority re-meter resets it regardless.
     func setExposureBias(_ bias: Float) {
+        guard !isChangingFrameRate else { return }
         let range = session.exposureBiasRange
         let clamped = min(max(bias, range.lowerBound), range.upperBound)
         liveExposureBias = clamped
@@ -619,6 +736,8 @@ final class CameraViewModel {
     }
 
     func toggleManualExposure() {
+        // A frame-rate transition owns the exposure path; hold the toggle too.
+        guard !isChangingFrameRate else { return }
         if isManualExposure {
             exposureCommandGeneration &+= 1
             let generation = exposureCommandGeneration
@@ -739,6 +858,12 @@ final class CameraViewModel {
 
     private func handleRecordingFinished(_ result: Result<RecordingCompletion, Error>) async {
         let generation = captureGeneration
+        // Resolve this take's captured mode before any await. The policy is
+        // immutable through the take and is never the live mode (which may have
+        // reset at a session boundary while the take drained).
+        let takeMode = takeStartFrameRate.flatMap { $0.generation == generation ? $0.mode : nil }
+            ?? sessionFrameRate
+        takeStartFrameRate = nil
         isRecording = false
         isStoppingRecording = false
         refreshRecordingStabilization()
@@ -752,6 +877,10 @@ final class CameraViewModel {
         case .success(let completion):
             switch RecordingFinishPresentationPolicy.plan(for: completion) {
             case .render(let url):
+                // Associate the take's policy with the completed URL BEFORE
+                // publishing it, so the screen and the awaiting-stock path read
+                // the take's policy even after a live-mode reset.
+                capturePolicies.record(sourceURL: url, mode: takeMode)
                 lastRecordedURL = url
                 if let warning = completion.warning {
                     let warningMessage = warning.localizedDescription

@@ -121,6 +121,11 @@ struct ContentView: View {
                             isManualFocus: $isManualFocus,
                             expanded: $manualControlsExpanded,
                             landscape: abs(statusRotationDegrees) == 90,
+                            daylight60Armed: cameraViewModel.sessionFrameRate == .daylight60,
+                            daylight60Available: cameraViewModel.supportsDaylight60,
+                            daylight60UnavailableReason: Daylight60Control.unavailableReason,
+                            canChangeFrameRate: cameraViewModel.canChangeSessionFrameRate,
+                            setDaylight60: cameraViewModel.setDaylight60Enabled,
                             onDismiss: {
                                 cameraViewModel.endSlowZoom()
                                 withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false }
@@ -151,7 +156,8 @@ struct ContentView: View {
             } else {
                 // Durably queue the take before the sheet is shown, so leaving the
                 // sheet (Done/swipe), a second take, or a relaunch cannot strand it.
-                awaitingStockJobId = renderQueueViewModel.enqueueAwaitingStock(sourceURL: url)
+                awaitingStockJobId = renderQueueViewModel.enqueueAwaitingStock(
+                    sourceURL: url, capturePolicy: cameraViewModel.capturePolicy(for: url))
                 showStockSheet = true
             }
         }
@@ -227,7 +233,8 @@ struct ContentView: View {
             sourceURL: sourceURL,
             stockId: stock.stockId,
             iso: currentISO,
-            gauge: library.lastGauge(for: stock.stockId)
+            gauge: library.lastGauge(for: stock.stockId),
+            capturePolicy: cameraViewModel.capturePolicy(for: sourceURL)
         )
     }
 
@@ -419,7 +426,8 @@ struct ContentView: View {
     private func statusFace(text: String) -> some View {
         RecordingStatusFace(presentation: recordPresentation, text: text,
                             style: RecordingIndicatorStyle.resolved(recordingIndicatorStyle),
-                            rotationDegrees: CameraGlyphRotation.degrees(for: orientation.deviceOrientation))
+                            rotationDegrees: CameraGlyphRotation.degrees(for: orientation.deviceOrientation),
+                            daylight60Active: cameraViewModel.sessionFrameRate == .daylight60)
     }
 
     private var lensMenu: some View {
@@ -543,6 +551,7 @@ struct ContentView: View {
             renderQueueViewModel: renderQueueViewModel,
             sourceURL: currentSourceURL,
             awaitingStockJobId: awaitingStockJobId,
+            capturePolicy: currentSourceURL.flatMap { cameraViewModel.capturePolicy(for: $0) },
             isPresented: $showStockSheet,
             selectedStock: $selectedStock,
             currentISO: $currentISO
@@ -592,6 +601,9 @@ private struct StockSheetView: View {
     /// When set, rendering assigns the stock to this durable awaiting entry
     /// instead of creating a second job for the same take.
     var awaitingStockJobId: UUID?
+    /// The policy snapshotted for this take, read from the view model — never
+    /// from the live mode, which may already have reset for the next session.
+    var capturePolicy: RenderCapturePolicy?
     @Binding var isPresented: Bool
     @Binding var selectedStock: FilmStockConfig?
     @Binding var currentISO: Float
@@ -704,7 +716,8 @@ private struct StockSheetView: View {
                     sourceURL: sourceURL,
                     stockId: stock.stockId,
                     iso: stock.defaultISO,
-                    gauge: gauge
+                    gauge: gauge,
+                    capturePolicy: capturePolicy
                 )
             }
             isPresented = false
