@@ -1,31 +1,29 @@
 name: Xcode Cloud monitor
 
-# Manual-start only during cutover.
+# Manual-start only.
 #
-# This workflow starts and monitors an Xcode Cloud build run through the App
-# Store Connect API. It is intentionally limited to `workflow_dispatch` until the
-# live Cloud configuration is verified and the release manager turns on the
-# automatic triggers below. The native GitHub macOS workflow (xcode.yml) stays in
-# place until this path is proven, so nothing here edits or replaces it.
+# This workflow supervises the production `Nitrate` ARCHIVE (release) Cloud
+# workflow through the App Store Connect API. It stays manual-only because the
+# release archive is a deliberate, human-started delivery step and because the
+# App Store Connect API has NO cancel endpoint and NO timeout field (verified
+# against the official OpenAPI 4.5.1 spec: 0 of 1303 operations cancel;
+# /v1/ciBuildRuns/{id} is GET only). At the 600 s alert deadline it fails loudly
+# and asks a human to cancel in App Store Connect; the Actions job failure is the
+# notification channel. No email is promised. The job timeout (15 min) is
+# deliberately longer than the 600 s alert so the alert fires before the runner
+# is killed.
 #
-# The App Store Connect API has NO cancel endpoint and NO timeout field
-# (verified against the official OpenAPI 4.5.1 spec: 0 of 1303 operations cancel;
-# /v1/ciBuildRuns/{id} is GET only). This monitor therefore never cancels a run.
-# At the 600 s alert deadline it fails loudly and asks a human to cancel in App
-# Store Connect; the Actions job failure is the notification channel. No email is
-# promised. The job timeout (15 min) is deliberately longer than the 600 s alert
-# so the alert fires before the runner is killed.
+# The TEST (RenderCLI) role no longer lives here. The automatic test monitor is
+# `.github/workflows/xcode.yml`, which preserves the required "Xcode build and
+# tests" check context. Retaining a second, manual test launcher here would let a
+# human start duplicate, unmonitored test builds that contend for the same
+# product compute, so the manual test job was removed; only the release monitor
+# remains.
 on:
   workflow_dispatch:
     inputs:
-      role:
-        description: Which Cloud workflow to start
-        type: choice
-        required: true
-        default: test
-        options: [test, release]
       branch:
-        description: Branch to build (ignored when a pull request number is given)
+        description: Branch to archive (ignored when a pull request number is given)
         type: string
         required: false
         default: main
@@ -34,7 +32,7 @@ on:
         type: string
         required: true
       workflow_id:
-        description: Cloud workflow id override (defaults to the role's repo variable)
+        description: Cloud workflow id override (defaults to the release repo variable)
         type: string
         required: false
         default: ""
@@ -43,74 +41,34 @@ on:
         type: string
         required: false
         default: ""
-# Automatic triggers stay disabled until the manager verifies the live config:
+# Automatic triggers stay disabled: the release archive is started by a human,
+# and the automatic PR/main test monitor is xcode.yml, not this file.
 #  pull_request:
 #    branches: [main]
 #  push:
 #    branches: [main]
 #
-# When those are enabled, each job must check the helper out from the trusted
-# BASE ref (never github.ref, never pull_request_target) and pass the PR head SHA
-# as --expected-sha, because the helper itself is untrusted when a PR can change
-# it. The dispatched-ref checkout below is the trusted source for manual runs.
+# If those were ever enabled, each job would have to check the helper out from
+# the trusted BASE ref (never github.ref, never pull_request_target) and pass the
+# PR head SHA as --expected-sha, because the helper itself is untrusted when a PR
+# can change it. The dispatched-ref checkout below is the trusted source for
+# manual runs.
 
 permissions:
   contents: read
   pull-requests: write
 
 concurrency:
-  # One orchestration group for the whole product: a second monitor must not run
-  # in parallel. cancel-in-progress is FALSE because a cancelled monitor cannot
-  # cancel the Cloud run it started.
+  # One orchestration group for the whole product, shared with the automatic test
+  # monitor in xcode.yml: a second monitor must not run in parallel.
+  # cancel-in-progress is FALSE because a cancelled monitor cannot cancel the
+  # Cloud run it started.
   group: cloud-monitor
   cancel-in-progress: false
 
 jobs:
-  pr-test:
-    name: Cloud PR test monitor
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.role == 'test' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      XCODE_CLOUD_WORKFLOW_ID: ${{ inputs.workflow_id != '' && inputs.workflow_id || vars.XCODE_CLOUD_TEST_WORKFLOW_ID }}
-      APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      CLOUD_ROLE: test
-      CLOUD_BRANCH: ${{ inputs.branch }}
-      CLOUD_EXPECTED_SHA: ${{ inputs.expected_sha }}
-      CLOUD_PULL_REQUEST: ${{ inputs.pull_request }}
-    steps:
-      - name: Check out the trusted monitor helper
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-      - name: Install the monitor dependencies in an isolated venv
-        run: |
-          python3 -m venv "$RUNNER_TEMP/cloud-monitor-venv"
-          "$RUNNER_TEMP/cloud-monitor-venv/bin/pip" install --disable-pip-version-check \
-            --require-hashes -r scripts/cloud-monitor-requirements.txt
-      - name: Run the monitor unit tests
-        run: |
-          "$RUNNER_TEMP/cloud-monitor-venv/bin/python" scripts/test_cloud_monitor.py -v
-      - name: Start and monitor the Cloud run
-        # The App Store Connect private key is only exposed to the one step that
-        # actually needs it. Dependency install and unit tests run without it.
-        env:
-          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
-        run: |
-          args=(start --role "$CLOUD_ROLE" --expected-sha "$CLOUD_EXPECTED_SHA" --alert-deadline 600)
-          if [ -n "$CLOUD_PULL_REQUEST" ]; then
-            args+=(--pull-request "$CLOUD_PULL_REQUEST")
-          else
-            args+=(--branch "$CLOUD_BRANCH")
-          fi
-          "$RUNNER_TEMP/cloud-monitor-venv/bin/python" scripts/cloud_monitor.py "${args[@]}"
-
   main-archive:
     name: Cloud main archive monitor
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.role == 'release' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:

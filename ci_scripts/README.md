@@ -20,6 +20,20 @@ build processes. Do not silently skip lint when a tool is missing.
 Only the Cloud checkout is prepared; this script does not commit or push a
 project, change a developer account, create certificates, or publish a build.
 
+## Post-xcodebuild iOS coverage
+
+`ci_post_xcodebuild.sh` runs after `xcodebuild` for each action. Apple runs a
+test action in two phases: it builds test products with
+`xcodebuild build-for-testing` (source code available), then runs them with
+`xcodebuild test-without-building` (source code unavailable). Because the
+RenderCLI TEST action only compiles for macOS, this hook restores the iOS compile
+the retired native job provided: when `CI_XCODEBUILD_ACTION` is
+`build-for-testing` it re-adds the pinned tool paths and runs
+`python3 scripts/verify.py check` (lint plus an unsigned generic iOS build).
+Every other action and the `test-without-building` phase exit immediately. If the
+source checkout is missing in that phase, the hook fails loudly instead of
+silently dropping the coverage.
+
 ## Configure the existing Cloud workflow
 
 In App Store Connect → Apps → nitrate.camera → Xcode Cloud → Workflows →
@@ -77,6 +91,7 @@ or publish the PR.
 
 ```sh
 python3 scripts/test_cloud_bootstrap.py
+python3 scripts/test_verify_workflow.py
 python3 scripts/verify.py verify
 ```
 

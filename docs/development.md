@@ -122,31 +122,45 @@ archive to pass on PRs: it runs only after main changes.
 
 ## Automated build and test checks
 
-`.github/workflows/xcode.yml` runs **Xcode build and tests** on pull requests to
-main, on main pushes, and on manual dispatch. It uses GitHub's `xcode-27` macOS
-image, installs the downloadable Metal toolchain that hosted macOS images do
-not ship (shader compilation otherwise fails with `cannot execute tool
-'metal'`), reports the selected SDK and Metal device, installs the
-checksum-pinned XcodeGen/SwiftLint tools through the existing Cloud bootstrap,
-and runs `python3 scripts/verify.py verify`. This covers lint, Python
-policy/bootstrap checks, the macOS RenderCLI test suite, and an unsigned
-generic iOS build. No
-Apple signing credentials or Photos permissions are needed. Verification logs
-are retained as an Actions artifact for one day. The workflow reads the actual
-`.xcresult` bundle to publish passed, failed, and skipped counts in the run
-summary and fails if no successful nonempty test run was produced. A skipped
-hardware-dependent test is not proof that its rendering behavior passed.
+`.github/workflows/xcode.yml` runs the required **Xcode build and tests** check
+on pull requests to main, on main pushes, and on manual dispatch. It no longer
+compiles on a GitHub macOS runner: it is an Ubuntu job that starts a Cloud
+RenderCLI **TEST** run through the App Store Connect API and monitors it to
+completion (start, poll, verify the exact source commit, and confirm real test
+results). The job name is unchanged, so the required status-check context and the
+branch-protection settings do not move.
 
-After the first successful run, require **Xcode build and tests** alongside
-**Release version gate** in main's branch protection. Keep the strict
-up-to-date requirement. A main-only Cloud archive cannot serve as a pre-merge
-check. Physical iPhone checks remain necessary for camera, permissions,
-Photos handoff, thermal behavior, and real rendering performance.
+The job checks out the monitor helper from a fixed reviewed commit
+(`git rev-parse 05993dd` on dev), never the pull-request head, so a PR cannot
+change the code that talks to Apple. Dependencies are hash-pinned
+(`scripts/cloud-monitor-requirements.txt`) and the monitor unit tests run before
+the monitor starts. The App Store Connect private key is exposed only to the one
+step that starts the run. A **fork** pull request fails the check explicitly —
+fork PRs never receive the secrets, and their head branch is not in this
+repository — so a fork can never pass by being silently skipped.
 
-The PR check and Xcode Cloud are separate: GitHub Actions provides the
-pre-merge build/test gate; Cloud handles the signed main-branch archive and
-TestFlight delivery. Neither a green unsigned build nor a green archive alone
-establishes end-to-end device behavior or successful TestFlight delivery.
+The iOS build coverage the retired native job provided is restored *inside*
+Cloud by `ci_scripts/ci_post_xcodebuild.sh`. Apple runs a test action in two
+phases: it builds test products with `xcodebuild build-for-testing` (source code
+available), then runs them with `xcodebuild test-without-building` (source code
+unavailable). The hook runs only in the `build-for-testing` phase
+(`CI_XCODEBUILD_ACTION`), where it lints and compiles the iOS app without signing
+through `python3 scripts/verify.py check`. The RenderCLI TEST action alone only
+compiles for macOS; the hook keeps the iOS compile in the required check.
+
+The portable Ubuntu policy checks live in `.github/workflows/policy.yml`, the
+release-version gate stays in `.github/workflows/release-version.yml`, and the
+manual release (archive) monitor is `.github/workflows/cloud.yml`. Every Cloud
+monitor shares one product-wide `cloud-monitor` concurrency group with
+`cancel-in-progress: false`, because a cancelled monitor cannot cancel the Cloud
+run it started.
+
+Require **Xcode build and tests** alongside **Release version gate** in main's
+branch protection. A main-only Cloud archive cannot serve as a pre-merge check.
+Physical iPhone checks remain necessary for camera, permissions, Photos handoff,
+thermal behavior, and real rendering performance. Neither a green unsigned build
+nor a green archive alone establishes end-to-end device behavior or successful
+TestFlight delivery.
 
 ## Cloud distribution
 

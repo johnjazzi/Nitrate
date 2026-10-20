@@ -2,14 +2,43 @@
 
 ## Target split
 
-- **GitHub/Linux:** release-version enforcement and portable Python policy tests.
-- **Xcode Cloud:** one macOS `RenderCLI` Test action for validation; a separate
+- **GitHub/Linux:** the required **Xcode build and tests** check is an Ubuntu
+  monitor (`.github/workflows/xcode.yml`) that starts and supervises a Cloud
+  RenderCLI TEST run; the release-version gate and the portable Python policy
+  tests run here too.
+- **Xcode Cloud:** one macOS `RenderCLI` Test action for validation, plus
+  `ci_scripts/ci_post_xcodebuild.sh` restoring the iOS lint/compile; a separate
   production `Nitrate` Archive workflow for merge-to-TestFlight delivery.
-- Start with manual dispatch. Enable automatic PR/main orchestration only after
-  the workflows, monitoring, and exact-commit checks have been exercised live.
-- Keep the existing native GitHub requirement until its replacement has passed
-  and the replacement status context has been verified. Do not leave a gap in
-  required native validation.
+- The test monitor is now automatic (same-repo PR to main, main push, manual
+  dispatch). The release archive monitor stays manual
+  (`.github/workflows/cloud.yml`).
+- The replacement reuses the existing required check name, so no
+  branch-protection setting changes. Do not leave a gap in required native
+  validation.
+
+## Implemented cutover (repository side)
+
+- `.github/workflows/xcode.yml` replaces the native macOS job with a job named
+  **Xcode build and tests** on `ubuntu-latest`. It checks out the monitor helper
+  from the fixed reviewed commit `05993dd` (full SHA, never the PR head),
+  installs the hash-pinned monitor dependencies, runs the monitor unit tests, and
+  then starts/monitors the Cloud TEST run. The private key is scoped to the
+  single start step. The helper commit is deliberately pinned; advance it only
+  after review.
+- Fork pull requests **fail** the check explicitly (never silently skip): fork
+  PRs never receive the secrets and their head branch is not in this repository.
+  The refusal step runs before any secret is read.
+- The PR head branch is built with `--branch` (the Cloud manual workflow supports
+  a branch, not a PR), and `--expected-sha` is the exact head commit.
+- `ci_scripts/ci_post_xcodebuild.sh` restores the iOS lint/compile the native job
+  used to provide. Apple runs a test action in two phases — `build-for-testing`
+  (source available) then `test-without-building` (source unavailable) — so the
+  hook runs only when `CI_XCODEBUILD_ACTION == build-for-testing` and then runs
+  `python3 scripts/verify.py check`.
+- Every Cloud monitor shares one product-wide `cloud-monitor` concurrency group
+  with `cancel-in-progress: false`.
+- The duplicate manual TEST launcher was removed from `cloud.yml`; it now
+  supervises the release archive only.
 
 ## Budget policy: alert, not an automatic stop
 
@@ -79,16 +108,21 @@ and Python packaging tests alone do not establish Cloud success.
 5. Exercise the monitor against a live exact-commit Cloud run. Confirm its
    deadline notification and manual-cancellation instructions. Confirm actual
    successful tests separately from a successful archive/upload.
-6. Run the portable GitHub workflow on Ubuntu and inspect real results.
-7. Register the demonstrated replacement native status context in protection,
-   retain the release-version gate, then retire the GitHub macOS test job.
+6. Confirm the automatic test monitor ran on a real same-repo PR to main and a
+   real main push, and that a fork PR fails as intended.
+7. Confirm `ci_scripts/ci_post_xcodebuild.sh` ran during the build-for-testing
+   phase and produced the lint and unsigned iOS build. If Apple does not expose
+   the source checkout at this hook stage, replace the hook with a separate Cloud
+   BUILD action in the test workflow (an owner-side edit) instead of dropping the
+   iOS coverage.
 
-A new dispatch-only workflow must be present on the default branch for normal
-workflow discovery. The existing dispatch-enabled `xcode.yml` path can host a
-staged monitor on `dev` for the initial `--ref dev` validation without merging
-untested orchestration. Read that ref's actual workflow before dispatching.
+The required check keeps its existing name, so no branch-protection edit is
+needed, and the release-version gate is retained. The helper pin
+(`ref: 05993dd3ef90ff19d38440a49cc462f8f5ead2c3`) must be advanced deliberately
+when the monitor changes.
 
-**Current live state is not verified:** the automation browser is unauthenticated,
-no App Store Connect credentials are available to this session, and Cloud runs
-have not been started by this migration. Repository implementation is preparation,
-not proof that Cloud or its alerts are active.
+**Live Cloud behavior is not yet verified:** this repository change prepares and
+documents the cutover, but the automation session has no App Store Connect
+credentials, so the Cloud test workflow, its alerts, and the post-xcodebuild hook
+have not been exercised live. A green repository test is not proof that Cloud or
+its alerts are active.

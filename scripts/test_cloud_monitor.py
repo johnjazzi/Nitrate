@@ -42,6 +42,7 @@ except ImportError:  # pragma: no cover - only on a bare interpreter
     HAVE_CRYPTO = False
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/cloud.yml"
+TEST_WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/xcode.yml"
 
 API = cm.API_BASE
 WID = "11111111-2222-3333-4444-555555555555"
@@ -1243,9 +1244,16 @@ class DeadlineTests(MonitorTestCase):
 
 
 # --------------------------------------------------------------------------- #
-# Static workflow contract (not a claim that GitHub dispatched a run)
+# Static workflow contracts (not a claim that GitHub dispatched a run)
 # --------------------------------------------------------------------------- #
-class WorkflowContractTests(unittest.TestCase):
+class ReleaseWorkflowContractTests(unittest.TestCase):
+    """cloud.yml is now the manual-only RELEASE monitor.
+
+    The automatic TEST monitor moved to xcode.yml; the duplicate manual test
+    launcher was removed so a human cannot start a second, unmonitored test build
+    that contends for the same product compute.
+    """
+
     def setUp(self):
         self.assertTrue(WORKFLOW.is_file(), "cloud monitor workflow is missing")
         self.text = WORKFLOW.read_text()
@@ -1258,10 +1266,12 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("pull_request_target:", self.text)
         self.assertIn("#  pull_request:", self.text)
 
-    def test_inputs_are_typed_and_role_is_a_controlled_choice(self):
-        self.assertIn("options: [test, release]", self.text)
-        for name in ("role:", "branch:", "expected_sha:", "workflow_id:", "pull_request:"):
-            self.assertIn(name, self.text)
+    def test_only_the_release_job_remains(self):
+        # The manual TEST launcher is gone; xcode.yml owns the test role now.
+        self.assertIn("main-archive:", self.text)
+        self.assertNotIn("pr-test:", self.text)
+        self.assertEqual(self.text.count("runs-on: ubuntu-latest"), 1)
+        self.assertEqual(self.text.count("timeout-minutes: 15"), 1)
 
     def test_permissions_and_concurrency_are_conservative(self):
         self.assertIn("permissions:\n  contents: read\n  pull-requests: write", self.text)
@@ -1269,27 +1279,18 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("cancel-in-progress: false", self.text)
         self.assertIn("group: cloud-monitor", self.text)
 
-    def test_two_jobs_run_on_linux_with_headroom_over_the_alert(self):
-        self.assertIn("pr-test:", self.text)
-        self.assertIn("main-archive:", self.text)
-        self.assertEqual(self.text.count("runs-on: ubuntu-latest"), 2)
-        self.assertEqual(self.text.count("timeout-minutes: 15"), 2)
-        self.assertNotIn("timeout-minutes: 10\n", self.text)
-
-    def test_workflow_ids_come_from_repo_variables(self):
-        self.assertIn("vars.XCODE_CLOUD_TEST_WORKFLOW_ID", self.text)
+    def test_release_workflow_id_comes_from_a_repo_variable(self):
         self.assertIn("vars.XCODE_CLOUD_RELEASE_WORKFLOW_ID", self.text)
 
     def test_checkout_is_pinned_and_read_only(self):
         self.assertIn("actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5", self.text)
-        self.assertEqual(self.text.count("persist-credentials: false"), 2)
+        self.assertEqual(self.text.count("persist-credentials: false"), 1)
 
     def test_secrets_are_env_only_and_never_shell_interpolated(self):
         self.assertIn("secrets.APP_STORE_CONNECT_KEY_ID", self.text)
         self.assertIn("secrets.APP_STORE_CONNECT_PRIVATE_KEY", self.text)
         for line in self.text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("run:"):
+            if line.strip().startswith("run:"):
                 self.assertNotIn("${{", line)
             if "${{" in line and "secrets." in line:
                 self.assertIn("env:", self.text)
@@ -1302,7 +1303,7 @@ class WorkflowContractTests(unittest.TestCase):
         # declared once per job, inside the start step's env.
         key_lines = [line for line in self.text.splitlines()
                      if "APP_STORE_CONNECT_PRIVATE_KEY" in line]
-        self.assertEqual(len(key_lines), 2)
+        self.assertEqual(len(key_lines), 1)
         for line in key_lines:
             indent = len(line) - len(line.lstrip())
             self.assertEqual(indent, 10, f"private key not scoped to a step env: {line!r}")
@@ -1316,6 +1317,76 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("--require-hashes", self.text)
         self.assertIn("scripts/cloud_monitor.py", self.text)
         self.assertIn("scripts/test_cloud_monitor.py", self.text)
+        self.assertNotIn("git push", self.text)
+        self.assertNotIn("sudo ", self.text)
+
+
+class TestMonitorWorkflowContractTests(unittest.TestCase):
+    """xcode.yml is the automatic test monitor that keeps the required check.
+
+    It replaces the native macOS job: same required status context
+    ("Xcode build and tests"), but an Ubuntu job that orchestrates and monitors a
+    Cloud RenderCLI TEST run. It must fail forks, build the PR head branch with
+    --branch, and pin the helper to the reviewed commit.
+    """
+
+    def setUp(self):
+        self.assertTrue(TEST_WORKFLOW.is_file(), "the test monitor workflow is missing")
+        self.text = TEST_WORKFLOW.read_text()
+
+    def test_triggers_on_same_repo_pr_main_push_and_dispatch(self):
+        self.assertIn("pull_request:", self.text)
+        self.assertIn("branches: [main]", self.text)
+        self.assertIn("push:", self.text)
+        self.assertIn("workflow_dispatch:", self.text)
+        self.assertNotIn("pull_request_target:", self.text)
+
+    def test_preserves_the_required_check_context(self):
+        # The required main-branch status check name must not change.
+        self.assertIn("name: Xcode build and tests", self.text)
+
+    def test_runs_on_ubuntu_not_a_macos_runner(self):
+        self.assertIn("runs-on: ubuntu-latest", self.text)
+        self.assertIn("timeout-minutes: 15", self.text)
+        self.assertNotIn("xcode-27", self.text)
+
+    def test_concurrency_matches_the_product_wide_monitor_group(self):
+        self.assertIn("group: cloud-monitor", self.text)
+        self.assertIn("cancel-in-progress: false", self.text)
+
+    def test_helper_is_pinned_to_the_reviewed_commit_not_the_pr_head(self):
+        self.assertIn("actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5", self.text)
+        self.assertIn("ref: 05993dd3ef90ff19d38440a49cc462f8f5ead2c3", self.text)
+        self.assertIn("persist-credentials: false", self.text)
+
+    def test_fork_pull_requests_fail_instead_of_passing(self):
+        # A fork must fail the check, never pass by being skipped, and must not
+        # expose credentials.
+        self.assertIn("github.event.pull_request.head.repo.full_name != github.repository",
+                      self.text)
+        self.assertIn("exit 1", self.text)
+
+    def test_builds_the_head_branch_with_branch_not_pull_request(self):
+        self.assertIn("--branch", self.text)
+        self.assertNotIn("--pull-request", self.text)
+
+    def test_workflow_id_comes_from_the_repo_variable(self):
+        self.assertIn("vars.XCODE_CLOUD_TEST_WORKFLOW_ID", self.text)
+
+    def test_private_key_is_scoped_to_the_start_step_only(self):
+        key_lines = [line for line in self.text.splitlines()
+                     if "APP_STORE_CONNECT_PRIVATE_KEY" in line]
+        self.assertEqual(len(key_lines), 1)
+        for line in key_lines:
+            indent = len(line) - len(line.lstrip())
+            self.assertEqual(indent, 10, f"private key not scoped to a step env: {line!r}")
+
+    def test_dependencies_are_hash_pinned_and_unit_tests_run(self):
+        self.assertIn("--require-hashes", self.text)
+        self.assertNotIn("pip install ", self.text)
+        self.assertIn("scripts/cloud-monitor-requirements.txt", self.text)
+        self.assertIn("scripts/test_cloud_monitor.py", self.text)
+        self.assertIn("scripts/cloud_monitor.py", self.text)
         self.assertNotIn("git push", self.text)
         self.assertNotIn("sudo ", self.text)
 
