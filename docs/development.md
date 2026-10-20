@@ -123,7 +123,9 @@ archive to pass on PRs: it runs only after main changes.
 ## Automated build and test checks
 
 `.github/workflows/xcode.yml` runs the required **Xcode build and tests** check
-on pull requests to main, on main pushes, and on manual dispatch. It no longer
+on pull requests to main and on manual dispatch. Main pushes retain the
+existing automatic TestFlight archive; a duplicate test launch would race that
+archive against the monitor’s product-wide active-run check. It no longer
 compiles on a GitHub macOS runner: it is an Ubuntu job that starts a Cloud
 RenderCLI **TEST** run through the App Store Connect API and monitors it to
 completion (start, poll, verify the exact source commit, and confirm real test

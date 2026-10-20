@@ -1334,10 +1334,10 @@ class TestMonitorWorkflowContractTests(unittest.TestCase):
         self.assertTrue(TEST_WORKFLOW.is_file(), "the test monitor workflow is missing")
         self.text = TEST_WORKFLOW.read_text()
 
-    def test_triggers_on_same_repo_pr_main_push_and_dispatch(self):
+    def test_triggers_on_pr_and_dispatch_without_racing_testflight(self):
         self.assertIn("pull_request:", self.text)
         self.assertIn("branches: [main]", self.text)
-        self.assertIn("push:", self.text)
+        self.assertNotIn("\n  push:", self.text)
         self.assertIn("workflow_dispatch:", self.text)
         self.assertNotIn("pull_request_target:", self.text)
 

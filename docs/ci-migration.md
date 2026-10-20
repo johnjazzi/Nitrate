@@ -9,7 +9,7 @@
 - **Xcode Cloud:** one macOS `RenderCLI` Test action for validation, plus
   `ci_scripts/ci_post_xcodebuild.sh` restoring the iOS lint/compile; a separate
   production `Nitrate` Archive workflow for merge-to-TestFlight delivery.
-- The test monitor is now automatic (same-repo PR to main, main push, manual
+- The test monitor is now automatic (same-repo PR to main, manual
   dispatch). The release archive monitor stays manual
   (`.github/workflows/cloud.yml`).
 - The replacement reuses the existing required check name, so no
@@ -109,7 +109,9 @@ and Python packaging tests alone do not establish Cloud success.
    deadline notification and manual-cancellation instructions. Confirm actual
    successful tests separately from a successful archive/upload.
 6. Confirm the automatic test monitor ran on a real same-repo PR to main and a
-   real main push, and that a fork PR fails as intended.
+   manual dispatch, and that a fork PR fails as intended. Main pushes retain
+   the existing automatic TestFlight archive; no duplicate test run competes
+   with it for the product-wide Cloud lock.
 7. Confirm `ci_scripts/ci_post_xcodebuild.sh` ran during the build-for-testing
    phase and produced the lint and unsigned iOS build. If Apple does not expose
    the source checkout at this hook stage, replace the hook with a separate Cloud
