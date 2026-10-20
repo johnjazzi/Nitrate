@@ -91,13 +91,15 @@ struct CameraTopPanel<Settings: View, Manual: View, Lens: View, Status: View, Di
 
     var body: some View {
         CameraTopPanelLayout() {
-            settings()
-            manual()
-            lens()
-            Group {
-                if statusInToolbar { status() } else { Color.clear.frame(width: 0, height: 0) }
+            // Layout requires five stable slots. Group/EmptyView flatten their
+            // children, so an absent timer must live in a concrete container.
+            ZStack { settings() }
+            ZStack { manual() }
+            ZStack { lens() }
+            ZStack {
+                if statusInToolbar { status() }
             }
-            diagnostics()
+            ZStack { diagnostics() }
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
