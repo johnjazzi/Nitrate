@@ -1,8 +1,9 @@
 # Stock-preview effects: grain scale and halation
 
 The stock selector shows a bundled Apple Log 2 plate with the selected stock's own look applied
-at display time. It now runs the same effect chain, in the same order, as a full-size render of
-the same stock, so a card shows what the clip will look like instead of an approximation.
+at display time. White balance, halation, the stock LUT and grain run in that order. Halation
+reuses the production stage; grain uses a smaller preview approximation. The preview does not
+include the renderer's glow, contrast adjustment or complete grain model.
 
 ```
 plate (Apple Log 2)
@@ -39,10 +40,9 @@ by the footprint, which tied a cell to the volume's own 128-texel repeat instead
 
 ### Subpixel damping
 
-When a cell is smaller than one drawable pixel it cannot be resolved. Averaging the independent
-cells that fall inside one output pixel reduces the noise RMS by the square root of their count,
-which is exactly the cell's size in drawable pixels, so the amplitude is scaled by
-`saturate(cellDrawablePixels)`. Subpixel grain then reads as fine texture instead of aliasing.
+When a cell is smaller than one drawable pixel it cannot be resolved. The preview scales its
+amplitude by `saturate(cellDrawablePixels)` to reduce visible noise at that size. This is an
+approximation, not an exact filtered reduction of the production grain field.
 
 ## Gauge presence
 
@@ -66,8 +66,8 @@ textures and measures pixels:
 
 - the CPU uniform mirror matches the shader structs (stride and every offset, including the
   `referenceLongEdge` field that rescales the grain);
-- doubling the drawable roughly halves the grain cell (mean horizontal difference of a uniform
-  plate, which is inversely proportional to the cell's pixel size);
+- reducing the drawable reduces the grain cell's pixel size while preserving its size relative
+  to the picture;
 - a subpixel cell is damped well below a resolved one while staying present;
 - presence falls across the gauge ladder, 8mm loudest and 75mm nearly silent;
 - the corrected reference resolves far finer grain than the legacy 128-pixel one;
