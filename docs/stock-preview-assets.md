@@ -39,8 +39,15 @@ At runtime:
 
 ```
 plate -> Apple Log decode -> assumed scene/stock white-balance matrix
-      -> Apple Log encode -> selected stock .cube -> grain -> Rec. 709
+      -> Apple Log encode -> production halation (scene-linear, pre-LUT)
+      -> selected stock .cube -> gauge grain sized in reference-frame pixels -> Rec. 709
 ```
+
+Halation is the real `SpatialEffectsStage` chain the offline render uses, run on the
+white-balanced frame before the LUT, so the preview's halo scatters the light the camera's
+lock actually produced. Grain is the shipped 128³ volume, sampled in the reference frame's
+pixel space so a cell keeps the same size relative to the picture at any drawable resolution.
+See `docs/stock-preview-effects.md` for the chain and the tests that pin it.
 
 `platePreviewFragment` in `Resources/Shaders/camera-preview.metal` performs the lookup with
 the same convention as `cameraPreviewFragment`, so a plate and a live frame grade identically.
@@ -105,7 +112,9 @@ mixed lighting and a deliberately warm/cool camera setting can violate that assu
 
 ## What these plates are not
 
-- Not grain, halation, glow or gauge. Those come from the app's own shaders.
+- Not glow. Glow is the one effect the preview does not show, because it is a post-LUT optical
+  bloom its card is too small to read. Grain, halation and gauge DO come from the app's own
+  shaders (`docs/stock-preview-effects.md`), not from the plates.
 - Not full-screen quality: 8-bit Log is ample for a card but will band if the preview is ever
   shown large. 16-bit plates are the upgrade path.
 

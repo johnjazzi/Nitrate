@@ -13,6 +13,11 @@ import simd
 /// tweak or a gauge change updates the preview with no new asset. The LUT lookup matches
 /// `cameraPreviewFragment` exactly, so a plate and a live frame grade identically.
 ///
+/// The preview stands in for a full-size render of the same stock and runs the same chain in
+/// the same order -- white-balance preparation, the production halation stage, the stock LUT,
+/// then gauge grain -- so it needs neither a baked per-stock still nor a second, invented
+/// effect shader.
+///
 /// Plates are the author's RAW photographs converted to Apple Wide Gamut and encoded with
 /// the Apple Log curve. They are illustrative, not camera-recorded Apple Log 2 frames.
 struct StockSamplePreview: View {
@@ -20,6 +25,9 @@ struct StockSamplePreview: View {
     /// Print gauge, so the preview shows the grain that gauge produces.
     var gauge: PrintGauge?
     @State private var sceneID = ""
+    /// The optional magnified crop. The card's frame never changes with it, so the sheet keeps
+    /// its height; only the sampled window (and the grain/halation scale) does.
+    @State private var isDetail = false
     private static let catalog = Result { try StockSampleCatalog.load() }
 
     var body: some View {
@@ -61,7 +69,9 @@ struct StockSamplePreview: View {
                           stockName: stock?.displayName ?? "Neutral",
                           lutName: stock?.lutName ?? "AppleLog2ToRec709.cube",
                           configuration: PreviewConfiguration(stock: stock, gauge: gauge,
-                                                              sceneIlluminantKelvin: scene.sceneIlluminantKelvin))
+                                                              sceneIlluminantKelvin: scene.sceneIlluminantKelvin),
+                          isDetail: isDetail,
+                          onToggleDetail: { isDetail.toggle() })
                     .padding(.horizontal, 4)
                     .tag(scene.id)
             }
@@ -95,44 +105,98 @@ struct StockSamplePreview: View {
 
 /// One page: the plate with this stock's cube applied, plus its caption.
 /// Everything the shader needs for one (scene, stock, gauge) combination: the realised grain
-/// footprint the renderer would use, and the white-balance gain the camera would apply.
+/// footprint, the grain presence that gauge carries, the white-balance lock the camera would
+/// apply, and the stock's own halation parameters.
 struct PreviewConfiguration: Equatable {
+    /// Realised grain cell size, in REFERENCE-frame pixels.
     let footprint: Float
+    /// Grain presence. The gauge owns it, so 8mm reads coarse and loud and 75mm nearly none.
     let amplitude: Float
     /// Simulates the stock lock's cast with a Bradford transform in linear Apple Wide Gamut,
     /// carrying the locked white onto the assumed scene white.
     let whiteBalance: simd_float3x3
+    /// Pre-LUT halation, straight from the stock. Never rescaled here: the 30% total-amount
+    /// reduction lives in the catalogs, so applying it again would halve it twice.
+    let halationStrength: Float
+    /// Base diffusion radius as a fraction of half-resolution width -- already relative to
+    /// the frame, so it needs no rescaling for the smaller preview drawable.
+    let halationRadiusFraction: Float
+    /// Per-layer halation contribution weights (red dominant).
+    let halationTint: SIMD3<Float>
+    /// Long edge, in pixels, of the render the preview stands in for. Grain is sized in this
+    /// frame's pixels so the card shows the grain a full render would, not a magnified copy.
+    let referenceLongEdge: Float
+    /// Magnification of the optional detail view. 1 shows the whole frame; a larger value shows
+    /// a centre crop of it, with the grain and the halation magnified by the same factor rather
+    /// than the photo alone.
+    let zoom: Float
+
+    /// The 4K delivery frame.
+    static let defaultReferenceLongEdge: Float = 3840
+
+    init(footprint: Float, amplitude: Float, whiteBalance: simd_float3x3,
+         halationStrength: Float, halationRadiusFraction: Float, halationTint: SIMD3<Float>,
+         referenceLongEdge: Float = PreviewConfiguration.defaultReferenceLongEdge,
+         zoom: Float = 1) {
+        self.footprint = footprint
+        self.amplitude = amplitude
+        self.whiteBalance = whiteBalance
+        self.halationStrength = halationStrength
+        self.halationRadiusFraction = halationRadiusFraction
+        self.halationTint = halationTint
+        self.referenceLongEdge = referenceLongEdge
+        self.zoom = zoom
+    }
 
     init(stock: FilmStockConfig?, gauge: PrintGauge?, sceneIlluminantKelvin: Float) {
         guard let stock else {
-            self.footprint = 0
-            self.amplitude = 0
-            self.whiteBalance = matrix_identity_float3x3
+            self.init(footprint: 0, amplitude: 0, whiteBalance: matrix_identity_float3x3,
+                      halationStrength: 0, halationRadiusFraction: 0,
+                      halationTint: SIMD3(repeating: 0))
             return
         }
-        self.footprint = GrainModel.effectiveSize(stockGrainSize: stock.grainSize,
-                                                  gauge: gauge ?? stock.effectivePrintGauge)
-        // Presence, not the render's exact amplitude: the selector shows which gauge is
-        // coarser, not a calibrated grain loudness.
-        self.amplitude = PreviewConfiguration.previewAmplitude
-        self.whiteBalance = PlateWhiteBalance.adaptation(sceneKelvin: sceneIlluminantKelvin,
-                                                         lockedKelvin: stock.colorTemperature)
+        let effectiveGauge = gauge ?? stock.effectivePrintGauge
+        self.init(
+            footprint: GrainModel.effectiveSize(stockGrainSize: stock.grainSize, gauge: effectiveGauge),
+            amplitude: GrainModel.amount(gauge: effectiveGauge),
+            whiteBalance: PlateWhiteBalance.adaptation(sceneKelvin: sceneIlluminantKelvin,
+                                                       lockedKelvin: stock.colorTemperature),
+            halationStrength: stock.halationStrength,
+            halationRadiusFraction: stock.halationRadiusFraction,
+            halationTint: stock.halationTint)
     }
 
-    static let previewAmplitude: Float = 0.055
+    /// The same configuration magnified for the detail view. The grain and the halation are
+    /// scaled with the crop, so the magnified card shows the real relative size of both.
+    func withZoom(_ zoom: Float) -> PreviewConfiguration {
+        PreviewConfiguration(footprint: footprint, amplitude: amplitude, whiteBalance: whiteBalance,
+                             halationStrength: halationStrength,
+                             halationRadiusFraction: halationRadiusFraction,
+                             halationTint: halationTint, referenceLongEdge: referenceLongEdge,
+                             zoom: zoom)
+    }
 
     var isGrainVisible: Bool { footprint > 0 && amplitude > 0 }
 
+    var isHalationVisible: Bool { halationStrength > 0 && halationRadiusFraction > 0 }
+
     var key: String {
         let m = whiteBalance
-        return String(format: "%.3f|%.5f", footprint, amplitude)
+        return String(format: "%.3f|%.5f|%.5f|%.5f|%.0f|%.2f", footprint, amplitude,
+                      halationStrength, halationRadiusFraction, referenceLongEdge, zoom)
             + String(format: "|%.5f,%.5f,%.5f", m.columns.0.x, m.columns.1.x, m.columns.2.x)
             + String(format: "|%.5f,%.5f,%.5f", m.columns.0.y, m.columns.1.y, m.columns.2.y)
             + String(format: "|%.5f,%.5f,%.5f", m.columns.0.z, m.columns.1.z, m.columns.2.z)
+            + String(format: "|%.5f,%.5f,%.5f", halationTint.x, halationTint.y, halationTint.z)
     }
 
     static func == (lhs: PreviewConfiguration, rhs: PreviewConfiguration) -> Bool {
         lhs.footprint == rhs.footprint && lhs.amplitude == rhs.amplitude
+            && lhs.halationStrength == rhs.halationStrength
+            && lhs.halationRadiusFraction == rhs.halationRadiusFraction
+            && lhs.halationTint == rhs.halationTint
+            && lhs.referenceLongEdge == rhs.referenceLongEdge
+            && lhs.zoom == rhs.zoom
             && lhs.whiteBalance.columns.0 == rhs.whiteBalance.columns.0
             && lhs.whiteBalance.columns.1 == rhs.whiteBalance.columns.1
             && lhs.whiteBalance.columns.2 == rhs.whiteBalance.columns.2
@@ -223,21 +287,61 @@ private struct PlatePage: View {
     let stockName: String
     let lutName: String
     let configuration: PreviewConfiguration
+    /// Whether the card is showing its magnified crop.
+    let isDetail: Bool
+    let onToggleDetail: () -> Void
+
+    /// The magnified crop's factor. Large enough that a shipping grain footprint resolves into
+    /// several card pixels and a hairline halo becomes a visible fringe, so the two physically
+    /// tiny effects can be seen at their real relative size instead of only measured.
+    static let detailZoom: Float = 3
+
+    private var effectiveConfiguration: PreviewConfiguration {
+        configuration.withZoom(isDetail ? Self.detailZoom : 1)
+    }
 
     var body: some View {
+        ZStack(alignment: .topTrailing) {
+            plate
+            detailButton
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 22))
+    }
+
+    private var plate: some View {
         ZStack {
             Color.white.opacity(0.06)
             if let url {
-                PlateSurface(plate: url, lutName: lutName, configuration: configuration)
+                PlateSurface(plate: url, lutName: lutName, configuration: effectiveConfiguration)
             } else {
                 ContentUnavailableView("Preview unavailable", systemImage: "photo",
                                        description: Text("No plate for this scene."))
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 22))
         .overlay(alignment: .bottomLeading) { caption }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title), \(stockName), illustrative colour preview")
+    }
+
+    /// Optional and clearly labelled: the default card is the full photo, and this only ever
+    /// magnifies the image the card already shows. It is kept as a sibling of the combined
+    /// plate element so it stays a separate, tappable control for VoiceOver.
+    private var detailButton: some View {
+        Button(action: onToggleDetail) {
+            Label(isDetail ? "Full photo" : "Detail",
+                  systemImage: isDetail ? "arrow.down.right.and.arrow.up.left" : "plus.magnifyingglass")
+                .font(.callout.weight(.semibold))
+                .padding(.horizontal, 14)
+                .frame(minHeight: 44)
+                .background(.ultraThinMaterial, in: Capsule())
+                .environment(\.colorScheme, .dark)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .padding(12)
+        .accessibilityLabel(isDetail ? "Show the full photo"
+                                     : "Show a magnified detail of the grain and halation")
+        .accessibilityAddTraits(isDetail ? [.isSelected] : [])
     }
 
     private var caption: some View {
@@ -338,129 +442,183 @@ enum PlateImage {
     }
 }
 
-/// Renders a plate through a cube. One retained plate texture and one cube; the preview is
-/// static, so each draw is a single full-target pass.
-final class PlateLUTRenderer: @unchecked Sendable {
-    enum RenderError: Error { case unavailable }
+/// CPU mirror of the shader's `PlatePrepareUniforms`.
+struct PlatePrepareUniformsCPU {
+    var whiteBalance: simd_float3x3
+}
+
+/// CPU mirror of the shader's `PlatePreviewUniforms`. Field order and types must match
+/// `Resources/Shaders/camera-preview.metal`; `PlatePreviewEffectsTests` pins the stride and
+/// the last field's offset so a field added on only one side fails loudly.
+struct PlatePreviewUniformsCPU {
+    var uvScale: SIMD2<Float>
+    var drawableSize: SIMD2<Float>
+    var footprint: Float
+    var amplitude: Float
+    var offset: Float
+    var referenceLongEdge: Float
+    var zoom: Float
+
+    static let identity = PlatePreviewUniformsCPU(uvScale: SIMD2(repeating: 1),
+                                                  drawableSize: SIMD2(repeating: 1),
+                                                  footprint: 0, amplitude: 0, offset: 0,
+                                                  referenceLongEdge: PreviewConfiguration.defaultReferenceLongEdge,
+                                                  zoom: 1)
+}
+
+/// The preview's render-on-demand chain, with no layer or view dependency so tests can drive
+/// it headless: white-balance preparation, the production halation stage, the stock LUT, then
+/// grain sized in the reference frame's pixels.
+///
+/// The plate ships as Apple Log 2 code values. The camera locks white balance in hardware
+/// before the renderer sees a frame, so the preview reproduces that order: the lock is applied
+/// in linear light and re-encoded to Apple Log 2 first, then the SAME `SpatialEffectsStage`
+/// halation kernels the offline render uses run on that frame with the stock's own
+/// strength/radius/tint, and only then does the LUT grade it. Grain is added last, in the
+/// graded image, sampled in the reference frame's pixel space.
+final class PlatePreviewPipeline: @unchecked Sendable {
+    enum PipelineError: Error { case unavailable }
 
     private let device: any MTLDevice
+    private let library: any MTLLibrary
     private let queue: any MTLCommandQueue
-    private let pipeline: any MTLRenderPipelineState
-    private let layer: CAMetalLayer
-    private var plateTexture: (any MTLTexture)?
+    private let preparePipeline: any MTLComputePipelineState
+    private let spatialStage: SpatialEffectsStage
+    private var fragmentPipelines: [UInt: any MTLRenderPipelineState] = [:]
+
+    private(set) var plateSize = SIMD2<Float>(1, 1)
+    private(set) var configuration = PreviewConfiguration(footprint: 0, amplitude: 0,
+                                                          whiteBalance: matrix_identity_float3x3,
+                                                          halationStrength: 0,
+                                                          halationRadiusFraction: 0,
+                                                          halationTint: SIMD3(repeating: 0))
+    private var preparedTexture: (any MTLTexture)?
+    private var halatedTexture: (any MTLTexture)?
     private var lutTexture: (any MTLTexture)?
     private var grainVolume: (any MTLTexture)?
-    private var plateSize = SIMD2<Float>(1, 1)
-    private var configuration = PreviewConfiguration(stock: nil, gauge: nil, sceneIlluminantKelvin: 5600)
-    private var loaded: String?
 
-    init(layer: CAMetalLayer) throws {
-        guard let device = layer.device ?? MTLCreateSystemDefaultDevice(),
-              let queue = device.makeCommandQueue(),
-              let library = device.makeDefaultLibrary(),
-              let vertex = library.makeFunction(name: "platePreviewVertex"),
-              let fragment = library.makeFunction(name: "platePreviewFragment") else {
-            throw RenderError.unavailable
+    init(device: any MTLDevice, library: any MTLLibrary, queue: any MTLCommandQueue) throws {
+        guard let function = library.makeFunction(name: "plate_prepare") else {
+            throw PipelineError.unavailable
         }
-        let descriptor = MTLRenderPipelineDescriptor()
-        descriptor.vertexFunction = vertex
-        descriptor.fragmentFunction = fragment
-        descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        self.preparePipeline = try device.makeComputePipelineState(function: function)
+        self.spatialStage = try SpatialEffectsStage(device: device, library: library)
         self.device = device
+        self.library = library
         self.queue = queue
-        self.pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
-        self.layer = layer
-        layer.device = device
     }
 
-    /// Uploads the pair only when it changes; the caller renders afterwards.
-    func load(plate: URL, lutName: String, configuration: PreviewConfiguration) throws {
-        let key = "\(plate.path)|\(lutName)|\(configuration.key)"
-        guard key != loaded else { return }
-        let cube = try PlateCube.parse(Self.lutText(named: lutName))
-        guard let image = PlateImage.load(plate) else { throw RenderError.unavailable }
-        let plateTexture = try Self.makePlateTexture(image, device: device)
-        let lutTexture = try Self.makeLUTTexture(cube, device: device)
-        if configuration.isGrainVisible, grainVolume == nil {
-            grainVolume = Self.makeGrainVolume(device: device)
+    /// Run the plate through white-balance preparation and the production halation stage once
+    /// and retain the result, so each subsequent `render` is a single full-target pass.
+    func load(plateTexture: any MTLTexture,
+              plateSize: SIMD2<Float>,
+              lutTexture: any MTLTexture,
+              grainVolume: (any MTLTexture)?,
+              configuration: PreviewConfiguration) throws {
+        let width = Int(plateSize.x)
+        let height = Int(plateSize.y)
+        guard width > 0, height > 0 else { throw PipelineError.unavailable }
+        guard let prepared = Self.makeScratch(device: device, width: width, height: height) else {
+            throw PipelineError.unavailable
         }
-        self.plateSize = SIMD2(Float(image.width), Float(image.height))
+
+        // 1. White balance, in linear light, re-encoded to Apple Log 2.
+        guard let commandBuffer = queue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw PipelineError.unavailable
+        }
+        var prepare = PlatePrepareUniformsCPU(whiteBalance: configuration.whiteBalance)
+        encoder.setComputePipelineState(preparePipeline)
+        encoder.setTexture(plateTexture, index: 0)
+        encoder.setTexture(prepared, index: 1)
+        encoder.setBytes(&prepare, length: MemoryLayout<PlatePrepareUniformsCPU>.stride, index: 0)
+        encoder.dispatchThreadgroups(MTLSize(width: (width + 15) / 16, height: (height + 15) / 16, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        guard commandBuffer.status == .completed else { throw PipelineError.unavailable }
+
+        // 2. The production halation stage, on the locked frame, with the stock's own
+        //    parameters. Zero strength returns the prepared frame unchanged.
+        guard let halated = spatialStage.applyHalation(
+            source: prepared,
+            commandQueue: queue,
+            strength: configuration.halationStrength,
+            radiusFraction: configuration.halationRadiusFraction,
+            layerScale: configuration.halationTint,
+            width: width,
+            height: height
+        ) else { throw PipelineError.unavailable }
+
+        self.plateSize = plateSize
         self.configuration = configuration
-        self.plateTexture = plateTexture
         self.lutTexture = lutTexture
-        loaded = key
+        self.grainVolume = grainVolume
+        self.preparedTexture = prepared
+        self.halatedTexture = halated
     }
 
-    func render() {
-        guard let plateTexture, let lutTexture,
-              let drawable = layer.nextDrawable(),
-              let command = queue.makeCommandBuffer() else { return }
+    /// One full-target pass over the prepared frame: LUT, then gauge grain scaled to the
+    /// reference frame. `presentOn` presents the drawable when the target came from a layer.
+    @discardableResult
+    func render(into target: any MTLTexture, drawableSize: CGSize,
+                presentOn drawable: (any CAMetalDrawable)? = nil) -> Bool {
+        guard let halated = halatedTexture, let lut = lutTexture,
+              let pipeline = fragmentPipeline(for: target.pixelFormat),
+              let command = queue.makeCommandBuffer() else { return false }
         let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = drawable.texture
+        pass.colorAttachments[0].texture = target
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
-        guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
+        guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return false }
         var uniforms = PlatePreviewUniformsCPU(
-            whiteBalance: configuration.whiteBalance,
+            uvScale: Self.uvScale(plate: plateSize, drawable: drawableSize),
+            drawableSize: SIMD2(Float(drawableSize.width), Float(drawableSize.height)),
             footprint: configuration.footprint,
-            amplitude: configuration.amplitude,
+            amplitude: configuration.isGrainVisible ? configuration.amplitude : 0,
             offset: Self.grainOffset,
-            uvScale: Self.uvScale(plate: plateSize, drawable: layer.drawableSize))
+            referenceLongEdge: configuration.referenceLongEdge,
+            zoom: configuration.zoom)
         encoder.setRenderPipelineState(pipeline)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<PlatePreviewUniformsCPU>.stride, index: 0)
-        encoder.setFragmentTexture(plateTexture, index: 0)
-        encoder.setFragmentTexture(lutTexture, index: 1)
+        encoder.setFragmentTexture(halated, index: 0)
+        encoder.setFragmentTexture(lut, index: 1)
         encoder.setFragmentTexture(grainVolume, index: 2)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         encoder.endEncoding()
-        command.present(drawable)
+        if let drawable { command.present(drawable) }
         command.commit()
+        command.waitUntilCompleted()
+        return command.status == .completed
+    }
+
+    private func fragmentPipeline(for format: MTLPixelFormat) -> (any MTLRenderPipelineState)? {
+        if let cached = fragmentPipelines[format.rawValue] { return cached }
+        guard let vertex = library.makeFunction(name: "platePreviewVertex"),
+              let fragment = library.makeFunction(name: "platePreviewFragment") else { return nil }
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertex
+        descriptor.fragmentFunction = fragment
+        descriptor.colorAttachments[0].pixelFormat = format
+        guard let state = try? device.makeRenderPipelineState(descriptor: descriptor) else { return nil }
+        fragmentPipelines[format.rawValue] = state
+        return state
     }
 
     // MARK: - Resources
 
-    private static func lutText(named name: String) throws -> String {
-        let bundle = Bundle.main
-        let candidates: [URL?] = [
-            bundle.url(forResource: name, withExtension: nil),
-            bundle.url(forResource: name, withExtension: nil, subdirectory: "LUTs"),
-            bundle.url(forResource: name, withExtension: nil, subdirectory: "Preview"),
-        ]
-        guard let url = candidates.compactMap({ $0 }).first else { throw RenderError.unavailable }
-        return try String(contentsOf: url, encoding: .utf8)
-    }
-
-    private static func makePlateTexture(_ image: CGImage, device: any MTLDevice) throws -> any MTLTexture {
-        let width = image.width, height = image.height
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
-                                                                 width: width, height: height,
-                                                                 mipmapped: false)
-        descriptor.usage = .shaderRead
-        guard let texture = device.makeTexture(descriptor: descriptor) else { throw RenderError.unavailable }
-        var bytes = [UInt8](repeating: 0, count: width * height * 4)
-        try bytes.withUnsafeMutableBytes { buffer in
-            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
-                                          bitsPerComponent: 8, bytesPerRow: width * 4,
-                                          space: CGColorSpaceCreateDeviceRGB(),
-                                          bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
-                                            | CGBitmapInfo.byteOrder32Little.rawValue) else {
-                throw RenderError.unavailable
-            }
-            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        }
-        texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
-                        withBytes: bytes, bytesPerRow: width * 4)
-        return texture
-    }
-
     /// The shipped 128^3 grain volume the renderer samples, so the selector's grain is the
     /// same noise field rather than a second, invented texture.
-    private static func makeGrainVolume(device: any MTLDevice) -> (any MTLTexture)? {
-        let bundle = Bundle.main
+    static func makeGrainVolume(device: any MTLDevice, bundle: Bundle = .main) -> (any MTLTexture)? {
         let path = bundle.path(forResource: "grain3d", ofType: "raw")
             ?? bundle.path(forResource: "grain3d", ofType: "raw", inDirectory: "Grain")
         guard let path, let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+        return makeGrainVolume(data: data, device: device)
+    }
+
+    static func makeGrainVolume(data: Data, device: any MTLDevice) -> (any MTLTexture)? {
         let size = 128
         guard data.count >= size * size * size * MemoryLayout<Float>.size else { return nil }
         let descriptor = MTLTextureDescriptor()
@@ -480,6 +638,57 @@ final class PlateLUTRenderer: @unchecked Sendable {
         return texture
     }
 
+    /// Upload a plate to the Apple Log 2 code texture the prepare kernel reads. The plate is
+    /// BGRA8 in memory but RGBA-ordered in the shader, matching the format it is stored as.
+    static func makePlateTexture(_ image: CGImage, device: any MTLDevice) throws -> any MTLTexture {
+        let width = image.width, height = image.height
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
+                                                                 width: width, height: height,
+                                                                 mipmapped: false)
+        descriptor.usage = .shaderRead
+        descriptor.storageMode = .shared
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            throw PipelineError.unavailable
+        }
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        try bytes.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
+                                          bitsPerComponent: 8, bytesPerRow: width * 4,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                            | CGBitmapInfo.byteOrder32Little.rawValue) else {
+                throw PipelineError.unavailable
+            }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
+                        withBytes: bytes, bytesPerRow: width * 4)
+        return texture
+    }
+
+    /// Same direct RGB / red-fastest RGBA32Float upload as the capture preview.
+    static func makeLUTTexture(_ cube: PlateCube, device: any MTLDevice) throws -> any MTLTexture {
+        let size = cube.size
+        let descriptor = MTLTextureDescriptor()
+        descriptor.textureType = .type3D
+        descriptor.pixelFormat = .rgba32Float
+        descriptor.width = size
+        descriptor.height = size
+        descriptor.depth = size
+        descriptor.usage = .shaderRead
+        descriptor.storageMode = .shared
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            throw PipelineError.unavailable
+        }
+        cube.rgba.withUnsafeBytes {
+            texture.replace(region: MTLRegionMake3D(0, 0, 0, size, size, size), mipmapLevel: 0, slice: 0,
+                            withBytes: $0.baseAddress!,
+                            bytesPerRow: size * 4 * MemoryLayout<Float>.size,
+                            bytesPerImage: size * size * 4 * MemoryLayout<Float>.size)
+        }
+        return texture
+    }
+
     /// Aspect-fill: scale the sampled region so the plate's shape fills the card without
     /// being stretched (a shorter region crops instead).
     static func uvScale(plate: SIMD2<Float>, drawable: CGSize) -> SIMD2<Float> {
@@ -495,26 +704,75 @@ final class PlateLUTRenderer: @unchecked Sendable {
     }
 
     /// Fixed phase: the preview is a still, so a per-frame index would only shimmer.
-    private static let grainOffset: Float = 0.37
+    static let grainOffset: Float = 0.37
 
-    /// Same direct RGB / red-fastest RGBA32Float upload as the capture preview.
-    private static func makeLUTTexture(_ cube: PlateCube, device: any MTLDevice) throws -> any MTLTexture {
-        let size = cube.size
-        let descriptor = MTLTextureDescriptor()
-        descriptor.textureType = .type3D
-        descriptor.pixelFormat = .rgba32Float
-        descriptor.width = size
-        descriptor.height = size
-        descriptor.depth = size
-        descriptor.usage = .shaderRead
-        guard let texture = device.makeTexture(descriptor: descriptor) else { throw RenderError.unavailable }
-        cube.rgba.withUnsafeBytes {
-            texture.replace(region: MTLRegionMake3D(0, 0, 0, size, size, size), mipmapLevel: 0, slice: 0,
-                            withBytes: $0.baseAddress!,
-                            bytesPerRow: size * 4 * MemoryLayout<Float>.size,
-                            bytesPerImage: size * size * 4 * MemoryLayout<Float>.size)
+    /// RGBA16Float scratch for the prepared (white-balanced) frame. GPU-only: nothing reads
+    /// it back, so it stays `.private`.
+    private static func makeScratch(device: any MTLDevice, width: Int, height: Int) -> (any MTLTexture)? {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float,
+                                                                 width: width, height: height,
+                                                                 mipmapped: false)
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.storageMode = .private
+        return device.makeTexture(descriptor: descriptor)
+    }
+}
+
+/// Renders a plate through the preview chain into a layer drawable. One retained plate,
+/// cube, grain volume and prepared frame; the preview is static, so each draw is a single
+/// full-target pass.
+final class PlateLUTRenderer: @unchecked Sendable {
+    enum RenderError: Error { case unavailable }
+
+    private let device: any MTLDevice
+    private let layer: CAMetalLayer
+    private let pipeline: PlatePreviewPipeline
+    private var loaded: String?
+
+    init(layer: CAMetalLayer) throws {
+        guard let device = layer.device ?? MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue(),
+              let library = device.makeDefaultLibrary() else {
+            throw RenderError.unavailable
         }
-        return texture
+        self.device = device
+        self.layer = layer
+        self.pipeline = try PlatePreviewPipeline(device: device, library: library, queue: queue)
+        layer.device = device
+    }
+
+    /// Uploads the pair and runs the preparation chain only when something changed.
+    func load(plate: URL, lutName: String, configuration: PreviewConfiguration) throws {
+        let key = "\(plate.path)|\(lutName)|\(configuration.key)"
+        guard key != loaded else { return }
+        let cube = try PlateCube.parse(Self.lutText(named: lutName))
+        guard let image = PlateImage.load(plate) else { throw RenderError.unavailable }
+        let plateTexture = try PlatePreviewPipeline.makePlateTexture(image, device: device)
+        let lutTexture = try PlatePreviewPipeline.makeLUTTexture(cube, device: device)
+        let grain = configuration.isGrainVisible
+            ? PlatePreviewPipeline.makeGrainVolume(device: device) : nil
+        try pipeline.load(plateTexture: plateTexture,
+                          plateSize: SIMD2(Float(image.width), Float(image.height)),
+                          lutTexture: lutTexture,
+                          grainVolume: grain,
+                          configuration: configuration)
+        loaded = key
+    }
+
+    func render() {
+        guard let drawable = layer.nextDrawable() else { return }
+        pipeline.render(into: drawable.texture, drawableSize: layer.drawableSize, presentOn: drawable)
+    }
+
+    private static func lutText(named name: String) throws -> String {
+        let bundle = Bundle.main
+        let candidates: [URL?] = [
+            bundle.url(forResource: name, withExtension: nil),
+            bundle.url(forResource: name, withExtension: nil, subdirectory: "LUTs"),
+            bundle.url(forResource: name, withExtension: nil, subdirectory: "Preview"),
+        ]
+        guard let url = candidates.compactMap({ $0 }).first else { throw RenderError.unavailable }
+        return try String(contentsOf: url, encoding: .utf8)
     }
 }
 
@@ -523,19 +781,6 @@ final class PlateLUTRenderer: @unchecked Sendable {
 /// Deliberately local to the selector: the FilmStockLibrary target also builds the macOS
 /// CLI, which does not compile the capture module. Row order is preserved (red-fastest) so
 /// the 3D upload matches the shader's `(code * (size - 1) + .5) / size` lookup.
-/// CPU mirror of the shader's `PlatePreviewUniforms`.
-struct PlatePreviewUniformsCPU {
-    var whiteBalance: simd_float3x3
-    var footprint: Float
-    var amplitude: Float
-    var offset: Float
-    var uvScale: SIMD2<Float>
-
-    static let identity = PlatePreviewUniformsCPU(whiteBalance: matrix_identity_float3x3,
-                                                  footprint: 0, amplitude: 0, offset: 0,
-                                                  uvScale: SIMD2(repeating: 1))
-}
-
 struct PlateCube: Sendable {
     let size: Int
     let rgba: [Float]

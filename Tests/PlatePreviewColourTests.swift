@@ -5,29 +5,29 @@ import simd
 
 /// Regression tests for the stock-selector plate preview's colour path.
 ///
-/// The plate shader is the only place the app decodes Apple Log 2 to linear light, applies a
-/// white-balance transform and re-encodes. Two defects lived there: the Log toe was linear
-/// instead of a square root (so the decode threshold and the inverse were both wrong), and the
-/// white-balance transform was a diagonal derived in linear sRGB but applied to Apple Wide
-/// Gamut values. These tests run the shipping `platePreviewFragment` on real Metal textures and
-/// pin the correction, using the Apple Log 2 curve and Apple Wide Gamut primaries from the
-/// Apple Log 2 white paper as copied in OpenColorIO 2.6 (`AppleCameras.cpp`,
+/// The preview's first pass -- `plate_prepare` in `Resources/Shaders/camera-preview.metal` --
+/// is the only place the app decodes Apple Log 2 to linear light, applies a white-balance
+/// transform and re-encodes. It runs BEFORE halation and the LUT, so the halo scatters the
+/// light the camera's lock actually produced. Two defects lived in this step: the Log toe was
+/// linear instead of a square root (so the decode threshold and the inverse were both wrong),
+/// and the white-balance transform was a diagonal derived in linear sRGB but applied to Apple
+/// Wide Gamut values. These tests run the shipping kernel on real Metal textures and pin the
+/// correction, using the Apple Log 2 curve and Apple Wide Gamut primaries from the Apple Log 2
+/// white paper as copied in OpenColorIO 2.6 (`AppleCameras.cpp`,
 /// `APPLE_LOG-APPLEWG_to_ACES2065-1`).
 struct PlatePreviewColourTests {
     private final class BundleToken {}
 
-    // MARK: - Shipping shader on real textures
+    // MARK: - Shipping kernel on real textures
 
-    /// Render a row of plate codes through `platePreviewFragment` with an identity LUT, so the
-    /// shader's own decode -> white balance -> encode is what the read-back measures.
+    /// Run a row of plate codes through `plate_prepare`, so the kernel's own decode -> white
+    /// balance -> encode is what the read-back measures. The kernel reads and writes 1:1, so a
+    /// single row of codes is enough.
     private func render(_ codes: [Float], whiteBalance: simd_float3x3) throws -> [[Float]] {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let library = try device.makeDefaultLibrary(bundle: Bundle(for: BundleToken.self))
-        let descriptor = MTLRenderPipelineDescriptor()
-        descriptor.vertexFunction = try #require(library.makeFunction(name: "platePreviewVertex"))
-        descriptor.fragmentFunction = try #require(library.makeFunction(name: "platePreviewFragment"))
-        descriptor.colorAttachments[0].pixelFormat = .rgba32Float
-        let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+        let function = try #require(library.makeFunction(name: "plate_prepare"))
+        let pipeline = try device.makeComputePipelineState(function: function)
 
         let width = codes.count
         let plate = try make2D(device, format: .rgba32Float, width: width)
@@ -37,25 +37,18 @@ struct PlatePreviewColourTests {
             plate.replace(region: MTLRegionMake2D(0, 0, width, 1), mipmapLevel: 0,
                           withBytes: $0.baseAddress!, bytesPerRow: width * 16)
         }
-        let lut = try makeIdentityLUT(device)
-        let grain = try make3D(device, format: .r32Float, side: 1)
         let output = try make2D(device, format: .rgba32Float, width: width)
 
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = output
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
         let queue = try #require(device.makeCommandQueue())
         let command = try #require(queue.makeCommandBuffer())
-        let encoder = try #require(command.makeRenderCommandEncoder(descriptor: pass))
-        var uniforms = PlatePreviewUniformsCPU(whiteBalance: whiteBalance, footprint: 0,
-                                               amplitude: 0, offset: 0, uvScale: SIMD2(repeating: 1))
-        encoder.setRenderPipelineState(pipeline)
-        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<PlatePreviewUniformsCPU>.stride, index: 0)
-        encoder.setFragmentTexture(plate, index: 0)
-        encoder.setFragmentTexture(lut, index: 1)
-        encoder.setFragmentTexture(grain, index: 2)
-        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        let encoder = try #require(command.makeComputeCommandEncoder())
+        var uniforms = PlatePrepareUniformsCPU(whiteBalance: whiteBalance)
+        encoder.setComputePipelineState(pipeline)
+        encoder.setTexture(plate, index: 0)
+        encoder.setTexture(output, index: 1)
+        encoder.setBytes(&uniforms, length: MemoryLayout<PlatePrepareUniformsCPU>.stride, index: 0)
+        encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1))
         encoder.endEncoding()
         command.commit()
         command.waitUntilCompleted()
@@ -72,53 +65,12 @@ struct PlatePreviewColourTests {
         }
     }
 
-    /// An identity `33^3` LUT: trilinear sampling returns the input coordinate to within the
-    /// sampler's interpolation precision, so it isolates the shader's decode/encode from the
-    /// cube. A 2^3 grid would do the same in exact maths but the Metal sampler computes its
-    /// interpolation weights in 8-bit fixed point, quantising the result to 1/256; the finer
-    /// grid keeps that error near 1e-4 (and matches the real neutral cube's size).
-    private func makeIdentityLUT(_ device: any MTLDevice) throws -> any MTLTexture {
-        let side = 33
-        let texture = try make3D(device, format: .rgba32Float, side: side)
-        var values = [Float]()
-        values.reserveCapacity(side * side * side * 4)
-        for blue in 0..<side {
-            for green in 0..<side {
-                for red in 0..<side {
-                    values.append(contentsOf: [Float(red) / Float(side - 1),
-                                               Float(green) / Float(side - 1),
-                                               Float(blue) / Float(side - 1), 1])
-                }
-            }
-        }
-        let rowBytes = side * 16
-        values.withUnsafeBytes {
-            texture.replace(region: MTLRegionMake3D(0, 0, 0, side, side, side), mipmapLevel: 0, slice: 0,
-                            withBytes: $0.baseAddress!,
-                            bytesPerRow: rowBytes, bytesPerImage: rowBytes * side)
-        }
-        return texture
-    }
-
     private func make2D(_ device: any MTLDevice, format: MTLPixelFormat,
                         width: Int) throws -> any MTLTexture {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: format, width: width, height: 1, mipmapped: false)
         descriptor.storageMode = .shared
-        descriptor.usage = [.shaderRead, .renderTarget]
-        return try #require(device.makeTexture(descriptor: descriptor))
-    }
-
-    private func make3D(_ device: any MTLDevice, format: MTLPixelFormat,
-                        side: Int) throws -> any MTLTexture {
-        let descriptor = MTLTextureDescriptor()
-        descriptor.textureType = .type3D
-        descriptor.pixelFormat = format
-        descriptor.width = side
-        descriptor.height = side
-        descriptor.depth = side
-        descriptor.storageMode = .shared
-        descriptor.usage = .shaderRead
+        descriptor.usage = [.shaderRead, .shaderWrite]
         return try #require(device.makeTexture(descriptor: descriptor))
     }
 
@@ -138,7 +90,7 @@ struct PlatePreviewColourTests {
         }
     }
 
-    /// The shipping shader must reproduce the official Apple Log 2 curve: decode, apply a
+    /// The shipping kernel must reproduce the official Apple Log 2 curve: decode, apply a
     /// scalar gain, re-encode. A linear toe fails this for every code below the join.
     @Test func shaderMatchesTheOfficialAppleLog2CurveUnderAScalarGain() throws {
         let codes: [Float] = [0.02, 0.05, 0.1, 0.15, 0.2, 0.2086, 0.25, 0.35, 0.5, 0.65, 0.8]

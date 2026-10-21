@@ -1,10 +1,13 @@
 # Stock-preview colour path
 
-`platePreviewFragment` in `Resources/Shaders/camera-preview.metal` grades a bundled Apple
-Log 2 plate live: it decodes the plate to linear light, applies the stock's locked white
-balance, re-encodes to Apple Log 2, and runs the stock `.cube` (or the neutral monitoring
-cube) through the same red-fastest trilinear lookup the live capture preview uses. This
-note records the two transforms in that chain and the tests that pin them.
+`plate_prepare` in `Resources/Shaders/camera-preview.metal` grades a bundled Apple
+Log 2 plate toward the render's white point: it decodes the plate to linear light, applies the
+stock's locked white balance, and re-encodes to Apple Log 2. It runs BEFORE halation and the
+stock `.cube`, so the halo scatters the light the camera's lock actually produced. The plate
+then goes through the production `SpatialEffectsStage` halation, the stock `.cube` (or the
+neutral monitoring cube) with the same red-fastest trilinear lookup the live capture preview
+uses, and finally the gauge's grain. This note records the two transforms in the colour step
+and the tests that pin them; `docs/stock-preview-effects.md` covers the effect chain.
 
 ## Apple Log 2 transfer function
 
@@ -50,8 +53,9 @@ gives ≈0.85, exaggerating the blue cast. This model is not a measured match to
 
 ## Tests
 
-`Tests/PlatePreviewColourTests.swift` runs the shipping `platePreviewFragment` on real Metal
-textures (a `33³` identity cube isolates the shader's own decode/encode) and pins:
+`Tests/PlatePreviewColourTests.swift` runs the shipping `plate_prepare` kernel on real Metal
+textures (the kernel reads and writes 1:1, so a single row of codes isolates its own
+decode/encode) and pins:
 
 - identity white balance preserves plate codes across the toe and the log segment;
 - the shader reproduces the published Apple Log 2 curve under a scalar gain;
