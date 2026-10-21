@@ -25,6 +25,9 @@ struct StockSamplePreview: View {
     /// Print gauge, so the preview shows the grain that gauge produces.
     var gauge: PrintGauge?
     @State private var sceneID = ""
+    /// The optional magnified crop. The card's frame never changes with it, so the sheet keeps
+    /// its height; only the sampled window (and the grain/halation scale) does.
+    @State private var isDetail = false
     private static let catalog = Result { try StockSampleCatalog.load() }
 
     var body: some View {
@@ -66,7 +69,9 @@ struct StockSamplePreview: View {
                           stockName: stock?.displayName ?? "Neutral",
                           lutName: stock?.lutName ?? "AppleLog2ToRec709.cube",
                           configuration: PreviewConfiguration(stock: stock, gauge: gauge,
-                                                              sceneIlluminantKelvin: scene.sceneIlluminantKelvin))
+                                                              sceneIlluminantKelvin: scene.sceneIlluminantKelvin),
+                          isDetail: isDetail,
+                          onToggleDetail: { isDetail.toggle() })
                     .padding(.horizontal, 4)
                     .tag(scene.id)
             }
@@ -121,13 +126,18 @@ struct PreviewConfiguration: Equatable {
     /// Long edge, in pixels, of the render the preview stands in for. Grain is sized in this
     /// frame's pixels so the card shows the grain a full render would, not a magnified copy.
     let referenceLongEdge: Float
+    /// Magnification of the optional detail view. 1 shows the whole frame; a larger value shows
+    /// a centre crop of it, with the grain and the halation magnified by the same factor rather
+    /// than the photo alone.
+    let zoom: Float
 
     /// The 4K delivery frame.
     static let defaultReferenceLongEdge: Float = 3840
 
     init(footprint: Float, amplitude: Float, whiteBalance: simd_float3x3,
          halationStrength: Float, halationRadiusFraction: Float, halationTint: SIMD3<Float>,
-         referenceLongEdge: Float = PreviewConfiguration.defaultReferenceLongEdge) {
+         referenceLongEdge: Float = PreviewConfiguration.defaultReferenceLongEdge,
+         zoom: Float = 1) {
         self.footprint = footprint
         self.amplitude = amplitude
         self.whiteBalance = whiteBalance
@@ -135,6 +145,7 @@ struct PreviewConfiguration: Equatable {
         self.halationRadiusFraction = halationRadiusFraction
         self.halationTint = halationTint
         self.referenceLongEdge = referenceLongEdge
+        self.zoom = zoom
     }
 
     init(stock: FilmStockConfig?, gauge: PrintGauge?, sceneIlluminantKelvin: Float) {
@@ -147,7 +158,7 @@ struct PreviewConfiguration: Equatable {
         let effectiveGauge = gauge ?? stock.effectivePrintGauge
         self.init(
             footprint: GrainModel.effectiveSize(stockGrainSize: stock.grainSize, gauge: effectiveGauge),
-            amplitude: PreviewConfiguration.previewPresence * effectiveGauge.amplitudeMultiplier,
+            amplitude: GrainModel.amount(gauge: effectiveGauge),
             whiteBalance: PlateWhiteBalance.adaptation(sceneKelvin: sceneIlluminantKelvin,
                                                        lockedKelvin: stock.colorTemperature),
             halationStrength: stock.halationStrength,
@@ -155,9 +166,15 @@ struct PreviewConfiguration: Equatable {
             halationTint: stock.halationTint)
     }
 
-    /// Base grain presence before the gauge scales it. 0.2 x 0.27 (35mm) reproduces the
-    /// 0.055 the preview used to apply to every gauge.
-    static let previewPresence: Float = 0.2
+    /// The same configuration magnified for the detail view. The grain and the halation are
+    /// scaled with the crop, so the magnified card shows the real relative size of both.
+    func withZoom(_ zoom: Float) -> PreviewConfiguration {
+        PreviewConfiguration(footprint: footprint, amplitude: amplitude, whiteBalance: whiteBalance,
+                             halationStrength: halationStrength,
+                             halationRadiusFraction: halationRadiusFraction,
+                             halationTint: halationTint, referenceLongEdge: referenceLongEdge,
+                             zoom: zoom)
+    }
 
     var isGrainVisible: Bool { footprint > 0 && amplitude > 0 }
 
@@ -165,8 +182,8 @@ struct PreviewConfiguration: Equatable {
 
     var key: String {
         let m = whiteBalance
-        return String(format: "%.3f|%.5f|%.5f|%.5f|%.0f", footprint, amplitude,
-                      halationStrength, halationRadiusFraction, referenceLongEdge)
+        return String(format: "%.3f|%.5f|%.5f|%.5f|%.0f|%.2f", footprint, amplitude,
+                      halationStrength, halationRadiusFraction, referenceLongEdge, zoom)
             + String(format: "|%.5f,%.5f,%.5f", m.columns.0.x, m.columns.1.x, m.columns.2.x)
             + String(format: "|%.5f,%.5f,%.5f", m.columns.0.y, m.columns.1.y, m.columns.2.y)
             + String(format: "|%.5f,%.5f,%.5f", m.columns.0.z, m.columns.1.z, m.columns.2.z)
@@ -179,6 +196,7 @@ struct PreviewConfiguration: Equatable {
             && lhs.halationRadiusFraction == rhs.halationRadiusFraction
             && lhs.halationTint == rhs.halationTint
             && lhs.referenceLongEdge == rhs.referenceLongEdge
+            && lhs.zoom == rhs.zoom
             && lhs.whiteBalance.columns.0 == rhs.whiteBalance.columns.0
             && lhs.whiteBalance.columns.1 == rhs.whiteBalance.columns.1
             && lhs.whiteBalance.columns.2 == rhs.whiteBalance.columns.2
@@ -269,21 +287,61 @@ private struct PlatePage: View {
     let stockName: String
     let lutName: String
     let configuration: PreviewConfiguration
+    /// Whether the card is showing its magnified crop.
+    let isDetail: Bool
+    let onToggleDetail: () -> Void
+
+    /// The magnified crop's factor. Large enough that a shipping grain footprint resolves into
+    /// several card pixels and a hairline halo becomes a visible fringe, so the two physically
+    /// tiny effects can be seen at their real relative size instead of only measured.
+    static let detailZoom: Float = 3
+
+    private var effectiveConfiguration: PreviewConfiguration {
+        configuration.withZoom(isDetail ? Self.detailZoom : 1)
+    }
 
     var body: some View {
+        ZStack(alignment: .topTrailing) {
+            plate
+            detailButton
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 22))
+    }
+
+    private var plate: some View {
         ZStack {
             Color.white.opacity(0.06)
             if let url {
-                PlateSurface(plate: url, lutName: lutName, configuration: configuration)
+                PlateSurface(plate: url, lutName: lutName, configuration: effectiveConfiguration)
             } else {
                 ContentUnavailableView("Preview unavailable", systemImage: "photo",
                                        description: Text("No plate for this scene."))
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 22))
         .overlay(alignment: .bottomLeading) { caption }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title), \(stockName), illustrative colour preview")
+    }
+
+    /// Optional and clearly labelled: the default card is the full photo, and this only ever
+    /// magnifies the image the card already shows. It is kept as a sibling of the combined
+    /// plate element so it stays a separate, tappable control for VoiceOver.
+    private var detailButton: some View {
+        Button(action: onToggleDetail) {
+            Label(isDetail ? "Full photo" : "Detail",
+                  systemImage: isDetail ? "arrow.down.right.and.arrow.up.left" : "plus.magnifyingglass")
+                .font(.callout.weight(.semibold))
+                .padding(.horizontal, 14)
+                .frame(minHeight: 44)
+                .background(.ultraThinMaterial, in: Capsule())
+                .environment(\.colorScheme, .dark)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .padding(12)
+        .accessibilityLabel(isDetail ? "Show the full photo"
+                                     : "Show a magnified detail of the grain and halation")
+        .accessibilityAddTraits(isDetail ? [.isSelected] : [])
     }
 
     private var caption: some View {
@@ -399,11 +457,13 @@ struct PlatePreviewUniformsCPU {
     var amplitude: Float
     var offset: Float
     var referenceLongEdge: Float
+    var zoom: Float
 
     static let identity = PlatePreviewUniformsCPU(uvScale: SIMD2(repeating: 1),
                                                   drawableSize: SIMD2(repeating: 1),
                                                   footprint: 0, amplitude: 0, offset: 0,
-                                                  referenceLongEdge: PreviewConfiguration.defaultReferenceLongEdge)
+                                                  referenceLongEdge: PreviewConfiguration.defaultReferenceLongEdge,
+                                                  zoom: 1)
 }
 
 /// The preview's render-on-demand chain, with no layer or view dependency so tests can drive
@@ -519,7 +579,8 @@ final class PlatePreviewPipeline: @unchecked Sendable {
             footprint: configuration.footprint,
             amplitude: configuration.isGrainVisible ? configuration.amplitude : 0,
             offset: Self.grainOffset,
-            referenceLongEdge: configuration.referenceLongEdge)
+            referenceLongEdge: configuration.referenceLongEdge,
+            zoom: configuration.zoom)
         encoder.setRenderPipelineState(pipeline)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<PlatePreviewUniformsCPU>.stride, index: 0)
         encoder.setFragmentTexture(halated, index: 0)

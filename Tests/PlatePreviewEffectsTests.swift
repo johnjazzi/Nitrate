@@ -160,7 +160,7 @@ struct PlatePreviewEffectsTests {
     /// scrambles the uniforms on device. `platePrepareUniformsMatchTheShaderLayout` does the
     /// same for the white-balance pass.
     @Test func previewUniformsMatchTheShaderLayout() {
-        #expect(MemoryLayout<PlatePreviewUniformsCPU>.stride == 32)
+        #expect(MemoryLayout<PlatePreviewUniformsCPU>.stride == 40)
         #expect(MemoryLayout<PlatePreviewUniformsCPU>.alignment == 8)
         #expect(MemoryLayout<PlatePreviewUniformsCPU>.offset(of: \.uvScale) == 0)
         #expect(MemoryLayout<PlatePreviewUniformsCPU>.offset(of: \.drawableSize) == 8)
@@ -168,6 +168,7 @@ struct PlatePreviewEffectsTests {
         #expect(MemoryLayout<PlatePreviewUniformsCPU>.offset(of: \.amplitude) == 20)
         #expect(MemoryLayout<PlatePreviewUniformsCPU>.offset(of: \.offset) == 24)
         #expect(MemoryLayout<PlatePreviewUniformsCPU>.offset(of: \.referenceLongEdge) == 28)
+        #expect(MemoryLayout<PlatePreviewUniformsCPU>.offset(of: \.zoom) == 32)
     }
 
     @Test func platePrepareUniformsMatchTheShaderLayout() {

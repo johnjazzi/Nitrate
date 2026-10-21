@@ -46,11 +46,19 @@ approximation, not an exact filtered reduction of the production grain field.
 
 ## Gauge presence
 
-The gauge owns both grain axes. Size comes from `GrainModel.effectiveSize` (the renderer's own
-model); presence is `previewPresence * gauge.amplitudeMultiplier`, so the ladder reads
-8mm 0.100, 16mm 0.072, 35mm 0.054 (which reproduces the 0.055 the preview used to apply to every
-gauge) and 75mm 0.030. With the size axis and the damping above, 8mm reads coarse and loud and
-75mm nearly silent.
+The gauge owns both grain axes. Size comes from `GrainModel.effectiveSize`, and presence now
+comes from `GrainModel.amount` rather than the quieter preview-only constant. The same
+luminance window as the renderer suppresses grain in deep shadows and bright highlights.
+The preview still uses a simplified noise field and reduced-image damping; matching the amount
+constant does not make it an exact filtered copy of exported grain.
+
+### Detail view
+
+The card starts with the full photograph. Its **Detail** button shows a 3× centre crop and
+changes to **Full photo** to return. The photograph, halation and grain enlarge together;
+stock strength, radius, selected scene and gauge do not change. The control sits above the
+caption and has a minimum 44-point height. Halation remains subtle at full-photo size, so the
+detail view provides inspection without increasing exported strength or diffusion radius.
 
 ## Halation amount
 

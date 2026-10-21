@@ -145,9 +145,10 @@ struct PlatePreviewUniforms {
     float2 uvScale;           // aspect-fill: crop rather than stretch the plate
     float2 drawableSize;      // render target size in pixels
     float footprint;          // realised grain cell size in REFERENCE pixels
-    float amplitude;          // grain presence (size is the dial, not loudness)
+    float amplitude;          // grain presence: the renderer's own base amount x gauge
     float offset;             // fixed grain phase: the preview is a still
     float referenceLongEdge;  // reference frame's long edge in pixels (3840 for the 4K render)
+    float zoom;               // 1 = the whole frame; >1 = a magnified centre crop
 };
 
 /// Final pass: grade the prepared, halation-bearing Apple Log 2 frame through the stock LUT,
@@ -160,6 +161,12 @@ struct PlatePreviewUniforms {
 /// relative to the picture at any drawable resolution. The previous implementation divided
 /// normalised uv by the footprint, which magnified the grain by the ratio between the
 /// drawable and the volume's own 128-texel repeat (3840 / 128 = 30x at 4K).
+///
+/// `zoom` magnifies a centre crop for the optional detail view. It scales BOTH the sampled
+/// region and the grain's reference space, so the magnified crop carries the grain and the
+/// halation at the same relative size as the full frame rather than magnifying the photo
+/// alone. At `zoom == 1` the pass is byte-for-byte the previous one apart from the grain
+/// amount and its luma latitude.
 fragment float4 platePreviewFragment(PlatePreviewVertex in [[stage_in]],
                                      constant PlatePreviewUniforms &u [[buffer(0)]],
                                      texture2d<float> prepared [[texture(0)]],
@@ -167,8 +174,10 @@ fragment float4 platePreviewFragment(PlatePreviewVertex in [[stage_in]],
                                      texture3d<float> grainVolume [[texture(2)]]) {
     constexpr sampler linearSampler(filter::linear, address::clamp_to_edge);
     constexpr sampler grainSampler(coord::normalized, filter::linear, address::repeat);
-    // Aspect-fill: crop the plate to the card instead of squeezing it into it.
-    float2 uv = clamp((in.uv - 0.5f) * u.uvScale + 0.5f, 0.0f, 1.0f);
+    float zoom = max(u.zoom, 1.0f);
+    // Aspect-fill: crop the plate to the card instead of squeezing it into it. A zoom is the
+    // same move with a smaller window, so the two scale the centred offset together.
+    float2 uv = clamp((in.uv - 0.5f) * u.uvScale / zoom + 0.5f, 0.0f, 1.0f);
     float3 balanced = prepared.sample(linearSampler, uv).rgb;
     float3 size = float3(lut.get_width(), lut.get_height(), lut.get_depth());
     float3 coordinates = (clamp(balanced, 0.0f, 1.0f) * (size - 1.0f) + .5f) / size;
@@ -176,10 +185,14 @@ fragment float4 platePreviewFragment(PlatePreviewVertex in [[stage_in]],
     if (u.amplitude > 0.0f && u.footprint > 0.0f) {
         // Reference pixels per drawable pixel. One 128^3 volume texel is one grain cell, so a
         // cell spans `footprint` reference pixels -- the same quantity pass2_grain samples as
-        // gid / (128 * footprint) in the full-size render.
+        // gid / (128 * footprint) in the full-size render. Magnifying by `zoom` shrinks the
+        // reference space by the same factor, so a cell covers `zoom` times as many drawable
+        // pixels: the grain is magnified with the crop, not left behind at card scale.
         float drawableLong = max(u.drawableSize.x, u.drawableSize.y);
-        float referenceScale = u.referenceLongEdge / max(drawableLong, 1.0f);
-        float2 referencePixel = in.position.xy * referenceScale;
+        float baseScale = u.referenceLongEdge / max(drawableLong, 1.0f);
+        float referenceScale = baseScale / zoom;
+        float2 referencePixel = ((in.position.xy - 0.5f * u.drawableSize) / zoom
+                                 + 0.5f * u.drawableSize) * baseScale;
         float2 address = referencePixel / (128.0f * u.footprint);
         float3 position = float3(address.x, address.y, 0.0f) + float3(u.offset);
         float noise = grainVolume.sample(grainSampler, position).r * 2.0f - 1.0f;
@@ -189,7 +202,14 @@ fragment float4 platePreviewFragment(PlatePreviewVertex in [[stage_in]],
         // Fade to that value so subpixel grain reads as fine texture instead of aliasing.
         float cellDrawable = u.footprint / max(referenceScale, 1e-6f);
         float damping = saturate(cellDrawable);
-        graded = clamp(graded + noise * u.amplitude * damping, 0.0f, 1.0f);
+        // `pass2_grain` modulates its amount by the graded luma's latitude: grain fades out of
+        // the deepest shadows so it never lifts the black point, and out of the brightest
+        // highlights so it never crusts a specular. The preview applies the same window, so
+        // the card's grain is the renderer's grain rather than a flat overlay.
+        float luminance = dot(graded, float3(0.2126f, 0.7152f, 0.0722f));
+        float latitude = smoothstep(0.015f, 0.13f, luminance)
+            * (1.0f - smoothstep(0.78f, 0.98f, luminance));
+        graded = clamp(graded + noise * u.amplitude * damping * latitude, 0.0f, 1.0f);
     }
     return float4(graded, 1);
 }
