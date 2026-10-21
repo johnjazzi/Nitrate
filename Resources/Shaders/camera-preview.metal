@@ -69,7 +69,9 @@ vertex PlatePreviewVertex platePreviewVertex(uint id [[vertex_id]]) {
 /// Plate preview controls: the identity of the selected stock's white balance and the
 /// print gauge's grain, plus the aspect fit.
 struct PlatePreviewUniforms {
-    float3 whiteBalanceGain;   // I(scene illuminant) / I(locked Kelvin), luminance-normalised
+    /// Bradford chromatic adaptation in linear Apple Wide Gamut: it maps the white the
+    /// camera locks to (source) onto the scene's illuminant white (destination).
+    float3x3 whiteBalance;
     float footprint;           // realised grain size for stock x gauge
     float amplitude;           // grain presence (size is the dial, not loudness)
     float offset;              // fixed grain phase: the preview is a still
@@ -83,16 +85,28 @@ constant float PLATE_AL0_C = 47.28711236f;
 constant float PLATE_AL0_BETA = 0.00964052f;
 constant float PLATE_AL0_GAMMA = 0.08550479f;
 constant float PLATE_AL0_DELTA = 0.69336945f;
+/// The toe is a square root of the code, so the two segments meet at the linear value
+/// `R_t`, which is the code `c * (R_t - R_0)^2` -- NOT `(R_t - R_0) / c`. Using the linear
+/// join put every plate code below ~0.209 through the log segment, then re-encoded it near
+/// zero, crushing the shadows and exaggerating whichever channel the gain favoured.
+constant float PLATE_AL0_PT = PLATE_AL0_C * (PLATE_AL0_RT - PLATE_AL0_R0) * (PLATE_AL0_RT - PLATE_AL0_R0);
 
 static inline float plate_log2_decode(float code) {
-    return code < (PLATE_AL0_RT - PLATE_AL0_R0) / PLATE_AL0_C
-        ? PLATE_AL0_R0 + PLATE_AL0_C * code
-        : exp2((code - PLATE_AL0_DELTA) / PLATE_AL0_GAMMA) - PLATE_AL0_BETA;
+    if (code >= PLATE_AL0_PT) {
+        return pow(2.0f, (code - PLATE_AL0_DELTA) / PLATE_AL0_GAMMA) - PLATE_AL0_BETA;
+    }
+    if (code >= 0.0f) {
+        return sqrt(code / PLATE_AL0_C) + PLATE_AL0_R0;
+    }
+    return PLATE_AL0_R0;
 }
 
 static inline float plate_log2_encode(float linear) {
+    if (linear <= PLATE_AL0_R0) {
+        return 0.0f;
+    }
     return linear < PLATE_AL0_RT
-        ? (linear - PLATE_AL0_R0) / PLATE_AL0_C
+        ? PLATE_AL0_C * (linear - PLATE_AL0_R0) * (linear - PLATE_AL0_R0)
         : PLATE_AL0_DELTA + PLATE_AL0_GAMMA * log2(max(linear, 0.0f) + PLATE_AL0_BETA);
 }
 
@@ -106,12 +120,14 @@ fragment float4 platePreviewFragment(PlatePreviewVertex in [[stage_in]],
     // Aspect-fill: crop the plate to the card instead of squeezing it into it.
     float2 uv = clamp((in.uv - 0.5f) * u.uvScale + 0.5f, 0.0f, 1.0f);
     float3 code = plate.sample(linearSampler, uv).rgb;
-    // The camera locks white balance before the cube sees the frame, so apply the gain in
-    // linear light and re-encode at Log before the lookup.
+    // The camera locks white balance before the cube sees the frame, so the adaptation is
+    // applied in linear light and the result is re-encoded to Log before the lookup. The
+    // matrix is a Bradford adaptation expressed in the plate's own Apple Wide Gamut basis;
+    // a per-channel gain derived in linear sRGB and applied here would be the wrong basis.
     float3 linear = float3(plate_log2_decode(code.r),
                            plate_log2_decode(code.g),
                            plate_log2_decode(code.b));
-    linear *= u.whiteBalanceGain;
+    linear = u.whiteBalance * linear;
     float3 balanced = float3(plate_log2_encode(linear.r),
                              plate_log2_encode(linear.g),
                              plate_log2_encode(linear.b));

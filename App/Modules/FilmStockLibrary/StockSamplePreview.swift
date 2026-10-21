@@ -99,13 +99,15 @@ struct StockSamplePreview: View {
 struct PreviewConfiguration: Equatable {
     let footprint: Float
     let amplitude: Float
-    let whiteBalanceGain: SIMD3<Float>
+    /// Bradford adaptation in linear Apple Wide Gamut from the scene illuminant to the
+    /// stock's locked white balance.
+    let whiteBalance: simd_float3x3
 
     init(stock: FilmStockConfig?, gauge: PrintGauge?, sceneIlluminantKelvin: Float) {
         guard let stock else {
             self.footprint = 0
             self.amplitude = 0
-            self.whiteBalanceGain = SIMD3(repeating: 1)
+            self.whiteBalance = matrix_identity_float3x3
             return
         }
         self.footprint = GrainModel.effectiveSize(stockGrainSize: stock.grainSize,
@@ -113,48 +115,77 @@ struct PreviewConfiguration: Equatable {
         // Presence, not the render's exact amplitude: the selector shows which gauge is
         // coarser, not a calibrated grain loudness.
         self.amplitude = PreviewConfiguration.previewAmplitude
-        self.whiteBalanceGain = PlateWhiteBalance.gain(sceneKelvin: sceneIlluminantKelvin,
-                                                       lockedKelvin: stock.colorTemperature)
+        self.whiteBalance = PlateWhiteBalance.adaptation(sceneKelvin: sceneIlluminantKelvin,
+                                                         lockedKelvin: stock.colorTemperature)
     }
 
     static let previewAmplitude: Float = 0.055
 
     var isGrainVisible: Bool { footprint > 0 && amplitude > 0 }
-    var key: String { String(format: "%.3f|%.4f|%.4f|%.4f|%.4f",
-                             footprint, whiteBalanceGain.x, whiteBalanceGain.y, whiteBalanceGain.z,
-                             amplitude) }
+
+    var key: String {
+        let m = whiteBalance
+        return String(format: "%.3f|%.5f", footprint, amplitude)
+            + String(format: "|%.5f,%.5f,%.5f", m.columns.0.x, m.columns.1.x, m.columns.2.x)
+            + String(format: "|%.5f,%.5f,%.5f", m.columns.0.y, m.columns.1.y, m.columns.2.y)
+            + String(format: "|%.5f,%.5f,%.5f", m.columns.0.z, m.columns.1.z, m.columns.2.z)
+    }
+
+    static func == (lhs: PreviewConfiguration, rhs: PreviewConfiguration) -> Bool {
+        lhs.footprint == rhs.footprint && lhs.amplitude == rhs.amplitude
+            && lhs.whiteBalance.columns.0 == rhs.whiteBalance.columns.0
+            && lhs.whiteBalance.columns.1 == rhs.whiteBalance.columns.1
+            && lhs.whiteBalance.columns.2 == rhs.whiteBalance.columns.2
+    }
 }
 
-/// The white balance the camera would leave on a scene, as a per-channel linear gain.
+/// The white balance the camera would leave on a scene, as a full colour transform.
 ///
 /// `CameraSession.setWhiteBalance` locks the sensor to the selected stock's
 /// `colorTemperature` with tint 0, so a scene lit at a different temperature records with its
-/// neutral axis displaced by `I(scene) / I(locked)`. Mirrors the generator's model: Planckian
-/// locus (Kim et al. 1997) -> XYZ -> Bradford adaptation -> linear sRGB -> luminance-normalised.
+/// neutral axis displaced by the illuminant ratio `I(scene) / I(locked)`. That ratio is a
+/// chromatic adaptation, so it is applied as a full Bradford transform — never as a
+/// per-channel gain. The transform is conjugated into **Apple Wide Gamut**, the primaries the
+/// plates' linear values are in (Apple Log 2 white paper, the same primaries OCIO 2.6 uses for
+/// `APPLE_LOG-APPLEWG_to_ACES2065-1`); deriving gains in linear sRGB and applying them to
+/// Apple Wide Gamut values would mix two different bases.
 enum PlateWhiteBalance {
     private static let bradford = simd_float3x3(rows: [
         SIMD3(0.8951, 0.2664, -0.1614),
         SIMD3(-0.7502, 1.7135, 0.0367),
         SIMD3(0.0389, -0.0685, 1.0296),
     ])
-    private static let xyzToSRGB = simd_float3x3(rows: [
-        SIMD3(3.2406, -1.5372, -0.4986),
-        SIMD3(-0.9689, 1.8758, 0.0415),
-        SIMD3(0.0557, -0.2040, 1.0570),
-    ])
-    private static let luma = SIMD3<Float>(0.2126, 0.7152, 0.0722)
+    /// Apple Wide Gamut primaries and D65 white, from the Apple Log 2 white paper.
+    private static let appleWideGamutToXYZ = primariesMatrix(red: SIMD2(0.725, 0.301),
+                                                             green: SIMD2(0.221, 0.814),
+                                                             blue: SIMD2(0.068, -0.076),
+                                                             white: SIMD2(0.3127, 0.3290))
+    private static let xyzToAppleWideGamut = appleWideGamutToXYZ.inverse
+    /// Apple Wide Gamut luminance coefficients: the Y row of `appleWideGamutToXYZ`.
+    private static let appleWideGamutLuma = SIMD3<Float>(appleWideGamutToXYZ[0][1],
+                                                         appleWideGamutToXYZ[1][1],
+                                                         appleWideGamutToXYZ[2][1])
 
-    static func gain(sceneKelvin: Float, lockedKelvin: Float) -> SIMD3<Float> {
-        guard sceneKelvin > 0, lockedKelvin > 0 else { return SIMD3(repeating: 1) }
-        let adaptation = bradford.inverse * diagonal(bradford * xyz(sceneKelvin)
-                                                     / (bradford * xyz(lockedKelvin))) * bradford
-        let toSRGB = xyzToSRGB * adaptation * xyzToSRGB.inverse
-        var white = toSRGB * SIMD3(repeating: 1)
-        white = simd_max(white, SIMD3(repeating: 1e-6))
-        let luminance = simd_dot(white, luma)
-        guard luminance.isFinite, luminance > 0 else { return SIMD3(repeating: 1) }
-        let gain = white / luminance
-        return gain.x.isFinite && gain.y.isFinite && gain.z.isFinite ? gain : SIMD3(repeating: 1)
+    /// Full chromatic adaptation that carries the locked white onto the scene's white, in the
+    /// plate's Apple Wide Gamut basis, normalised so the plate's neutral keeps its luminance
+    /// (the lock changes colour, not exposure). Identity when the two agree.
+    static func adaptation(sceneKelvin: Float, lockedKelvin: Float) -> simd_float3x3 {
+        guard sceneKelvin > 0, lockedKelvin > 0 else { return matrix_identity_float3x3 }
+        let cone = bradford * xyz(sceneKelvin) / (bradford * xyz(lockedKelvin))
+        let inXYZ = bradford.inverse * simd_float3x3(diagonal: cone) * bradford
+        var transform = xyzToAppleWideGamut * inXYZ * appleWideGamutToXYZ
+        let neutral = transform * SIMD3<Float>(repeating: 1)
+        let luminance = simd_dot(appleWideGamutLuma, neutral)
+        guard luminance.isFinite, luminance > 0 else { return matrix_identity_float3x3 }
+        transform = simd_float3x3(columns: (transform.columns.0 / luminance,
+                                            transform.columns.1 / luminance,
+                                            transform.columns.2 / luminance))
+        let isFinite = transform.columns.0.x.isFinite && transform.columns.0.y.isFinite
+            && transform.columns.0.z.isFinite && transform.columns.1.x.isFinite
+            && transform.columns.1.y.isFinite && transform.columns.1.z.isFinite
+            && transform.columns.2.x.isFinite && transform.columns.2.y.isFinite
+            && transform.columns.2.z.isFinite
+        return isFinite ? transform : matrix_identity_float3x3
     }
 
     /// CIE 1931 xy on the Planckian locus, Y = 1.
@@ -174,8 +205,15 @@ enum PlateWhiteBalance {
         return SIMD3(x / y, 1, (1 - x - y) / y)
     }
 
-    private static func diagonal(_ v: SIMD3<Float>) -> simd_float3x3 {
-        simd_float3x3(rows: [SIMD3(v.x, 0, 0), SIMD3(0, v.y, 0), SIMD3(0, 0, v.z)])
+    /// RGB→XYZ for the given primaries, scaled so `white` maps to Y = 1.
+    private static func primariesMatrix(red: SIMD2<Float>, green: SIMD2<Float>,
+                                        blue: SIMD2<Float>, white: SIMD2<Float>) -> simd_float3x3 {
+        func toXYZ(_ chromaticity: SIMD2<Float>) -> SIMD3<Float> {
+            SIMD3(chromaticity.x / chromaticity.y, 1,
+                  (1 - chromaticity.x - chromaticity.y) / chromaticity.y)
+        }
+        let primaries = simd_float3x3(toXYZ(red), toXYZ(green), toXYZ(blue))
+        return primaries * simd_float3x3(diagonal: primaries.inverse * toXYZ(white))
     }
 }
 
@@ -364,7 +402,7 @@ final class PlateLUTRenderer: @unchecked Sendable {
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
         guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
         var uniforms = PlatePreviewUniformsCPU(
-            whiteBalanceGain: configuration.whiteBalanceGain,
+            whiteBalance: configuration.whiteBalance,
             footprint: configuration.footprint,
             amplitude: configuration.amplitude,
             offset: Self.grainOffset,
@@ -487,13 +525,13 @@ final class PlateLUTRenderer: @unchecked Sendable {
 /// the 3D upload matches the shader's `(code * (size - 1) + .5) / size` lookup.
 /// CPU mirror of the shader's `PlatePreviewUniforms`.
 struct PlatePreviewUniformsCPU {
-    var whiteBalanceGain: SIMD3<Float>
+    var whiteBalance: simd_float3x3
     var footprint: Float
     var amplitude: Float
     var offset: Float
     var uvScale: SIMD2<Float>
 
-    static let identity = PlatePreviewUniformsCPU(whiteBalanceGain: SIMD3(repeating: 1),
+    static let identity = PlatePreviewUniformsCPU(whiteBalance: matrix_identity_float3x3,
                                                   footprint: 0, amplitude: 0, offset: 0,
                                                   uvScale: SIMD2(repeating: 1))
 }
