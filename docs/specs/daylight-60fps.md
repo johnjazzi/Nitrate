@@ -618,9 +618,10 @@ This user-directed revision supersedes §10 and the Manual-controls placement in
   exact geometry and the scene stays visible behind a dim scrim (currently a 55%
   black wash). The card floats centred over the dim; tapping outside it dismisses
   without changing the mode. Explain that an **ND filter is recommended**, that
-  temporary 60fps / 1/120 has **less cinematic motion**, and give the overexposure
-  reason in film terms: negative stock's long shoulder used to hold a blown
-  highlight, while a fixed 1/48 shutter here clips it. Explicitly confirm 60fps or
+  temporary 60fps / 1/120 has **less cinematic motion**, and explain the trade in
+  film terms: 24fps with a 180 degree shutter has been the balance for over a
+  century, while this mode trades that motion for 1/120 and about 1.3 stops of
+  light so the scene fits in daylight. Explicitly confirm 60fps or
   cancel/keep 24fps. Card actions are deliberately larger than a 44pt toolbar key
   (min 52pt tall with 18pt horizontal padding) so the labels are never crowded.
   Unsupported hardware has a visible reason and no enable action. Take/transition

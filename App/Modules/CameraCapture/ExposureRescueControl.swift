@@ -165,21 +165,23 @@ struct DaylightExposureRescueModal: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(armed ? "Daylight 60 fps is on" : "Protect the highlights")
+            Text(armed ? "Daylight 60 fps is on" : "24 fps or 60 fps?")
                 .font(.system(size: 19, weight: .semibold))
                 .foregroundStyle(.white)
 
             if !armed {
-                Text("Negative stock had a long shoulder, so a blown highlight still printed. "
-                     + "Here the highlight simply clips, and a fixed 1/48 shutter is what puts it over.")
+                Text("Films are shot at 24 fps (except The Hobbit, but we don't count that). "
+                     + "Over 100 years ago we found a perfect balance: 24 fps with a 180° shutter, "
+                     + "just enough blur to feel real and present.")
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.88))
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Text("60 fps drops the shutter to 1/120 — about 1.3 stops less light. "
-                 + "Motion looks less cinematic than 24 fps; an ND filter is the better answer "
-                 + "when you can use one.")
+            Text("But this is an iPhone, and modern tech has given us highly sensitive sensors. "
+                 + "This mode sets 60 fps and drops the shutter to 1/120 — about 1.3 stops less light — "
+                 + "giving you the ability to shoot in daylight. An ND filter is the better answer "
+                 + "if you can use one.")
                 .font(.footnote)
                 .foregroundStyle(.white.opacity(0.88))
                 .fixedSize(horizontal: false, vertical: true)
