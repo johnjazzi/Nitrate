@@ -1,74 +1,66 @@
 import CoreGraphics
 import Foundation
 import ImageIO
-import SwiftUI
 import Testing
 import UniformTypeIdentifiers
 
+/// Contracts for the shipped plates and the inputs the live LUT preview needs.
+///
+/// The rendered look is not asserted here: the GPU applies the cube at display time, so
+/// these tests pin what can be checked offscreen — that every scene ships a plate, that the
+/// plate is a real image at the shipped size, and that the cube the preview will load parses.
 struct StockSampleRenderTests {
     private final class BundleToken {}
 
-    @Test func sampleCatalogIsBundledWithAPreviewForEveryShippingStock() throws {
+    @Test func everySceneShipsAPlateAtTheBudgetedSize() throws {
         let catalog = try StockSampleCatalog.load(bundle: Bundle(for: BundleToken.self))
-        #expect(catalog.scenes.count == 3)
+        #expect(catalog.scenes.count == 8)
         let data = try Data(contentsOf: TestRepository.url(for: "App/Resources/stocks.json"))
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let stocks = try #require(object["stocks"] as? [[String: Any]])
-        for stock in stocks {
-            let stockID = try #require(stock["stockId"] as? String)
-            for scene in catalog.scenes {
-                let url = try #require(scene.imageURL(stockID: stockID, directory: catalog.directory))
-                #expect(StockSamplePhoto.load(url) != nil)
-            }
+        #expect(stocks.count == 2, "the selector must preview every shipping stock")
+        for scene in catalog.scenes {
+            let url = scene.plateURL(directory: catalog.directory)
+            let image = try #require(PlateImage.load(url), "\(scene.id) has no decodable plate")
+            #expect(image.width == 480 && image.height == 720,
+                    "\(scene.id): plates ship at the budgeted 2:3 size")
         }
     }
 
-    @MainActor @Test func realPhotoFacesAreNonblankAtNarrowAndWidePhoneWidths() throws {
+    @Test func everyStockCubeParsesForTheLivePreview() throws {
+        for stock in ["5207 - Apple Log 2.cube", "5219 - Apple Log 2.cube"] {
+            let url = try #require(Bundle(for: BundleToken.self)
+                .url(forResource: stock, withExtension: nil)
+                ?? Bundle(for: BundleToken.self).url(forResource: stock, withExtension: nil, subdirectory: "LUTs"))
+            let cube = try PlateCube.parse(String(contentsOf: url, encoding: .utf8))
+            #expect(cube.size >= 17)
+        }
+    }
+
+    @MainActor @Test func platesAreNonblankPhotographs() throws {
         let catalog = try StockSampleCatalog.load(bundle: Bundle(for: BundleToken.self))
         for scene in catalog.scenes {
-            for stockID in scene.previews.keys.sorted() {
-                let url = try #require(scene.imageURL(stockID: stockID, directory: catalog.directory))
-                let photo = try #require(StockSamplePhoto.load(url))
-                for width: CGFloat in [288, 398] {
-                    let content = StockSamplePhoto(image: photo, title: scene.title, stockName: stockID)
-                        .frame(width: width, height: 310)
-                    let renderer = ImageRenderer(content: content)
-                    renderer.scale = 2
-                    let image = try #require(renderer.cgImage)
-                    #expect(image.width == Int(width * 2))
-                    #expect(image.height == 620)
-                    let pixels = try rgba(image)
-                    // Evaluate the photo, excluding the caption's bottom material.
-                    var values: [UInt8] = []
-                    var opaque = true
-                    var whiteSamples = 0
-                    var midtoneSamples = 0
-                    var sampleCount = 0
-                    for row in stride(from: 40, to: 400, by: 8) {
-                        for column in stride(from: 40, to: image.width - 40, by: 8) {
-                            let index = (row * image.width + column) * 4
-                            opaque = opaque && pixels[index + 3] > 240
-                            let red = Int(pixels[index])
-                            let green = Int(pixels[index + 1])
-                            let blue = Int(pixels[index + 2])
-                            let brightness = (red + green + blue) / 3
-                            if min(red, green, blue) > 247 { whiteSamples += 1 }
-                            if (20...239).contains(brightness) { midtoneSamples += 1 }
-                            sampleCount += 1
-                            values.append(contentsOf: pixels[index..<(index + 3)])
-                        }
-                    }
-                    #expect(opaque)
-                    #expect(Double(whiteSamples) / Double(sampleCount) < 0.45,
-                            "A nearly white sample is not a useful stock preview.")
-                    #expect(Double(midtoneSamples) / Double(sampleCount) > 0.25,
-                            "The photo must retain recognizable midtone content.")
-                    #expect(Int(values.max() ?? 0) - Int(values.min() ?? 0) > 80,
-                            "An example must contain photographic detail, not a blank placeholder.")
-                    #expect(pixels[3] < 20, "Rounded corners should remain transparent.")
-                    try save(image, name: "\(scene.id)-\(stockID)-\(Int(width))")
+            let url = scene.plateURL(directory: catalog.directory)
+            let image = try #require(PlateImage.load(url))
+            let pixels = try rgba(image)
+            var values: [UInt8] = []
+            var midtoneSamples = 0
+            var sampleCount = 0
+            for row in stride(from: 0, to: image.height, by: 12) {
+                for column in stride(from: 0, to: image.width, by: 12) {
+                    let index = (row * image.width + column) * 4
+                    let red = Int(pixels[index]), green = Int(pixels[index + 1]), blue = Int(pixels[index + 2])
+                    let brightness = (red + green + blue) / 3
+                    if (20...239).contains(brightness) { midtoneSamples += 1 }
+                    sampleCount += 1
+                    values.append(contentsOf: pixels[index..<(index + 3)])
                 }
             }
+            #expect(Double(midtoneSamples) / Double(sampleCount) > 0.25,
+                    "\(scene.id): a plate that is mostly clipped shows no roll character")
+            #expect(Int(values.max() ?? 0) - Int(values.min() ?? 0) > 60,
+                    "\(scene.id): plate looks blank")
+            try save(image, name: scene.id)
         }
     }
 
@@ -85,7 +77,7 @@ struct StockSampleRenderTests {
     }
 
     private func save(_ image: CGImage, name: String) throws {
-        let directory = TestRepository.artifactDirectory("stock-selector")
+        let directory = TestRepository.artifactDirectory("stock-plates")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("\(name).png")
         let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL,

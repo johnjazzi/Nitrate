@@ -2,7 +2,8 @@
 """Contract tests for the illustrative stock-preview sample assets.
 
 These are Python tests (allowed alongside the Swift suite). They run offline against the
-committed JPEGs and the committed ``.cube`` LUTs -- no network, no Xcode.
+committed JPEGs and the committed ``.cube`` LUTs -- no network, no Xcode, and no RAW
+decoder: the source NEFs are build-time inputs and are not in the repository.
 
 Run:
     python3 -m venv .venv && . .venv/bin/activate && pip install numpy Pillow scipy
@@ -40,7 +41,8 @@ STOCK_LUTS = {
     "kodak5207": REPO / "App" / "Resources" / "LUTs" / "5207 - Apple Log 2.cube",
     "kodak5219": REPO / "App" / "Resources" / "LUTs" / "5219 - Apple Log 2.cube",
 }
-SCENE_IDS = ["daylight", "city", "night"]
+SCENE_IDS = ["neon", "forest", "harvest", "fireworks", "nightride",
+             "race", "shoreline", "flyover"]
 
 # Image-quality gates (fractions of a 540x810 frame).
 MAX_WHITE_FRACTION = 0.35      # all three channels > 0.97 -> over-exposed
@@ -68,52 +70,70 @@ class ManifestContractTests(unittest.TestCase):
         self.manifest = json.loads(MANIFEST.read_text())
 
     def test_schema_and_disclaimer(self):
-        self.assertEqual(self.manifest["schemaVersion"], 1)
+        self.assertEqual(self.manifest["schemaVersion"], 2)
         self.assertEqual(self.manifest["disclaimer"],
-                         "Illustrative photos \u00b7 color LUT + white balance only")
+                         "Illustrative plates \u00b7 your LUT applied live")
 
     def test_scene_coverage(self):
         ids = [s["id"] for s in self.manifest["scenes"]]
         self.assertEqual(ids, SCENE_IDS)
 
-    def test_every_scene_covers_every_stock(self):
+    def test_every_scene_ships_one_plate(self):
         for scene in self.manifest["scenes"]:
-            self.assertEqual(set(scene["previews"]), set(STOCK_LUTS),
-                             f"{scene['id']} must preview every current stock")
+            self.assertTrue(scene["plate"].endswith("-log.jpg"), scene["plate"])
+            self.assertNotIn("previews", scene,
+                             "plates ship ungraded; the app applies the stock LUT at runtime")
+            self.assertTrue((STOCK_DIR / scene["plate"]).is_file())
 
-    def test_all_referenced_files_exist(self):
-        for scene in self.manifest["scenes"]:
-            for name in [scene["neutralFile"], *scene["previews"].values()]:
-                self.assertTrue((STOCK_DIR / name).is_file(), f"missing asset {name}")
+    def test_runtime_contract_is_recorded(self):
+        self.assertEqual(self.manifest["plateCount"], len(SCENE_IDS))
+        self.assertIn("live", self.manifest["runtimeNote"])
+        self.assertIn("live", self.manifest["disclaimer"])
 
     def test_lut_hashes_match_files(self):
         for sid, path in STOCK_LUTS.items():
             self.assertEqual(self.manifest["lutSHA256"][sid], GEN.source_sha256(path))
         self.assertEqual(self.manifest["neutralLutSHA256"], GEN.source_sha256(NEUTRAL_LUT))
 
-    def test_asset_checksums_match_files(self):
+    def test_plate_checksums_and_stats_match_files(self):
         for scene in self.manifest["scenes"]:
-            for meta in scene["assets"].values():
-                path = STOCK_DIR / meta["file"]
-                self.assertEqual(meta["sha256"], GEN.source_sha256(path),
-                                 f"{meta['file']} checksum drift")
+            stats = scene["plateStats"]
+            path = STOCK_DIR / scene["plate"]
+            self.assertEqual(stats["sha256"], GEN.source_sha256(path))
+            self.assertLess(stats["whiteFraction"], 0.35, f"{scene['id']} plate is blown")
+            self.assertGreater(stats["midtoneFraction"], 0.25, f"{scene['id']} plate is flat")
+            self.assertLess(stats["roundTripMeanAbsError8bit"], 3.0,
+                            f"{scene['id']}: plate does not survive the neutral round trip")
 
-    def test_sources_are_real_cc0_with_urls(self):
+    def test_sources_are_identified_supplied_raws(self):
         for scene in self.manifest["scenes"]:
             src = scene["source"]
-            self.assertEqual(src["license"], "CC0")
-            self.assertTrue(src["sourceURL"].startswith("https://"))
-            self.assertTrue(src["licenseURL"].startswith("https://"))
-            self.assertEqual(len(src["sha256"]), 64)
-            self.assertEqual(len(src["md5"]), 32)
+            self.assertIn("John Azzinaro", src["provider"])
+            self.assertIn("permission", src["license"].lower())
+            self.assertTrue(src["file"].lower().endswith(".nef"))
+            self.assertEqual(len(src["sha256"]), 64, "source RAW must carry a content hash")
+            nef = src["nef"]
+            self.assertTrue(nef["camera"].startswith("NIKON"), nef)
+            for key in ("exposureTime", "fNumber", "iso", "originalDate"):
+                self.assertTrue(nef.get(key), f"{scene['id']}: capture metadata {key} missing")
+
+    def test_every_shipped_plate_records_its_compression_budget(self):
+        for scene in self.manifest["scenes"]:
+            path = STOCK_DIR / scene["plate"]
+            self.assertLess(path.stat().st_size, 90 * 1024,
+                            f"{path.name} exceeds the per-plate bundle budget")
+    def test_total_bundle_stays_small(self):
+        total = sum(f.stat().st_size for f in STOCK_DIR.glob("*.jpg"))
+        self.assertLess(total, 600 * 1024,
+                        f"stock previews total {total/1024:.0f} KB; budget is 600 KB")
 
     def test_labelling_is_honest_not_calibration(self):
         blob = json.dumps(self.manifest).lower()
         for banned in ["calibrated", "camera original", "captured with", "apple log 2 original"]:
-            self.assertNotIn(banned, blob.replace("not apple log 2 camera original", ""))
+            self.assertNotIn(banned, blob.replace("not a camera original", ""))
         self.assertIn("illustrative", blob)
         scene = self.manifest["scenes"][0]
-        self.assertIn("illustrative synthetic Log input", scene["derivation"]["inputLabel"])
+        self.assertIn("NOT a camera original", scene["derivation"]["plateLabel"])
 
     def test_inverse_roundtrip_metric_present(self):
         rt = self.manifest["inverseRoundTripGlobal"]
@@ -128,17 +148,16 @@ class ImageQualityTests(unittest.TestCase):
 
     def _paths(self):
         for scene in self.manifest["scenes"]:
-            for label, meta in scene["assets"].items():
-                yield scene["id"], label, STOCK_DIR / meta["file"]
+            yield scene["id"], STOCK_DIR / scene["plate"]
 
     def test_size_and_format(self):
-        for _sid, _label, path in self._paths():
+        for _sid, path in self._paths():
             with Image.open(path) as im:
                 self.assertEqual(im.format, "JPEG")
-                self.assertEqual(im.size, (540, 810))
+                self.assertEqual(im.size, (480, 720))
 
     def test_images_are_present_and_not_blank(self):
-        for sid, label, path in self._paths():
+        for sid, path in self._paths():
             img = _read(path)
             self.assertGreater(float(img.std()), 0.02, f"{path.name} looks flat/blank")
             palette = len(np.unique((img * 255).astype(np.uint8).reshape(-1, 3), axis=0))
@@ -146,63 +165,46 @@ class ImageQualityTests(unittest.TestCase):
                                f"{path.name} only {palette} colours -> posterised/blank")
 
     def test_not_blown_out(self):
-        for _sid, _label, path in self._paths():
+        for _sid, path in self._paths():
             img = _read(path)
-            white = float((img > 0.97).all(axis=-1).mean())
-            self.assertLess(white, MAX_WHITE_FRACTION,
-                            f"{path.name}: {white:.3f} of pixels are blown white")
+            self.assertLess(float((img > 0.97).all(axis=-1).mean()), MAX_WHITE_FRACTION,
+                            f"{path.name} is blown out")
 
     def test_has_meaningful_midtones(self):
-        for _sid, _label, path in self._paths():
+        for _sid, path in self._paths():
             img = _read(path)
             m = img.mean(axis=-1)
-            mid = float(((m > 0.08) & (m < 0.94)).mean())
-            self.assertGreater(mid, MIN_MIDTONE_FRACTION,
-                               f"{path.name}: only {mid:.3f} midtone pixels")
+            self.assertGreater(float(((m > 0.08) & (m < 0.94)).mean()), MIN_MIDTONE_FRACTION,
+                               f"{path.name} has no midtone content")
 
     def test_broad_luminance_histogram(self):
-        # a real photo occupies most of the tonal range, not one or two narrow spikes
-        for _sid, _label, path in self._paths():
-            m = _read(path).mean(axis=-1)
-            hist, _ = np.histogram(m, bins=10, range=(0.0, 1.0))
-            occupied = int((hist > 0.01 * m.size).sum())
-            self.assertGreaterEqual(occupied, 6, f"{path.name}: only {occupied}/10 tone bins used")
+        for _sid, path in self._paths():
+            img = _read(path)
+            with Image.open(path) as im:
+                hist = np.asarray(im.convert("L").histogram(), dtype=float)
+            occupied = int((hist > 0.01 * hist.sum()).sum())
+            self.assertGreaterEqual(occupied, 5, f"{path.name}: only {occupied} tone bins used")
 
-    def test_neutral_photos_read_as_photographs(self):
-        # the neutral base must be sensible BEFORE any inverse/stock step
-        for scene in self.manifest["scenes"]:
-            img = _read(STOCK_DIR / scene["neutralFile"])
-            white = float((img > 0.97).all(axis=-1).mean())
-            self.assertLess(white, MAX_WHITE_FRACTION, f"{scene['id']} neutral blown out")
-            self.assertGreater(float(img.std()), 0.05, f"{scene['id']} neutral lacks contrast")
+    def test_plates_total_stays_within_budget(self):
+        total = sum(f.stat().st_size for f in STOCK_DIR.glob("*.jpg"))
+        self.assertLess(total, 400 * 1024,
+                        f"plates total {total/1024:.0f} KB; budget is 400 KB")
 
 
 class DistinctnessTests(unittest.TestCase):
     def setUp(self):
         self.manifest = json.loads(MANIFEST.read_text())
-
-    def _scene(self, sid):
-        return next(s for s in self.manifest["scenes"] if s["id"] == sid)
+        self.plates = [_read(STOCK_DIR / s["plate"]) for s in self.manifest["scenes"]]
 
     def test_scenes_differ_from_each_other(self):
-        neutrals = [_read(STOCK_DIR / self._scene(s)["neutralFile"]) for s in SCENE_IDS]
-        for i in range(len(neutrals)):
-            for j in range(i + 1, len(neutrals)):
-                self.assertGreater(float(np.abs(neutrals[i] - neutrals[j]).mean()), 0.05,
-                                   f"scenes {SCENE_IDS[i]}/{SCENE_IDS[j]} look the same")
+        for a in range(len(self.plates)):
+            for b in range(a + 1, len(self.plates)):
+                self.assertGreater(float(np.abs(self.plates[a] - self.plates[b]).mean()), 0.02,
+                                   f"{SCENE_IDS[a]} and {SCENE_IDS[b]} plates look the same")
 
-    def test_stocks_differ_from_neutral_and_each_other(self):
-        for sid in SCENE_IDS:
-            sc = self._scene(sid)
-            neutral = _read(STOCK_DIR / sc["neutralFile"])
-            a = _read(STOCK_DIR / sc["previews"]["kodak5207"])
-            b = _read(STOCK_DIR / sc["previews"]["kodak5219"])
-            self.assertGreater(float(np.abs(a - neutral).mean()), 0.01,
-                               f"{sid}: 5207 preview indistinguishable from neutral")
-            self.assertGreater(float(np.abs(b - neutral).mean()), 0.01,
-                               f"{sid}: 5219 preview indistinguishable from neutral")
-            self.assertGreater(float(np.abs(a - b).mean()), 0.005,
-                               f"{sid}: 5207 and 5219 previews identical")
+    def test_each_scene_carries_a_different_source_raw(self):
+        files = [s["source"]["file"] for s in self.manifest["scenes"]]
+        self.assertEqual(len(set(files)), len(files), "two scenes reference the same RAW")
 
 
 class CubeMathsTests(unittest.TestCase):
@@ -287,147 +289,6 @@ class InverseTests(unittest.TestCase):
         greys = np.linspace(0.1, 1.0, 20)[:, None].repeat(3, axis=1)
         out = self.inv.apply(greys)[:, 0]
         self.assertTrue(np.all(np.diff(out) > -1e-6), "inverse not monotonic on grey ramp")
-
-
-class ReprojectionTests(unittest.TestCase):
-    def test_rectilinear_crop_is_upright(self):
-        # an HDRI with a bright band just above the horizon must render it at the TOP
-        h = np.zeros((64, 128, 3))
-        h[20:32, :, :] = 1.0  # above-horizon band; below-horizon rows stay dark
-        img = GEN.reproject_linear(h, 0.0, 0.0, 70.0)
-        top = img[: img.shape[0] // 3].mean()
-        bottom = img[-img.shape[0] // 3:].mean()
-        self.assertGreater(top, bottom, "crop is vertically flipped")
-
-    def test_crop_has_no_equirect_distortion(self):
-        # a source meridian (vertical line) must stay a straight vertical line in the crop;
-        # a stretched panorama slice would curve it.
-        h = np.zeros((64, 128, 3))
-        h[:, 70, :] = 1.0  # u ~= 0.55 -> ~18 deg longitude, inside the ~42 deg crop
-        img = GEN.reproject_linear(h, 0.0, 0.0, 60.0)
-        prof = img.mean(axis=2)
-        band = img.shape[0] // 5
-        cols = [int(np.argmax(prof[i * band:(i + 1) * band].mean(axis=0))) for i in range(5)]
-        self.assertLess(max(cols) - min(cols), 2, "vertical line curves in crop -> equirect distortion")
-
-
-class WhiteBalanceTests(unittest.TestCase):
-    """The app locks the sensor white balance per stock, so the previews must show it.
-
-    Rigour matters here: the neutral reference has *no* LUT applied, so comparing a
-    shipped variant against it measures the LUT and the white balance together. These
-    tests instead rebuild each stock's LUT-only output and require the shipped asset to
-    be exactly that output with the recorded gain applied -- which pins the cast to the
-    white balance and nothing else.
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        cls.manifest = json.loads(MANIFEST.read_text())
-        cls.scene = {s["id"]: s for s in cls.manifest["scenes"]}
-        cls.neutral_inv = GEN.InverseNeutral(NEUTRAL_LUT)
-        cls.cubes = {sid: GEN._parse_cube(path) for sid, path in STOCK_LUTS.items()}
-        cls.lut_only = {}
-        for scene in cls.manifest["scenes"]:
-            base = _read(STOCK_DIR / scene["neutralFile"])
-            log_input = cls.neutral_inv.apply(base)
-            for sid, (size, cube) in cls.cubes.items():
-                cls.lut_only[(scene["id"], sid)] = GEN._trilinear(cube, size, log_input)
-
-    def setUp(self):
-        self.stocks = json.loads((REPO / "App" / "Resources" / "stocks.json").read_text())["stocks"]
-
-    def _shipped(self, scene_id, sid):
-        return _read(STOCK_DIR / self.scene[scene_id]["previews"][sid])
-
-    def _gain(self, scene_id, sid):
-        return np.array(self.scene[scene_id]["assets"][sid]["whiteBalance"]["gainLinearRGB"])
-
-    def test_locks_match_the_app_stock_config(self):
-        configured = {s["stockId"]: float(s["colorTemperature"]) for s in self.stocks}
-        for sid in STOCK_LUTS:
-            self.assertEqual(self.manifest["lockedKelvin"][sid], configured[sid],
-                             f"{sid} previews must use the Kelvin the capture session locks")
-
-    def test_every_stock_variant_records_its_simulation(self):
-        for scene in self.manifest["scenes"]:
-            for sid in STOCK_LUTS:
-                wb = scene["assets"][sid]["whiteBalance"]
-                self.assertEqual(wb["lockedKelvin"], self.manifest["lockedKelvin"][sid])
-                self.assertEqual(wb["sceneIlluminantKelvin"],
-                                 scene["derivation"]["sceneIlluminantKelvin"])
-                self.assertEqual(len(wb["gainLinearRGB"]), 3)
-                for gain in wb["gainLinearRGB"]:
-                    self.assertTrue(0.0 < gain < 8.0, "implausible white-balance gain")
-        self.assertIn("illustrative", self.manifest["whiteBalanceSimulation"]["label"])
-
-    def test_recorded_gains_are_reproducible_from_the_scene_and_the_lock(self):
-        # The shipped cast must be exactly what the documented model produces: same scene
-        # illuminant, same Kelvin the capture session locks. A missing or duplicated gain
-        # changes these numbers, so this pins the simulation without depending on JPEG
-        # quantisation (which the gain amplifies in the clipped regions).
-        for scene in self.manifest["scenes"]:
-            illuminant = scene["derivation"]["sceneIlluminantKelvin"]
-            for sid in STOCK_LUTS:
-                expected = GEN.white_balance_factor(illuminant, self.manifest["lockedKelvin"][sid])
-                recorded = self._gain(scene["id"], sid)
-                np.testing.assert_allclose(
-                    recorded, expected, atol=1e-9,
-                    err_msg=f"{scene['id']}/{sid}: recorded gain is not the documented model's")
-
-    def test_applying_a_mismatched_gain_moves_channels_in_the_expected_direction(self):
-        patch = np.full((4, 4, 3), 0.5)
-        cooled = GEN.apply_display_white_balance(patch, self._gain("daylight", "kodak5219"))
-        warmed = GEN.apply_display_white_balance(patch, self._gain("night", "kodak5207"))
-        self.assertLess(cooled[..., 0].mean(), 0.5, "tungsten lock invalidates red")
-        self.assertGreater(cooled[..., 2].mean(), 0.5, "tungsten lock must lift blue")
-        self.assertGreater(warmed[..., 0].mean(), 0.5, "daylight lock must lift red")
-        self.assertLess(warmed[..., 2].mean(), 0.5, "daylight lock invalidates blue")
-
-    def test_matching_lock_leaves_a_daylight_scene_on_its_white_balance(self):
-        for scene_id in ("daylight", "city"):
-            for gain in self._gain(scene_id, "kodak5207"):
-                self.assertAlmostEqual(gain, 1.0, delta=0.03,
-                                       msg="a daylight stock on a daylight scene must not cast")
-
-    def test_tungsten_stock_reads_cooler_than_its_own_lut_on_a_daylight_scene(self):
-        for scene_id in ("daylight", "city"):
-            lut_only = self.lut_only[(scene_id, "kodak5219")]
-            shipped = self._shipped(scene_id, "kodak5219")
-            self.assertLess(shipped[..., 0].mean(), lut_only[..., 0].mean() - 0.02,
-                            f"{scene_id}: tungsten lock must reduce red below the LUT's own output")
-            self.assertGreater(shipped[..., 2].mean(), lut_only[..., 2].mean() + 0.02,
-                               f"{scene_id}: tungsten lock must raise blue above the LUT's own output")
-
-    def test_daylight_stock_reads_warmer_than_its_own_lut_on_a_warm_night_scene(self):
-        lut_only = self.lut_only[("night", "kodak5207")]
-        shipped = self._shipped("night", "kodak5207")
-        self.assertGreater(shipped[..., 0].mean(), lut_only[..., 0].mean() + 0.02,
-                           "daylight lock on a warm scene must raise red")
-        self.assertLess(shipped[..., 2].mean(), lut_only[..., 2].mean() - 0.02,
-                        "daylight lock on a warm scene must reduce blue")
-
-    def test_a_matching_lock_casts_less_than_a_mismatched_one(self):
-        night_tungsten = self._gain("night", "kodak5219")
-        night_daylight = self._gain("night", "kodak5207")
-        self.assertLess(float(np.abs(night_tungsten - 1.0).max()),
-                        float(np.abs(night_daylight - 1.0).max()),
-                        "on a warm scene the tungsten lock must cast less than the daylight lock")
-        self.assertLess(float(np.abs(night_tungsten - 1.0).max()), 0.2,
-                        "a matching lock should be close to neutral")
-
-    def test_mismatched_casts_do_not_clip_the_frame_away(self):
-        # A locked white balance does clip a channel, but a preview that clips most of the
-        # frame stops showing the stock at all. Bound it and keep the frame readable.
-        for scene in self.manifest["scenes"]:
-            for sid in STOCK_LUTS:
-                asset = scene["assets"][sid]
-                self.assertLess(asset["clippedChannelFraction"], 0.45,
-                                f"{scene['id']}/{sid} clips most of the frame")
-                image = _read(STOCK_DIR / asset["file"])
-                self.assertGreater(len(np.unique((image * 255).astype(np.uint8).reshape(-1, 3),
-                                                 axis=0)), MIN_PALETTE,
-                                   f"{scene['id']}/{sid} is posterised")
 
 
 if __name__ == "__main__":

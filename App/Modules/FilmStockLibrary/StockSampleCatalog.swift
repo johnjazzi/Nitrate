@@ -1,23 +1,18 @@
 import Foundation
 
-/// Offline, illustrative color previews. The manifest never promotes sample
-/// photographs into camera-captured Log originals or a calibration claim.
+/// The bundled preview plates: one Apple Log 2 still per scene, shipped ungraded so the
+/// app applies the selected stock's LUT (and later grain, halation and glow) at display
+/// time. The manifest never promotes these into camera-captured originals or a calibration
+/// claim.
 struct StockSampleCatalog: Sendable {
     struct Scene: Decodable, Identifiable, Sendable {
         let id: String
         let title: String
-        let neutralFile: String
-        let previews: [String: String]
+        /// Apple Log 2 encoded plate, LUT applied live by `PlateLUTRenderer`.
+        let plate: String
 
-        func imageURL(stockID: String?, directory: URL) -> URL? {
-            let filename: String
-            if let stockID {
-                guard let preview = previews[stockID] else { return nil }
-                filename = preview
-            } else {
-                filename = neutralFile
-            }
-            return directory.appendingPathComponent(filename)
+        func plateURL(directory: URL) -> URL {
+            directory.appendingPathComponent(plate)
         }
     }
 
@@ -38,14 +33,14 @@ struct StockSampleCatalog: Sendable {
 
     static func decode(_ data: Data, directory: URL) throws -> Self {
         let manifest = try JSONDecoder().decode(Manifest.self, from: data)
-        guard manifest.schemaVersion == 1, !manifest.scenes.isEmpty,
+        guard manifest.schemaVersion == 2, !manifest.scenes.isEmpty,
               !manifest.disclaimer.isEmpty,
               Set(manifest.scenes.map(\.id)).count == manifest.scenes.count else {
             throw CatalogError.invalidManifest
         }
         for scene in manifest.scenes {
-            guard !scene.id.isEmpty, !scene.title.isEmpty, !scene.previews.isEmpty,
-                  ([scene.neutralFile] + Array(scene.previews.values)).allSatisfy(isSafeFilename) else {
+            guard !scene.id.isEmpty, !scene.title.isEmpty,
+                  isSafeFilename(scene.plate) else {
                 throw CatalogError.invalidManifest
             }
         }
@@ -59,10 +54,8 @@ struct StockSampleCatalog: Sendable {
         let data = try Data(contentsOf: directory.appendingPathComponent("manifest.json"))
         let catalog = try decode(data, directory: directory)
         for scene in catalog.scenes {
-            for file in [scene.neutralFile] + Array(scene.previews.values) {
-                guard FileManager.default.fileExists(atPath: directory.appendingPathComponent(file).path) else {
-                    throw CatalogError.missingResources
-                }
+            guard FileManager.default.fileExists(atPath: scene.plateURL(directory: directory).path) else {
+                throw CatalogError.missingResources
             }
         }
         return catalog

@@ -47,3 +47,32 @@ fragment float4 cameraPreviewFragment(CameraPreviewVertex in [[stage_in]],
     // deliberately NOT an sRGB render target and NOT an HLG/gamma conversion.
     return float4(lut.sample(linearSampler, coordinates).rgb, 1);
 }
+
+// MARK: - Stock-selector plate preview
+//
+// The selector ships Apple Log 2 encoded plates and applies the selected stock LUT on the
+// GPU, so a user-supplied LUT, a grade tweak or a gauge change needs no new asset. The LUT
+// lookup is deliberately identical to cameraPreviewFragment above (red-fastest trilinear,
+// clamp-to-edge) so a plate and a live frame grade the same way.
+
+struct PlatePreviewVertex { float4 position [[position]]; float2 uv; };
+
+vertex PlatePreviewVertex platePreviewVertex(uint id [[vertex_id]]) {
+    const float2 points[] = {float2(-1,-1), float2(1,-1), float2(-1,1),
+                            float2(1,-1), float2(1,1), float2(-1,1)};
+    PlatePreviewVertex out;
+    out.position = float4(points[id], 0, 1);
+    out.uv = float2((points[id].x + 1) * .5, (1 - points[id].y) * .5);
+    return out;
+}
+
+fragment float4 platePreviewFragment(PlatePreviewVertex in [[stage_in]],
+                                     texture2d<float> plate [[texture(0)]],
+                                     texture3d<float> lut [[texture(1)]]) {
+    constexpr sampler linearSampler(filter::linear, address::clamp_to_edge);
+    // The plate is already Apple Log 2 encoded, so it feeds the cube directly.
+    float3 logRGB = plate.sample(linearSampler, in.uv).rgb;
+    float3 size = float3(lut.get_width(), lut.get_height(), lut.get_depth());
+    float3 coordinates = (clamp(logRGB, 0.0, 1.0) * (size - 1.0) + .5) / size;
+    return float4(lut.sample(linearSampler, coordinates).rgb, 1);
+}

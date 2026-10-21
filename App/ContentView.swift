@@ -647,7 +647,7 @@ private struct StockSheetView: View {
             GeometryReader { geometry in
                 ScrollView(.vertical) {
                     VStack(spacing: 20) {
-                        StockSamplePreview(stock: localSelection)
+                        StockSamplePreview(stock: localSelection ?? stocks.first)
                             .frame(height: previewHeight(for: geometry.size))
                             .frame(maxWidth: .infinity)
 
