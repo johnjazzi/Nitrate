@@ -1,0 +1,437 @@
+{
+  "schemaVersion": 2,
+  "disclaimer": "Illustrative plates \u00b7 your LUT applied live",
+  "generator": "scripts/generate_stock_previews.py",
+  "stocks": [
+    "kodak5207",
+    "kodak5219"
+  ],
+  "lutSHA256": {
+    "kodak5207": "f483e2fb151b3b4699b8d5fd1c36df9f583952941d48c0bc99dd311e574d32b5",
+    "kodak5219": "d2320ea308730f3aa5186d66691b91d4a94595806970cbb16059c2d067d4924a"
+  },
+  "neutralLutSHA256": "831b0e32a18ceba3d93fdf0c2816c01163a67fadd48550a3276167b3b2b1e7f2",
+  "runtimeNote": "Plates are Apple Log 2 encoded. The app applies the selected stock LUT to the plate live, so previews track a user LUT, a grade tweak or a gauge change without new assets.",
+  "scenes": [
+    {
+      "id": "neon",
+      "title": "Neon",
+      "plate": "neon-log.jpg",
+      "source": {
+        "provider": "John Azzinaro (Nikon D700) \u2014 supplied for Nitrate",
+        "file": "DSC_0278.nef",
+        "license": "\u00a9 John Azzinaro, used with permission in Nitrate",
+        "sha256": "6df2d10feec3511f6cc36522b39e1e6db0ec9b3e41c3ba164252cd387d3042d9",
+        "nef": {
+          "camera": "NIKON CORPORATION NIKON D700",
+          "exposureTime": "1/100",
+          "fNumber": "14/5",
+          "iso": "280",
+          "focalLength": "28",
+          "originalDate": "2023:09:02 17:47:24",
+          "whiteBalance": "Auto"
+        },
+        "note": "Tungsten signage against a dusk sky"
+      },
+      "derivation": {
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 3600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.0013978909465020577,
+          "gainsRGB": [
+            1.0,
+            1.0061553283733826,
+            1.13114902066973
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "outputSize": [
+          720,
+          1080
+        ],
+        "jpegQuality": 60,
+        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+      },
+      "plateStats": {
+        "sha256": "b681852e59ff1126d185243b1fc36e2a6aae0f36ce9806b09b2763a71482b6f3",
+        "meanCode": 0.3052791740229244,
+        "whiteFraction": 4.243827160493827e-05,
+        "midtoneFraction": 0.991644804526749,
+        "clippedChannelFraction": 5.529835390946502e-05,
+        "roundTripMeanAbsError8bit": 0.2068964098170702,
+        "roundTripP99AbsError8bit": 5.0
+      }
+    },
+    {
+      "id": "forest",
+      "title": "Forest",
+      "plate": "forest-log.jpg",
+      "source": {
+        "provider": "John Azzinaro (Nikon D700) \u2014 supplied for Nitrate",
+        "file": "DSC_0982.nef",
+        "license": "\u00a9 John Azzinaro, used with permission in Nitrate",
+        "sha256": "cfc45c674c002936177c1397fc6bc5da5d5736e5a0d90a1de97c3b0fb7e3db85",
+        "nef": {
+          "camera": "NIKON CORPORATION NIKON D700",
+          "exposureTime": "1/100",
+          "fNumber": "9",
+          "iso": "2200",
+          "focalLength": "28",
+          "originalDate": "2023:09:17 12:19:40",
+          "whiteBalance": "Auto"
+        },
+        "note": "Daylight under a canopy"
+      },
+      "derivation": {
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 5600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.021300154320987655,
+          "gainsRGB": [
+            1.0070337385338484,
+            1.0,
+            1.0428728326871746
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "outputSize": [
+          720,
+          1080
+        ],
+        "jpegQuality": 60,
+        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+      },
+      "plateStats": {
+        "sha256": "3551bd2b568ebc33dc29f4800e696fe78511933e10c258cd89a804a3906f3274",
+        "meanCode": 0.32894696128715045,
+        "whiteFraction": 0.0029732510288065844,
+        "midtoneFraction": 0.9895897633744856,
+        "clippedChannelFraction": 0.007064043209876543,
+        "roundTripMeanAbsError8bit": 0.12947612027928773,
+        "roundTripP99AbsError8bit": 4.171491330748697
+      }
+    },
+    {
+      "id": "harvest",
+      "title": "Harvest",
+      "plate": "harvest-log.jpg",
+      "source": {
+        "provider": "John Azzinaro (Nikon D700) \u2014 supplied for Nitrate",
+        "file": "DSC_2186.nef",
+        "license": "\u00a9 John Azzinaro, used with permission in Nitrate",
+        "sha256": "c31e7d3527252f2dee0b4e5f07034a180bf351b546e106fa1558c61936eef8d0",
+        "nef": {
+          "camera": "NIKON CORPORATION NIKON D700",
+          "exposureTime": "1/1600",
+          "fNumber": "7/2",
+          "iso": "200",
+          "focalLength": "28",
+          "originalDate": "2025:10:19 09:25:59",
+          "whiteBalance": "Auto"
+        },
+        "note": "Daylight, saturated warm subject"
+      },
+      "derivation": {
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 5600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.024521604938271605,
+          "gainsRGB": [
+            1.0746246232252203,
+            1.0404126490664247,
+            1.0
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "outputSize": [
+          720,
+          1080
+        ],
+        "jpegQuality": 60,
+        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+      },
+      "plateStats": {
+        "sha256": "bb9c91f15cdd0ff0df288c9833cdc8b84895b6c7cd2c6e9af5d0afa197b40b57",
+        "meanCode": 0.41818533136888897,
+        "whiteFraction": 1.02880658436214e-05,
+        "midtoneFraction": 0.9995498971193416,
+        "clippedChannelFraction": 5.1440329218106995e-05,
+        "roundTripMeanAbsError8bit": 0.19122552725405048,
+        "roundTripP99AbsError8bit": 6.0
+      }
+    },
+    {
+      "id": "fireworks",
+      "title": "Fireworks",
+      "plate": "fireworks-log.jpg",
+      "source": {
+        "provider": "John Azzinaro (Nikon D700) \u2014 supplied for Nitrate",
+        "file": "DSC_2077.nef",
+        "license": "\u00a9 John Azzinaro, used with permission in Nitrate",
+        "sha256": "f870dd104369c346f55603ac4322cda84905c78f3cbb7ce41467519ce08f2c0c",
+        "nef": {
+          "camera": "NIKON CORPORATION NIKON D700",
+          "exposureTime": "1/100",
+          "fNumber": "5/2",
+          "iso": "2500",
+          "focalLength": "50",
+          "originalDate": "2025:07:05 20:19:27",
+          "whiteBalance": "Auto"
+        },
+        "note": "Night highlights on a dark ground"
+      },
+      "derivation": {
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 3600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.01800925925925926,
+          "gainsRGB": [
+            1.001720993610067,
+            1.0,
+            1.0516257656488055
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "outputSize": [
+          720,
+          1080
+        ],
+        "jpegQuality": 60,
+        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+      },
+      "plateStats": {
+        "sha256": "3f4355632d193861c95ac9eb6c5cad7b08aa91662bdf2f2d14dcfd53a5867b01",
+        "meanCode": 0.2506311682838627,
+        "whiteFraction": 0.0025257201646090533,
+        "midtoneFraction": 0.9900938786008231,
+        "clippedChannelFraction": 0.003221450617283951,
+        "roundTripMeanAbsError8bit": 0.5589117964839799,
+        "roundTripP99AbsError8bit": 8.324167725000008
+      }
+    },
+    {
+      "id": "nightride",
+      "title": "Night ride",
+      "plate": "nightride-log.jpg",
+      "source": {
+        "provider": "John Azzinaro (Nikon D700) \u2014 supplied for Nitrate",
+        "file": "DSC_3488.nef",
+        "license": "\u00a9 John Azzinaro, used with permission in Nitrate",
+        "sha256": "86a4a9aef1dacf522c40ce4a6b85e1ba6ad1567290a13c8cf2857ed528468183",
+        "nef": {
+          "camera": "NIKON CORPORATION NIKON D700",
+          "exposureTime": "1/13",
+          "fNumber": "33/10",
+          "iso": "200",
+          "focalLength": "23",
+          "originalDate": "2026:04:11 19:07:50",
+          "whiteBalance": "Auto"
+        },
+        "note": "Night speed, skin under sodium light"
+      },
+      "derivation": {
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 3600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.06770061728395062,
+          "gainsRGB": [
+            1.037169355749392,
+            1.018144928105745,
+            1.0
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "outputSize": [
+          720,
+          1080
+        ],
+        "jpegQuality": 60,
+        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+      },
+      "plateStats": {
+        "sha256": "970c3756b6a166be7d30163368b18681a06aa5f548553a60868dce21084a67dd",
+        "meanCode": 0.298615254741139,
+        "whiteFraction": 0.010169753086419753,
+        "midtoneFraction": 0.9683654835390947,
+        "clippedChannelFraction": 0.01159593621399177,
+        "roundTripMeanAbsError8bit": 0.5691170630798008,
+        "roundTripP99AbsError8bit": 9.163304352951705
+      }
+    },
+    {
+      "id": "race",
+      "title": "Race day",
+      "plate": "race-log.jpg",
+      "source": {
+        "provider": "John Azzinaro (Nikon D700) \u2014 supplied for Nitrate",
+        "file": "DSC_7950.nef",
+        "license": "\u00a9 John Azzinaro, used with permission in Nitrate",
+        "sha256": "caf059232a9f1ccb742053edfe7fe8a7c4d43573ab1ee50d368b0614d0781b5f",
+        "nef": {
+          "camera": "NIKON CORPORATION NIKON D700",
+          "exposureTime": "1/640",
+          "fNumber": "28/5",
+          "iso": "200",
+          "focalLength": "200",
+          "originalDate": "2023:08:06 09:09:41",
+          "whiteBalance": "Auto"
+        },
+        "note": "Daylight skin tones, saturated crowd colour"
+      },
+      "derivation": {
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 5600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.05568672839506173,
+          "gainsRGB": [
+            1.016194415357553,
+            1.0,
+            1.0191685831626418
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "outputSize": [
+          720,
+          1080
+        ],
+        "jpegQuality": 60,
+        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+      },
+      "plateStats": {
+        "sha256": "06ac790594872294149af2ae9af2332edc606ad5538e796424a9546005ff8d17",
+        "meanCode": 0.43490002956866924,
+        "whiteFraction": 0.0068467078189300415,
+        "midtoneFraction": 0.9907201646090535,
+        "clippedChannelFraction": 0.009229681069958848,
+        "roundTripMeanAbsError8bit": 0.06668357354439772,
+        "roundTripP99AbsError8bit": 0.9370971409443802
+      }
+    },
+    {
+      "id": "shoreline",
+      "title": "Shoreline",
+      "plate": "shoreline-log.jpg",
+      "source": {
+        "provider": "John Azzinaro (Nikon D700) \u2014 supplied for Nitrate",
+        "file": "DSC_0355.nef",
+        "license": "\u00a9 John Azzinaro, used with permission in Nitrate",
+        "sha256": "0599f92768a0610004760bc69a3414d3f737e7307d49ebbcf5554d8817d4a3c5",
+        "nef": {
+          "camera": "NIKON CORPORATION NIKON D700",
+          "exposureTime": "1/200",
+          "fNumber": "14",
+          "iso": "200",
+          "focalLength": "50",
+          "originalDate": "2023:09:04 15:09:21",
+          "whiteBalance": "Auto"
+        },
+        "note": "Daylight water and a hazy skyline"
+      },
+      "derivation": {
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 5600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.03551054526748971,
+          "gainsRGB": [
+            1.0840005783749977,
+            1.0276551224097739,
+            1.0
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "outputSize": [
+          720,
+          1080
+        ],
+        "jpegQuality": 60,
+        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+      },
+      "plateStats": {
+        "sha256": "69bc5ffc9509743c902846785414da2afa600dc1d93904c6df915b703950c05f",
+        "meanCode": 0.5492303882458318,
+        "whiteFraction": 0.012055041152263374,
+        "midtoneFraction": 0.964130658436214,
+        "clippedChannelFraction": 0.035002572016460905,
+        "roundTripMeanAbsError8bit": 0.08915949688526816,
+        "roundTripP99AbsError8bit": 3.3241677249999975
+      }
+    },
+    {
+      "id": "flyover",
+      "title": "Flyover",
+      "plate": "flyover-log.jpg",
+      "source": {
+        "provider": "John Azzinaro (Nikon D700) \u2014 supplied for Nitrate",
+        "file": "DSC_4498.nef",
+        "license": "\u00a9 John Azzinaro, used with permission in Nitrate",
+        "sha256": "fb4961a50e2db75e7b3b9830ab57c7cbd74a7bceec7801ee576696fa55418c97",
+        "nef": {
+          "camera": "NIKON CORPORATION NIKON D700",
+          "exposureTime": "1/4000",
+          "fNumber": "21/5",
+          "iso": "200",
+          "focalLength": "90",
+          "originalDate": "2026:07:04 09:02:28",
+          "whiteBalance": "Auto"
+        },
+        "note": "Bright daylight sky and distant detail"
+      },
+      "derivation": {
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 5600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.07999485596707819,
+          "gainsRGB": [
+            1.0,
+            1.0100456715394737,
+            1.0279144731061707
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "outputSize": [
+          720,
+          1080
+        ],
+        "jpegQuality": 60,
+        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+      },
+      "plateStats": {
+        "sha256": "21ecdc65c02978f6cb064b2744fa0efd88c9b55ecb2e08f98f9fada42aedd90d",
+        "meanCode": 0.7033662480486734,
+        "whiteFraction": 0.054021347736625515,
+        "midtoneFraction": 0.9150012860082305,
+        "clippedChannelFraction": 0.06068287037037037,
+        "roundTripMeanAbsError8bit": 0.2083449018097381,
+        "roundTripP99AbsError8bit": 7.219042582224163
+      }
+    }
+  ],
+  "inverseRoundTripGlobal": {
+    "holdoutSamples": 20000,
+    "validSamples": 19949,
+    "validMeanAbsError8bit": 1.6868037113584817,
+    "validP95AbsError8bit": 7.440338895641595,
+    "validMaxAbsError8bit": 237.91140979622998,
+    "fullMeanAbsError8bit": 1.6908758014642342,
+    "fullP95AbsError8bit": 7.462207138572689,
+    "fullMaxAbsError8bit": 237.91140979622998,
+    "note": "error over the full cube is dominated by unreachable near-black codes where the neutral transform is not invertible; the valid-range figure is the meaningful one for these photos."
+  },
+  "plateCount": 8
+}

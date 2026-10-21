@@ -46,8 +46,8 @@ struct ContentView: View {
     @State private var availableLenses: [CameraLens] = []
 
     /// Pinch-zoom baseline (ISO/EV controls live in `CameraControlBar`).
-    @State private var pinchBaseZoom: Double = 1.0
     @State private var pinchIsActive = false
+    @State private var pinchFocalLength = 24.0
 
     /// Physical orientation source for the `.cameraUpright()` chrome modifier.
     /// Every icon/text glyph in the camera UI rotates to stay readable in
@@ -130,6 +130,19 @@ struct ContentView: View {
                     .transition(.opacity)
                 }
 
+                if pinchIsActive, let bottom = controlBounds["bottom"] {
+                    FocalLengthRuler(millimeters: pinchFocalLength)
+                        .frame(width: max(0, geometry.size.width - 32))
+                        .position(x: geometry.size.width / 2, y: max(34, bottom.minY - 42))
+                }
+
+                if !showFramedPreview, let top = controlBounds["top"] {
+                    RecordingTallyLight(isRecording: recordPresentation == .recording)
+                        .position(x: geometry.size.width - 24, y: top.maxY + 20)
+                }
+
+                debugControlsOverlay(in: geometry)
+
                 errorOverlays
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -188,9 +201,18 @@ struct ContentView: View {
         .onChange(of: showSettings || showQueueSheet || showStockSheet) { _, shown in
             if shown { cameraViewModel.endSlowZoom() }
         }
-        .onChange(of: cameraViewModel.zoomSnapshot?.cameraRevision) { _, _ in
-            pinchIsActive = false
-            pinchBaseZoom = cameraViewModel.zoomSnapshot?.displayFactor ?? 1
+        .onChange(of: cameraViewModel.activeLens) { _, lens in
+            selectedLens = lens
+            focusReadGeneration &+= 1
+            let focusRequest = focusReadGeneration
+            cameraViewModel.session.readManualFocusSnapshot { snapshot in
+                guard focusRequest == focusReadGeneration else { return }
+                if !snapshot.isSupported {
+                    isManualFocus = false
+                } else if isManualFocus, let position = snapshot.lensPosition {
+                    manualFocusPosition = Double(position)
+                }
+            }
         }
     }
 
@@ -272,7 +294,7 @@ struct ContentView: View {
     private func cameraLayer(in rect: CGRect) -> some View {
         // One structural identity in both modes: no camera lifecycle transition.
         CameraView(viewModel: cameraViewModel,
-                   videoGravity: showFramedPreview ? .resizeAspect : .resizeAspectFill,
+                   videoGravity: .resizeAspectFill,
                    selectedStockLUTName: selectedStock?.lutName)
             .frame(width: rect.width, height: rect.height)
             .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
@@ -282,23 +304,13 @@ struct ContentView: View {
                         .strokeBorder(.white.opacity(0.25), lineWidth: 2)
                 }
             }
-            .simultaneousGesture(
-                MagnificationGesture()
-                    .onChanged { value in
-                        guard let snapshot = cameraViewModel.zoomSnapshot else { return }
-                        if !pinchIsActive {
-                            pinchBaseZoom = snapshot.displayFactor
-                            pinchIsActive = true
-                        }
-                        // Damped (0.45) so a small pinch doesn't jump the zoom.
-                        let damped = 1.0 + (value - 1.0) * 0.45
-                        cameraViewModel.setDisplayZoom(pinchBaseZoom * damped)
-                    }
-                    .onEnded { _ in
-                        pinchIsActive = false
-                        pinchBaseZoom = cameraViewModel.zoomSnapshot?.displayFactor ?? pinchBaseZoom
-                    }
-            )
+            .overlay(alignment: .topTrailing) {
+                if showFramedPreview {
+                    RecordingTallyLight(isRecording: recordPresentation == .recording)
+                        .padding(12)
+                }
+            }
+            .modifier(FocalPinchZoom(camera: cameraViewModel, isActive: $pinchIsActive, millimeters: $pinchFocalLength))
             .position(x: rect.midX, y: rect.midY)
     }
 
@@ -312,11 +324,39 @@ struct ContentView: View {
         } manual: {
             manualButton
         } lens: {
+            // The lens keeps the rightmost first-row slot except while a take is
+            // live: the timer then owns that row in portrait — but centered on
+            // the toolbar, not right-aligned into the lens slot — and in
+            // landscape the slot stays hidden while the timer floats on the
+            // physical edge. Either way the toolbar height never changes.
             lensMenu
+                .opacity(recordPresentation == .recording ? 0 : 1)
+                .allowsHitTesting(recordPresentation != .recording)
+                .accessibilityHidden(recordPresentation == .recording)
         } status: {
             recordingStatus
         } diagnostics: {
-            VStack(spacing: 4) { diagnosticButtons }
+            // The DEBUG/FAULT rail does not belong to the measured top bar: its
+            // height used to reserve toolbar space and shrink the framed preview.
+            // It renders in a non-sizing sibling overlay instead (see
+            // `debugControlsOverlay`), while this fifth slot stays concrete.
+            EmptyView()
+        }
+    }
+
+    /// DEBUG/FAULT render in a non-sizing sibling overlay on the full camera
+    /// canvas, outside the measured top bar. They keep their real round 44pt
+    /// buttons and their actions, so they stay tappable, yet they never reserve
+    /// a toolbar height or shrink the framed preview. The rail sits at its
+    /// historic spot: just below the stationary key row, inset 16pt from the
+    /// leading edge of the canvas.
+    @ViewBuilder private func debugControlsOverlay(in geometry: GeometryProxy) -> some View {
+        if let top = controlBounds["top"] {
+            VStack(alignment: .leading, spacing: 4) { diagnosticButtons }
+                .padding(.leading, 16)
+                .padding(.top, top.maxY)
+                .frame(width: geometry.size.width, height: geometry.size.height,
+                       alignment: .topLeading)
         }
     }
 
@@ -330,7 +370,7 @@ struct ContentView: View {
                 .cameraUpright()
                 .frame(width: 44, height: 44)
         }
-        .buttonStyle(CameraRaisedButtonStyle())
+        .buttonStyle(CameraRoundButtonStyle())
     }
 
     private var manualButton: some View {
@@ -343,7 +383,7 @@ struct ContentView: View {
                 .cameraUpright()
                 .frame(width: 44, height: 44)
         }
-        .buttonStyle(CameraRaisedButtonStyle(faceColor: showManualControls ? .yellow : Color(red: 0.16, green: 0.17, blue: 0.19)))
+        .buttonStyle(CameraRoundButtonStyle(faceColor: showManualControls ? .yellow : nil))
 
     }
 
@@ -356,15 +396,13 @@ struct ContentView: View {
                 openDebugFrame()
             } label: {
                 Text("DEBUG")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(.black)
                     .fixedSize()
-                    .cameraUpright(in: CGSize(width: 43, height: 27))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(.yellow)
-                    .clipShape(Capsule())
+                    .cameraUpright()
+                    .frame(width: 44, height: 44)
             }
+            .buttonStyle(CameraRoundButtonStyle(faceColor: .yellow))
         }
 
         // Preview the "recording never started" treatment without provoking a
@@ -377,15 +415,13 @@ struct ContentView: View {
                 flashRecordingFailure()
             } label: {
                 Text("FAULT")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(.white)
                     .fixedSize()
-                    .cameraUpright(in: CGSize(width: 43, height: 27))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(.red)
-                    .clipShape(Capsule())
+                    .cameraUpright()
+                    .frame(width: 44, height: 44)
             }
+            .buttonStyle(CameraRoundButtonStyle(faceColor: .red))
         }
 #endif
     }
@@ -398,17 +434,21 @@ struct ContentView: View {
         )
     }
 
+    /// The timer and its tally dot exist only for a confirmed take. Idle,
+    /// starting and finalizing render nothing at all — no placeholder, no dot.
     @ViewBuilder private var recordingStatus: some View {
-        if let origin = cameraViewModel.recordingTimerOrigin {
-            if let stoppedAt = cameraViewModel.recordingStoppedAt {
-                statusFace(text: RecordingDurationText.format(seconds: stoppedAt.timeIntervalSince(origin)))
-            } else {
-                TimelineView(.animation) { context in
-                    statusFace(text: RecordingDurationText.format(seconds: context.date.timeIntervalSince(origin)))
+        if recordPresentation == .recording {
+            if let origin = cameraViewModel.recordingTimerOrigin {
+                if let stoppedAt = cameraViewModel.recordingStoppedAt {
+                    statusFace(text: RecordingDurationText.format(seconds: stoppedAt.timeIntervalSince(origin)))
+                } else {
+                    TimelineView(.animation) { context in
+                        statusFace(text: RecordingDurationText.format(seconds: context.date.timeIntervalSince(origin)))
+                    }
                 }
+            } else {
+                statusFace(text: "00:00.00")
             }
-        } else {
-            statusFace(text: recordPresentation == .idle ? "--:--.--" : "00:00.00")
         }
     }
 
@@ -602,19 +642,29 @@ private struct StockSheetView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
-                stockPicker
-                if localSelection != nil { gaugePicker }
+            // The example preview is tall, so the sheet scrolls vertically:
+            // a short phone at 320pt can still reach the gauge and Render.
+            GeometryReader { geometry in
+                ScrollView(.vertical) {
+                    VStack(spacing: 20) {
+                        StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge)
+                            .frame(maxWidth: .infinity)
 
-                if let url = sourceURL {
-                    renderButton(sourceURL: url)
-                } else {
-                    Text("Record a video to render.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        if !stocks.isEmpty { stockCarousel }
+
+                        if localSelection != nil { gaugePicker }
+
+                        if let url = sourceURL {
+                            renderButton(sourceURL: url)
+                        } else {
+                            Text("Record a video to render.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding()
                 }
             }
-            .padding()
             .navigationTitle("Film Stock")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -640,27 +690,40 @@ private struct StockSheetView: View {
                 }
             }
             .onChange(of: localSelection) { _, _ in persistPreferences() }
+            .onChange(of: gauge) { _, _ in persistPreferences() }
         }
     }
 
-    private var stockPicker: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Select Stock").font(.headline)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(stocks, id: \.stockId) { stock in
-                        DuotoneStockCard(
-                            stock: stock,
-                            isSelected: localSelection?.stockId == stock.stockId,
-                            action: {
-                                localSelection = stock
-                                currentISO = stock.defaultISO
-                                gauge = library.lastGauge(for: stock.stockId) ?? .thirtyFiveMillimetre
-                            }
-                        )
-                    }
-                }
+    private var stockCarousel: some View {
+        StockCarousel(stocks: stocks, selectedStockId: selectedStockIdBinding)
+    }
+
+    /// The carousel and the sheet share one selection: the carousel writes the
+    /// id of the stock it centred through the binding, and the sheet resolves it
+    /// back to a config (ISO + remembered gauge).
+    private var selectedStockIdBinding: Binding<String?> {
+        Binding(
+            get: { localSelection?.stockId },
+            set: { newValue in
+                guard let newValue, let stock = stocks.first(where: { $0.stockId == newValue }) else { return }
+                select(stock)
             }
+        )
+    }
+
+    /// Adopt a stock as the local selection. ISO follows the stock; the remembered
+    /// gauge is only restored when the selection actually changes, so re-tapping
+    /// the centred stock never resets a gauge the user dialled in.
+    private func select(_ stock: FilmStockConfig) {
+        let previous = localSelection
+        localSelection = stock
+        currentISO = stock.defaultISO
+        if let restored = StockCarouselSelection.gauge(
+            onSelecting: stock.stockId,
+            from: previous?.stockId,
+            remembered: library.lastGauge(for: stock.stockId)
+        ) {
+            gauge = restored
         }
     }
 
@@ -718,51 +781,6 @@ private struct StockSheetView: View {
             .background(Color.accentColor)
             .foregroundStyle(.white)
             .clipShape(RoundedRectangle(cornerRadius: 12))
-        }
-    }
-}
-
-// MARK: - Duotone Stock Card
-
-private struct DuotoneStockCard: View {
-    let stock: FilmStockConfig
-    let isSelected: Bool
-    var action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 6) {
-                // Duotone swatch
-                GeometryReader { geo in
-                    VStack(spacing: 0) {
-                        ForEach(0..<5) { index in
-                            let isPrimary = index == 0 || index == 1 || index == 4
-                            (isPrimary ? stock.primaryColor : stock.secondaryColor)
-                                .frame(height: geo.size.height / 5.0)
-                        }
-                    }
-                }
-                .frame(width: 48, height: 60)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(isSelected ? .white : .clear, lineWidth: 2)
-                }
-
-                Text(stock.displayName)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(isSelected ? .white : .secondary)
-                    .lineLimit(1)
-
-                Text(stock.lightType)
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(isSelected ? stock.primaryColor : .secondary.opacity(0.3))
-                    .clipShape(RoundedRectangle(cornerRadius: 3))
-            }
-            .frame(width: 72)
         }
     }
 }

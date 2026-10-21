@@ -1,5 +1,27 @@
 import SwiftUI
 
+/// Fixed 44pt toolbar keys use an actual circle, including the hit region.
+struct CameraRoundButtonStyle: ButtonStyle {
+    var faceColor: Color?
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background {
+                Circle().fill(.ultraThinMaterial)
+                    .overlay {
+                        Circle().fill((faceColor ?? .black).opacity(configuration.isPressed ? 0.7 : 0.45))
+                    }
+            }
+            .overlay {
+                Circle().strokeBorder(
+                    LinearGradient(colors: [.white.opacity(0.38), .black.opacity(0.5)],
+                                   startPoint: .top, endPoint: .bottom), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.35), radius: configuration.isPressed ? 1 : 3, y: 2)
+            .contentShape(Circle())
+    }
+}
+
 /// Shared tactile face for camera controls, styled after the machined panel of a
 /// cinema camera: a soft-edged plate that is **translucent** rather than opaque,
 /// so the preview reads through it and only the bevel, the rim and the shadow
