@@ -187,3 +187,128 @@ enum CameraPreviewPolicy {
         return remainder < 0 ? remainder + 4 : remainder
     }
 }
+
+/// Pure, time-injected arbiter for the live LUT preview's last-good-frame
+/// handoff.
+///
+/// A lens handoff, a source reconfiguration, or a brief nil frame is an
+/// *expected* interruption, not a failure: the preview must keep presenting its
+/// last graded drawable for a bounded grace instead of flashing the raw Log
+/// layer and an error-styled label. A genuine failure — a frame the current
+/// source cannot grade, a missing/invalid LUT, a GPU error — is never hidden.
+///
+/// The policy holds no clock, no lock, and no camera state; callers feed the
+/// event and the current time so the whole transition sequence can be exercised
+/// without a camera, a GPU, or a sleep.
+struct CameraPreviewHandoffPolicy {
+    /// How long an expected handoff may hold the last graded drawable before the
+    /// preview surfaces the underlying source/unsupported condition. Bounded so
+    /// a stopped source cannot freeze the preview indefinitely.
+    static let grace: TimeInterval = 1.5
+
+    static let pendingText = "Preview LUT pending — showing Log"
+    static let sourceUnavailableText = "Preview LUT source unavailable — showing Log"
+
+    /// A frame that could not be graded. `.transitional` reasons may be held
+    /// silently through an expected handoff; `.fatal` reasons never are.
+    enum Rejection: Equatable {
+        case transitional(String)
+        case fatal(String)
+
+        var text: String {
+            switch self {
+            case .transitional(let text), .fatal(let text): return text
+            }
+        }
+    }
+
+    enum Decision: Equatable {
+        /// Keep the current drawable; publish nothing.
+        case hold
+        /// Publish: `nil` means the LUT is active and the graded drawable shows.
+        case show(String?)
+    }
+
+    private var hasGradedFrame = false
+    private var deadline: TimeInterval?
+    private var transitionalText: String?
+
+    /// The bounded hold deadline, or nil when nothing is being held.
+    var holdDeadline: TimeInterval? { deadline }
+    var isHolding: Bool { deadline != nil }
+    var hasGradableFrame: Bool { hasGradedFrame }
+
+    /// Leaving the gradeable state (inactive scene, Log mode, or an explicit LUT
+    /// change): the previous drawable must not persist and must not be held.
+    mutating func invalidate() {
+        hasGradedFrame = false
+        deadline = nil
+        transitionalText = nil
+    }
+
+    /// An expected handoff begins (lens switch, source-signature change, or a
+    /// suspension). Begins the bounded grace only when nothing good exists to
+    /// hold yet; a repeated begin never extends an existing hold.
+    mutating func beginHold(at now: TimeInterval) -> Decision {
+        guard hasGradedFrame else { return .show(Self.pendingText) }
+        if deadline == nil { deadline = now + Self.grace }
+        return .hold
+    }
+
+    /// The expected handoff completed: restart the bounded grace from here, so
+    /// the visible Log-off is bounded from the handoff finishing, not starting.
+    mutating func handoffCompleted(at now: TimeInterval) -> Decision {
+        guard hasGradedFrame else { return .show(Self.pendingText) }
+        if deadline != nil { deadline = now + Self.grace }
+        return .hold
+    }
+
+    /// A conforming frame was graded and presented.
+    mutating func graded(at _: TimeInterval) -> Decision {
+        hasGradedFrame = true
+        deadline = nil
+        transitionalText = nil
+        return .show(nil)
+    }
+
+    /// The independent source went away (nil frame). Held only while a graded
+    /// drawable exists to show; otherwise it is a real, immediate condition.
+    mutating func suspended(at now: TimeInterval) -> Decision {
+        guard hasGradedFrame else { return .show(Self.sourceUnavailableText) }
+        if deadline == nil { deadline = now + Self.grace }
+        return .hold
+    }
+
+    /// A frame was rejected. A fatal reason is always surfaced; a transitional
+    /// reason is held (and remembered for the deadline) only during a live hold.
+    mutating func rejected(_ rejection: Rejection, at now: TimeInterval) -> Decision {
+        switch rejection {
+        case .fatal(let text):
+            hasGradedFrame = false
+            deadline = nil
+            transitionalText = nil
+            return .show(text)
+        case .transitional(let text):
+            if let deadline, now < deadline {
+                transitionalText = text
+                return .hold
+            }
+            hasGradedFrame = false
+            self.deadline = nil
+            transitionalText = nil
+            return .show(text)
+        }
+    }
+
+    /// The bounded deadline was reached (frames stopped, or a rejection arrived
+    /// late). Surfaces the last transitional reason, or the source being gone,
+    /// as a persistent condition.
+    mutating func deadlineReached(at now: TimeInterval) -> Decision {
+        guard let deadline, now >= deadline else { return .hold }
+        let text = transitionalText ?? Self.sourceUnavailableText
+        hasGradedFrame = false
+        self.deadline = nil
+        transitionalText = nil
+        return .show(text)
+    }
+}

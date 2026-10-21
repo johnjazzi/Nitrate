@@ -38,13 +38,20 @@ struct FocalPinchZoom: ViewModifier {
                             isActive = true
                             camera.endSlowZoom()
                         }
-                        guard let target = camera.normalizedFocalLengthZoom(baseline * pow(value, 0.65)) else { return }
-                        if FocalLengthRulerScale.crossesMajorTick(from: millimeters, to: target) {
+                        // `requested` is the raw gesture intent; `display` is the
+                        // readout/haptic value clamped to what the active lens can
+                        // actually render. The engine is fed the raw intent so a
+                        // hardware clamp cannot pin the target at a lens floor and
+                        // strand a deliberate pinch (or corrupt an in-flight
+                        // coalesced target).
+                        let requested = baseline * pow(value, 0.65)
+                        guard let display = camera.normalizedFocalLengthZoom(requested) else { return }
+                        if FocalLengthRulerScale.crossesMajorTick(from: millimeters, to: display) {
                             CameraHaptics.prepareForCaptureFeedback()
                             feedbackTrigger &+= 1
                         }
-                        millimeters = target
-                        camera.setFocalLengthZoom(target)
+                        millimeters = display
+                        camera.setFocalLengthZoom(requested)
                     }
                     .onEnded { _ in
                         isActive = false

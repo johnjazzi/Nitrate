@@ -370,15 +370,18 @@ final class CameraViewModel {
         return millimeters
     }
 
-    /// The focal length the UI should show and drive for a raw pinch target,
-    /// clamped to what the active lens and the installed lenses can actually
-    /// render. Returns nil for non-finite input or when no rear lens exists.
+    /// The focal length the UI should show for a raw pinch target — the honest,
+    /// hardware-clamped readout and haptic value, not the value handed to the
+    /// engine. Returns nil for non-finite input or when no rear lens exists.
     ///
-    /// The UI calls this BEFORE `setFocalLengthZoom` and its tick haptics, so
-    /// neither the readout nor the haptic can announce a focal length the
-    /// hardware will not reach: requesting 13 mm without an ultrawide stays at
-    /// the wide lens's floor, and a target past the wide device's ceiling is
-    /// clamped to the ceiling rather than shown past the rail.
+    /// The UI calls this BEFORE `setFocalLengthZoom` for its readout and tick
+    /// haptics, so neither can announce a focal length the hardware will not
+    /// reach: requesting 13 mm without an ultrawide stays at the wide lens's
+    /// floor, and a target past the wide device's ceiling is clamped to the
+    /// ceiling rather than shown past the rail. `setFocalLengthZoom` separately
+    /// receives the raw intent, and the engine and this normalizer share the
+    /// hysteresis-aware `tier(forFocalLength:currentlyOn:)` so they never
+    /// disagree about whether a switch is warranted.
     func normalizedFocalLengthZoom(_ millimeters: Double) -> Double? {
         guard let requested = CameraFocalZoomPolicy.clampedTarget(millimeters) else { return nil }
         let activeTier = Self.focalTier(for: activeLens)
@@ -389,7 +392,12 @@ final class CameraViewModel {
             return clampToActiveZoomWindow(requested, tier: .front) ?? requested
         }
 
-        let desired = CameraFocalZoomPolicy.tier(forFocalLength: requested)
+        // Switch decision is hysteresis-aware and shares the engine's policy:
+        // while the pinch sits inside the deadband around a boundary the active
+        // lens is held, so the readout agrees with the lens that will actually
+        // render. A target that clears the band still resolves to its preference
+        // (and may jump straight across the wide span).
+        let desired = CameraFocalZoomPolicy.tier(forFocalLength: requested, currentlyOn: activeTier)
         guard let resolved = CameraFocalZoomPolicy.resolvedTier(desired, available: availableLensTiers) else {
             return nil
         }
@@ -429,23 +437,33 @@ final class CameraViewModel {
         guard lifecycleGate.isActive, cameraConfigured, !isChangingFrameRate,
               !isStartingRecording, !isRecording, !isStoppingRecording,
               let snapshot = zoomSnapshot,
-              let normalized = normalizedFocalLengthZoom(millimeters) else { return }
+              let target = CameraFocalZoomPolicy.clampedTarget(millimeters) else { return }
+        // The engine decides on the RAW gesture intent, only clamped to the
+        // valid 13...150 mm range. It must not be pre-clamped to the active
+        // lens's device window: during an in-flight switch that window still
+        // belongs to the *old* lens, so a clamp there would corrupt the
+        // coalesced target (e.g. a 96.5 mm dither pinching onto a wide device
+        // whose ceiling is far below 96 mm) and re-issue a reverse switch. The
+        // visible readout/haptics are clamped independently by
+        // `normalizedFocalLengthZoom`, and the session clamps the factor to the
+        // active device's real achievable window in `setDisplayZoom`.
         if isSwitchingCameraLens {
             // Only the pinch engine's own queued switch keeps collecting updates;
             // a manual switch owns the device and must not be commandeered.
             guard focalSwitchInFlight else { return }
-            _ = focalEngine.request(targetMM: normalized, available: availableLensTiers)
+            _ = focalEngine.request(targetMM: target, available: availableLensTiers)
             return
         }
         focalEngine.syncActiveTier(Self.focalTier(for: activeLens))
-        let decision = focalEngine.request(targetMM: normalized, available: availableLensTiers)
+        let decision = focalEngine.request(targetMM: target, available: availableLensTiers)
         performFocal(decision, revision: snapshot.cameraRevision, multiplier: snapshot.displayMultiplier)
     }
 
-    /// Drive a decision to the session. The target has already been clamped by
-    /// `normalizedFocalLengthZoom`; `multiplier` is the active device's real
-    /// display multiplier, so the display factor is converted on the tier's own
-    /// native base.
+    /// Drive a decision to the session. `targetMM` is the raw pinch intent from
+    /// the engine (clamped only to 13...150 mm); `multiplier` is the active
+    /// device's real display multiplier, so the display factor is converted on
+    /// the tier's own native base and the session clamps it to the device's
+    /// achievable window in `setDisplayZoom`.
     private func performFocal(_ decision: CameraFocalZoomEngine.Decision,
                               revision: UInt64, multiplier: Double) {
         switch decision {

@@ -37,12 +37,18 @@ final class CameraPreviewRenderer: @unchecked Sendable {
     private let lock = NSLock()
     private let admission = DispatchSemaphore(value: 1)
     private var active = false
+    private var transitioning = false
     private var revision: UInt64 = 0
     private var geometry = Geometry()
     private var selection = CameraPreviewLUTSelection()
     private var lastAdmission: TimeInterval = 0
     private var publishedStatus: String?
     private var sourceSignature: SourceSignature?
+    /// Decides whether an expected handoff keeps the last graded drawable or a
+    /// real condition is published. Guarded by `lock`; time is injected.
+    private var handoff = CameraPreviewHandoffPolicy()
+    private var armedDeadline: TimeInterval?
+    private var deadlineToken: UInt64 = 0
     private var device: (any MTLDevice)?
     private var commands: (any MTLCommandQueue)?
     private var pipeline: (any MTLRenderPipelineState)?
@@ -61,35 +67,69 @@ final class CameraPreviewRenderer: @unchecked Sendable {
     }
 
     /// Invalidates in-flight presentation before changing modes/geometry/lens.
+    /// `transitioning` marks an *expected* lens handoff: the last graded drawable
+    /// is held within a bounded grace instead of being replaced by the Log layer.
     @discardableResult
-    func configure(active: Bool, geometry: Geometry, selectedLUTName: String? = nil) -> Bool {
+    func configure(active: Bool, transitioning: Bool, geometry: Geometry, selectedLUTName: String? = nil) -> Bool {
         lock.lock()
         let nameChanged = selection.select(selectedLUTName)
-        guard self.active != active || self.geometry != geometry || nameChanged else { lock.unlock(); return false }
+        let activeChanged = self.active != active
+        let transitionChanged = self.transitioning != transitioning
+        let geometryChanged = self.geometry != geometry
+        guard activeChanged || transitionChanged || geometryChanged || nameChanged else { lock.unlock(); return false }
         self.active = active
+        self.transitioning = transitioning
         self.geometry = geometry
         revision &+= 1
         publishedStatus = nil
         lastAdmission = 0
         let requested = selection
+        let now = ProcessInfo.processInfo.systemUptime
+        var decision: CameraPreviewHandoffPolicy.Decision?
+        if !active || activeChanged || nameChanged {
+            // Leaving the active scene, entering Log mode, or choosing a new LUT
+            // must never keep the previous drawable.
+            handoff.invalidate()
+            decision = CameraPreviewHandoffPolicy.Decision.show(
+                active ? CameraPreviewHandoffPolicy.pendingText : nil)
+        } else if transitionChanged {
+            // Only the expected handoff itself is held; a layout/geometry change
+            // is not, so it cannot restart or extend the bounded deadline.
+            decision = transitioning ? handoff.beginHold(at: now) : handoff.handoffCompleted(at: now)
+        }
+        let current = revision
         lock.unlock()
+        if let decision { apply(decision, revision: current) }
+        syncDeadline()
         if nameChanged { renderQueue.async { [weak self] in self?.loadLUT(requested) } }
         return true
     }
 
-    func reset(warning: String = "Preview LUT pending — showing Log") {
+    func reset(warning: String = CameraPreviewHandoffPolicy.pendingText) {
         lock.lock()
         revision &+= 1
         publishedStatus = nil
+        handoff.invalidate()
         let current = revision
         lock.unlock()
         publish(lutActive: false, warning: warning, revision: current)
+        syncDeadline()
     }
 
     /// Capture queue does only bounded admission and a read-only retain.
     func receive(_ frame: CameraPreviewFrame?) {
         guard let frame else {
-            reset(warning: "Preview LUT source unavailable — showing Log")
+            // An expected suspension holds the last graded drawable; only a
+            // source with nothing good to show publishes immediately.
+            lock.lock()
+            guard active else { lock.unlock(); return }
+            revision &+= 1
+            publishedStatus = nil
+            let decision = handoff.suspended(at: ProcessInfo.processInfo.systemUptime)
+            let current = revision
+            lock.unlock()
+            apply(decision, revision: current)
+            syncDeadline()
             return
         }
         lock.lock()
@@ -109,9 +149,77 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         let current = revision
         let snapshot = geometry
         let selected = selection
+        // A source-signature change during a handoff is expected: invalidate the
+        // in-flight presentation but hold the good drawable and publish nothing.
+        let decision = sourceChanged ? handoff.beginHold(at: now) : nil
         lock.unlock()
-        if sourceChanged { publish(lutActive: false, warning: "Preview LUT pending — showing Log", revision: current) }
+        if let decision { apply(decision, revision: current) }
+        syncDeadline()
         renderQueue.async { [self] in render(frame, geometry: snapshot, selected: selected, revision: current) }
+    }
+
+    /// Publishes a frame-level failure, holding only while a bounded handoff is
+    /// live; a fatal reason is surfaced immediately.
+    private func reject(_ rejection: CameraPreviewHandoffPolicy.Rejection, revision current: UInt64) {
+        lock.lock()
+        guard active, revision == current else { lock.unlock(); return }
+        let decision = handoff.rejected(rejection, at: ProcessInfo.processInfo.systemUptime)
+        lock.unlock()
+        apply(decision, revision: current)
+        syncDeadline()
+    }
+
+    /// Publishes a successfully graded frame and clears any held handoff.
+    private func graded(revision current: UInt64) {
+        lock.lock()
+        guard active, revision == current else { lock.unlock(); return }
+        let decision = handoff.graded(at: ProcessInfo.processInfo.systemUptime)
+        lock.unlock()
+        apply(decision, revision: current)
+        syncDeadline()
+    }
+
+    private func apply(_ decision: CameraPreviewHandoffPolicy.Decision, revision current: UInt64) {
+        switch decision {
+        case .hold:
+            break
+        case .show(let warning):
+            publish(lutActive: warning == nil, warning: warning, revision: current)
+        }
+    }
+
+    /// Arms the single bounded deadline for the current hold. Only the newest arm
+    /// fires, so a rapid transition cannot leave a stale callback behind.
+    private func syncDeadline() {
+        lock.lock()
+        // Read the live policy under the same lock. Passing a snapshot from a
+        // previous event could cancel a newer hold when capture and GPU race.
+        let deadline = handoff.holdDeadline
+        guard armedDeadline != deadline else { lock.unlock(); return }
+        armedDeadline = deadline
+        deadlineToken &+= 1
+        guard let deadline else { lock.unlock(); return }
+        let token = deadlineToken
+        lock.unlock()
+        let delay = max(0, deadline - ProcessInfo.processInfo.systemUptime)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.deadlineFired(token)
+        }
+    }
+
+    private func deadlineFired(_ token: UInt64) {
+        lock.lock()
+        guard token == deadlineToken else { lock.unlock(); return }
+        // Consume this arm before checking the injected-clock policy. If clock
+        // rounding makes it early, syncDeadline schedules the remaining delay.
+        armedDeadline = nil
+        let decision = handoff.deadlineReached(at: ProcessInfo.processInfo.systemUptime)
+        let current = revision
+        let stillActive = active
+        lock.unlock()
+        guard stillActive else { return }
+        apply(decision, revision: current)
+        syncDeadline()
     }
 
     private func isCurrent(_ current: UInt64) -> Bool {
@@ -168,14 +276,15 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         guard isCurrent(current) else { return }
         guard initializationFailure == nil, let commands, let pipeline, let cache, let lut,
               selected.name != nil, loadedSelection == selected else {
-            publish(lutActive: false, warning: initializationFailure ?? lutFailure ?? "Preview LUT missing selection — showing Log", revision: current)
+            reject(.fatal(initializationFailure ?? lutFailure ?? "Preview LUT missing selection — showing Log"),
+                   revision: current)
             return
         }
         let buffer = frame.buffer
         // Recording stabilization can crop/warp the data-output image independently
         // of the native preview. Do not misregister focus/metering over that source.
         guard !frame.stabilized else {
-            publish(lutActive: false, warning: "Preview LUT unavailable with recording stabilization — showing Log", revision: current)
+            reject(.fatal("Preview LUT unavailable with recording stabilization — showing Log"), revision: current)
             return
         }
         guard #available(iOS 26.0, *),
@@ -186,7 +295,10 @@ final class CameraPreviewRenderer: @unchecked Sendable {
               Self.unspecifiedAttachment(buffer, key: kCVImageBufferTransferFunctionKey),
               let format = CameraPreviewPolicy.format(CVPixelBufferGetPixelFormatType(buffer)),
               CVPixelBufferGetPlaneCount(buffer) == 2 else {
-            publish(lutActive: false, warning: "Preview LUT unsupported for this source — showing Log", revision: current)
+            // A non-conforming frame is never graded. During an expected handoff
+            // it may be a superseded transitional frame, so it is held silently;
+            // otherwise it is a real, persistent condition.
+            reject(.transitional("Preview LUT unsupported for this source — showing Log"), revision: current)
             return
         }
         let turns = (Int(((geometry.rotationAngle - frame.rotationAngle) / 90).rounded()) % 4 + 4) % 4
@@ -203,7 +315,7 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         guard yResult == kCVReturnSuccess, cResult == kCVReturnSuccess,
               let yRef, let cRef, let y = CVMetalTextureGetTexture(yRef), let c = CVMetalTextureGetTexture(cRef),
               let drawable = layer.nextDrawable(), let command = commands.makeCommandBuffer() else {
-            publish(lutActive: false, warning: "Preview LUT rendering unavailable — showing Log", revision: current)
+            reject(.fatal("Preview LUT rendering unavailable — showing Log"), revision: current)
             return
         }
         let pass = MTLRenderPassDescriptor()
@@ -212,7 +324,7 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
         guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else {
-            publish(lutActive: false, warning: "Preview LUT rendering unavailable — showing Log", revision: current)
+            reject(.fatal("Preview LUT rendering unavailable — showing Log"), revision: current)
             return
         }
         var uniforms = Uniforms(imageScale: scale, quarterTurns: UInt32(turns),
@@ -231,8 +343,11 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         command.addCompletedHandler { [self, lease] completed in
             // Explicit ownership through GPU completion, including CV texture wrappers.
             withExtendedLifetime(lease) {}
-            publish(lutActive: completed.status == .completed,
-                    warning: completed.status == .completed ? nil : "Preview LUT GPU error — showing Log", revision: current)
+            if completed.status == .completed {
+                graded(revision: current)
+            } else {
+                reject(.fatal("Preview LUT GPU error — showing Log"), revision: current)
+            }
             admission.signal()
         }
         committed = true

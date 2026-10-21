@@ -34,6 +34,15 @@ enum CameraFocalZoomPolicy {
     /// Above this the target prefers the telephoto camera.
     static let wideUpperBoundMM: Double = 96
 
+    /// Deadband around each tier boundary, in millimetres, applied only while
+    /// deciding whether to *switch* the physical lens. A pinch that dithers
+    /// across 24 mm or 96 mm (hand tremor, a fractional drag) must not rebuild
+    /// the capture device: the active lens holds until the target clears the
+    /// boundary by this much. Kept well under `(96 - 24) / 2`, so no dead zone
+    /// exists where neither neighbouring lens is reachable, and far smaller than
+    /// the 24↔96 gap, so a deliberate reversal still switches promptly.
+    static let boundaryHysteresisMM: Double = 1.0
+
     /// Clamp a requested focal length into the valid, finite 13...150 range.
     /// Non-finite input is refused rather than coerced.
     static func clampedTarget(_ millimeters: Double) -> Double? {
@@ -47,6 +56,42 @@ enum CameraFocalZoomPolicy {
         if millimeters < ultraWideUpperBoundMM { return .ultraWide }
         if millimeters <= wideUpperBoundMM { return .wide }
         return .telephoto
+    }
+
+    /// The lens to *switch to* for a target, given the lens the pinch is
+    /// currently on. This is the hysteresis-aware companion to the pure
+    /// preference `tier(forFocalLength:)`: the active lens holds its tier until
+    /// the target clears the shared boundary by `boundaryHysteresisMM`, and a
+    /// target far onto the other side still resolves straight to its
+    /// preference (a single jump may cross more than one boundary).
+    ///
+    /// Only `tier(forFocalLength:)` decides *preference* (the UI ruler, the
+    /// readout window); this decides *switch*. Both the engine and the view
+    /// model's normalizer call it, so the announced readout and the engine's
+    /// decision can never disagree about whether a switch is warranted.
+    static func tier(forFocalLength millimeters: Double,
+                     currentlyOn active: CameraFocalZoomLensTier) -> CameraFocalZoomLensTier {
+        guard millimeters.isFinite else { return tier(forFocalLength: millimeters) }
+        let delta = boundaryHysteresisMM
+        switch active {
+        case .wide:
+            // Hold wide across [24 - delta, 96 + delta].
+            if millimeters < ultraWideUpperBoundMM - delta { return .ultraWide }
+            if millimeters > wideUpperBoundMM + delta { return .telephoto }
+            return .wide
+        case .ultraWide:
+            // Hold ultrawide up to 24 + delta; beyond, resolve to preference
+            // (wide, or telephoto if the gesture jumped the whole wide span).
+            if millimeters > ultraWideUpperBoundMM + delta { return tier(forFocalLength: millimeters) }
+            return .ultraWide
+        case .telephoto:
+            // Hold telephoto down to 96 - delta; below, resolve to preference
+            // (wide, or ultrawide if the gesture jumped the whole wide span).
+            if millimeters < wideUpperBoundMM - delta { return tier(forFocalLength: millimeters) }
+            return .telephoto
+        case .front:
+            return .front
+        }
     }
 
     /// The lens to drive for a target, falling back to the nearest available
@@ -164,7 +209,11 @@ struct CameraFocalZoomEngine: Sendable {
                                   available: [CameraFocalZoomLensTier]) -> Decision {
         // The front camera never switches away: it only adjusts its own zoom.
         if activeTier == .front { return .adjust(tier: .front, targetMM: mm) }
-        let desired = CameraFocalZoomPolicy.tier(forFocalLength: mm)
+        // Hysteresis-aware: the active tier holds across a boundary dither, so a
+        // pinch that wobbles across 24 mm/96 mm cannot re-issue the switch that
+        // is already committed or in flight. The pure preference
+        // `tier(forFocalLength:)` is unchanged; only the switch decision damps.
+        let desired = CameraFocalZoomPolicy.tier(forFocalLength: mm, currentlyOn: activeTier)
         guard let tier = CameraFocalZoomPolicy.resolvedTier(desired, available: available) else {
             return .ignore
         }
