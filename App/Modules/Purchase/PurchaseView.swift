@@ -29,6 +29,10 @@ struct PurchaseView: View {
                         purchasedBanner
                     }
 
+                    // Legal and support, reachable on every channel — including
+                    // a paid checkout — before the display preferences below.
+                    legalLinksSection
+
                     // Preview mode
                     previewModeSection
                     exportSection
@@ -320,6 +324,36 @@ struct PurchaseView: View {
                  : "Film rendering unlocked — subscription active")
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// The published privacy, terms and support pages. Rendered on every channel
+    /// — a free trial, an expired trial, a paid checkout and the beta all show
+    /// the same rows — so the policy is reachable without buying first. Each row
+    /// is a real tappable `Link` with a 44pt target, not a caption-sized label.
+    private var legalLinksSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Legal & Support")
+                .font(.headline)
+
+            ForEach(LegalLinks.visibleLinks(for: viewModel.settingsChannel)) { link in
+                Link(destination: link.url) {
+                    HStack {
+                        Label(link.title, systemImage: link.systemImage)
+                        Spacer()
+                        Image(systemName: "arrow.up.right")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityIdentifier(link.accessibilityID)
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private var appInfoSection: some View {

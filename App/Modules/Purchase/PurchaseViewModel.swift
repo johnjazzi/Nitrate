@@ -69,6 +69,17 @@ final class PurchaseViewModel {
     /// instead of a trial that never existed.
     var isDevelopmentBuild: Bool { distribution == .debug || distribution == .development }
 
+    /// The Settings access state the legal/support section renders in. The
+    /// section shows the same published links on every channel, so this only
+    /// labels which state the screen is in; it never gates the links.
+    var settingsChannel: LegalLinks.Channel {
+        if isDevelopmentBuild { return .development }
+        if isBetaAccess { return .beta }
+        if isPurchased { return .purchased }
+        if isTrialActive { return .trialActive }
+        return .trialExpired
+    }
+
     /// The non-purchasable US launch-pricing block, or `nil` on a checkout
     /// channel (production or the local StoreKit-testing harness) where the live
     /// StoreKit `displayPrice` belongs.
