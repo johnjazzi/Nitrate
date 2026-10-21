@@ -648,7 +648,6 @@ private struct StockSheetView: View {
                 ScrollView(.vertical) {
                     VStack(spacing: 20) {
                         StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge)
-                            .frame(height: previewHeight(for: geometry.size))
                             .frame(maxWidth: .infinity)
 
                         if !stocks.isEmpty { stockCarousel }
@@ -693,12 +692,6 @@ private struct StockSheetView: View {
             .onChange(of: localSelection) { _, _ in persistPreferences() }
             .onChange(of: gauge) { _, _ in persistPreferences() }
         }
-    }
-
-    /// Tall example preview, bounded so the stock strip stays visible on a short
-    /// phone. The preview owns its own swipeable example-photo selection.
-    private func previewHeight(for size: CGSize) -> CGFloat {
-        min(max(size.height * 0.42, 280), 360)
     }
 
     private var stockCarousel: some View {

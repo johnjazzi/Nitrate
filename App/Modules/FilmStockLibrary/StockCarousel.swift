@@ -46,8 +46,8 @@ struct StockCarousel: View {
     /// Tracks the snap-aligned card; the single source of scroll truth.
     @State private var scrollPosition: String?
 
-    private let cardWidth: CGFloat = 208
-    private let cardHeight: CGFloat = 264
+    private let cardWidth: CGFloat = 104
+    private let cardHeight: CGFloat = 132
     private let cardSpacing: CGFloat = 16
 
     var body: some View {
@@ -157,49 +157,51 @@ struct StockCarouselCard: View {
     let stock: FilmStockConfig
     let isSelected: Bool
 
+    /// The duotone stripe swatch: five bands, primary at the top and bottom edges with two
+    /// dark bands between, so a stock reads as a film canister rather than a flat chip.
+    private let bandCount = 5
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            RoundedRectangle(cornerRadius: 14)
-                .fill(
-                    LinearGradient(
-                        colors: [stock.primaryColor, stock.secondaryColor],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14)
-                        .stroke(isSelected ? Color.white : Color.white.opacity(0.12),
-                                lineWidth: isSelected ? 2 : 1)
+        VStack(spacing: 6) {
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    ForEach(0..<bandCount, id: \.self) { index in
+                        let isPrimary = index == 0 || index == 1 || index == bandCount - 1
+                        (isPrimary ? stock.primaryColor : stock.secondaryColor)
+                            .frame(height: geometry.size.height / CGFloat(bandCount))
+                    }
                 }
-                .overlay(alignment: .bottomLeading) {
-                    Text(stock.displayName)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(10)
-                        .shadow(radius: 2)
-                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? Color.white : Color.white.opacity(0.12),
+                            lineWidth: isSelected ? 2 : 1)
+            }
 
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 Text(stock.lightType)
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.black)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
                     .background(stock.primaryColor)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-
-                Spacer(minLength: 0)
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                Text(stock.displayName)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(isSelected ? .white : .secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
         }
-        .padding(8)
+        .padding(6)
         .background(
-            RoundedRectangle(cornerRadius: 18)
+            RoundedRectangle(cornerRadius: 12)
                 .fill(Color.white.opacity(isSelected ? 0.10 : 0.03))
         )
         .scaleEffect(isSelected ? 1.0 : 0.9)
         .opacity(isSelected ? 1.0 : 0.6)
         .animation(.easeInOut(duration: 0.2), value: isSelected)
-        .contentShape(RoundedRectangle(cornerRadius: 18))
+        .contentShape(RoundedRectangle(cornerRadius: 12))
     }
 }

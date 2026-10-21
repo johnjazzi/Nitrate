@@ -4,6 +4,7 @@ import ImageIO
 import Metal
 import QuartzCore
 import SwiftUI
+import simd
 
 /// Stock-selector preview: one bundled Apple Log 2 plate per scene, with the selected
 /// stock's LUT applied on the GPU.
@@ -26,7 +27,9 @@ struct StockSamplePreview: View {
         case .success(let catalog):
             VStack(spacing: 10) {
                 pages(catalog)
-                    .frame(height: 310)
+                    // The card takes the plate's 2:3 shape; the sheet scrolls rather than
+                    // squeezing it into a fixed row.
+                    .frame(maxWidth: 250)
                 sceneDots(catalog)
                 Text(catalog.disclaimer)
                     .font(.caption2)
@@ -51,7 +54,8 @@ struct StockSamplePreview: View {
                           title: scene.title,
                           stockName: stock?.displayName ?? "Neutral",
                           lutName: stock?.lutName ?? "AppleLog2ToRec709.cube",
-                          grain: GrainConfiguration(stock: stock, gauge: gauge))
+                          configuration: PreviewConfiguration(stock: stock, gauge: gauge,
+                                                              sceneIlluminantKelvin: scene.sceneIlluminantKelvin))
                     .padding(.horizontal, 4)
                     .tag(scene.id)
             }
@@ -84,28 +88,89 @@ struct StockSamplePreview: View {
 }
 
 /// One page: the plate with this stock's cube applied, plus its caption.
-/// Realised grain for the selector: the same footprint the renderer uses for this stock and
-/// gauge, so a coarser gauge visibly grows the grain.
-struct GrainConfiguration: Equatable {
+/// Everything the shader needs for one (scene, stock, gauge) combination: the realised grain
+/// footprint the renderer would use, and the white-balance gain the camera would apply.
+struct PreviewConfiguration: Equatable {
     let footprint: Float
     let amplitude: Float
+    let whiteBalanceGain: SIMD3<Float>
 
-    init(stock: FilmStockConfig?, gauge: PrintGauge?) {
+    init(stock: FilmStockConfig?, gauge: PrintGauge?, sceneIlluminantKelvin: Float) {
         guard let stock else {
             self.footprint = 0
             self.amplitude = 0
+            self.whiteBalanceGain = SIMD3(repeating: 1)
             return
         }
         self.footprint = GrainModel.effectiveSize(stockGrainSize: stock.grainSize,
                                                   gauge: gauge ?? stock.effectivePrintGauge)
         // Presence, not the render's exact amplitude: the selector shows which gauge is
         // coarser, not a calibrated grain loudness.
-        self.amplitude = GrainConfiguration.previewAmplitude
+        self.amplitude = PreviewConfiguration.previewAmplitude
+        self.whiteBalanceGain = PlateWhiteBalance.gain(sceneKelvin: sceneIlluminantKelvin,
+                                                       lockedKelvin: stock.colorTemperature)
     }
 
     static let previewAmplitude: Float = 0.055
 
-    var isVisible: Bool { footprint > 0 && amplitude > 0 }
+    var isGrainVisible: Bool { footprint > 0 && amplitude > 0 }
+    var key: String { String(format: "%.3f|%.4f|%.4f|%.4f|%.4f",
+                             footprint, whiteBalanceGain.x, whiteBalanceGain.y, whiteBalanceGain.z,
+                             amplitude) }
+}
+
+/// The white balance the camera would leave on a scene, as a per-channel linear gain.
+///
+/// `CameraSession.setWhiteBalance` locks the sensor to the selected stock's
+/// `colorTemperature` with tint 0, so a scene lit at a different temperature records with its
+/// neutral axis displaced by `I(scene) / I(locked)`. Mirrors the generator's model: Planckian
+/// locus (Kim et al. 1997) -> XYZ -> Bradford adaptation -> linear sRGB -> luminance-normalised.
+enum PlateWhiteBalance {
+    private static let bradford = simd_float3x3(rows: [
+        SIMD3(0.8951, 0.2664, -0.1614),
+        SIMD3(-0.7502, 1.7135, 0.0367),
+        SIMD3(0.0389, -0.0685, 1.0296),
+    ])
+    private static let xyzToSRGB = simd_float3x3(rows: [
+        SIMD3(3.2406, -1.5372, -0.4986),
+        SIMD3(-0.9689, 1.8758, 0.0415),
+        SIMD3(0.0557, -0.2040, 1.0570),
+    ])
+    private static let luma = SIMD3<Float>(0.2126, 0.7152, 0.0722)
+
+    static func gain(sceneKelvin: Float, lockedKelvin: Float) -> SIMD3<Float> {
+        guard sceneKelvin > 0, lockedKelvin > 0 else { return SIMD3(repeating: 1) }
+        let adaptation = bradford.inverse * diagonal(bradford * xyz(sceneKelvin)
+                                                     / (bradford * xyz(lockedKelvin))) * bradford
+        let toSRGB = xyzToSRGB * adaptation * xyzToSRGB.inverse
+        var white = toSRGB * SIMD3(repeating: 1)
+        white = simd_max(white, SIMD3(repeating: 1e-6))
+        let luminance = simd_dot(white, luma)
+        guard luminance.isFinite, luminance > 0 else { return SIMD3(repeating: 1) }
+        let gain = white / luminance
+        return gain.x.isFinite && gain.y.isFinite && gain.z.isFinite ? gain : SIMD3(repeating: 1)
+    }
+
+    /// CIE 1931 xy on the Planckian locus, Y = 1.
+    private static func xyz(_ kelvin: Float) -> SIMD3<Float> {
+        let t = min(max(kelvin, 1667), 25000)
+        let x: Float = t <= 4000
+            ? -0.2661239e9 / pow(t, 3) - 0.2343589e6 / pow(t, 2) + 0.8776956e3 / t + 0.179910
+            : -3.0258469e9 / pow(t, 3) + 2.1070379e6 / pow(t, 2) + 0.2226347e3 / t + 0.240390
+        let y: Float
+        if t <= 2222 {
+            y = -1.1063814 * pow(x, 3) - 1.34811020 * pow(x, 2) + 2.18555832 * x - 0.20219683
+        } else if t <= 4000 {
+            y = -0.9549476 * pow(x, 3) - 1.37418593 * pow(x, 2) + 2.09137015 * x - 0.16748867
+        } else {
+            y = 3.0817580 * pow(x, 3) - 5.87338670 * pow(x, 2) + 3.75112997 * x - 0.37001483
+        }
+        return SIMD3(x / y, 1, (1 - x - y) / y)
+    }
+
+    private static func diagonal(_ v: SIMD3<Float>) -> simd_float3x3 {
+        simd_float3x3(rows: [SIMD3(v.x, 0, 0), SIMD3(0, v.y, 0), SIMD3(0, 0, v.z)])
+    }
 }
 
 private struct PlatePage: View {
@@ -113,18 +178,20 @@ private struct PlatePage: View {
     let title: String
     let stockName: String
     let lutName: String
-    let grain: GrainConfiguration
+    let configuration: PreviewConfiguration
 
     var body: some View {
         ZStack {
             Color.white.opacity(0.06)
             if let url {
-                PlateSurface(plate: url, lutName: lutName, grain: grain)
+                PlateSurface(plate: url, lutName: lutName, configuration: configuration)
             } else {
                 ContentUnavailableView("Preview unavailable", systemImage: "photo",
                                        description: Text("No plate for this scene."))
             }
         }
+        // The plate is 2:3; the card takes the plate's shape so nothing is stretched.
+        .aspectRatio(2.0 / 3.0, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 22))
         .overlay(alignment: .bottomLeading) { caption }
         .accessibilityElement(children: .combine)
@@ -150,12 +217,12 @@ private struct PlatePage: View {
 private struct PlateSurface: UIViewRepresentable {
     let plate: URL
     let lutName: String
-    let grain: GrainConfiguration
+    let configuration: PreviewConfiguration
 
     func makeUIView(context: Context) -> PlateMetalView { PlateMetalView() }
 
     func updateUIView(_ view: PlateMetalView, context: Context) {
-        view.show(plate: plate, lutName: lutName, grain: grain)
+        view.show(plate: plate, lutName: lutName, configuration: configuration)
     }
 }
 
@@ -175,12 +242,12 @@ final class PlateMetalView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     /// Loads the plate and cube only when the pair changes, then renders once.
-    func show(plate: URL, lutName: String, grain: GrainConfiguration) {
-        let key = "\(plate.path)|\(lutName)|\(grain.footprint)"
+    func show(plate: URL, lutName: String, configuration: PreviewConfiguration) {
+        let key = "\(plate.path)|\(lutName)|\(configuration.key)"
         guard key != shown else { return }
         do {
             if renderer == nil { renderer = try PlateLUTRenderer(layer: metalLayer) }
-            try renderer?.load(plate: plate, lutName: lutName, grain: grain)
+            try renderer?.load(plate: plate, lutName: lutName, configuration: configuration)
             shown = key
         } catch {
             renderer = nil
@@ -207,7 +274,7 @@ final class PlateMetalView: UIView {
 private struct PlateSurface: View {
     let plate: URL
     let lutName: String
-    let grain: GrainConfiguration
+    let configuration: PreviewConfiguration
 
     var body: some View {
         if let image = PlateImage.load(plate) {
@@ -240,7 +307,8 @@ final class PlateLUTRenderer: @unchecked Sendable {
     private var plateTexture: (any MTLTexture)?
     private var lutTexture: (any MTLTexture)?
     private var grainVolume: (any MTLTexture)?
-    private var grainUniforms = PlateGrainUniformsCPU(footprint: 0, amplitude: 0, offset: 0)
+    private var plateSize = SIMD2<Float>(1, 1)
+    private var configuration = PreviewConfiguration(stock: nil, gauge: nil, sceneIlluminantKelvin: 5600)
     private var loaded: String?
 
     init(layer: CAMetalLayer) throws {
@@ -263,19 +331,18 @@ final class PlateLUTRenderer: @unchecked Sendable {
     }
 
     /// Uploads the pair only when it changes; the caller renders afterwards.
-    func load(plate: URL, lutName: String, grain: GrainConfiguration) throws {
-        let key = "\(plate.path)|\(lutName)|\(grain.footprint)"
+    func load(plate: URL, lutName: String, configuration: PreviewConfiguration) throws {
+        let key = "\(plate.path)|\(lutName)|\(configuration.key)"
         guard key != loaded else { return }
         let cube = try PlateCube.parse(Self.lutText(named: lutName))
         guard let image = PlateImage.load(plate) else { throw RenderError.unavailable }
         let plateTexture = try Self.makePlateTexture(image, device: device)
         let lutTexture = try Self.makeLUTTexture(cube, device: device)
-        if grain.isVisible, grainVolume == nil {
+        if configuration.isGrainVisible, grainVolume == nil {
             grainVolume = Self.makeGrainVolume(device: device)
         }
-        grainUniforms = PlateGrainUniformsCPU(footprint: grain.footprint,
-                                              amplitude: grain.amplitude,
-                                              offset: Self.grainOffset)
+        self.plateSize = SIMD2(Float(image.width), Float(image.height))
+        self.configuration = configuration
         self.plateTexture = plateTexture
         self.lutTexture = lutTexture
         loaded = key
@@ -291,9 +358,14 @@ final class PlateLUTRenderer: @unchecked Sendable {
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
         guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
-        var uniforms = grainUniforms
+        var uniforms = PlatePreviewUniformsCPU(
+            whiteBalanceGain: configuration.whiteBalanceGain,
+            footprint: configuration.footprint,
+            amplitude: configuration.amplitude,
+            offset: Self.grainOffset,
+            uvScale: Self.uvScale(plate: plateSize, drawable: layer.drawableSize))
         encoder.setRenderPipelineState(pipeline)
-        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<PlateGrainUniformsCPU>.stride, index: 0)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<PlatePreviewUniformsCPU>.stride, index: 0)
         encoder.setFragmentTexture(plateTexture, index: 0)
         encoder.setFragmentTexture(lutTexture, index: 1)
         encoder.setFragmentTexture(grainVolume, index: 2)
@@ -365,6 +437,20 @@ final class PlateLUTRenderer: @unchecked Sendable {
         return texture
     }
 
+    /// Aspect-fill: scale the sampled region so the plate's shape fills the card without
+    /// being stretched (a shorter region crops instead).
+    static func uvScale(plate: SIMD2<Float>, drawable: CGSize) -> SIMD2<Float> {
+        let viewWidth = Float(drawable.width), viewHeight = Float(drawable.height)
+        guard plate.x > 0, plate.y > 0, viewWidth > 0, viewHeight > 0 else {
+            return SIMD2(repeating: 1)
+        }
+        let plateAspect = plate.x / plate.y
+        let viewAspect = viewWidth / viewHeight
+        return viewAspect > plateAspect
+            ? SIMD2(plateAspect / viewAspect, 1)   // card wider than the plate: crop sides
+            : SIMD2(1, viewAspect / plateAspect)   // card taller: crop top and bottom
+    }
+
     /// Fixed phase: the preview is a still, so a per-frame index would only shimmer.
     private static let grainOffset: Float = 0.37
 
@@ -394,11 +480,17 @@ final class PlateLUTRenderer: @unchecked Sendable {
 /// Deliberately local to the selector: the FilmStockLibrary target also builds the macOS
 /// CLI, which does not compile the capture module. Row order is preserved (red-fastest) so
 /// the 3D upload matches the shader's `(code * (size - 1) + .5) / size` lookup.
-/// CPU mirror of the shader's grain uniforms.
-struct PlateGrainUniformsCPU {
+/// CPU mirror of the shader's `PlatePreviewUniforms`.
+struct PlatePreviewUniformsCPU {
+    var whiteBalanceGain: SIMD3<Float>
     var footprint: Float
     var amplitude: Float
     var offset: Float
+    var uvScale: SIMD2<Float>
+
+    static let identity = PlatePreviewUniformsCPU(whiteBalanceGain: SIMD3(repeating: 1),
+                                                  footprint: 0, amplitude: 0, offset: 0,
+                                                  uvScale: SIMD2(repeating: 1))
 }
 
 struct PlateCube: Sendable {

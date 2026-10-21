@@ -120,7 +120,7 @@ class ManifestContractTests(unittest.TestCase):
     def test_every_shipped_plate_records_its_compression_budget(self):
         for scene in self.manifest["scenes"]:
             path = STOCK_DIR / scene["plate"]
-            self.assertLess(path.stat().st_size, 90 * 1024,
+            self.assertLess(path.stat().st_size, 160 * 1024,
                             f"{path.name} exceeds the per-plate bundle budget")
     def test_total_bundle_stays_small(self):
         total = sum(f.stat().st_size for f in STOCK_DIR.glob("*.jpg"))
@@ -154,7 +154,7 @@ class ImageQualityTests(unittest.TestCase):
         for _sid, path in self._paths():
             with Image.open(path) as im:
                 self.assertEqual(im.format, "JPEG")
-                self.assertEqual(im.size, (480, 720))
+                self.assertEqual(im.size, (720, 1080))
 
     def test_images_are_present_and_not_blank(self):
         for sid, path in self._paths():
@@ -187,8 +187,8 @@ class ImageQualityTests(unittest.TestCase):
 
     def test_plates_total_stays_within_budget(self):
         total = sum(f.stat().st_size for f in STOCK_DIR.glob("*.jpg"))
-        self.assertLess(total, 400 * 1024,
-                        f"plates total {total/1024:.0f} KB; budget is 400 KB")
+        self.assertLess(total, 800 * 1024,
+                        f"plates total {total/1024:.0f} KB; budget is 800 KB")
 
 
 class DistinctnessTests(unittest.TestCase):

@@ -10,6 +10,15 @@ struct StockSampleCatalog: Sendable {
         let title: String
         /// Apple Log 2 encoded plate, LUT applied live by `PlateLUTRenderer`.
         let plate: String
+        let derivation: Derivation
+
+        /// The illuminant this scene was assumed to be shot under. The camera locks white
+        /// balance per stock, so the preview needs both numbers to show the resulting cast.
+        struct Derivation: Decodable, Sendable {
+            let sceneIlluminantKelvin: Float?
+        }
+
+        var sceneIlluminantKelvin: Float { derivation.sceneIlluminantKelvin ?? 5600 }
 
         func plateURL(directory: URL) -> URL {
             directory.appendingPathComponent(plate)

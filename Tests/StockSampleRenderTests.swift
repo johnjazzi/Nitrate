@@ -22,8 +22,8 @@ struct StockSampleRenderTests {
         for scene in catalog.scenes {
             let url = scene.plateURL(directory: catalog.directory)
             let image = try #require(PlateImage.load(url), "\(scene.id) has no decodable plate")
-            #expect(image.width == 480 && image.height == 720,
-                    "\(scene.id): plates ship at the budgeted 2:3 size")
+            #expect(image.width == 720 && image.height == 1080,
+                    "\(scene.id): plates ship at the card's native 2:3 size")
         }
     }
 

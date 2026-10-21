@@ -34,22 +34,33 @@
         "note": "Tungsten signage against a dusk sky"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
-        "crop": "centre 480x720 (2:3) from the full frame, Lanczos",
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 3600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.0013978909465020577,
+          "gainsRGB": [
+            1.0,
+            1.0061553283733826,
+            1.13114902066973
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          480,
-          720
+          720,
+          1080
         ],
-        "jpegQuality": 66,
+        "jpegQuality": 60,
         "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "7f738ff0c279089b6cda775e59d0d07282516a4bf77d4680009a146d8b40594f",
-        "meanCode": 0.2974026278905151,
-        "whiteFraction": 8.680555555555556e-06,
-        "midtoneFraction": 0.9897453703703704,
-        "clippedChannelFraction": 3.472222222222222e-05,
-        "roundTripMeanAbsError8bit": 0.24695696849681603,
+        "sha256": "b681852e59ff1126d185243b1fc36e2a6aae0f36ce9806b09b2763a71482b6f3",
+        "meanCode": 0.3052791740229244,
+        "whiteFraction": 4.243827160493827e-05,
+        "midtoneFraction": 0.991644804526749,
+        "clippedChannelFraction": 5.529835390946502e-05,
+        "roundTripMeanAbsError8bit": 0.2068964098170702,
         "roundTripP99AbsError8bit": 5.0
       }
     },
@@ -74,23 +85,34 @@
         "note": "Daylight under a canopy"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
-        "crop": "centre 480x720 (2:3) from the full frame, Lanczos",
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 5600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.021300154320987655,
+          "gainsRGB": [
+            1.0070337385338484,
+            1.0,
+            1.0428728326871746
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          480,
-          720
+          720,
+          1080
         ],
-        "jpegQuality": 66,
+        "jpegQuality": 60,
         "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "2937c612d376a93cf349fd6ff11099e80f0918c599f67761ed0857a4267bba1a",
-        "meanCode": 0.3271770917701993,
-        "whiteFraction": 0.0014322916666666666,
-        "midtoneFraction": 0.992199074074074,
-        "clippedChannelFraction": 0.004013310185185185,
-        "roundTripMeanAbsError8bit": 0.09240281651418882,
-        "roundTripP99AbsError8bit": 3.0
+        "sha256": "3551bd2b568ebc33dc29f4800e696fe78511933e10c258cd89a804a3906f3274",
+        "meanCode": 0.32894696128715045,
+        "whiteFraction": 0.0029732510288065844,
+        "midtoneFraction": 0.9895897633744856,
+        "clippedChannelFraction": 0.007064043209876543,
+        "roundTripMeanAbsError8bit": 0.12947612027928773,
+        "roundTripP99AbsError8bit": 4.171491330748697
       }
     },
     {
@@ -114,23 +136,34 @@
         "note": "Daylight, saturated warm subject"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
-        "crop": "centre 480x720 (2:3) from the full frame, Lanczos",
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 5600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.024521604938271605,
+          "gainsRGB": [
+            1.0746246232252203,
+            1.0404126490664247,
+            1.0
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          480,
-          720
+          720,
+          1080
         ],
-        "jpegQuality": 66,
+        "jpegQuality": 60,
         "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "7758d4ab0ece38b841c64ff1b1f2ca25198540ee9700b535da430ac06671eb98",
-        "meanCode": 0.41062429992891936,
-        "whiteFraction": 1.4467592592592593e-05,
-        "midtoneFraction": 0.9996440972222222,
-        "clippedChannelFraction": 2.604166666666667e-05,
-        "roundTripMeanAbsError8bit": 0.16245243774922563,
-        "roundTripP99AbsError8bit": 5.0
+        "sha256": "bb9c91f15cdd0ff0df288c9833cdc8b84895b6c7cd2c6e9af5d0afa197b40b57",
+        "meanCode": 0.41818533136888897,
+        "whiteFraction": 1.02880658436214e-05,
+        "midtoneFraction": 0.9995498971193416,
+        "clippedChannelFraction": 5.1440329218106995e-05,
+        "roundTripMeanAbsError8bit": 0.19122552725405048,
+        "roundTripP99AbsError8bit": 6.0
       }
     },
     {
@@ -154,22 +187,33 @@
         "note": "Night highlights on a dark ground"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
-        "crop": "centre 480x720 (2:3) from the full frame, Lanczos",
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 3600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.01800925925925926,
+          "gainsRGB": [
+            1.001720993610067,
+            1.0,
+            1.0516257656488055
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          480,
-          720
+          720,
+          1080
         ],
-        "jpegQuality": 66,
+        "jpegQuality": 60,
         "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "a90e42d2ac9f2a0f4b2b1466efa19fbc3c172a3d03b760831b52edbeb6a2572d",
-        "meanCode": 0.24990665141329862,
-        "whiteFraction": 0.0017939814814814815,
-        "midtoneFraction": 0.9910069444444445,
-        "clippedChannelFraction": 0.002447916666666667,
-        "roundTripMeanAbsError8bit": 0.5598073166052784,
+        "sha256": "3f4355632d193861c95ac9eb6c5cad7b08aa91662bdf2f2d14dcfd53a5867b01",
+        "meanCode": 0.2506311682838627,
+        "whiteFraction": 0.0025257201646090533,
+        "midtoneFraction": 0.9900938786008231,
+        "clippedChannelFraction": 0.003221450617283951,
+        "roundTripMeanAbsError8bit": 0.5589117964839799,
         "roundTripP99AbsError8bit": 8.324167725000008
       }
     },
@@ -194,23 +238,34 @@
         "note": "Night speed, skin under sodium light"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
-        "crop": "centre 480x720 (2:3) from the full frame, Lanczos",
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 3600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.06770061728395062,
+          "gainsRGB": [
+            1.037169355749392,
+            1.018144928105745,
+            1.0
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          480,
-          720
+          720,
+          1080
         ],
-        "jpegQuality": 66,
+        "jpegQuality": 60,
         "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "6ee9dff01d1b50936380ac1e6471e850703ca8ff449f2c57b413b4721c785d08",
-        "meanCode": 0.29716247064687923,
-        "whiteFraction": 0.008585069444444444,
-        "midtoneFraction": 0.9741550925925926,
-        "clippedChannelFraction": 0.01072337962962963,
-        "roundTripMeanAbsError8bit": 0.5704974403223969,
-        "roundTripP99AbsError8bit": 10.0
+        "sha256": "970c3756b6a166be7d30163368b18681a06aa5f548553a60868dce21084a67dd",
+        "meanCode": 0.298615254741139,
+        "whiteFraction": 0.010169753086419753,
+        "midtoneFraction": 0.9683654835390947,
+        "clippedChannelFraction": 0.01159593621399177,
+        "roundTripMeanAbsError8bit": 0.5691170630798008,
+        "roundTripP99AbsError8bit": 9.163304352951705
       }
     },
     {
@@ -234,23 +289,34 @@
         "note": "Daylight skin tones, saturated crowd colour"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
-        "crop": "centre 480x720 (2:3) from the full frame, Lanczos",
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 5600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.05568672839506173,
+          "gainsRGB": [
+            1.016194415357553,
+            1.0,
+            1.0191685831626418
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          480,
-          720
+          720,
+          1080
         ],
-        "jpegQuality": 66,
+        "jpegQuality": 60,
         "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "aea51bf8ee734e0e35018e96f50b9fe4a4e53dba5637d53c5dfdcf0a1df50ee3",
-        "meanCode": 0.4323049343828321,
-        "whiteFraction": 0.005402199074074074,
-        "midtoneFraction": 0.99203125,
-        "clippedChannelFraction": 0.007913773148148149,
-        "roundTripMeanAbsError8bit": 0.056280244734379266,
-        "roundTripP99AbsError8bit": 0.13876242673228206
+        "sha256": "06ac790594872294149af2ae9af2332edc606ad5538e796424a9546005ff8d17",
+        "meanCode": 0.43490002956866924,
+        "whiteFraction": 0.0068467078189300415,
+        "midtoneFraction": 0.9907201646090535,
+        "clippedChannelFraction": 0.009229681069958848,
+        "roundTripMeanAbsError8bit": 0.06668357354439772,
+        "roundTripP99AbsError8bit": 0.9370971409443802
       }
     },
     {
@@ -274,23 +340,34 @@
         "note": "Daylight water and a hazy skyline"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
-        "crop": "centre 480x720 (2:3) from the full frame, Lanczos",
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 5600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.03551054526748971,
+          "gainsRGB": [
+            1.0840005783749977,
+            1.0276551224097739,
+            1.0
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          480,
-          720
+          720,
+          1080
         ],
-        "jpegQuality": 66,
+        "jpegQuality": 60,
         "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "6ef671062eb560aed3b446f3768a32f68e210b5cc7bb78d9a419bcc53e409e00",
-        "meanCode": 0.5370696776281255,
-        "whiteFraction": 0.0006626157407407407,
-        "midtoneFraction": 0.9910734953703704,
-        "clippedChannelFraction": 0.017433449074074073,
-        "roundTripMeanAbsError8bit": 0.014082405723991701,
-        "roundTripP99AbsError8bit": 0.18903251966022883
+        "sha256": "69bc5ffc9509743c902846785414da2afa600dc1d93904c6df915b703950c05f",
+        "meanCode": 0.5492303882458318,
+        "whiteFraction": 0.012055041152263374,
+        "midtoneFraction": 0.964130658436214,
+        "clippedChannelFraction": 0.035002572016460905,
+        "roundTripMeanAbsError8bit": 0.08915949688526816,
+        "roundTripP99AbsError8bit": 3.3241677249999975
       }
     },
     {
@@ -314,23 +391,34 @@
         "note": "Bright daylight sky and distant detail"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
-        "crop": "centre 480x720 (2:3) from the full frame, Lanczos",
+        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "sceneIlluminantKelvin": 5600,
+        "sceneIlluminantProvenance": "assumed for this scene, not measured",
+        "whiteReference": {
+          "applied": true,
+          "candidateFraction": 0.07999485596707819,
+          "gainsRGB": [
+            1.0,
+            1.0100456715394737,
+            1.0279144731061707
+          ]
+        },
+        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          480,
-          720
+          720,
+          1080
         ],
-        "jpegQuality": 66,
+        "jpegQuality": 60,
         "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "9e652bfebadce2d36aa611338043fdb06c9bd87b94e5ac62d33f3dcfd412739b",
-        "meanCode": 0.6922231099006338,
-        "whiteFraction": 0.008006365740740741,
-        "midtoneFraction": 0.9422916666666666,
-        "clippedChannelFraction": 0.040144675925925924,
-        "roundTripMeanAbsError8bit": 0.1079683985714621,
-        "roundTripP99AbsError8bit": 4.91852797532622
+        "sha256": "21ecdc65c02978f6cb064b2744fa0efd88c9b55ecb2e08f98f9fada42aedd90d",
+        "meanCode": 0.7033662480486734,
+        "whiteFraction": 0.054021347736625515,
+        "midtoneFraction": 0.9150012860082305,
+        "clippedChannelFraction": 0.06068287037037037,
+        "roundTripMeanAbsError8bit": 0.2083449018097381,
+        "roundTripP99AbsError8bit": 7.219042582224163
       }
     }
   ],

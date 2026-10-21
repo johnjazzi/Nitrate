@@ -66,33 +66,62 @@ vertex PlatePreviewVertex platePreviewVertex(uint id [[vertex_id]]) {
     return out;
 }
 
-/// Grain controls for the plate preview. `footprint` is the realised grain size for the
-/// selected stock and print gauge (the same value the renderer uses), so the selector shows
-/// the gauge by showing its grain.
-struct PlateGrainUniforms {
-    float footprint;
-    float amplitude;
-    float offset;
+/// Plate preview controls: the identity of the selected stock's white balance and the
+/// print gauge's grain, plus the aspect fit.
+struct PlatePreviewUniforms {
+    float3 whiteBalanceGain;   // I(scene illuminant) / I(locked Kelvin), luminance-normalised
+    float footprint;           // realised grain size for stock x gauge
+    float amplitude;           // grain presence (size is the dial, not loudness)
+    float offset;              // fixed grain phase: the preview is a still
+    float2 uvScale;            // aspect-fill: crop rather than stretch the plate
 };
 
+// Apple Log 2 constants, shared with Resources/Shaders/spatial.metal.
+constant float PLATE_AL0_R0 = -0.05641088f;
+constant float PLATE_AL0_RT = 0.01f;
+constant float PLATE_AL0_C = 47.28711236f;
+constant float PLATE_AL0_BETA = 0.00964052f;
+constant float PLATE_AL0_GAMMA = 0.08550479f;
+constant float PLATE_AL0_DELTA = 0.69336945f;
+
+static inline float plate_log2_decode(float code) {
+    return code < (PLATE_AL0_RT - PLATE_AL0_R0) / PLATE_AL0_C
+        ? PLATE_AL0_R0 + PLATE_AL0_C * code
+        : exp2((code - PLATE_AL0_DELTA) / PLATE_AL0_GAMMA) - PLATE_AL0_BETA;
+}
+
+static inline float plate_log2_encode(float linear) {
+    return linear < PLATE_AL0_RT
+        ? (linear - PLATE_AL0_R0) / PLATE_AL0_C
+        : PLATE_AL0_DELTA + PLATE_AL0_GAMMA * log2(max(linear, 0.0f) + PLATE_AL0_BETA);
+}
+
 fragment float4 platePreviewFragment(PlatePreviewVertex in [[stage_in]],
-                                     constant PlateGrainUniforms &grain [[buffer(0)]],
+                                     constant PlatePreviewUniforms &u [[buffer(0)]],
                                      texture2d<float> plate [[texture(0)]],
                                      texture3d<float> lut [[texture(1)]],
                                      texture3d<float> grainVolume [[texture(2)]]) {
     constexpr sampler linearSampler(filter::linear, address::clamp_to_edge);
     constexpr sampler grainSampler(coord::normalized, filter::linear, address::repeat);
-    // The plate is already Apple Log 2 encoded, so it feeds the cube directly.
-    float3 logRGB = plate.sample(linearSampler, in.uv).rgb;
+    // Aspect-fill: crop the plate to the card instead of squeezing it into it.
+    float2 uv = clamp((in.uv - 0.5f) * u.uvScale + 0.5f, 0.0f, 1.0f);
+    float3 code = plate.sample(linearSampler, uv).rgb;
+    // The camera locks white balance before the cube sees the frame, so apply the gain in
+    // linear light and re-encode at Log before the lookup.
+    float3 linear = float3(plate_log2_decode(code.r),
+                           plate_log2_decode(code.g),
+                           plate_log2_decode(code.b));
+    linear *= u.whiteBalanceGain;
+    float3 balanced = float3(plate_log2_encode(linear.r),
+                             plate_log2_encode(linear.g),
+                             plate_log2_encode(linear.b));
     float3 size = float3(lut.get_width(), lut.get_height(), lut.get_depth());
-    float3 coordinates = (clamp(logRGB, 0.0, 1.0) * (size - 1.0) + .5) / size;
+    float3 coordinates = (clamp(balanced, 0.0f, 1.0f) * (size - 1.0f) + .5f) / size;
     float3 graded = lut.sample(linearSampler, coordinates).rgb;
-    if (grain.amplitude > 0.0f && grain.footprint > 0.0f) {
-        // Same 3D volume the renderer samples; coarser gauges take a larger step through it,
-        // which is what makes the grain coarser rather than just louder.
-        float3 position = float3(in.uv, 0.0f) / grain.footprint + float3(grain.offset);
+    if (u.amplitude > 0.0f && u.footprint > 0.0f) {
+        float3 position = float3(uv, 0.0f) / u.footprint + float3(u.offset);
         float noise = grainVolume.sample(grainSampler, position).r * 2.0f - 1.0f;
-        graded = clamp(graded + noise * grain.amplitude, 0.0f, 1.0f);
+        graded = clamp(graded + noise * u.amplitude, 0.0f, 1.0f);
     }
     return float4(graded, 1);
 }

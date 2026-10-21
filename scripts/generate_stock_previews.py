@@ -63,12 +63,12 @@ DEFAULT_SOURCES = Path.home() / "Downloads"
 
 SCHEMA_VERSION = 2
 DISCLAIMER = "Illustrative plates \u00b7 your LUT applied live"
-# Shipped asset budget: these cards are the only bitmap art the app bundles, so they are
-# deliberately small. 480x720 at q72 keeps a full set of five scenes under ~400 KB while
-# still looking clean on a ~350 pt card (2x screens); the stock selector is not a
-# full-screen viewer.
-OUT_W, OUT_H = 480, 720
-PREVIEW_QUALITY = 66
+# Shipped asset budget: the plates are the only bitmap art the app bundles. 720x1080 (2:3)
+# is the card's native shape at 2x, and the quality is chosen to hold the whole set near
+# 1 MB. The crop is taken at source resolution and only ever downscaled, so the plate keeps
+# its aspect instead of being squeezed into the card.
+OUT_W, OUT_H = 720, 1080
+PREVIEW_QUALITY = 60
 STOCKS = ["kodak5207", "kodak5219"]
 STOCKS_JSON = RES / "stocks.json"
 REC709_LUMA = np.array([0.2126, 0.7152, 0.0722])
@@ -78,21 +78,21 @@ REC709_LUMA = np.array([0.2126, 0.7152, 0.0722])
 # plates and their checksums live in the repository.
 SCENES = {
     "neon": {"title": "Neon", "nef": "DSC_0278.nef",
-             "note": "Tungsten signage against a dusk sky"},
+             "illuminant_kelvin": 3600, "note": "Tungsten signage against a dusk sky"},
     "forest": {"title": "Forest", "nef": "DSC_0982.nef",
-               "note": "Daylight under a canopy"},
+               "illuminant_kelvin": 5600, "note": "Daylight under a canopy"},
     "harvest": {"title": "Harvest", "nef": "DSC_2186.nef",
-                "note": "Daylight, saturated warm subject"},
+                "illuminant_kelvin": 5600, "note": "Daylight, saturated warm subject"},
     "fireworks": {"title": "Fireworks", "nef": "DSC_2077.nef",
-                  "note": "Night highlights on a dark ground"},
+                  "illuminant_kelvin": 3600, "note": "Night highlights on a dark ground"},
     "nightride": {"title": "Night ride", "nef": "DSC_3488.nef",
-                  "note": "Night speed, skin under sodium light"},
+                  "illuminant_kelvin": 3600, "note": "Night speed, skin under sodium light"},
     "race": {"title": "Race day", "nef": "DSC_7950.nef",
-             "note": "Daylight skin tones, saturated crowd colour"},
+             "illuminant_kelvin": 5600, "note": "Daylight skin tones, saturated crowd colour"},
     "shoreline": {"title": "Shoreline", "nef": "DSC_0355.nef",
-                  "note": "Daylight water and a hazy skyline"},
+                  "illuminant_kelvin": 5600, "note": "Daylight water and a hazy skyline"},
     "flyover": {"title": "Flyover", "nef": "DSC_4498.nef",
-                "note": "Bright daylight sky and distant detail"},
+                "illuminant_kelvin": 5600, "note": "Bright daylight sky and distant detail"},
 }
 
 # ----------------------------------------------------------------- RAW still sources
@@ -141,8 +141,40 @@ def load_nef_display(path: Path, out_w: int = OUT_W, out_h: int = OUT_H) -> np.n
     x0 = (width - crop_w) // 2
     image = image.crop((x0, 0, x0 + crop_w, height))
     # Resample in display space: the source is already tone-mapped by the developer, and
-    # a second linear round-trip here would only cost precision.
+    # a second linear round-trip here would only cost precision. Only ever downscaled, so
+    # the plate keeps its aspect.
     return np.asarray(image.resize((out_w, out_h), Image.LANCZOS)).astype(np.float64) / 255.0
+
+
+def scene_white_reference_balance(display: np.ndarray) -> tuple[np.ndarray, dict]:
+    """Neutralise the plate against the brightest low-saturation surface in the scene.
+
+    The camera's own white balance is used as a starting point, but a scene with no neutral
+    in it (a field of foliage, a wall of neon) leaves it tinted, and the stock preview then
+    inherits that tint. White-patch: take the brightest few percent of pixels that are also
+    desaturated and scale the channels so that reference is neutral.
+
+    Returns the balanced image and the evidence, so the manifest can say whether it applied
+    rather than silently retinting every plate.
+    """
+    maximum = display.max(axis=-1)
+    minimum = display.min(axis=-1)
+    chroma = maximum - minimum
+    luminance = display @ np.array([0.2126, 0.7152, 0.0722])
+    threshold = float(np.percentile(luminance, 92.0))
+    candidate = (luminance >= threshold) & (chroma < 0.12) & (maximum > 0.30)
+    fraction = float(candidate.mean())
+    if fraction < 0.001 or not candidate.any():
+        return display, {"applied": False, "reason": "no neutral reference in the scene",
+                         "candidateFraction": fraction}
+    reference = display[candidate].mean(axis=0)
+    target = float(reference.max())
+    gains = target / np.maximum(reference, 1e-4)
+    # Never let a stray highlight drag the scene more than a stop.
+    gains = np.clip(gains, 0.5, 2.0)
+    balanced = np.clip(display * gains, 0.0, 1.0)
+    return balanced, {"applied": True, "candidateFraction": fraction,
+                      "gainsRGB": [float(g) for g in gains]}
 
 
 # ------------------------------------------------------------------ display <-> synthetic Log
@@ -368,6 +400,7 @@ def build_assets(neutral_inv: InverseNeutral, contact_sheet: bool, sources: Path
         if not src.exists():
             raise SystemExit(f"missing source RAW {src}; pass --sources <dir>")
         base = load_nef_display(src)
+        base, neutral_reference = scene_white_reference_balance(base)
         plate = np.clip(neutral_inv.apply(base), 0.0, 1.0)
         path = STOCK_DIR / f"{sid}-log.jpg"
         _save_jpg(plate, path)
@@ -390,8 +423,12 @@ def build_assets(neutral_inv: InverseNeutral, contact_sheet: bool, sources: Path
             },
             "derivation": {
                 "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, "
-                          "as-shot white balance) -> centre 2:3 crop -> approximate inverse of "
-                          "the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+                          "as-shot white balance) -> white-patch neutral balance -> centre 2:3 "
+                          "crop -> approximate inverse of the official neutral Apple Log 2 -> "
+                          "Rec.709 LUT -> Log plate",
+                "sceneIlluminantKelvin": scene["illuminant_kelvin"],
+                "sceneIlluminantProvenance": "assumed for this scene, not measured",
+                "whiteReference": neutral_reference,
                 "crop": f"centre {OUT_W}x{OUT_H} (2:3) from the full frame, Lanczos",
                 "outputSize": [OUT_W, OUT_H],
                 "jpegQuality": PREVIEW_QUALITY,
