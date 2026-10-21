@@ -13,8 +13,8 @@ import simd
 /// tweak or a gauge change updates the preview with no new asset. The LUT lookup matches
 /// `cameraPreviewFragment` exactly, so a plate and a live frame grade identically.
 ///
-/// Plates are illustrative — the author's own photographs pushed through the inverse of the
-/// official neutral transform, not camera-recorded Apple Log 2 frames.
+/// Plates are the author's RAW photographs converted to Apple Wide Gamut and encoded with
+/// the Apple Log curve. They are illustrative, not camera-recorded Apple Log 2 frames.
 struct StockSamplePreview: View {
     let stock: FilmStockConfig?
     /// Print gauge, so the preview shows the grain that gauge produces.

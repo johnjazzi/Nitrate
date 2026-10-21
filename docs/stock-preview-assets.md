@@ -28,7 +28,7 @@ suite fails if a plate exceeds 384 KB or the set exceeds 1.25 MB. The source RAW
 ```
 Nikon NEF (author-supplied, see manifest `source`) with its AS-SHOT camera white balance
   └─ LibRaw scene-linear sRGB — gamma=(1,1), output_bps=16, use_camera_wb=True,
-     no_auto_bright=False (explicit as-shot-exposure choice)
+     no_auto_bright=True (automatic brightening disabled; LibRaw RAW scaling remains)
   └─ linear-light centre 2:3 crop, Lanczos to 1080x1620
   └─ Apple Wide Gamut matrix (derived from the published primaries)
   └─ exact Apple Log 2 transfer curve (quadratic toe below R_t, log segment above)
@@ -38,7 +38,8 @@ Nikon NEF (author-supplied, see manifest `source`) with its AS-SHOT camera white
 At runtime:
 
 ```
-plate (Apple Log 2 codes) -> selected stock .cube, red-fastest trilinear -> Rec. 709
+plate -> Apple Log decode -> assumed scene/stock white-balance matrix
+      -> Apple Log encode -> selected stock .cube -> grain -> Rec. 709
 ```
 
 `platePreviewFragment` in `Resources/Shaders/camera-preview.metal` performs the lookup with
@@ -98,7 +99,9 @@ manifest records the D700's own multipliers under `source.nef.asShotWhiteBalance
 render as a "neutral" reference and scaled the channels to it. Gamma-encoded values are not
 scene-linear and a bright non-neutral surface passes the filter, so the reference was
 unreliable and could silently re-tint every plate; it was removed. The per-scene
-`sceneIlluminantKelvin` is *assumed for labelling only* — it is not measured.
+`sceneIlluminantKelvin` is an assumption used by the runtime white-balance simulation,
+not a measurement. It assumes the as-shot image has been balanced to that illuminant;
+mixed lighting and a deliberately warm/cool camera setting can violate that assumption.
 
 ## What these plates are not
 

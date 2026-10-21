@@ -93,7 +93,7 @@ constant float PLATE_AL0_PT = PLATE_AL0_C * (PLATE_AL0_RT - PLATE_AL0_R0) * (PLA
 
 static inline float plate_log2_decode(float code) {
     if (code >= PLATE_AL0_PT) {
-        return pow(2.0f, (code - PLATE_AL0_DELTA) / PLATE_AL0_GAMMA) - PLATE_AL0_BETA;
+        return exp2((code - PLATE_AL0_DELTA) / PLATE_AL0_GAMMA) - PLATE_AL0_BETA;
     }
     if (code >= 0.0f) {
         return sqrt(code / PLATE_AL0_C) + PLATE_AL0_R0;

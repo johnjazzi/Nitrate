@@ -41,8 +41,8 @@ rebalancing is applied. An earlier revision selected the brightest desaturated p
 gamma-encoded RGB render as a "neutral" reference and scaled the channels to it; that had no
 reliable reference (gamma-encoded values are not scene-linear, and a bright non-neutral
 surface passes the filter), so it could silently re-tint every plate. It was removed. A
-per-scene illuminant Kelvin is *assumed* for labelling only (``sceneIlluminantKelvin``); it is
-NOT measured and is NOT derived from the RAW multipliers. Colour only -- no grain / halation /
+per-scene illuminant Kelvin is *assumed* for the runtime stock white-balance simulation
+(``sceneIlluminantKelvin``); it is NOT measured or derived from RAW multipliers. Colour only -- no grain / halation /
 gauge simulation.
 
 DEPS (build-time only): numpy, Pillow, rawpy, exifread.
@@ -89,7 +89,7 @@ PREVIEW_QUALITY = 76
 # Explicit exposure choice for the exact encode: keep the as-shot exposure (no LibRaw
 # auto-bright stretch). Apple Log 2 is a scene-referred encoding, so stretching each frame
 # to full scale would move 18% grey off its defined code and misrepresent the roll.
-AUTO_BRIGHT = False
+NO_AUTO_BRIGHT = True
 PIPELINES = ("exact", "inverse")
 STOCKS = ["kodak5207", "kodak5219"]
 STOCKS_JSON = RES / "stocks.json"
@@ -268,14 +268,14 @@ def load_nef_linear(path: Path, out_w: int = OUT_W, out_h: int = OUT_H) -> np.nd
 
     ``gamma=(1, 1)`` disables LibRaw's tone curve, ``output_bps=16`` keeps precision, and
     ``use_camera_wb=True`` applies the RAW's AS-SHOT white balance. ``no_auto_bright`` is an
-    explicit choice (see AUTO_BRIGHT): False keeps the as-shot exposure rather than
-    stretching each frame to full scale, so the plates reflect what the photographer shot.
+    explicit choice (see NO_AUTO_BRIGHT): True disables the automatic exposure stretch.
+    LibRaw's RAW scaling remains; this is not an absolute scene-radiance calibration.
     Resampling happens in LINEAR light here (correct for a scene-linear signal).
     """
     import rawpy
     with rawpy.imread(str(path)) as raw:
         linear = raw.postprocess(half_size=False, output_bps=16, gamma=(1, 1),
-                                 no_auto_bright=AUTO_BRIGHT, use_camera_wb=True,
+                                 no_auto_bright=NO_AUTO_BRIGHT, use_camera_wb=True,
                                  output_color=rawpy.ColorSpace.sRGB)
     return _resize_linear(linear, out_w, out_h)
 
@@ -557,7 +557,7 @@ def build_assets(neutral_inv: InverseNeutral, contact_sheet: bool, sources: Path
         "whiteBalancePolicy": "RAW as-shot camera white balance; no white-patch / grey-world "
                               "rebalancing is applied, so scene chroma is not inferred.",
         "exposurePolicy": "LibRaw no_auto_bright=%s (as-shot exposure; scene-referred encode)"
-                          % AUTO_BRIGHT,
+                          % NO_AUTO_BRIGHT,
         "scenes": [],
     }
 

@@ -46,7 +46,7 @@ values are in (Apple Log 2 white paper; the same primaries OCIO 2.6 uses for
 `APPLE_LOG-APPLEWG_to_ACES2065-1`). The previous implementation derived a diagonal gain in
 linear sRGB and applied it to Apple Wide Gamut values, mixing two bases: for a 5600 K scene
 on a 3200 K lock it put the neutral's red gain at ≈0.46 where the AppleWG-basis transform
-gives ≈0.85, making the preview markedly bluer than the camera's locked balance.
+gives ≈0.85, exaggerating the blue cast. This model is not a measured match to iPhone sensor gains.
 
 ## Tests
 

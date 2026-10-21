@@ -302,6 +302,18 @@ class NoAutoWhitePatchTests(unittest.TestCase):
 class AppleLog2EncodeTests(unittest.TestCase):
     """The exact forward encode replaces the display-LUT inverse; pin its maths."""
 
+    def test_linear_raw_development_disables_automatic_brightening(self):
+        import rawpy
+        from unittest.mock import MagicMock, patch
+        raw = MagicMock()
+        raw.postprocess.return_value = np.full((6, 4, 3), 12000, dtype=np.uint16)
+        context = MagicMock()
+        context.__enter__.return_value = raw
+        with patch.object(rawpy, "imread", return_value=context):
+            GEN.load_nef_linear(Path("sample.nef"), out_w=4, out_h=6)
+        self.assertTrue(raw.postprocess.call_args.kwargs["no_auto_bright"],
+                        "False enables automatic brightening rather than preserving exposure")
+
     def test_published_18_percent_reflection_lands_at_apple_code(self):
         # Apple's own white paper example: 18% reflectance encodes to ~0.4883.
         self.assertAlmostEqual(float(GEN.apple_log_encode(0.18)), 0.4882724, places=5)

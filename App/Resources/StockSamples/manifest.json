@@ -69,7 +69,7 @@
     "note": "encode -> decode of the Apple Log 2 curve; validates the toe/log split"
   },
   "whiteBalancePolicy": "RAW as-shot camera white balance; no white-patch / grey-world rebalancing is applied, so scene chroma is not inferred.",
-  "exposurePolicy": "LibRaw no_auto_bright=False (as-shot exposure; scene-referred encode)",
+  "exposurePolicy": "LibRaw no_auto_bright=True (as-shot exposure; scene-referred encode)",
   "scenes": [
     {
       "id": "neon",
@@ -122,18 +122,18 @@
         "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "2d59e7c8f33bb4a943a379ae1083012ecd131dda4f701cea0993bef0195906f6",
-        "meanCode": 0.29654466978073046,
+        "sha256": "193154134408ffd0512727ea8bc17ef537a15ea9ea4b145cfb512b9fa7b52bf2",
+        "meanCode": 0.29654384793088095,
         "whiteFraction": 0.0,
         "midtoneFraction": 1.0,
         "clippedChannelFraction": 0.0,
-        "jpegBytes": 100616,
-        "jpegEncodeMeanAbsError8bit": 1.3094888905990294,
-        "jpegEncodeP99AbsError8bit": 8.223035536594537,
-        "roundTripMeanAbsError8bit": 1.7148806155804315,
-        "roundTripP99AbsError8bit": 13.808987585755638,
+        "jpegBytes": 100639,
+        "jpegEncodeMeanAbsError8bit": 1.3095316937787551,
+        "jpegEncodeP99AbsError8bit": 8.222761860078029,
+        "roundTripMeanAbsError8bit": 1.7148993229751341,
+        "roundTripP99AbsError8bit": 13.803721834259079,
         "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
-        "displayToneDeltaMeanAbsError8bit": 15.701854843104435,
+        "displayToneDeltaMeanAbsError8bit": 15.701792240896506,
         "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     },
@@ -188,18 +188,18 @@
         "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "394925925cd1179bee1f47678c2d115538898016803094662d4ce66737fb841c",
-        "meanCode": 0.3211587739195663,
+        "sha256": "63be988af5e4e0e192d521512a096e14cdc0ff24ffaa3f7fa02993404bda24ef",
+        "meanCode": 0.32115817695772103,
         "whiteFraction": 0.0,
         "midtoneFraction": 0.9999994284407865,
         "clippedChannelFraction": 0.0,
-        "jpegBytes": 305547,
-        "jpegEncodeMeanAbsError8bit": 3.960783848193661,
-        "jpegEncodeP99AbsError8bit": 16.862339622597663,
-        "roundTripMeanAbsError8bit": 5.0930694776229615,
-        "roundTripP99AbsError8bit": 27.480760881750786,
+        "jpegBytes": 305586,
+        "jpegEncodeMeanAbsError8bit": 3.9607510146778835,
+        "jpegEncodeP99AbsError8bit": 16.86369562865658,
+        "roundTripMeanAbsError8bit": 5.092990555943512,
+        "roundTripP99AbsError8bit": 27.483029061742148,
         "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
-        "displayToneDeltaMeanAbsError8bit": 17.922339936407596,
+        "displayToneDeltaMeanAbsError8bit": 17.92181576142988,
         "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     },
@@ -254,18 +254,18 @@
         "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "63b9e506b32990c76de77125dc4e18fec236efbcdbee9d03363c98e1d46997f1",
-        "meanCode": 0.40561739079109776,
+        "sha256": "5417ce6a13c0fffb298ea6078969b69581070d832e5cd3f1cc1a648e61428f74",
+        "meanCode": 0.349843934449256,
         "whiteFraction": 0.0,
         "midtoneFraction": 1.0,
         "clippedChannelFraction": 0.0,
-        "jpegBytes": 132833,
-        "jpegEncodeMeanAbsError8bit": 1.4383950089224626,
-        "jpegEncodeP99AbsError8bit": 6.707107649746027,
-        "roundTripMeanAbsError8bit": 2.259418172190918,
-        "roundTripP99AbsError8bit": 10.389428222915502,
+        "jpegBytes": 125815,
+        "jpegEncodeMeanAbsError8bit": 1.3681769756284323,
+        "jpegEncodeP99AbsError8bit": 6.257659648789802,
+        "roundTripMeanAbsError8bit": 1.8615197753408672,
+        "roundTripP99AbsError8bit": 8.60166279518868,
         "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
-        "displayToneDeltaMeanAbsError8bit": 19.26906744894406,
+        "displayToneDeltaMeanAbsError8bit": 17.288331146389904,
         "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     },
@@ -320,18 +320,18 @@
         "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "1a1ba538b3d7be841bc5b27995bdadff8c9aa625ba4e67065289e44695953cca",
-        "meanCode": 0.2531148460451091,
+        "sha256": "83be6b752684252310201732275c530b6c99d247401e9d2fd42072b71685c1c6",
+        "meanCode": 0.2517530363616259,
         "whiteFraction": 0.0,
         "midtoneFraction": 1.0,
         "clippedChannelFraction": 0.0,
-        "jpegBytes": 101076,
-        "jpegEncodeMeanAbsError8bit": 1.862222451452961,
-        "jpegEncodeP99AbsError8bit": 9.178669595897542,
-        "roundTripMeanAbsError8bit": 2.0337995961656623,
-        "roundTripP99AbsError8bit": 14.188259318705784,
+        "jpegBytes": 100448,
+        "jpegEncodeMeanAbsError8bit": 1.8449300295595974,
+        "jpegEncodeP99AbsError8bit": 9.153282967153224,
+        "roundTripMeanAbsError8bit": 2.008473507950065,
+        "roundTripP99AbsError8bit": 14.131212666557575,
         "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
-        "displayToneDeltaMeanAbsError8bit": 15.030952544881702,
+        "displayToneDeltaMeanAbsError8bit": 14.93999385975168,
         "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     },
@@ -386,18 +386,18 @@
         "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "945ba2fa7409f9e62aab721a5e1a23fd1aba96a210dcf993211bab32d38d9d3e",
-        "meanCode": 0.29552726673659857,
+        "sha256": "a405594f1172e22fc71717b1d747652c2198fa9bc6439bba10ac1ce49a1827ab",
+        "meanCode": 0.2154153853280376,
         "whiteFraction": 0.0,
         "midtoneFraction": 0.9999994284407865,
         "clippedChannelFraction": 0.0,
-        "jpegBytes": 78052,
-        "jpegEncodeMeanAbsError8bit": 1.2594577580157829,
-        "jpegEncodeP99AbsError8bit": 5.194230444793559,
-        "roundTripMeanAbsError8bit": 1.4542384731250717,
-        "roundTripP99AbsError8bit": 7.063182784989307,
+        "jpegBytes": 56249,
+        "jpegEncodeMeanAbsError8bit": 0.851917851627491,
+        "jpegEncodeP99AbsError8bit": 3.948391598718845,
+        "roundTripMeanAbsError8bit": 0.7508408579854465,
+        "roundTripP99AbsError8bit": 4.4190644744566265,
         "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
-        "displayToneDeltaMeanAbsError8bit": 16.01710553691627,
+        "displayToneDeltaMeanAbsError8bit": 10.454143674146248,
         "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     },
@@ -452,18 +452,18 @@
         "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "052966a681cecbcd29042ca7a50c9204f2f07613a76be5a7af73d45e7ee02389",
-        "meanCode": 0.4142822329510984,
+        "sha256": "bcb7888c2083f60e88bc6f80fa487816215b3fe023318ba9a629c518522be726",
+        "meanCode": 0.3201831567103293,
         "whiteFraction": 0.0,
         "midtoneFraction": 1.0,
         "clippedChannelFraction": 0.0,
-        "jpegBytes": 139269,
-        "jpegEncodeMeanAbsError8bit": 1.4433140003905673,
-        "jpegEncodeP99AbsError8bit": 7.090364648309181,
-        "roundTripMeanAbsError8bit": 2.397440344443459,
-        "roundTripP99AbsError8bit": 12.530650308237627,
+        "jpegBytes": 126346,
+        "jpegEncodeMeanAbsError8bit": 1.3132301605565018,
+        "jpegEncodeP99AbsError8bit": 6.444536434014979,
+        "roundTripMeanAbsError8bit": 1.764870076968819,
+        "roundTripP99AbsError8bit": 9.802303329618775,
         "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
-        "displayToneDeltaMeanAbsError8bit": 20.751408336397475,
+        "displayToneDeltaMeanAbsError8bit": 16.73542018254073,
         "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     },
@@ -518,18 +518,18 @@
         "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "519b980eacfd8c402416589fc362757c8f023515628e2f2d375791a3c20d7781",
-        "meanCode": 0.4888740395563804,
+        "sha256": "52ce4b4debd9515cef50140dba2ab3fd1f7922d39b4d9929f8f1e043d749387d",
+        "meanCode": 0.3478713311875581,
         "whiteFraction": 0.0,
         "midtoneFraction": 1.0,
         "clippedChannelFraction": 0.0,
-        "jpegBytes": 180803,
-        "jpegEncodeMeanAbsError8bit": 2.0529603674500696,
-        "jpegEncodeP99AbsError8bit": 9.676457492929902,
-        "roundTripMeanAbsError8bit": 3.3270051316189764,
-        "roundTripP99AbsError8bit": 15.51733734900601,
+        "jpegBytes": 157366,
+        "jpegEncodeMeanAbsError8bit": 1.7852739583888306,
+        "jpegEncodeP99AbsError8bit": 8.331779633464272,
+        "roundTripMeanAbsError8bit": 2.2366586581903016,
+        "roundTripP99AbsError8bit": 10.070551442728487,
         "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
-        "displayToneDeltaMeanAbsError8bit": 27.60957538511498,
+        "displayToneDeltaMeanAbsError8bit": 17.130044197304844,
         "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     },
@@ -584,18 +584,18 @@
         "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "12a475453e52708bd085965272dfaeee67906289708ca642d2a34b28fd34592f",
-        "meanCode": 0.5857612197447186,
+        "sha256": "00c33f362ba75eb0791a361439ce929953930582c81599be33eaebf688cd88d5",
+        "meanCode": 0.4788624058981921,
         "whiteFraction": 0.0,
         "midtoneFraction": 1.0,
         "clippedChannelFraction": 0.0,
-        "jpegBytes": 52457,
-        "jpegEncodeMeanAbsError8bit": 0.8449834833543614,
-        "jpegEncodeP99AbsError8bit": 3.7104500077795084,
-        "roundTripMeanAbsError8bit": 1.5755745459014743,
-        "roundTripP99AbsError8bit": 6.9166060140003385,
+        "jpegBytes": 49987,
+        "jpegEncodeMeanAbsError8bit": 0.8219469649501491,
+        "jpegEncodeP99AbsError8bit": 3.548606640564547,
+        "roundTripMeanAbsError8bit": 1.529516322702676,
+        "roundTripP99AbsError8bit": 5.915487727171555,
         "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
-        "displayToneDeltaMeanAbsError8bit": 40.388531121987725,
+        "displayToneDeltaMeanAbsError8bit": 22.46261106880214,
         "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     }
