@@ -16,6 +16,8 @@ import SwiftUI
 /// official neutral transform, not camera-recorded Apple Log 2 frames.
 struct StockSamplePreview: View {
     let stock: FilmStockConfig?
+    /// Print gauge, so the preview shows the grain that gauge produces.
+    var gauge: PrintGauge?
     @State private var sceneID = ""
     private static let catalog = Result { try StockSampleCatalog.load() }
 
@@ -48,7 +50,8 @@ struct StockSamplePreview: View {
                 PlatePage(url: scene.plateURL(directory: catalog.directory),
                           title: scene.title,
                           stockName: stock?.displayName ?? "Neutral",
-                          lutName: stock?.lutName ?? "AppleLog2ToRec709.cube")
+                          lutName: stock?.lutName ?? "AppleLog2ToRec709.cube",
+                          grain: GrainConfiguration(stock: stock, gauge: gauge))
                     .padding(.horizontal, 4)
                     .tag(scene.id)
             }
@@ -81,17 +84,42 @@ struct StockSamplePreview: View {
 }
 
 /// One page: the plate with this stock's cube applied, plus its caption.
+/// Realised grain for the selector: the same footprint the renderer uses for this stock and
+/// gauge, so a coarser gauge visibly grows the grain.
+struct GrainConfiguration: Equatable {
+    let footprint: Float
+    let amplitude: Float
+
+    init(stock: FilmStockConfig?, gauge: PrintGauge?) {
+        guard let stock else {
+            self.footprint = 0
+            self.amplitude = 0
+            return
+        }
+        self.footprint = GrainModel.effectiveSize(stockGrainSize: stock.grainSize,
+                                                  gauge: gauge ?? stock.effectivePrintGauge)
+        // Presence, not the render's exact amplitude: the selector shows which gauge is
+        // coarser, not a calibrated grain loudness.
+        self.amplitude = GrainConfiguration.previewAmplitude
+    }
+
+    static let previewAmplitude: Float = 0.055
+
+    var isVisible: Bool { footprint > 0 && amplitude > 0 }
+}
+
 private struct PlatePage: View {
     let url: URL?
     let title: String
     let stockName: String
     let lutName: String
+    let grain: GrainConfiguration
 
     var body: some View {
         ZStack {
             Color.white.opacity(0.06)
             if let url {
-                PlateSurface(plate: url, lutName: lutName)
+                PlateSurface(plate: url, lutName: lutName, grain: grain)
             } else {
                 ContentUnavailableView("Preview unavailable", systemImage: "photo",
                                        description: Text("No plate for this scene."))
@@ -122,11 +150,12 @@ private struct PlatePage: View {
 private struct PlateSurface: UIViewRepresentable {
     let plate: URL
     let lutName: String
+    let grain: GrainConfiguration
 
     func makeUIView(context: Context) -> PlateMetalView { PlateMetalView() }
 
     func updateUIView(_ view: PlateMetalView, context: Context) {
-        view.show(plate: plate, lutName: lutName)
+        view.show(plate: plate, lutName: lutName, grain: grain)
     }
 }
 
@@ -146,12 +175,12 @@ final class PlateMetalView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     /// Loads the plate and cube only when the pair changes, then renders once.
-    func show(plate: URL, lutName: String) {
-        let key = "\(plate.path)|\(lutName)"
+    func show(plate: URL, lutName: String, grain: GrainConfiguration) {
+        let key = "\(plate.path)|\(lutName)|\(grain.footprint)"
         guard key != shown else { return }
         do {
             if renderer == nil { renderer = try PlateLUTRenderer(layer: metalLayer) }
-            try renderer?.load(plate: plate, lutName: lutName)
+            try renderer?.load(plate: plate, lutName: lutName, grain: grain)
             shown = key
         } catch {
             renderer = nil
@@ -178,6 +207,7 @@ final class PlateMetalView: UIView {
 private struct PlateSurface: View {
     let plate: URL
     let lutName: String
+    let grain: GrainConfiguration
 
     var body: some View {
         if let image = PlateImage.load(plate) {
@@ -209,6 +239,8 @@ final class PlateLUTRenderer: @unchecked Sendable {
     private let layer: CAMetalLayer
     private var plateTexture: (any MTLTexture)?
     private var lutTexture: (any MTLTexture)?
+    private var grainVolume: (any MTLTexture)?
+    private var grainUniforms = PlateGrainUniformsCPU(footprint: 0, amplitude: 0, offset: 0)
     private var loaded: String?
 
     init(layer: CAMetalLayer) throws {
@@ -231,13 +263,19 @@ final class PlateLUTRenderer: @unchecked Sendable {
     }
 
     /// Uploads the pair only when it changes; the caller renders afterwards.
-    func load(plate: URL, lutName: String) throws {
-        let key = "\(plate.path)|\(lutName)"
+    func load(plate: URL, lutName: String, grain: GrainConfiguration) throws {
+        let key = "\(plate.path)|\(lutName)|\(grain.footprint)"
         guard key != loaded else { return }
         let cube = try PlateCube.parse(Self.lutText(named: lutName))
         guard let image = PlateImage.load(plate) else { throw RenderError.unavailable }
         let plateTexture = try Self.makePlateTexture(image, device: device)
         let lutTexture = try Self.makeLUTTexture(cube, device: device)
+        if grain.isVisible, grainVolume == nil {
+            grainVolume = Self.makeGrainVolume(device: device)
+        }
+        grainUniforms = PlateGrainUniformsCPU(footprint: grain.footprint,
+                                              amplitude: grain.amplitude,
+                                              offset: Self.grainOffset)
         self.plateTexture = plateTexture
         self.lutTexture = lutTexture
         loaded = key
@@ -253,9 +291,12 @@ final class PlateLUTRenderer: @unchecked Sendable {
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
         guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
+        var uniforms = grainUniforms
         encoder.setRenderPipelineState(pipeline)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<PlateGrainUniformsCPU>.stride, index: 0)
         encoder.setFragmentTexture(plateTexture, index: 0)
         encoder.setFragmentTexture(lutTexture, index: 1)
+        encoder.setFragmentTexture(grainVolume, index: 2)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         encoder.endEncoding()
         command.present(drawable)
@@ -298,6 +339,35 @@ final class PlateLUTRenderer: @unchecked Sendable {
         return texture
     }
 
+    /// The shipped 128^3 grain volume the renderer samples, so the selector's grain is the
+    /// same noise field rather than a second, invented texture.
+    private static func makeGrainVolume(device: any MTLDevice) -> (any MTLTexture)? {
+        let bundle = Bundle.main
+        let path = bundle.path(forResource: "grain3d", ofType: "raw")
+            ?? bundle.path(forResource: "grain3d", ofType: "raw", inDirectory: "Grain")
+        guard let path, let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+        let size = 128
+        guard data.count >= size * size * size * MemoryLayout<Float>.size else { return nil }
+        let descriptor = MTLTextureDescriptor()
+        descriptor.textureType = .type3D
+        descriptor.pixelFormat = .r32Float
+        descriptor.width = size
+        descriptor.height = size
+        descriptor.depth = size
+        descriptor.usage = .shaderRead
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+        data.withUnsafeBytes { bytes in
+            texture.replace(region: MTLRegionMake3D(0, 0, 0, size, size, size), mipmapLevel: 0, slice: 0,
+                            withBytes: bytes.baseAddress!,
+                            bytesPerRow: size * MemoryLayout<Float>.size,
+                            bytesPerImage: size * size * MemoryLayout<Float>.size)
+        }
+        return texture
+    }
+
+    /// Fixed phase: the preview is a still, so a per-frame index would only shimmer.
+    private static let grainOffset: Float = 0.37
+
     /// Same direct RGB / red-fastest RGBA32Float upload as the capture preview.
     private static func makeLUTTexture(_ cube: PlateCube, device: any MTLDevice) throws -> any MTLTexture {
         let size = cube.size
@@ -324,6 +394,13 @@ final class PlateLUTRenderer: @unchecked Sendable {
 /// Deliberately local to the selector: the FilmStockLibrary target also builds the macOS
 /// CLI, which does not compile the capture module. Row order is preserved (red-fastest) so
 /// the 3D upload matches the shader's `(code * (size - 1) + .5) / size` lookup.
+/// CPU mirror of the shader's grain uniforms.
+struct PlateGrainUniformsCPU {
+    var footprint: Float
+    var amplitude: Float
+    var offset: Float
+}
+
 struct PlateCube: Sendable {
     let size: Int
     let rgba: [Float]

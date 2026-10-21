@@ -66,13 +66,33 @@ vertex PlatePreviewVertex platePreviewVertex(uint id [[vertex_id]]) {
     return out;
 }
 
+/// Grain controls for the plate preview. `footprint` is the realised grain size for the
+/// selected stock and print gauge (the same value the renderer uses), so the selector shows
+/// the gauge by showing its grain.
+struct PlateGrainUniforms {
+    float footprint;
+    float amplitude;
+    float offset;
+};
+
 fragment float4 platePreviewFragment(PlatePreviewVertex in [[stage_in]],
+                                     constant PlateGrainUniforms &grain [[buffer(0)]],
                                      texture2d<float> plate [[texture(0)]],
-                                     texture3d<float> lut [[texture(1)]]) {
+                                     texture3d<float> lut [[texture(1)]],
+                                     texture3d<float> grainVolume [[texture(2)]]) {
     constexpr sampler linearSampler(filter::linear, address::clamp_to_edge);
+    constexpr sampler grainSampler(coord::normalized, filter::linear, address::repeat);
     // The plate is already Apple Log 2 encoded, so it feeds the cube directly.
     float3 logRGB = plate.sample(linearSampler, in.uv).rgb;
     float3 size = float3(lut.get_width(), lut.get_height(), lut.get_depth());
     float3 coordinates = (clamp(logRGB, 0.0, 1.0) * (size - 1.0) + .5) / size;
-    return float4(lut.sample(linearSampler, coordinates).rgb, 1);
+    float3 graded = lut.sample(linearSampler, coordinates).rgb;
+    if (grain.amplitude > 0.0f && grain.footprint > 0.0f) {
+        // Same 3D volume the renderer samples; coarser gauges take a larger step through it,
+        // which is what makes the grain coarser rather than just louder.
+        float3 position = float3(in.uv, 0.0f) / grain.footprint + float3(grain.offset);
+        float noise = grainVolume.sample(grainSampler, position).r * 2.0f - 1.0f;
+        graded = clamp(graded + noise * grain.amplitude, 0.0f, 1.0f);
+    }
+    return float4(graded, 1);
 }

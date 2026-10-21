@@ -22,4 +22,17 @@ struct StockPreviewTests {
         #expect(!source.contains("StockSamplePhoto.load"),
                 "No baked per-stock still should remain in the preview path.")
     }
+
+    @Test func thePreviewShowsTheSelectedGaugesGrain() throws {
+        let source = try String(contentsOf: TestRepository.url(for: "App/Modules/FilmStockLibrary/StockSamplePreview.swift"),
+                                encoding: .utf8)
+        #expect(source.contains("GrainModel.effectiveSize"),
+                "Grain size must come from the renderer's own model, not a second guess.")
+        #expect(source.contains("grain3d"),
+                "The preview must sample the shipped grain volume.")
+        let shader = try String(contentsOf: TestRepository.url(for: "Resources/Shaders/camera-preview.metal"),
+                                encoding: .utf8)
+        #expect(shader.contains("grainVolume.sample"),
+                "The plate fragment must apply grain so the gauge is visible.")
+    }
 }
