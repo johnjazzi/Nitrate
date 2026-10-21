@@ -99,8 +99,8 @@ struct StockSamplePreview: View {
 struct PreviewConfiguration: Equatable {
     let footprint: Float
     let amplitude: Float
-    /// Bradford adaptation in linear Apple Wide Gamut from the scene illuminant to the
-    /// stock's locked white balance.
+    /// Simulates the stock lock's cast with a Bradford transform in linear Apple Wide Gamut,
+    /// carrying the locked white onto the assumed scene white.
     let whiteBalance: simd_float3x3
 
     init(stock: FilmStockConfig?, gauge: PrintGauge?, sceneIlluminantKelvin: Float) {

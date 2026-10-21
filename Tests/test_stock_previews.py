@@ -302,6 +302,11 @@ class NoAutoWhitePatchTests(unittest.TestCase):
 class AppleLog2EncodeTests(unittest.TestCase):
     """The exact forward encode replaces the display-LUT inverse; pin its maths."""
 
+    def test_manifest_exposure_policy_matches_the_developer_argument(self):
+        manifest = json.loads(MANIFEST.read_text())
+        self.assertIn(f"no_auto_bright={GEN.NO_AUTO_BRIGHT}", manifest["exposurePolicy"])
+        self.assertTrue(GEN.NO_AUTO_BRIGHT)
+
     def test_linear_raw_development_disables_automatic_brightening(self):
         import rawpy
         from unittest.mock import MagicMock, patch
