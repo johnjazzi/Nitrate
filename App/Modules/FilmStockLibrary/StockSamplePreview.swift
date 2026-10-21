@@ -26,10 +26,16 @@ struct StockSamplePreview: View {
         switch Self.catalog {
         case .success(let catalog):
             VStack(spacing: 10) {
-                pages(catalog)
-                    // The card takes the plate's 2:3 shape; the sheet scrolls rather than
-                    // squeezing it into a fixed row.
-                    .frame(maxWidth: 250)
+                // A paged TabView has no intrinsic size: without a definite frame it
+                // collapses and no card appears. Give it the plate's 2:3 shape, bounded so
+                // the strip below stays reachable on a short phone.
+                GeometryReader { proxy in
+                    let cardWidth = min(proxy.size.width, 250)
+                    pages(catalog)
+                        .frame(width: cardWidth, height: cardWidth * 1.5)
+                        .frame(maxWidth: .infinity)
+                }
+                .frame(height: 375)
                 sceneDots(catalog)
                 Text(catalog.disclaimer)
                     .font(.caption2)
@@ -190,8 +196,6 @@ private struct PlatePage: View {
                                        description: Text("No plate for this scene."))
             }
         }
-        // The plate is 2:3; the card takes the plate's shape so nothing is stretched.
-        .aspectRatio(2.0 / 3.0, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 22))
         .overlay(alignment: .bottomLeading) { caption }
         .accessibilityElement(children: .combine)
@@ -259,6 +263,7 @@ final class PlateMetalView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let scale = window?.screen.scale ?? UIScreen.main.scale
+        metalLayer.frame = bounds
         metalLayer.contentsScale = scale
         metalLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
         render()
