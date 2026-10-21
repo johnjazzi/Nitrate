@@ -20,8 +20,8 @@ settings:
     # Single source of truth for the version shown on the splash and in
     # CFBundleShortVersionString / CFBundleVersion. Bump MARKETING_VERSION for a
     # user-visible release, CURRENT_PROJECT_VERSION for every build.
-    MARKETING_VERSION: "0.1.6"
-    CURRENT_PROJECT_VERSION: "6"
+    MARKETING_VERSION: "0.1.7"
+    CURRENT_PROJECT_VERSION: "7"
     INFOPLIST_KEY_CFBundleDisplayName: Nitrate
     INFOPLIST_KEY_NSCameraUsageDescription: "Nitrate needs camera access to capture Apple Log video for film stock processing."
     INFOPLIST_KEY_NSMicrophoneUsageDescription: "Nitrate records audio to accompany your film clips."
