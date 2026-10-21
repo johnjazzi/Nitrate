@@ -289,6 +289,124 @@ struct AppAccessPolicyTests {
             now: reference,
             verifiedEntitlements: []))
     }
+
+    // MARK: - Lifetime vs subscription copy
+
+    @Test func verifiedLifetimePurchaseIsFlaggedForTheForeverCopy() {
+        let state = AppAccessPolicy.evaluate(
+            distribution: .appStore,
+            firstLaunch: reference.addingTimeInterval(-30 * day),
+            now: reference,
+            verifiedEntitlements: [entitlement(.lifetime)])
+        #expect(state.hasLifetimePurchase)
+    }
+
+    @Test func yearlySubscriptionIsNotFlaggedAsALifetimePurchase() {
+        // A renewal must not claim "unlocked forever".
+        let state = AppAccessPolicy.evaluate(
+            distribution: .appStore,
+            firstLaunch: reference.addingTimeInterval(-30 * day),
+            now: reference,
+            verifiedEntitlements: [entitlement(.yearlySubscription, expiresIn: 5 * day)])
+        #expect(!state.hasLifetimePurchase)
+    }
+
+    @Test func revokedLifetimePurchaseIsNotFlagged() {
+        let state = AppAccessPolicy.evaluate(
+            distribution: .appStore,
+            firstLaunch: reference.addingTimeInterval(-30 * day),
+            now: reference,
+            verifiedEntitlements: [entitlement(.lifetime, revoked: true)])
+        #expect(!state.hasLifetimePurchase)
+    }
+}
+
+/// The Debug StoreKit-testing routing contract. The paywall is gated behind
+/// `AppAccessPolicy.debugChannelOverride`, which `StoreManager.resolveDistribution`
+/// consults inside `#if DEBUG`. These tests pin the routing decision and the
+/// customer-like behaviour of the channel it unlocks.
+struct StoreKitTestingRoutingTests {
+    private let reference = Date(timeIntervalSince1970: 1_000_000)
+    private let day: TimeInterval = 24 * 60 * 60
+
+    @Test func debugBuildWithoutTheTestingOptInIsAFreeDebugUnlock() {
+        // Normal development must stay unrestricted: no paywall, no checkout.
+        let override = AppAccessPolicy.debugChannelOverride(
+            isDebugBuild: true, storeKitTestingRequested: false)
+        #expect(override == .debug)
+    }
+
+    @Test func debugBuildWithTheTestingOptInResolvesTheStoreKitTestingChannel() {
+        // The opt-in must resolve `.storeKitTesting` directly. Falling through
+        // to the receipt guard would return `.development` for a Debug build
+        // with no App Store receipt — a free unlock that leaves the fixture
+        // inert and the paywall invisible.
+        let override = AppAccessPolicy.debugChannelOverride(
+            isDebugBuild: true, storeKitTestingRequested: true)
+        #expect(override == .storeKitTesting)
+        #expect(AppAccessPolicy.isProductionLike(.storeKitTesting))
+        #expect(!AccessDistribution.storeKitTesting.isCacheable)
+    }
+
+    @Test func storeKitTestingChannelIsGatedNotAFreeUnlock() {
+        // The channel the opt-in resolves is not unrestricted, so the gated
+        // paywall is reachable and a purchase is required after the evaluation.
+        let state = AppAccessPolicy.evaluate(
+            distribution: .storeKitTesting,
+            firstLaunch: reference.addingTimeInterval(-30 * day),
+            now: reference,
+            verifiedEntitlements: [])
+        #expect(!state.isUnrestricted)
+        #expect(!state.canUsePaidFeatures)
+    }
+
+    @Test func releaseBuildNeverHonoursTheDebugUnlock() {
+        // Production and TestFlight must be unaffected by the debug override, no
+        // matter what launch arguments are present.
+        #expect(AppAccessPolicy.debugChannelOverride(
+            isDebugBuild: false, storeKitTestingRequested: true) == nil)
+        #expect(AppAccessPolicy.debugChannelOverride(
+            isDebugBuild: false, storeKitTestingRequested: false) == nil)
+    }
+
+    @Test func storeKitTestingLaunchArgumentMatchesOnlyTheExactArgument() {
+        #expect(StoreKitTestingLaunchMode.isRequested(
+            arguments: ["/path/Nitrate", "-NitrateStoreKitTesting"]))
+        #expect(!StoreKitTestingLaunchMode.isRequested(arguments: ["/path/Nitrate"]))
+        // A near-miss must not enable the mode.
+        #expect(!StoreKitTestingLaunchMode.isRequested(
+            arguments: ["/path/Nitrate", "-NitrateStoreKitTestingOff"]))
+    }
+
+    @Test func storeKitTestingChannelEvaluatesThenExpiresThenPurchases() {
+        // The channel the opt-in reaches behaves exactly like a real customer:
+        // a live evaluation, a lock once it expires, and a verified purchase.
+        let evaluation = AppAccessPolicy.evaluate(
+            distribution: .storeKitTesting,
+            firstLaunch: reference.addingTimeInterval(-2 * day),
+            now: reference,
+            verifiedEntitlements: [])
+        #expect(evaluation.trialActive)
+        #expect(evaluation.canUsePaidFeatures)
+        #expect(!evaluation.isUnrestricted)
+
+        let expired = AppAccessPolicy.evaluate(
+            distribution: .storeKitTesting,
+            firstLaunch: reference.addingTimeInterval(-8 * day),
+            now: reference,
+            verifiedEntitlements: [])
+        #expect(!expired.canUsePaidFeatures)
+
+        let purchased = AppAccessPolicy.evaluate(
+            distribution: .storeKitTesting,
+            firstLaunch: reference.addingTimeInterval(-8 * day),
+            now: reference,
+            verifiedEntitlements: [VerifiedEntitlement(
+                productID: PaidProduct.yearlySubscription.rawValue,
+                expirationDate: reference.addingTimeInterval(5 * day))])
+        #expect(purchased.canUsePaidFeatures)
+        #expect(purchased.hasVerifiedPurchase)
+    }
 }
 
 struct PurchasePriceTextTests {
@@ -302,5 +420,58 @@ struct PurchasePriceTextTests {
         #expect(PurchasePriceText.resolved("$4.99") == "$4.99")
         #expect(PurchasePriceText.resolved("¥600") == "¥600")
         #expect(PurchasePriceText.resolved("4,99 €") == "4,99 €")
+    }
+}
+
+/// The non-purchasable launch-pricing copy shown on unrestricted channels. The
+/// exact owner-approved US amounts are pinned here, and the preview must appear
+/// for exactly the unrestricted channels — never on a checkout channel, where
+/// the live StoreKit `displayPrice` belongs.
+struct LaunchPricingPresentationTests {
+    @Test func launchPricingIsTheExactApprovedUSAmounts() {
+        #expect(LaunchPricingPresentation.yearlyPrice == "US $5.00/year")
+        #expect(LaunchPricingPresentation.lifetimePrice == "US $10.00 one time")
+        #expect(LaunchPricingPresentation.headline == "US launch pricing")
+    }
+
+    @Test func previewIsShownOnlyForUnrestrictedChannels() {
+        // Unrestricted: normal Debug, a development install, and the beta.
+        #expect(LaunchPricingPresentation.preview(for: .debug) != nil)
+        #expect(LaunchPricingPresentation.preview(for: .development) != nil)
+        #expect(LaunchPricingPresentation.preview(for: .testFlight) != nil)
+        // Checkout channels show the real StoreKit price instead.
+        #expect(LaunchPricingPresentation.preview(for: .appStore) == nil)
+        #expect(LaunchPricingPresentation.preview(for: .storeKitTesting) == nil)
+        #expect(LaunchPricingPresentation.preview(for: .unknown) == nil)
+    }
+
+    @Test func previewVisibilityMatchesTheUnrestrictedPolicy() {
+        // The preview channel set must equal the policy's unrestricted set, so
+        // it can never appear on a gated production or testing channel.
+        for channel in AccessDistribution.allCases {
+            let state = AppAccessPolicy.evaluate(
+                distribution: channel,
+                firstLaunch: nil,
+                now: Date(timeIntervalSince1970: 1_000_000),
+                verifiedEntitlements: [])
+            #expect(LaunchPricingPresentation.isUnrestrictedChannel(channel) == state.isUnrestricted,
+                    "preview visibility must match isUnrestricted for \(channel.rawValue)")
+        }
+    }
+
+    @Test func previewCarriesTheExactPricesAndTheFreeRecordingNote() {
+        let beta = LaunchPricingPresentation.preview(for: .testFlight)
+        #expect(beta?.yearlyPrice == "US $5.00/year")
+        #expect(beta?.lifetimePrice == "US $10.00 one time")
+        #expect(beta?.footnote.contains("not charged") == true)
+        #expect(beta?.footnote.contains("stays free") == true)
+
+        // The development/DEBUG preview carries the same prices and the
+        // no-charge, recording-stays-free note.
+        let development = LaunchPricingPresentation.preview(for: .debug)
+        #expect(development?.yearlyPrice == "US $5.00/year")
+        #expect(development?.lifetimePrice == "US $10.00 one time")
+        #expect(development?.footnote.contains("not charged") == true)
+        #expect(development?.footnote.contains("stays free") == true)
     }
 }

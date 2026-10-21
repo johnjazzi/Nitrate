@@ -31,6 +31,24 @@ enum AccessDistribution: String, Sendable, CaseIterable {
     var isCacheable: Bool { self == .testFlight || self == .appStore }
 }
 
+// MARK: - Debug StoreKit testing mode
+
+/// The explicit opt-in that routes a Debug build to the real StoreKit paywall
+/// instead of the free debug unlock. Only the dedicated `NitrateStoreKitTest`
+/// scheme passes this launch argument; normal Debug runs and every Release build
+/// never do, so development, TestFlight and production are all unaffected.
+/// `StoreManager` resolves it straight to `AccessDistribution.storeKitTesting`.
+enum StoreKitTestingLaunchMode {
+    /// Launch argument added by the `NitrateStoreKitTest` scheme's run action.
+    static let launchArgument = "-NitrateStoreKitTesting"
+
+    /// True only when the exact argument is present. A near-miss such as
+    /// `-NitrateStoreKitTestingOff` must not enable the mode.
+    static func isRequested(arguments: [String]) -> Bool {
+        arguments.contains(launchArgument)
+    }
+}
+
 // MARK: - Products
 
 /// The two paid products the app can grant. Raw values are the shipped App Store
@@ -76,6 +94,9 @@ struct AppAccessState: Equatable, Sendable {
     let trialActive: Bool
     let trialDaysRemaining: Int
     let hasVerifiedPurchase: Bool
+    /// True only for a verified, non-revoked lifetime purchase. Drives the
+    /// "unlocked forever" copy, which is false for a renewal subscription.
+    let hasLifetimePurchase: Bool
 
     static let locked = AppAccessState(
         canUsePaidFeatures: false,
@@ -83,7 +104,8 @@ struct AppAccessState: Equatable, Sendable {
         isUnrestricted: false,
         trialActive: false,
         trialDaysRemaining: 0,
-        hasVerifiedPurchase: false)
+        hasVerifiedPurchase: false,
+        hasLifetimePurchase: false)
 }
 
 // MARK: - Policy
@@ -110,6 +132,26 @@ enum AppAccessPolicy {
         distribution == .appStore || distribution == .storeKitTesting
     }
 
+    /// The compile-time Debug channel override, made explicit and testable.
+    ///
+    /// A Debug build is unrestricted by default so a developer is never blocked
+    /// by the paywall and no checkout is shown. A Debug build launched with the
+    /// explicit StoreKit-testing argument (the dedicated `NitrateStoreKitTest`
+    /// scheme) resolves straight to `.storeKitTesting`, so the real local StoreKit
+    /// configuration drives every `Product.purchase` and `Transaction` call and
+    /// the gated paywall becomes reachable. It must resolve directly: the
+    /// fall-through path cannot reach the fixture, because a Debug build has no
+    /// App Store receipt and would resolve to `.development` — a free unlock that
+    /// leaves the paywall invisible and the fixture inert. A non-Debug build
+    /// never honours the override: Release always reaches StoreKit, so a
+    /// production receipt or an offline grant is decided by the store exactly as
+    /// before.
+    static func debugChannelOverride(isDebugBuild: Bool,
+                                     storeKitTestingRequested: Bool) -> AccessDistribution? {
+        guard isDebugBuild else { return nil }
+        return storeKitTestingRequested ? .storeKitTesting : .debug
+    }
+
     static func evaluate(distribution: AccessDistribution,
                          firstLaunch: Date?,
                          now: Date,
@@ -128,6 +170,13 @@ enum AppAccessPolicy {
             } else if let expiration = entitlement.expirationDate, expiration <= now {
                 return false
             }
+            return true
+        }
+
+        let hasLifetimePurchase = verifiedEntitlements.contains { entitlement in
+            guard PaidProduct.expected(for: entitlement.productID) == .lifetime,
+                  entitlement.revocationDate == nil else { return false }
+            if let expiration = entitlement.expirationDate, expiration <= now { return false }
             return true
         }
 
@@ -156,7 +205,8 @@ enum AppAccessPolicy {
             isUnrestricted: isUnrestricted,
             trialActive: trialActive,
             trialDaysRemaining: daysRemaining,
-            hasVerifiedPurchase: hasVerifiedPurchase)
+            hasVerifiedPurchase: hasVerifiedPurchase,
+            hasLifetimePurchase: hasLifetimePurchase)
     }
 }
 

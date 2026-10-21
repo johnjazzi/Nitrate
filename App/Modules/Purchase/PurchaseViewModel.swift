@@ -28,6 +28,9 @@ final class PurchaseViewModel {
 
     var isTrialActive = false
     var isPurchased = false
+    /// True only for a verified lifetime purchase. A yearly subscription is a
+    /// renewal, so its copy must not claim "forever".
+    var isLifetimePurchased = false
     var daysRemaining = 0
     var subscriptionPrice: String?
     var lifetimePrice: String?
@@ -60,8 +63,29 @@ final class PurchaseViewModel {
 
     var trialDaysRemaining: Int { access.trialDaysRemaining }
 
-    /// A locally signed build that did not come from the App Store.
-    var isDevelopmentAccess: Bool { distribution == .development }
+    /// A build that did not come from the App Store: a normal Debug run
+    /// (`.debug`) or a locally signed development install (`.development`).
+    /// Both are unrestricted, so Settings labels them "Development Build"
+    /// instead of a trial that never existed.
+    var isDevelopmentBuild: Bool { distribution == .debug || distribution == .development }
+
+    /// The Settings access state the legal/support section renders in. The
+    /// section shows the same published links on every channel, so this only
+    /// labels which state the screen is in; it never gates the links.
+    var settingsChannel: LegalLinks.Channel {
+        if isDevelopmentBuild { return .development }
+        if isBetaAccess { return .beta }
+        if isPurchased { return .purchased }
+        if isTrialActive { return .trialActive }
+        return .trialExpired
+    }
+
+    /// The non-purchasable US launch-pricing block, or `nil` on a checkout
+    /// channel (production or the local StoreKit-testing harness) where the live
+    /// StoreKit `displayPrice` belongs.
+    var launchPricingPreview: LaunchPricingPreview? {
+        LaunchPricingPresentation.preview(for: distribution)
+    }
 
     /// Products have not loaded, so prices must render as unavailable.
     var pricesUnavailable: Bool {
@@ -169,6 +193,7 @@ final class PurchaseViewModel {
         // Mirror into the existing settings-facing fields.
         isTrialActive = access.trialActive
         isPurchased = access.hasVerifiedPurchase
+        isLifetimePurchased = access.hasLifetimePurchase
         daysRemaining = access.trialDaysRemaining
 
         // One line per resolution: the app has no log file, so this is how the
