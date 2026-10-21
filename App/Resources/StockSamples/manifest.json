@@ -1,0 +1,193 @@
+{
+  "schemaVersion": 1,
+  "disclaimer": "Illustrative photos \u00b7 color LUT only",
+  "generator": "scripts/generate_stock_previews.py",
+  "stocks": [
+    "kodak5207",
+    "kodak5219"
+  ],
+  "lutSHA256": {
+    "kodak5207": "f483e2fb151b3b4699b8d5fd1c36df9f583952941d48c0bc99dd311e574d32b5",
+    "kodak5219": "d2320ea308730f3aa5186d66691b91d4a94595806970cbb16059c2d067d4924a"
+  },
+  "neutralLutSHA256": "831b0e32a18ceba3d93fdf0c2816c01163a67fadd48550a3276167b3b2b1e7f2",
+  "scenes": [
+    {
+      "id": "daylight",
+      "title": "Daylight",
+      "neutralFile": "daylight-neutral.jpg",
+      "previews": {
+        "kodak5207": "daylight-kodak5207.jpg",
+        "kodak5219": "daylight-kodak5219.jpg"
+      },
+      "source": {
+        "provider": "Poly Haven",
+        "assetSlug": "yellow_field",
+        "sourceURL": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/yellow_field_4k.hdr",
+        "license": "CC0",
+        "licenseURL": "https://polyhaven.com/license",
+        "credit": "Poly Haven \u2014 yellow_field (CC0)",
+        "md5": "0c2a7bb386b8845592ade1f9e1d4c9c1",
+        "sha256": "ef36d8c2c21f6c335aeb83842f137c5f77951124e2aec3898caa89a8182169c5"
+      },
+      "derivation": {
+        "recipe": "display-space base photo -> approximate inverse of official neutral LUT (KD-tree kNN in cube-output space + bounded within-cell trilinear refinement) -> real stock .cube via red-fastest trilinear",
+        "cropYawDeg": 0.0,
+        "cropPitchDeg": 0.0,
+        "fovDeg": 68.0,
+        "exposureEV": -0.8,
+        "outputSize": [
+          540,
+          810
+        ],
+        "inputLabel": "illustrative synthetic Log input (NOT Apple Log 2 camera original)"
+      },
+      "assets": {
+        "neutral": {
+          "file": "daylight-neutral.jpg",
+          "sha256": "e6a73949a914bcd2da25704ebb7f79dc2ba2aac7069bd2ecc9d4b942a2c9f69a",
+          "whiteFraction": 0.0,
+          "midtoneFraction": 0.9858161865569273
+        },
+        "kodak5207": {
+          "file": "daylight-kodak5207.jpg",
+          "sha256": "b36933577a9d5738d28f746694412929b871c71f43cb3ceb1c433c5e352397e2",
+          "whiteFraction": 0.0,
+          "midtoneFraction": 0.9887928669410151
+        },
+        "kodak5219": {
+          "file": "daylight-kodak5219.jpg",
+          "sha256": "7064baa526491d1d1a53c75e24a290cc585d5928f01a71ba3941f302501e5239",
+          "whiteFraction": 0.0,
+          "midtoneFraction": 0.9872359396433471
+        }
+      },
+      "inverseRoundTripOnScene": {
+        "meanAbsError8bit": 1.576331108398306e-05,
+        "maxAbsError8bit": 6.425535604912102
+      }
+    },
+    {
+      "id": "city",
+      "title": "City",
+      "neutralFile": "city-neutral.jpg",
+      "previews": {
+        "kodak5207": "city-kodak5207.jpg",
+        "kodak5219": "city-kodak5219.jpg"
+      },
+      "source": {
+        "provider": "Poly Haven",
+        "assetSlug": "urban_street_04",
+        "sourceURL": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/urban_street_04_4k.hdr",
+        "license": "CC0",
+        "licenseURL": "https://polyhaven.com/license",
+        "credit": "Poly Haven \u2014 urban_street_04 (CC0)",
+        "md5": "7068383bf2cd109441e35f22b5dac71d",
+        "sha256": "e8cc071af1c8e2d19c0d734912b5ec4a094330ebbeae4d1afef439b01c967526"
+      },
+      "derivation": {
+        "recipe": "display-space base photo -> approximate inverse of official neutral LUT (KD-tree kNN in cube-output space + bounded within-cell trilinear refinement) -> real stock .cube via red-fastest trilinear",
+        "cropYawDeg": 0.0,
+        "cropPitchDeg": 0.0,
+        "fovDeg": 62.0,
+        "exposureEV": -0.8,
+        "outputSize": [
+          540,
+          810
+        ],
+        "inputLabel": "illustrative synthetic Log input (NOT Apple Log 2 camera original)"
+      },
+      "assets": {
+        "neutral": {
+          "file": "city-neutral.jpg",
+          "sha256": "20c559d3ca2adc1f4b1e2c30a482c7c16b1c0261f13f272ccb471b6701d693dd",
+          "whiteFraction": 0.0005784179240969365,
+          "midtoneFraction": 0.9824782807498856
+        },
+        "kodak5207": {
+          "file": "city-kodak5207.jpg",
+          "sha256": "c63c628f80dd962c492da4e2d27d635dd51cec26022bdd803d0998aa534b83c9",
+          "whiteFraction": 0.0,
+          "midtoneFraction": 0.9898353909465021
+        },
+        "kodak5219": {
+          "file": "city-kodak5219.jpg",
+          "sha256": "67e18edd53067068adb8ab9d5965cd4e4bea001248be574ef9b674583c0881c7",
+          "whiteFraction": 0.0,
+          "midtoneFraction": 0.9865317786922725
+        }
+      },
+      "inverseRoundTripOnScene": {
+        "meanAbsError8bit": 0.0056247726755494,
+        "maxAbsError8bit": 11.79720289209916
+      }
+    },
+    {
+      "id": "night",
+      "title": "Night",
+      "neutralFile": "night-neutral.jpg",
+      "previews": {
+        "kodak5207": "night-kodak5207.jpg",
+        "kodak5219": "night-kodak5219.jpg"
+      },
+      "source": {
+        "provider": "Poly Haven",
+        "assetSlug": "cobblestone_street_night",
+        "sourceURL": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/cobblestone_street_night_4k.hdr",
+        "license": "CC0",
+        "licenseURL": "https://polyhaven.com/license",
+        "credit": "Poly Haven \u2014 cobblestone_street_night (CC0)",
+        "md5": "d3840cba127cedf24dc15662a31e1e24",
+        "sha256": "74b6d68b472e4ce0f6c0bad0c8384ffea1fe003f2cd2db859a71354915cde32c"
+      },
+      "derivation": {
+        "recipe": "display-space base photo -> approximate inverse of official neutral LUT (KD-tree kNN in cube-output space + bounded within-cell trilinear refinement) -> real stock .cube via red-fastest trilinear",
+        "cropYawDeg": 0.0,
+        "cropPitchDeg": 0.0,
+        "fovDeg": 66.0,
+        "exposureEV": -0.7,
+        "outputSize": [
+          540,
+          810
+        ],
+        "inputLabel": "illustrative synthetic Log input (NOT Apple Log 2 camera original)"
+      },
+      "assets": {
+        "neutral": {
+          "file": "night-neutral.jpg",
+          "sha256": "0f9c58a0fd278b45dc7cb1b8b4e02a1768cdf65c3c99337c45d4f7d83b04f962",
+          "whiteFraction": 0.0002972107910379515,
+          "midtoneFraction": 0.8869227251943301
+        },
+        "kodak5207": {
+          "file": "night-kodak5207.jpg",
+          "sha256": "41cc5495e6723ae4317708fa3ceeafe51bd1c8eabbeaa8f1288b9a00b9339bb4",
+          "whiteFraction": 0.0,
+          "midtoneFraction": 0.9769935985368084
+        },
+        "kodak5219": {
+          "file": "night-kodak5219.jpg",
+          "sha256": "3de1370fafee17bf5b40675930885616bb20fc91cdb949e75834461425fecce7",
+          "whiteFraction": 0.0,
+          "midtoneFraction": 0.9669638774577046
+        }
+      },
+      "inverseRoundTripOnScene": {
+        "meanAbsError8bit": 0.22946682724843132,
+        "maxAbsError8bit": 164.92748361671914
+      }
+    }
+  ],
+  "inverseRoundTripGlobal": {
+    "holdoutSamples": 20000,
+    "validSamples": 19949,
+    "validMeanAbsError8bit": 1.6868037113584817,
+    "validP95AbsError8bit": 7.440338895641595,
+    "validMaxAbsError8bit": 237.91140979622998,
+    "fullMeanAbsError8bit": 1.6908758014642342,
+    "fullP95AbsError8bit": 7.462207138572689,
+    "fullMaxAbsError8bit": 237.91140979622998,
+    "note": "error over the full cube is dominated by unreachable near-black codes where the neutral transform is not invertible; the valid-range figure is the meaningful one for these photos."
+  },
+  "generatedAssetCount": 9
+}
