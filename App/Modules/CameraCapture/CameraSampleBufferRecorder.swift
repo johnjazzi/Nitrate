@@ -102,6 +102,10 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     /// Presentation time at which the recording exposure took effect; video
     /// frames older than this are dropped. Invalid means "do not filter".
     private var startAfter: CMTime = .invalid
+    /// Recorder duration fallback for a video sample that carries no duration.
+    /// Set from the immutable take mode (1/24 or 1/60) at `begin`; never guessed
+    /// as 24 for a 60 fps take.
+    private var videoFallbackDuration = CMTime(value: 1, timescale: 24)
     private var appendedAudioSamples = 0
     private var recentDropTimes: [Double] = []
     private var clipGeneration: UInt64 = 0
@@ -143,6 +147,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         preservationProbeEnabled: Bool = false,
         requiresAudioEvidence: Bool = false,
         startAfter: CMTime = .invalid,
+        videoFrameDuration: CMTime = CMTime(value: 1, timescale: 24),
         onStarted: @escaping @Sendable (Error?) -> Void,
         onFinished: @escaping @Sendable (Result<URL, Error>) -> Void
     ) {
@@ -176,6 +181,11 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             self.captureRotationAngle = captureRotationAngle
             self.codedDimensions = nil
             self.startAfter = startAfter
+            // The fallback duration is taken from the immutable take policy. A
+            // non-numeric value never silently degrades a 60 fps take to 24 fps.
+            self.videoFallbackDuration = (videoFrameDuration.isValid && videoFrameDuration.isNumeric
+                                          && videoFrameDuration > .zero)
+                ? videoFrameDuration : CMTime(value: 1, timescale: 24)
             self.requiresAudioEvidence = requiresAudioEvidence
 #if DEBUG
             self.preservationProbeEnabled = preservationProbeEnabled
@@ -515,7 +525,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         }
 #endif
         lastVideoTime = presentationTime
-        lastVideoEndTime = Self.sampleEnd(sampleBuffer, fallbackDuration: CMTime(value: 1, timescale: 24))
+        lastVideoEndTime = Self.sampleEnd(sampleBuffer, fallbackDuration: videoFallbackDuration)
         appendedVideoFrames += 1
 #if DEBUG
         if sourceProbe == nil { sourceProbe = firstFrameProbe }

@@ -61,18 +61,31 @@ final class StoreManager {
 
     /// The distribution channel resolved from the App Store-signed app
     /// transaction, falling back to the last verified channel when the store
-    /// cannot answer (offline launch). Debug builds never reach StoreKit here.
+    /// cannot answer (offline launch).
+    ///
+    /// A Debug build is unrestricted by default. A Debug build launched with the
+    /// explicit StoreKit-testing argument (the dedicated `NitrateStoreKitTest`
+    /// scheme) is resolved straight to `.storeKitTesting` — bypassing the
+    /// receipt-guard fall-through, which would otherwise return `.development`
+    /// (a free unlock) because a Debug build has no App Store receipt. The real
+    /// local StoreKit configuration then drives purchase and entitlement reads,
+    /// so evaluation, purchase, expiry and refund can be exercised. A Release
+    /// build never honours that override: the store decides, exactly as before.
     func resolveDistribution() async -> AccessDistribution {
         #if DEBUG
-        return .debug
-        #else
+        if let debugOverride = AppAccessPolicy.debugChannelOverride(
+            isDebugBuild: true,
+            storeKitTestingRequested: StoreKitTestingLaunchMode.isRequested(
+                arguments: ProcessInfo.processInfo.arguments)) {
+            return debugOverride
+        }
+        #endif
         let current = await verifiedDistribution()
         let resolved = AppAccessPolicy.resolvedChannel(current: current, cached: cachedDistribution)
         if resolved.isCacheable {
             UserDefaults.standard.set(resolved.rawValue, forKey: Self.distributionCacheKey)
         }
         return resolved
-        #endif
     }
 
     var cachedDistribution: AccessDistribution? {

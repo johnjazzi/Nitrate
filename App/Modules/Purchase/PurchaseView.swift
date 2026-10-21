@@ -20,14 +20,18 @@ struct PurchaseView: View {
                     // Trial status
                     trialStatusSection
 
-                    if viewModel.isBetaAccess || viewModel.isDevelopmentAccess {
-                        betaBanner
+                    if let preview = viewModel.launchPricingPreview {
+                        launchPricingPreview(preview)
                     } else if !viewModel.isPurchased {
                         // Purchase options
                         purchaseOptionsSection
                     } else {
                         purchasedBanner
                     }
+
+                    // Legal and support, reachable on every channel — including
+                    // a paid checkout — before the display preferences below.
+                    legalLinksSection
 
                     // Preview mode
                     previewModeSection
@@ -61,13 +65,13 @@ struct PurchaseView: View {
 
     private var trialStatusSection: some View {
         VStack(spacing: 8) {
-            if viewModel.isDevelopmentAccess {
+            if viewModel.isDevelopmentBuild {
                 Image(systemName: "hammer.fill")
                     .font(.largeTitle)
                     .foregroundStyle(.tint)
                 Text("Development Build")
                     .font(.title2.bold())
-                Text("This build did not come from the App Store, so every feature is unlocked. "
+                Text("This build did not come from the App Store, so film rendering is unlocked for free. "
                      + "Customers installing from the App Store are unaffected.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -77,7 +81,7 @@ struct PurchaseView: View {
                     .foregroundStyle(.tint)
                 Text("Unrestricted Beta")
                     .font(.title2.bold())
-                Text("Every feature is unlocked during the beta. No purchase or checkout is required.")
+                Text("Film rendering is unlocked during the beta. No purchase or checkout is required.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             } else if viewModel.isPurchased {
@@ -100,7 +104,7 @@ struct PurchaseView: View {
                     .foregroundStyle(.secondary)
                 Text("Trial Expired")
                     .font(.title2.bold())
-                Text("Unlock to continue using \(AppIdentity.name).")
+                Text("Unlock film rendering to continue. Recording stays free.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -110,29 +114,54 @@ struct PurchaseView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    /// Beta installs run without monetization: the live purchase CTA is hidden
-    /// entirely so a tester is never asked to check out.
-    private var betaBanner: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "infinity.circle.fill")
-                .foregroundStyle(.tint)
+    /// The non-purchasable price information for an unrestricted channel
+    /// (development/DEBUG and the TestFlight beta). It carries the owner-approved
+    /// US launch amounts and states that recording stays free and the tester is
+    /// not charged; there is deliberately no checkout button here, because this
+    /// copy is not a fallback purchase price.
+    private func launchPricingPreview(_ preview: LaunchPricingPreview) -> some View {
+        VStack(spacing: 10) {
+            Text(preview.headline)
+                .font(.headline)
+            priceRow(title: "Yearly",
+                     detail: "Film rendering, renews yearly",
+                     price: preview.yearlyPrice)
+            priceRow(title: "Lifetime",
+                     detail: "One-time purchase, film rendering forever",
+                     price: preview.lifetimePrice)
+            Text(preview.footnote)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding()
+        .frame(maxWidth: .infinity)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .accessibilityIdentifier("launch-pricing-preview")
+    }
+
+    private func priceRow(title: String, detail: String, price: String) -> some View {
+        HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Beta access")
-                    .font(.headline)
-                Text("You are testing an unrestricted beta build. All paid features are enabled and no purchase is required.")
+                Text(title)
+                    .font(.body.bold())
+                Text(detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Spacer()
+            Text(price)
+                .font(.body.bold())
         }
         .padding()
-        .frame(maxWidth: .infinity, alignment: .leading)
         .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private var purchaseOptionsSection: some View {
         VStack(spacing: 12) {
-            Text("Unlock Full Access")
+            Text("Unlock Film Rendering")
                 .font(.headline)
 
             if let loadError = viewModel.productLoadError {
@@ -147,7 +176,7 @@ struct PurchaseView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Yearly")
                             .font(.body.bold())
-                        Text("Full access, cancel anytime")
+                        Text("Film rendering, cancel anytime")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -168,7 +197,7 @@ struct PurchaseView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Lifetime")
                             .font(.body.bold())
-                        Text("One-time purchase, forever access")
+                        Text("One-time purchase, film rendering forever")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -290,9 +319,41 @@ struct PurchaseView: View {
         HStack {
             Image(systemName: "infinity.circle.fill")
                 .foregroundStyle(.green)
-            Text("All features unlocked forever")
+            Text(viewModel.isLifetimePurchased
+                 ? "Film rendering unlocked forever"
+                 : "Film rendering unlocked — subscription active")
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// The published privacy, terms and support pages. Rendered on every channel
+    /// — a free trial, an expired trial, a paid checkout and the beta all show
+    /// the same rows — so the policy is reachable without buying first. Each row
+    /// is a real tappable `Link` with a 44pt target, not a caption-sized label.
+    private var legalLinksSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Legal & Support")
+                .font(.headline)
+
+            ForEach(LegalLinks.visibleLinks(for: viewModel.settingsChannel)) { link in
+                Link(destination: link.url) {
+                    HStack {
+                        Label(link.title, systemImage: link.systemImage)
+                        Spacer()
+                        Image(systemName: "arrow.up.right")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityIdentifier(link.accessibilityID)
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private var appInfoSection: some View {

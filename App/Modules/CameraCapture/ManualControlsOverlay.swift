@@ -35,8 +35,11 @@ enum ManualControlsOverlayGeometry {
     }
 }
 
-/// Only this complete face rotates: background, scroll viewport and hit targets.
+/// Only this complete face rotates: background, bounded content and hit targets.
 /// Its swapped bounds are reserved before placement; it cannot size the preview.
+/// The face never scrolls: the surface fits its controls inside the granted size
+/// and falls back to the compact layout when that size cannot hold them, so a
+/// lower control is never buried below a scrolled fold.
 struct ManualControlsOverlay<Content: View>: View {
     let viewport: CGSize
     let toolbarBottom: CGFloat
@@ -51,20 +54,18 @@ struct ManualControlsOverlay<Content: View>: View {
                                                       controlsTop: controlsTop, excluding: excluding,
                                                       expanded: expanded, rotationDegrees: rotationDegrees)
         let landscape = abs(rotationDegrees) == 90
+        // Local (pre-rotation) face. A ±90° turn swaps the axes, so the granted
+        // height the surface sees is the rect's physical width and vice versa.
         let face = CGSize(width: landscape ? rect.height : rect.width,
                           height: landscape ? rect.width : rect.height)
-        ScrollView([.horizontal, .vertical]) {
-            content()
-                .frame(width: max(face.width, landscape ? 360 : 280))
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .scrollBounceBehavior(.basedOnSize, axes: [.horizontal, .vertical])
-        .frame(width: face.width, height: face.height, alignment: .topLeading)
-        .background(.black.opacity(0.55))
-        .clipShape(RoundedRectangle(cornerRadius: 18))
-        .rotationEffect(.degrees(rotationDegrees))
-        .frame(width: rect.width, height: rect.height)
-        .position(x: rect.midX, y: rect.midY)
-        .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
+        content()
+            .environment(\.manualControlsFaceSize, face)
+            .frame(width: face.width, height: face.height, alignment: .topLeading)
+            .background(.black.opacity(0.55))
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .rotationEffect(.degrees(rotationDegrees))
+            .frame(width: rect.width, height: rect.height)
+            .position(x: rect.midX, y: rect.midY)
+            .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
     }
 }

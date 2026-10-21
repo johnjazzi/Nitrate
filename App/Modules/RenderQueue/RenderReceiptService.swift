@@ -10,7 +10,8 @@ enum RenderReceiptService {
         "halation-level", "glow-level", "halation-radius-fraction", "halation-tint",
         "grain-size", "recipe-version", "print-gauge", "grain-size-effective",
         "grain-gauge-amplitude", "grain-algorithm", "grain-edge-boost-multiplier",
-        "shutter-speed", "shutter-angle", "encoding-codec", "encoding-bitrate-target",
+        "shutter-speed", "shutter-angle", "capture-frame-rate",
+        "encoding-codec", "encoding-bitrate-target",
         "color-contract-verified", "render-settings-schema", "render-settings",
         "source-color-validation", "capture-color-space", "source-color-test-bypass"
     ].map { "com.filmemulation." + $0 })

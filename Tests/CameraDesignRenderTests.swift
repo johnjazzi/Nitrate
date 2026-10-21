@@ -7,6 +7,125 @@ import Testing
 import UniformTypeIdentifiers
 
 struct CameraDesignRenderTests {
+    @MainActor @Test func daylightIndicatorPreservesRecordingStateBesideTheTimer() {
+        for (state, label) in [(RecordButtonPresentation.idle, "READY"), (.starting, "WAIT"),
+                               (.recording, "REC"), (.stopping, "STOP")] {
+            let face = RecordingStatusFace(presentation: state, text: "00:01.00", daylight60Active: true)
+            #expect(face.modeStatusLabel == label + " · 60FPS")
+            let standard = RecordingStatusFace(presentation: state, text: "00:01.00")
+            #expect(standard.modeStatusLabel == label)
+        }
+    }
+
+    /// Native proof of the idle off-ramp's restraint: the armed idle badge shows
+    /// its state/mode label but never a recording mark or elapsed timer, so a
+    /// take's timer text cannot leak into idle. The unarmed idle face keeps the
+    /// mark and timer and therefore differs.
+    @MainActor @Test func armedIdleBadgeCarriesNoRecordingDotOrTimer() throws {
+        func face(_ text: String, armed: Bool) -> some View {
+            RecordingStatusFace(presentation: .idle, text: text, daylight60Active: armed)
+                .padding(8)
+        }
+        let armedLong = try pixels(render(face("99:59.99", armed: true), name: "idle-armed-long"))
+        let armedShort = try pixels(render(face("00:00.00", armed: true), name: "idle-armed-short"))
+        #expect(armedLong == armedShort,
+                "The armed idle badge must not paint any timer digits.")
+        let unarmed = try pixels(render(face("99:59.99", armed: false), name: "idle-unarmed"))
+        #expect(armedLong != unarmed,
+                "The armed idle badge must still read differently from a plain idle face.")
+    }
+
+    @MainActor @Test func rescueButtonRendersInsideItsReservedBoundsInEveryHold() throws {
+        let size = CGSize(width: 390, height: 750)
+        let exposure = CGRect(x: 282, y: 560, width: 92, height: 168)
+        for degrees in [0.0, 90.0, -90.0] {
+            let rect = try #require(DaylightExposureRescueGeometry.buttonRect(
+                above: exposure, in: size, rotationDegrees: degrees))
+            let view = ZStack(alignment: .topLeading) {
+                Color.black
+                ExposureRescueButton(armed: false, enabled: true, action: {})
+                    .frame(width: 92, height: 44)
+                    .rotationEffect(.degrees(degrees))
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+            }
+            .frame(width: size.width, height: size.height)
+            let image = try render(view, name: "rescue-button-\(degrees)")
+            let data = try pixels(image)
+            let scale = CGFloat(image.width) / size.width
+            let bright = stride(from: 0, to: data.count, by: 4).filter {
+                data[$0] > 180 && data[$0 + 1] > 180 && data[$0 + 2] > 180
+            }
+            #expect(bright.count > 80, "The real rescue label must be visible in all holds.")
+            #expect(bright.allSatisfy { index in
+                rect.contains(CGPoint(x: CGFloat((index / 4) % image.width) / scale,
+                                      y: CGFloat((index / 4) / image.width) / scale))
+            }, "The complete rotated label must stay inside the reserved button slot.")
+        }
+    }
+
+    @MainActor @Test func rescueModalFitsItsButtonsAndWarningWithoutScrolling() throws {
+        for (armed, available) in [(false, true), (true, true), (false, false)] {
+            let view = DaylightExposureRescueModal(armed: armed, available: available,
+                                                  canChange: true, onSelect: { _ in }, onCancel: {})
+                .frame(width: 320)
+            let host = NSHostingView(rootView: view)
+            #expect(host.fittingSize.height <= 480, "Warning and both actions must fit the floating card.")
+            let image = try render(view, name: "rescue-modal-\(armed)-\(available)")
+            let data = try pixels(image)
+            let bright = stride(from: 0, to: data.count, by: 4).filter {
+                data[$0] > 180 && data[$0 + 1] > 180 && data[$0 + 2] > 180
+            }
+            #expect(bright.count > 250, "The real warning and confirmation must be rendered.")
+        }
+    }
+
+    /// The confirmation must dim the live canvas rather than replace the page:
+    /// the preview stays recognisable behind the card, and the scrim still pulls
+    /// its brightness down.
+    @MainActor @Test func rescueOverlayDimsTheCanvasWithoutHidingIt() throws {
+        let size = CGSize(width: 390, height: 750)
+        let preview = Color(red: 0.10, green: 0.85, blue: 0.20)
+
+        let plain = try pixels(try render(ZStack { preview }.frame(width: size.width, height: size.height),
+                                          name: "rescue-overlay-open"))
+        let dimmed = try pixels(try render(
+            ZStack {
+                preview
+                DaylightExposureRescueOverlay(armed: false, available: true, canChange: true,
+                                              onSelect: { _ in }, onCancel: {})
+            }
+            .frame(width: size.width, height: size.height), name: "rescue-overlay-dimmed"))
+
+        func greenPeak(_ data: [UInt8]) -> Int {
+            stride(from: 0, to: data.count, by: 4)
+                .filter { Int(data[$0 + 1]) > Int(data[$0]) + 30 }
+                .map { Int(data[$0 + 1]) }.max() ?? 0
+        }
+
+        #expect(greenPeak(dimmed) > 60, "The dimmed preview must stay visible behind the card.")
+        #expect(greenPeak(dimmed) < greenPeak(plain), "The canvas behind the card must actually be dimmed.")
+
+        // The card sits in the middle of the canvas, not pinned to an edge.
+        let image = try render(
+            ZStack {
+                preview
+                DaylightExposureRescueOverlay(armed: false, available: true, canChange: true,
+                                              onSelect: { _ in }, onCancel: {})
+            }
+            .frame(width: size.width, height: size.height), name: "rescue-overlay-geometry")
+        let data = try pixels(image)
+        let rows = stride(from: 0, to: data.count, by: 4).filter {
+            data[$0] > 200 && data[$0 + 1] > 200 && data[$0 + 2] > 200
+        }.map { CGFloat(($0 / 4) / image.width) / (CGFloat(image.width) / size.width) }
+        guard let firstRow = rows.min(), let lastRow = rows.max() else {
+            Issue.record("The card's label must render inside the overlay.")
+            return
+        }
+        #expect(firstRow <= size.height / 2 && lastRow >= size.height / 2,
+                "The card's label band must straddle the vertical centre of the canvas.")
+    }
+
     private let states: [RecordButtonPresentation] = [.idle, .starting, .recording, .stopping]
 
     @Test func geometryKeepsFullHeightCenteredAndSeparated() {
@@ -16,7 +135,8 @@ struct CameraDesignRenderTests {
                 let geometry = CameraControlGeometry(width: width, height: height)
                 #expect(geometry.exposure.height == height)
                 #expect(abs(geometry.lcd.height - 2 * geometry.stock.height) < 0.001)
-                #expect(geometry.lcd.maxY == height)
+                #expect(geometry.stock.maxY == height)
+                #expect(geometry.lcd.minY == 0)
                 #expect(geometry.record.midX == width / 2)
                 #expect(!geometry.stock.intersects(geometry.record))
                 #expect(!geometry.lcd.intersects(geometry.record))
@@ -31,21 +151,27 @@ struct CameraDesignRenderTests {
         }
     }
 
-    @Test func topPanelGeometrySeparatesAllControlsIncludingDiagnostics() {
+    @Test func stationaryTopKeysRemainBoundedWithFloatingChrome() {
         for screenWidth: CGFloat in [320, 390, 430] {
             for degrees in [0.0, 90.0, -90.0] {
                 let statusSize = abs(degrees) == 90 ? CGSize(width: 40, height: 112) : CGSize(width: 112, height: 40)
                 for diagnosticsHeight: CGFloat in [0, 44, 92] {
                     let geometry = CameraTopPanelGeometry(width: screenWidth - 32, statusSize: statusSize,
                                                           diagnosticsHeight: diagnosticsHeight)
-                    let faces = [geometry.settings, geometry.manual, geometry.lens, geometry.status, geometry.diagnostics]
+                    let faces = [geometry.settings, geometry.manual, geometry.lens]
                     for (index, face) in faces.enumerated() {
                         #expect(face.minX >= 0 && face.maxX <= screenWidth - 32)
                         #expect(face.minY >= 0 && face.maxY <= geometry.height)
                         for other in faces.dropFirst(index + 1) where !face.isEmpty && !other.isEmpty {
-                            #expect(!face.intersects(other), "Complete rotated status and every key must have disjoint reserved bounds.")
+                            #expect(!face.intersects(other), "Stationary key bounds must remain separate.")
                         }
                     }
+                    if !geometry.status.isEmpty {
+                        #expect(geometry.status.midX == (screenWidth - 32) / 2)
+                        #expect(geometry.status.minY >= 0 && geometry.status.maxY <= geometry.height)
+                    }
+                    #expect(geometry.diagnostics.minY >= geometry.height,
+                            "The floating diagnostic rail cannot reserve toolbar height.")
                 }
             }
         }
@@ -58,28 +184,31 @@ struct CameraDesignRenderTests {
                                                       statusSize: CGSize(width: 40, height: 112),
                                                       diagnosticsHeight: diagnosticsHeight)
                 #expect(geometry.status.isEmpty, "Landscape status belongs to the physical upper edge, not the portrait toolbar.")
-                #expect(geometry.height == 50 + diagnosticsHeight,
+                #expect(geometry.height == 50,
                         "No 112pt ghost row may remain after moving the entire status face.")
             }
         }
     }
 
-    @Test func relocatingStatusPreservesExistingFramedPreviewRectangle() {
+    @Test func recordingStatusReusesTopRowWithoutChangingFramedPreviewOnStart() {
         for width: CGFloat in [320, 390, 430] {
             for degrees in [0.0, 90.0, -90.0] {
                 for diagnosticsHeight: CGFloat in [0, 44, 92, 140] {
                     let statusSize = degrees == 0 ? CGSize(width: 112, height: 40) : .zero
-                    let toolbar = CameraTopPanelGeometry(width: width - 32, statusSize: statusSize,
-                                                         diagnosticsHeight: diagnosticsHeight)
-                    let legacyBottom = 8 + 50 + max(degrees == 0 ? 40 : 112, diagnosticsHeight)
-                    let frameBottom = CameraTopPanelGeometry.framingBottom(toolbarBottom: toolbar.height + 8,
-                                                                           rotationDegrees: degrees)
-                    #expect(frameBottom == legacyBottom,
-                            "Moving status must not enlarge, move or refocus the existing framed preview.")
+                    let idle = CameraTopPanelGeometry(width: width - 32, statusSize: .zero,
+                                                      diagnosticsHeight: diagnosticsHeight)
+                    let live = CameraTopPanelGeometry(width: width - 32, statusSize: statusSize,
+                                                      diagnosticsHeight: diagnosticsHeight)
+                    #expect(live.height == 50)
+                    #expect(idle.height == live.height, "Starting capture must not resize the toolbar.")
+                    let idleBottom = CameraTopPanelGeometry.framingBottom(toolbarBottom: idle.height + 8,
+                                                                          rotationDegrees: degrees)
+                    let liveBottom = CameraTopPanelGeometry.framingBottom(toolbarBottom: live.height + 8,
+                                                                          rotationDegrees: degrees)
                     let viewport = CGRect(x: 0, y: 0, width: width, height: 750)
-                    #expect(FramedPreviewLayout.previewRect(in: viewport, topControlsBottom: frameBottom,
+                    #expect(FramedPreviewLayout.previewRect(in: viewport, topControlsBottom: liveBottom,
                                                             bottomControlsTop: 560) ==
-                            FramedPreviewLayout.previewRect(in: viewport, topControlsBottom: legacyBottom,
+                            FramedPreviewLayout.previewRect(in: viewport, topControlsBottom: idleBottom,
                                                             bottomControlsTop: 560))
                 }
             }
@@ -203,7 +332,7 @@ struct CameraDesignRenderTests {
         }
     }
 
-    @MainActor @Test func actualTopPanelReservesStatusAndDiagnosticBoundsAtPhoneWidths() throws {
+    @MainActor @Test func actualTopPanelCentersTimerWithoutDiagnosticHeightAtPhoneWidths() throws {
         for width: CGFloat in [320, 390, 430] {
             for degrees in [0.0, 90.0, -90.0] {
                 let view = CameraTopPanel(statusInToolbar: degrees == 0) {
@@ -213,20 +342,36 @@ struct CameraDesignRenderTests {
                     Image(systemName: "slider.vertical.3").frame(width: 44, height: 44)
                 } lens: {
                     CameraLensFace(title: "120 mm", focalLength: "120", rotationDegrees: degrees)
+                        .frame(width: 44, height: 44)
+                        .opacity(0) // The production lens switch is hidden during a live take.
                 } status: {
                     RecordingStatusFace(presentation: .recording, text: "99:59.99", rotationDegrees: degrees)
                 } diagnostics: {
-                    VStack(spacing: 4) {
-                        Text("DEBUG").font(.system(size: 11, weight: .bold)).frame(width: 64, height: 44).background(.yellow)
-                        Text("FAULT").font(.system(size: 11, weight: .bold)).frame(width: 64, height: 44).background(.red)
-                    }
+                    EmptyView()
                 }
                 .foregroundStyle(.white)
                 .frame(width: width)
                 .padding(8)
                 let image = try render(view, name: "top-\(Int(width))-\(degrees)")
                 #expect(image.width == Int((width + 16) * 2))
-                #expect(image.height == 332, "Landscape status has no duplicate/ghost slot in the toolbar.")
+                #expect(image.height == Int((CGFloat(50) + 8 + 16) * 2),
+                        "Neither landscape status nor diagnostics can add toolbar height.")
+                let panelPixels = try pixels(image)
+                var timerRows: [Int] = []
+                for pixel in 0..<(panelPixels.count / 4) {
+                    let red = Int(panelPixels[pixel * 4])
+                    let green = Int(panelPixels[pixel * 4 + 1])
+                    if red > 160, red > green + 60 {
+                        timerRows.append(pixel / image.width)
+                    }
+                }
+                if degrees == 0 {
+                    #expect(timerRows.count > 150)
+                    #expect(timerRows.allSatisfy { $0 < 120 },
+                            "The actual shared portrait timer must stay in the first toolbar row.")
+                } else {
+                    #expect(timerRows.isEmpty, "Landscape must not duplicate its floating timer in the toolbar.")
+                }
                 let face = RecordingStatusFace(presentation: .recording, text: "999:59.99", rotationDegrees: degrees)
                 let faceImage = try render(face.padding(8), name: "status-rotation-\(degrees)")
                 #expect(faceImage.width == (degrees == 0 ? 256 : 112))

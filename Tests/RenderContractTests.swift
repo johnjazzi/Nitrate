@@ -192,8 +192,8 @@ struct RenderContractTests {
             let tungsten = try #require(catalog.first { $0.stockId == "kodak5219" })
             #expect(daylight.glowStrength == 0.155)
             #expect(tungsten.glowStrength == 0.2325)
-            #expect(daylight.halationStrength == 3.60)
-            #expect(tungsten.halationStrength == 3.60)
+            #expect(daylight.halationStrength == 2.52)
+            #expect(tungsten.halationStrength == 2.52)
             #expect(daylight.grainSize == 1.15)
             #expect(tungsten.grainSize == 1.3)
             #expect(daylight.outputContrast == 0.85)
@@ -201,6 +201,34 @@ struct RenderContractTests {
             #expect(daylight.effectiveRecipe.version == "5207-current-v7")
             #expect(tungsten.effectiveRecipe.version == "5219-current-v12")
         }
+    }
+
+    /// The requested 30% reduction applies to halation TOTAL AMOUNT only, and only in the
+    /// catalogs: the radius (0.001), the layer weights and every glow/grain/contrast setting
+    /// are untouched, and no code path reapplies the reduction. The preview and the renderer
+    /// both pass `config.halationStrength` through unchanged, so the amount cannot be halved
+    /// twice; the preview-side guard for that lives in `PlatePreviewEffectsTests`.
+    @Test func shippedHalationTotalAmountDropsThirtyPercentAndLeavesGeometryAlone() throws {
+        let previous: Float = 3.60
+        for path in ["App/Resources/stocks.json", "Resources/stocks.json"] {
+            for stock in try stocks(path) {
+                #expect(abs(stock.halationStrength - previous * 0.70) < 0.005,
+                        "\(stock.stockId): halation total amount must be 70% of \(previous)")
+                #expect(stock.halationRadiusFraction == 0.001,
+                        "\(stock.stockId): the reduction is amount-only; the radius must stay 0.001")
+            }
+        }
+        // Both bundled catalogs carry the same reduced amount and the same geometry.
+        let app = try stocks("App/Resources/stocks.json")
+        let cli = try stocks("Resources/stocks.json")
+        #expect(app == cli, "both bundled catalogs must carry the identical reduction")
+        let daylight = try #require(app.first { $0.stockId == "kodak5207" })
+        let tungsten = try #require(app.first { $0.stockId == "kodak5219" })
+        // The amount is the only halation field that moved.
+        #expect(daylight.halationTint == SIMD3(1.0, 0.28, 0.10))
+        #expect(tungsten.halationTint == SIMD3(1.0, 0.32, 0.10))
+        #expect(daylight.glowStrength == 0.155 && tungsten.glowStrength == 0.2325)
+        #expect(daylight.grainSize == 1.15 && tungsten.grainSize == 1.3)
     }
 
     @Test func shippedContrastIsFifteenPercentLowerAndHistoricalExplicitContrastStillDecodes() throws {

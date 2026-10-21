@@ -39,17 +39,23 @@ struct RenderJob: Codable, Identifiable, Equatable {
     /// Why a kept original was retained (a validation failure), kept for the
     /// queue row. Never used to decide rendering.
     var retainedReason: String? = nil
+    /// Capture policy snapshotted at enqueue. Immutable value; the renderer and
+    /// metadata read this, never live UI. `nil` preserves legacy behaviour:
+    /// 24 fps, per-frame grain, `1/48` shutter metadata.
+    var capturePolicy: RenderCapturePolicy? = nil
 
     init(sourceURL: URL, stockId: String, iso: Float, printGauge: PrintGauge? = nil,
          trimStart: CMTime? = nil, trimEnd: CMTime? = nil,
          sessionId: String? = nil, createdAt: Date = Date(),
-         deliveryPreferences: RenderDeliveryPreferences? = nil) {
+         deliveryPreferences: RenderDeliveryPreferences? = nil,
+         capturePolicy: RenderCapturePolicy? = nil) {
         self.id = UUID()
         self.sourceURL = sourceURL
         self.stockId = stockId
         self.iso = iso
         self.printGauge = printGauge
         self.deliveryPreferences = deliveryPreferences
+        self.capturePolicy = capturePolicy
         self.trimStartSeconds = trimStart.map { $0.seconds }
         self.trimEndSeconds = trimEnd.map { $0.seconds }
         self.createdAt = createdAt

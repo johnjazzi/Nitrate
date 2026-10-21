@@ -1,9 +1,9 @@
 import Foundation
 
-/// Display-only geometry. The native 16:9 camera image is shown upright at 9:16;
-/// this never changes capture, recorder or render dimensions.
+/// Display-only 2:3 viewfinder crop; this never changes capture,
+/// recorder or render dimensions.
 enum FramedPreviewLayout {
-    static let portraitAspect: CGFloat = 9.0 / 16.0
+    static let portraitAspect: CGFloat = 2.0 / 3.0
 
     static func previewRect(in canvas: CGRect, topControlsBottom: CGFloat,
                             bottomControlsTop: CGFloat, horizontalInset: CGFloat = 8,

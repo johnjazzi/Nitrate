@@ -20,8 +20,8 @@ settings:
     # Single source of truth for the version shown on the splash and in
     # CFBundleShortVersionString / CFBundleVersion. Bump MARKETING_VERSION for a
     # user-visible release, CURRENT_PROJECT_VERSION for every build.
-    MARKETING_VERSION: "0.1.6"
-    CURRENT_PROJECT_VERSION: "6"
+    MARKETING_VERSION: "0.1.7"
+    CURRENT_PROJECT_VERSION: "7"
     INFOPLIST_KEY_CFBundleDisplayName: Nitrate
     INFOPLIST_KEY_NSCameraUsageDescription: "Nitrate needs camera access to capture Apple Log video for film stock processing."
     INFOPLIST_KEY_NSMicrophoneUsageDescription: "Nitrate records audio to accompany your film clips."
@@ -47,10 +47,10 @@ schemes:
         Nitrate: all
     run:
       config: Debug
-      # Drives local StoreKit purchases so the real paywall (evaluation,
-      # purchase, restore, expiry) can be tested before any product exists in
-      # App Store Connect. Kept outside App/ so it is never compiled into or
-      # bundled with the shipping app.
+      # Kept for local StoreKit runs, but the gated paywall is only reachable
+      # through the dedicated NitrateStoreKitTest scheme, which also passes the
+      # opt-in launch argument. A normal run stays unrestricted. Kept outside
+      # App/ so the fixture is never compiled into or bundled with the app.
       storeKitConfiguration: StoreKit/Nitrate.storekit
     profile:
       config: Release
@@ -67,6 +67,24 @@ schemes:
       config: DevRelease
     archive:
       config: DevRelease
+  # Debug-only paywall harness. The launch argument makes StoreManager skip the
+  # free debug unlock and evaluate StoreKit against the local configuration file,
+  # so the gated paywall (evaluation, purchase, restore, expiry, refund) can be
+  # exercised before any product exists in App Store Connect. Normal development
+  # (Nitrate/NitrateDev) never passes the argument, and Release never honours it.
+  NitrateStoreKitTest:
+    build:
+      targets:
+        Nitrate: all
+    run:
+      config: Debug
+      commandLineArguments:
+        "-NitrateStoreKitTesting": true
+      storeKitConfiguration: StoreKit/Nitrate.storekit
+    profile:
+      config: Debug
+    archive:
+      config: Debug
   RenderCLI:
     build:
       targets:
@@ -90,11 +108,23 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Tests/CameraDesignTests.swift
+      - path: Tests/DaylightExposureRescueTests.swift
+      - path: App/Modules/CameraCapture/ExposureRescueControl.swift
       - path: Tests/CameraDesignRenderTests.swift
       - path: Tests/ManualControlsOverlayTests.swift
       - path: Tests/CameraZoomPolicyTests.swift
+      - path: Tests/CameraFocalZoomPolicyTests.swift
+      - path: Tests/CameraMoodControlsTests.swift
+      - path: Tests/CameraMoodLayoutTests.swift
+      - path: Tests/CameraMoodRenderTests.swift
+      - path: Tests/LiveRecordingStatusTests.swift
+      - path: Tests/CameraTopPanelVisibilityTests.swift
+      - path: Tests/CameraFloatingChromeTests.swift
+      - path: Tests/FocalLengthRulerTests.swift
+      - path: Tests/FramedPreviewLayoutTests.swift
       - path: Tests/TestRepository.swift
       - path: App/Modules/CameraCapture/CameraZoomPolicy.swift
+      - path: App/Modules/CameraCapture/CameraFocalZoomPolicy.swift
       - path: App/Modules/ProcessingPipeline/GrainModel.swift
       - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
       - path: Tests/CameraCleanupPresentationTests.swift
@@ -110,6 +140,8 @@ targets:
       - path: App/Modules/CameraCapture/CameraLensFace.swift
       - path: App/Modules/CameraCapture/CameraRaisedButtonStyle.swift
       - path: App/Modules/CameraCapture/RecordingTimeLCD.swift
+      - path: App/Modules/CameraCapture/RecordingTallyLight.swift
+      - path: App/Modules/CameraCapture/FocalLengthRuler.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
     settings:
       SWIFT_VERSION: "6.0"
@@ -133,6 +165,10 @@ targets:
       - path: App
         excludes:
           - Resources/Preview
+          - Resources/StockSamples
+      - path: App/Resources/StockSamples
+        type: folder
+        buildPhase: resources
       - path: App/Resources/Preview
         type: folder
         buildPhase: resources
@@ -218,6 +254,7 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: Tests
+      - path: App/Modules/CameraCapture/ExposureRescueControl.swift
       - path: App/AppIdentity.swift
       - path: App/SplashEdgeDetails.swift
       - path: App/SplashEdgeOverlay.swift
@@ -234,13 +271,17 @@ targets:
       - path: App/Modules/RenderQueue/CaptureJournal.swift
       - path: App/Modules/RenderQueue/PersistedPathRemap.swift
       - path: App/Modules/Purchase/AppAccessPolicy.swift
+      - path: App/Modules/Purchase/LaunchPricingPresentation.swift
       - path: App/Modules/Purchase/AboutPresentation.swift
+      - path: App/Modules/Purchase/LegalLinks.swift
       - path: App/Modules/CameraCapture/CameraOriginalStorage.swift
       - path: App/Modules/CameraCapture/CameraPreviewPolicy.swift
       - path: App/Modules/CameraCapture/CameraPreviewTap.swift
       - path: App/Modules/CameraCapture/CameraPolicies.swift
       - path: App/Modules/CameraCapture/CameraZoomPolicy.swift
+      - path: App/Modules/CameraCapture/CameraFocalZoomPolicy.swift
       - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
+      - path: App/Modules/CameraCapture/CameraFrameRatePolicy.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
       - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
       - path: App/Modules/CameraCapture/ManualControlsOverlay.swift
@@ -258,6 +299,8 @@ targets:
       - path: App/Modules/CameraCapture/CameraLensFace.swift
       - path: App/Modules/CameraCapture/CameraRaisedButtonStyle.swift
       - path: App/Modules/CameraCapture/RecordingTimeLCD.swift
+      - path: App/Modules/CameraCapture/RecordingTallyLight.swift
+      - path: App/Modules/CameraCapture/FocalLengthRuler.swift
       - path: App/Modules/CameraCapture/RecordingFeedbackPolicy.swift
       - path: Resources/Shaders/
         type: metal
@@ -265,6 +308,9 @@ targets:
         type: folder
         buildPhase: resources
       - path: App/Resources/LUTs
+        type: folder
+        buildPhase: resources
+      - path: App/Resources/StockSamples
         type: folder
         buildPhase: resources
       - path: Resources/stocks.json

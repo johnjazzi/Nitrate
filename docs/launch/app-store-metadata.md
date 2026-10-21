@@ -56,8 +56,10 @@ Display names fit within 30 characters and both descriptions fit within the
 conservative 45-character IAP description limit. The final subscription-specific
 fields must also be checked in its own App Store Connect form.[3]
 
-The 4.99 / 9.99 values in `StoreKit/Nitrate.storekit` are local test fixtures,
-not approved prices. No introductory offer is claimed or configured by this packet.
+The 5.00 / 10.00 values in `StoreKit/Nitrate.storekit` match the owner-approved
+US base prices and are used for local testing; App Store Connect remains the
+source of truth for every other storefront. No introductory offer is claimed or
+configured by this packet.
 
 ## Review and TestFlight text
 
@@ -122,14 +124,21 @@ made in this documentation pass.
 1. **Missing policy/terms links.** No external link or URL was found in the Swift
    source. Policy hosting and an accessible in-app policy link remain unfinished.
    Review subscription disclosures and applicable terms before submission.[5]
-2. **Purchase wording contradicts the render-only gate.** `PurchaseView.swift`
-   says “Unlock to continue using Nitrate” and “All features unlocked forever”.
-   Recording is actually ungated, and an annual subscriber must not be described
-   as permanently unlocked. Update UI wording and verify both purchase states.
-3. **Local StoreKit testing is not proven.** `StoreManager.resolveDistribution()`
-   returns `.debug` before consulting StoreKit in Debug; the scheme runs Debug.
-   The new `.storeKitTesting` policy test alone does not prove the local fixture
-   can reach the real paywall. Fix and execute the flow separately.
+2. **Purchase wording now matches the render-only gate.** `PurchaseView.swift` no
+   longer says “Unlock to continue using Nitrate” or “All features unlocked
+   forever”. The paid feature is named as film rendering throughout, an annual
+   subscriber is described as “subscription active” rather than permanently
+   unlocked, and recording is stated to stay free. An unrestricted channel
+   (development/DEBUG and the beta) shows a non-purchasable “US launch pricing”
+   block instead of a checkout, with no fallback purchase price.
+3. **Local StoreKit testing now resolves the paywall directly.**
+   `StoreManager.resolveDistribution()` returns `.debug` before consulting
+   StoreKit in a normal Debug build, so the paywall is invisible; the
+   `-NitrateStoreKitTesting` opt-in now resolves straight to `.storeKitTesting`,
+   bypassing the receipt guard that would otherwise return `.development`.
+   Purchases and entitlements still run through real StoreKit. The remaining
+   step is an actual run of that flow (build and capture the UI), which is owned
+   by the coordinating agent.
 4. **Evaluation policy needs review.** Earlier guidance that Apple only permits
    “free trial” to mean an introductory subscription offer was too broad. The
    guidelines also describe a non-subscription time-based-trial mechanism. That

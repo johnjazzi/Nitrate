@@ -7,7 +7,7 @@ import SwiftUI
 /// owns the shooting controls and remaining-recording-time readout.
 struct CameraControlBar: View {
     @Environment(\.cameraDeviceOrientation) private var orientation
-    private let controlFaceSize: CGFloat = 44
+    private let controlFaceSize: CGFloat = 38
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Drives `.sensoryFeedback`; bumped on every REC tap so the press is felt
     /// immediately instead of when capture reports it started.
@@ -38,15 +38,19 @@ struct CameraControlBar: View {
 
     // MARK: - Left selector row
 
+    /// Stock and gauge share the recessed well that fills the lower third of the
+    /// column. The 44pt frame keeps the stock control a full-size tap target
+    /// inside the well's own padding.
     private var selectorRow: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             stockControl(faceSize: controlFaceSize)
-                .frame(width: 52, height: 52)
+                .frame(width: 44, height: 44)
             if selectedStock != nil {
                 CameraGaugeLabel(gauge: selectedGauge,
                                  rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
             }
         }
+        .cameraControlWell(cornerRadius: 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
@@ -65,6 +69,7 @@ struct CameraControlBar: View {
                     Image(systemName: "film").font(.title3)
                     .foregroundStyle(.white)
                     .frame(width: faceSize, height: faceSize)
+                    .frame(minWidth: 44, minHeight: 44)
                 }
                 .buttonStyle(CameraRaisedButtonStyle())
             }
@@ -81,6 +86,7 @@ struct CameraControlBar: View {
         } label: {
             CameraFilmStockFace(primary: stock.primaryColor, secondary: stock.secondaryColor,
                                 isoLight: "\(Int(currentISO))\(stock.lightType)", faceSize: faceSize)
+                .frame(minWidth: 44, minHeight: 44)
         }
         .buttonStyle(CameraRaisedButtonStyle(faceColor: stock.primaryColor))
     }
@@ -104,6 +110,18 @@ struct CameraControlBar: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 6)
         .modifier(CameraRaisedSurface(cornerRadius: 14))
+        // Measurement anchor only: publishes the exposure column's frame in the
+        // shared `cameraCanvas` space so the parent can float the daylight rescue
+        // button above it. A background never changes the bar's measured footprint.
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: CameraControlBoundsPreference.self,
+                    value: ["exposure": geometry.frame(in: .named("cameraCanvas"))]
+                )
+            }
+            .allowsHitTesting(false)
+        }
     }
 
     /// One setting, two modes. Auto drives the scene's auto-exposure target bias
@@ -171,6 +189,14 @@ struct CameraControlBar: View {
                                         ? "Switch to auto exposure"
                                         : "Switch to manual exposure")) {
             cameraViewModel.toggleManualExposure()
+        }
+        // Keyed to the committed mode, not to the gesture: the long press and
+        // the accessibility action share `toggleManualExposure()`, so one state
+        // change is felt once however it was requested. The periodic exposure
+        // poll never writes this flag, so polling cannot fire it.
+        .sensoryFeedback(trigger: cameraViewModel.isManualExposure) { _, isManual in
+            CameraHaptics.prepareForCaptureFeedback()
+            return ManualExposureLockFeedback.sensory(isManual: isManual)
         }
     }
 
@@ -242,6 +268,16 @@ struct CameraControlBar: View {
             case .start: .impact(weight: .medium, intensity: 1)
             case .stop: .impact(weight: .heavy, intensity: 1)
             }
+        }
+    }
+
+    /// Committed manual-exposure transition. Taking the ISO lock is the firmer
+    /// notch; releasing it back to auto is the softer one, so the two are
+    /// distinguishable by feel alone.
+    enum ManualExposureLockFeedback {
+        static func sensory(isManual: Bool) -> SensoryFeedback {
+            isManual ? .impact(flexibility: .rigid, intensity: 0.9)
+                     : .impact(flexibility: .soft, intensity: 0.6)
         }
     }
 
@@ -318,14 +354,17 @@ struct CameraControlBar: View {
                 RecordingTimeLCD(
                     estimatedSeconds: estimatedRemainingSeconds,
                     isStorageLow: isStorageLow,
-                    queueStatus: queueStatus
+                    queueStatus: queueStatus,
+                    isRecording: recordPresentation == .recording,
+                    isStopping: cameraViewModel.isStoppingRecording
                 )
             }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Storage, render queue, and estimated recording time remaining")
-        .accessibilityValue("\(estimatedTimeText). \(freeSpaceText) free. "
+        .accessibilityValue("\(recordPresentation == .recording ? "Recording. " : "")"
+                            + "\(estimatedTimeText). \(freeSpaceText) free. "
                             + "\(isStorageLow ? "Low storage. " : "")\(queueStatus.accessibilityDescription)")
         .accessibilityHint("Tap for storage and render queue details, video playback, sharing, and retry controls.")
         }
@@ -353,6 +392,18 @@ struct CameraControlBar: View {
             videoBitRate: DeliverySettings.averageBitRate,
             audioBitRate: DeliverySettings.aacAverageBitRate
         )
+    }
+}
+
+/// Publishes per-control frames in the shared `cameraCanvas` space. The control bar
+/// contributes the exposure column so the parent can float the daylight rescue
+/// button above it without altering any measured footprint. Shared with the
+/// toolbar and shooting-bar bounds consumed by `ContentView`.
+struct CameraControlBoundsPreference: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }
 

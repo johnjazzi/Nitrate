@@ -18,7 +18,7 @@ struct CameraLensSelector: View {
             if availableLenses.isEmpty {
                 // Keep the current lens visible without offering a dead action.
                 triggerLabel
-                    .modifier(CameraRaisedSurface(faceColor: nil))
+                    .background(Circle().fill(.ultraThinMaterial))
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Camera lens")
                     .accessibilityValue(title(selectedLens))
@@ -29,7 +29,7 @@ struct CameraLensSelector: View {
                 } label: {
                     triggerLabel
                 }
-                .buttonStyle(CameraRaisedButtonStyle())
+                .buttonStyle(CameraRoundButtonStyle())
                 .accessibilityLabel("Camera lens")
                 .accessibilityValue(title(selectedLens))
                 .accessibilityHint("Opens available camera lenses")
@@ -46,11 +46,20 @@ struct CameraLensSelector: View {
     }
 
     private var triggerLabel: some View {
-        CameraLensFace(title: title(selectedLens),
-                       focalLength: selectedLens == .front ? nil : "\(selectedLens.focalLengthMM)",
-                       rotationDegrees: CameraGlyphRotation.degrees(for: deviceOrientation))
-            .foregroundStyle(.white)
-            .frame(width: 84, height: 44)
+        Group {
+            if selectedLens == .front {
+                Image(systemName: "camera.rotate").font(.system(size: 17, weight: .medium))
+            } else {
+                VStack(spacing: 0) {
+                    Text("\(selectedLens.focalLengthMM)")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded).monospacedDigit())
+                    Text("mm").font(.system(size: 9, weight: .medium))
+                }
+            }
+        }
+        .rotationEffect(.degrees(CameraGlyphRotation.degrees(for: deviceOrientation)))
+        .foregroundStyle(.white)
+        .frame(width: 44, height: 44)
     }
 
     private var lensWell: some View {

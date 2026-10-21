@@ -55,16 +55,19 @@ enum CameraCaptureFormatPolicy {
         let height: Int32
         let supportsAppleLog2: Bool
         let supports24FPS: Bool
+        /// `videoSupportedFrameRateRanges` contains 60.
+        let supports60FPS: Bool
         let isTenBitBiPlanar420: Bool
         let isTenBitBiPlanar422: Bool
 
         init(width: Int32, height: Int32, supportsAppleLog2: Bool,
              supports24FPS: Bool, isTenBitBiPlanar420: Bool = false,
-             isTenBitBiPlanar422: Bool = false) {
+             isTenBitBiPlanar422: Bool = false, supports60FPS: Bool = false) {
             self.width = width
             self.height = height
             self.supportsAppleLog2 = supportsAppleLog2
             self.supports24FPS = supports24FPS
+            self.supports60FPS = supports60FPS
             self.isTenBitBiPlanar420 = isTenBitBiPlanar420
             self.isTenBitBiPlanar422 = isTenBitBiPlanar422
         }
@@ -79,6 +82,19 @@ enum CameraCaptureFormatPolicy {
             let candidate = candidates[$0]
             return candidate.width == 3840 && candidate.height == 2160
                 && candidate.supportsAppleLog2 && candidate.supports24FPS
+                && (candidate.isTenBitBiPlanar420 || candidate.isTenBitBiPlanar422)
+        }
+        return matches.filter { candidates[$0].isTenBitBiPlanar420 }
+            + matches.filter { candidates[$0].isTenBitBiPlanar422 }
+    }
+
+    /// Parallel to `appleLog2CandidateIndexes`, but requires a 60 fps range.
+    /// `.standard24` selection is unchanged; `.daylight60` uses this.
+    static func appleLog2SixtyCandidateIndexes(in candidates: [Candidate]) -> [Int] {
+        let matches = candidates.indices.filter {
+            let candidate = candidates[$0]
+            return candidate.width == 3840 && candidate.height == 2160
+                && candidate.supportsAppleLog2 && candidate.supports60FPS
                 && (candidate.isTenBitBiPlanar420 || candidate.isTenBitBiPlanar422)
         }
         return matches.filter { candidates[$0].isTenBitBiPlanar420 }

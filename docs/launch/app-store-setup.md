@@ -92,10 +92,13 @@ Test the products with a sandbox account before relying on them; sandbox purchas
 ## Step 7 — Build and upload
 
 Before uploading, test the paywall locally against the StoreKit fixture in
-`StoreKit/Nitrate.storekit` — see `storekit-testing.md`. It exercises evaluation,
-purchase, restore, expiry and refund without any product existing in App Store
-Connect, and it is the only way to see the paywall before a real App Store build,
-because a development install is deliberately unrestricted.
+`StoreKit/Nitrate.storekit` — see `storekit-testing.md`. Run the dedicated
+**`NitrateStoreKitTest`** scheme (it launches a Debug build with
+`-NitrateStoreKitTesting`); the plain `Nitrate` scheme is unrestricted and never
+shows the paywall. The fixture exercises evaluation, purchase, restore, expiry and
+refund without any product existing in App Store Connect, and it is the only way
+to see the paywall before a real App Store build, because a development install is
+deliberately unrestricted.
 
 ```sh
 cd ~/projects/untitled-ios-film-emulation-app

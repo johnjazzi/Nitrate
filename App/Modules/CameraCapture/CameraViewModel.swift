@@ -12,6 +12,8 @@ final class CameraViewModel {
 
     init() {
         activeLens = session.activeLens
+        focalEngine = CameraFocalZoomEngine(activeTier: Self.focalTier(for: session.activeLens))
+        availableLensTiers = session.availableLenses.map { Self.focalTier(for: $0) }
         session.observeZoom { [weak self] snapshot in
             guard let self else { return }
             if let snapshot, let current = self.zoomSnapshot {
@@ -48,6 +50,28 @@ final class CameraViewModel {
     /// Set when a take finished with a readable original that failed validation.
     /// The screen saves it to Photos unchanged; it is never rendered.
     private(set) var retainedOriginal: RetainedOriginal?
+
+    // MARK: - Daylight 60 fps (session-only)
+
+    /// Live capture frame rate. Session-only: it resets to `.standard24` at every
+    /// foreground-session boundary (background, disappear, cold launch) and is
+    /// never persisted.
+    private(set) var sessionFrameRate: CameraFrameRate = .standard24
+    /// Whether the active device/format advertises a 4K Apple Log 2 10-bit 60 fps
+    /// range. Refreshed after configuration and lens switches; drives the
+    /// control's unavailable state. It never silently disarms the mode.
+    private(set) var supportsDaylight60 = false
+    /// True while an arm/disarm is in flight. Record, lens and exposure actions
+    /// are held until the transition settles, mirroring the stabilizer gate.
+    private(set) var isChangingFrameRate = false
+    /// Guards frame-rate callbacks against lifecycle/generation changes, so a
+    /// transition that was in flight when the app backgrounded can never restore
+    /// 60 fps on the following foreground session.
+    private var frameRateGeneration: UInt64 = 0
+    /// Capture policies keyed by the completed source URL. The screen and the
+    /// queue read the policy from here, never from the live mode, so a boundary
+    /// reset cannot mislabel a queued job.
+    private var capturePolicies = DaylightCapturePolicyLedger()
 
     // Exposure (live from the device, polled every 0.5s)
     var liveISO: Float = 0
@@ -114,6 +138,15 @@ final class CameraViewModel {
     private var stabilizationSnapshotRequestGeneration: UInt64 = 0
     private var cameraLensSwitchGeneration: UInt64 = 0
     private var pendingLensSwitchCount = 0
+    /// Focal-length pinch engine. Coalesces pinch updates across a physical lens
+    /// switch and keeps the gesture continuous in absolute focal length.
+    private var focalEngine = CameraFocalZoomEngine(activeTier: .wide)
+    /// True only while a lens switch the pinch engine itself requested is in
+    /// flight, so its queued target survives the switch while a manual lens
+    /// switch is never commandeered.
+    private var focalSwitchInFlight = false
+    /// Rear/front lenses the device reports, cached for the engine's fallbacks.
+    private var availableLensTiers: [CameraFocalZoomLensTier] = []
     private var apertureCommandGeneration: UInt64 = 0
     private let originalStorage = CameraOriginalStorage()
     /// Marks a take before capture and is acknowledged once the render queue has
@@ -145,6 +178,13 @@ final class CameraViewModel {
         endSlowZoom()
         guard lifecycleGate.isActive else { return }
         lifecycleGate.deactivate()
+        // A foreground-session boundary resets the session-only frame rate to
+        // 24 fps (daylight branch) and drops any in-flight focal gesture (mood
+        // branch). Both are independent device-config concerns; neither may be
+        // dropped in favor of the other.
+        resetFrameRateForSessionBoundary()
+        focalEngine.invalidate()
+        focalSwitchInFlight = false
         exposureCommandGeneration &+= 1
         cameraLensSwitchGeneration &+= 1
         apertureCommandGeneration &+= 1
@@ -241,6 +281,7 @@ final class CameraViewModel {
                 return
             }
             self.cameraConfigured = true
+            self.refreshDaylight60Eligibility()
             self.startSession()
         }
     }
@@ -252,6 +293,7 @@ final class CameraViewModel {
                   !self.isSwitchingCameraLens,
                   sourceLens == self.activeLens else { return }
             self.errorMessage = error.localizedDescription
+            self.recoverCaptureConfigurationIfNeeded(after: error)
         }
         session.onFinish { [weak self] result in
             Task { @MainActor in
@@ -295,12 +337,14 @@ final class CameraViewModel {
     }
 
     func setDisplayZoom(_ factor: Double) {
-        guard lifecycleGate.isActive, let snapshot = zoomSnapshot, !isSwitchingCameraLens else { return }
+        guard lifecycleGate.isActive, let snapshot = zoomSnapshot,
+              !isSwitchingCameraLens, !isChangingFrameRate else { return }
         session.setDisplayZoom(factor, revision: snapshot.cameraRevision)
     }
 
     func beginSlowZoom(_ direction: CameraZoomDirection) {
-        guard lifecycleGate.isActive, let snapshot = zoomSnapshot, !isSwitchingCameraLens else { return }
+        guard lifecycleGate.isActive, let snapshot = zoomSnapshot,
+              !isSwitchingCameraLens, !isChangingFrameRate else { return }
         session.beginSlowZoom(direction, revision: snapshot.cameraRevision)
     }
 
@@ -309,10 +353,183 @@ final class CameraViewModel {
         session.endSlowZoom(revision: revision)
     }
 
+    // MARK: - Focal-Length Pinch Zoom
+
+    /// Absolute, 35 mm-equivalent focal length the preview is rendering right
+    /// now. Derived from the session's published display factor and the active
+    /// device's real display multiplier, anchored on the active lens's native
+    /// base focal length.
+    var currentFocalLengthMM: Double {
+        guard let snapshot = zoomSnapshot,
+              let millimeters = CameraFocalZoomPolicy.focalLengthMM(
+                  displayFactor: snapshot.displayFactor,
+                  multiplier: snapshot.displayMultiplier,
+                  tier: Self.focalTier(for: activeLens)) else {
+            return Double(activeLens.focalLengthMM)
+        }
+        return millimeters
+    }
+
+    /// The focal length the UI should show and drive for a raw pinch target,
+    /// clamped to what the active lens and the installed lenses can actually
+    /// render. Returns nil for non-finite input or when no rear lens exists.
+    ///
+    /// The UI calls this BEFORE `setFocalLengthZoom` and its tick haptics, so
+    /// neither the readout nor the haptic can announce a focal length the
+    /// hardware will not reach: requesting 13 mm without an ultrawide stays at
+    /// the wide lens's floor, and a target past the wide device's ceiling is
+    /// clamped to the ceiling rather than shown past the rail.
+    func normalizedFocalLengthZoom(_ millimeters: Double) -> Double? {
+        guard let requested = CameraFocalZoomPolicy.clampedTarget(millimeters) else { return nil }
+        let activeTier = Self.focalTier(for: activeLens)
+
+        // The front camera never switches away; it only clamps within its own
+        // published window.
+        if activeTier == .front {
+            return clampToActiveZoomWindow(requested, tier: .front) ?? requested
+        }
+
+        let desired = CameraFocalZoomPolicy.tier(forFocalLength: requested)
+        guard let resolved = CameraFocalZoomPolicy.resolvedTier(desired, available: availableLensTiers) else {
+            return nil
+        }
+        // Already on that lens: clamp to the device's real achievable window,
+        // converted with its own multiplier.
+        if resolved == activeTier {
+            return clampToActiveZoomWindow(requested, tier: activeTier) ?? requested
+        }
+        // A switch is required: the new device's ceiling is unknown until it is
+        // installed, so pin the floor to its native base focal length.
+        return max(requested, CameraFocalZoomPolicy.baseFocalLengthMM(for: resolved))
+    }
+
+    /// Clamp `requested` into the active device's real achievable focal-length
+    /// window. Nil when there is no snapshot to convert.
+    private func clampToActiveZoomWindow(_ requested: Double, tier: CameraFocalZoomLensTier) -> Double? {
+        guard let snapshot = zoomSnapshot,
+              let minimum = CameraFocalZoomPolicy.focalLengthMM(
+                  displayFactor: snapshot.minimumDisplayFactor,
+                  multiplier: snapshot.displayMultiplier, tier: tier),
+              let maximum = CameraFocalZoomPolicy.focalLengthMM(
+                  displayFactor: snapshot.maximumDisplayFactor,
+                  multiplier: snapshot.displayMultiplier, tier: tier),
+              minimum <= maximum else { return nil }
+        return min(max(requested, minimum), maximum)
+    }
+
+    /// Drive the zoom to an absolute focal length. Targets below 24 mm ask for
+    /// the ultrawide, 24–96 mm the wide and above 96 mm the telephoto; a lens is
+    /// switched only when the capture is idle, and the gesture stays continuous
+    /// in absolute focal length across that switch. Non-finite input is ignored.
+    func setFocalLengthZoom(_ millimeters: Double) {
+        // Pinching must not race a take: no engine command while starting,
+        // recording or stopping, and none once the session is torn down.
+        // A frame-rate transition owns the device configuration, so a pinch
+        // must not start or continue while the format is being reconfigured.
+        guard lifecycleGate.isActive, cameraConfigured, !isChangingFrameRate,
+              !isStartingRecording, !isRecording, !isStoppingRecording,
+              let snapshot = zoomSnapshot,
+              let normalized = normalizedFocalLengthZoom(millimeters) else { return }
+        if isSwitchingCameraLens {
+            // Only the pinch engine's own queued switch keeps collecting updates;
+            // a manual switch owns the device and must not be commandeered.
+            guard focalSwitchInFlight else { return }
+            _ = focalEngine.request(targetMM: normalized, available: availableLensTiers)
+            return
+        }
+        focalEngine.syncActiveTier(Self.focalTier(for: activeLens))
+        let decision = focalEngine.request(targetMM: normalized, available: availableLensTiers)
+        performFocal(decision, revision: snapshot.cameraRevision, multiplier: snapshot.displayMultiplier)
+    }
+
+    /// Drive a decision to the session. The target has already been clamped by
+    /// `normalizedFocalLengthZoom`; `multiplier` is the active device's real
+    /// display multiplier, so the display factor is converted on the tier's own
+    /// native base.
+    private func performFocal(_ decision: CameraFocalZoomEngine.Decision,
+                              revision: UInt64, multiplier: Double) {
+        switch decision {
+        case .ignore:
+            break
+        case .adjust(let tier, let targetMM):
+            guard let factor = CameraFocalZoomPolicy.displayFactor(
+                forFocalLengthMM: targetMM, multiplier: multiplier, tier: tier) else { return }
+            session.setDisplayZoom(factor, revision: revision)
+        case .switchLens(let tier, _):
+            beginFocalLensSwitch(to: tier)
+        }
+    }
+
+    private func beginFocalLensSwitch(to tier: CameraFocalZoomLensTier) {
+        // Never open a switch while a frame-rate transition owns the device: the
+        // lens switch would race the format change and its completion would be
+        // dropped, stranding `focalSwitchInFlight`.
+        guard !focalSwitchInFlight, !isChangingFrameRate else { return }
+        focalSwitchInFlight = true
+        let requestGeneration = cameraLensSwitchGeneration &+ 1
+        selectLens(Self.cameraLens(for: tier), preservingFocalZoom: true) { [weak self] error in
+            guard let self, self.cameraLensSwitchGeneration == requestGeneration else { return }
+            self.focalSwitchInFlight = false
+            if error != nil {
+                // The switch rolled back: drop the gesture instead of replaying
+                // it against the lens that is actually installed.
+                self.focalEngine.invalidate()
+                self.focalEngine.syncActiveTier(Self.focalTier(for: self.activeLens))
+                return
+            }
+            self.applyFocalAfterSwitch()
+        }
+    }
+
+    /// Apply the coalesced target once the physical switch has committed, using
+    /// the fresh camera revision the switch published.
+    private func applyFocalAfterSwitch() {
+        // A frame-rate transition that began while the switch was in flight
+        // invalidates the gesture instead of replaying it on the new format.
+        guard lifecycleGate.isActive, cameraConfigured, !isChangingFrameRate,
+              !isStartingRecording, !isRecording, !isStoppingRecording,
+              let snapshot = zoomSnapshot else {
+            focalEngine.invalidate()
+            return
+        }
+        let decision = focalEngine.switchCommitted(to: Self.focalTier(for: activeLens),
+                                                   available: availableLensTiers)
+        performFocal(decision, revision: snapshot.cameraRevision, multiplier: snapshot.displayMultiplier)
+    }
+
+    private static func focalTier(for lens: CameraLens) -> CameraFocalZoomLensTier {
+        switch lens {
+        case .ultraWide: return .ultraWide
+        case .wide: return .wide
+        case .telephoto: return .telephoto
+        case .front: return .front
+        }
+    }
+
+    private static func cameraLens(for tier: CameraFocalZoomLensTier) -> CameraLens {
+        switch tier {
+        case .ultraWide: return .ultraWide
+        case .wide: return .wide
+        case .telephoto: return .telephoto
+        case .front: return .front
+        }
+    }
+
     func startRecording() {
-        guard !isStartingRecording, !isRecording else { return }
+        // A frame-rate transition owns the device configuration and exposure;
+        // do not start a take on a rate that is still changing.
+        guard !isStartingRecording, !isRecording, !isStoppingRecording,
+              !isSwitchingCameraLens, !isChangingFrameRate else { return }
         guard lifecycleGate.isActive, cameraConfigured else {
             errorMessage = "Camera is not ready to record."
+            return
+        }
+        // Any pending lens switch must settle first: starting a take while the
+        // session reconfigures the input would race the switch. This blocks the
+        // engine's own queued switch (`focalSwitchInFlight`) and a manual lens
+        // switch (`isSwitchingCameraLens`) alike, not only the pinch case.
+        guard !focalSwitchInFlight, !isSwitchingCameraLens else {
+            errorMessage = "Wait for the lens to finish switching before recording."
             return
         }
         guard !isSpaceCritical else {
@@ -320,6 +537,9 @@ final class CameraViewModel {
             return
         }
 
+        // A take owns the device; drop any pinch gesture so it cannot replay
+        // against the hardware afterwards.
+        focalEngine.invalidate()
         invalidateRecordingTimers()
         exposureCommandGeneration &+= 1
         isStartingRecording = true
@@ -332,6 +552,10 @@ final class CameraViewModel {
         recordingStoppedAt = nil
         do {
             let outputURL = try originalStorage.makeDestination()
+            // Bind policy to the actual destination before any async work.
+            // Cancellation advances captureGeneration, and a foreground reset
+            // changes sessionFrameRate; neither can relabel this take's URL.
+            capturePolicies.record(sourceURL: outputURL, mode: sessionFrameRate)
             captureJournal.markPending(outputURL)
             session.startRecording(to: outputURL) { [weak self] error in
                 guard let self else { return }
@@ -351,6 +575,7 @@ final class CameraViewModel {
                     self.invalidateRecordingTimers()
                     self.errorMessage = "Failed to start recording: \(error.localizedDescription)"
                     self.failRecordingProminently(error)
+                    self.recoverCaptureConfigurationIfNeeded(after: error)
                     return
                 }
                 self.isRecording = true
@@ -367,6 +592,8 @@ final class CameraViewModel {
     }
 
     func stopRecording() {
+        // The take owns the device; any queued pinch gesture is now stale.
+        focalEngine.invalidate()
         let wasStarting = isStartingRecording
         if wasStarting { captureGeneration &+= 1 }
         isStartingRecording = false
@@ -418,8 +645,17 @@ final class CameraViewModel {
 
     /// Switch the active lens and refresh tap-to-focus for the new device.
     /// Completion runs on the main queue; `nil` error means the swap succeeded.
-    func selectLens(_ lens: CameraLens, completion: @escaping (Error?) -> Void) {
+    func selectLens(_ lens: CameraLens, preservingFocalZoom: Bool = false, completion: @escaping (Error?) -> Void) {
+        // A manual lens switch supersedes any in-flight pinch gesture; the
+        // engine's own switch keeps its queued target instead.
+        if !preservingFocalZoom {
+            focalEngine.invalidate()
+            focalSwitchInFlight = false
+        }
         endSlowZoom()
+        // A frame-rate transition owns the device configuration; a lens switch
+        // must wait for it to settle rather than race it.
+        guard !isChangingFrameRate else { return }
         exposureCommandGeneration &+= 1
         cameraLensSwitchGeneration &+= 1
         pendingLensSwitchCount += 1
@@ -439,6 +675,13 @@ final class CameraViewModel {
             self.pendingLensSwitchCount = max(0, self.pendingLensSwitchCount - 1)
             self.isSwitchingCameraLens = self.pendingLensSwitchCount > 0
 
+            // Track the lens the session actually installed for the focal
+            // engine; a manual switch drops its gesture, the engine's own switch
+            // drains its coalesced target after this completion.
+            if !self.focalSwitchInFlight {
+                self.focalEngine.syncActiveTier(Self.focalTier(for: self.activeLens))
+            }
+
             if self.pendingLensSwitchCount == 0 {
                 if self.lifecycleGate.isActive {
                     self.restoreExposureAfterLensSwitch()
@@ -446,6 +689,9 @@ final class CameraViewModel {
                 } else {
                     self.invalidateApertureUIState()
                 }
+                // A lens switch can change 60 fps eligibility. Refresh it, but
+                // never silently disarm an armed mode on a failed switch.
+                self.refreshDaylight60Eligibility()
             }
             // Resolve every caller. ContentView commits each successful lens;
             // failures remain visible while they never replace the committed
@@ -476,6 +722,95 @@ final class CameraViewModel {
         exposure.toggleISOLock(currentISO: currentISO)
     }
 
+    /// A failed rollback/reset invalidates the runtime configuration. Reconnect
+    /// once, rather than leaving the UI marked ready until another scene boundary.
+    private func recoverCaptureConfigurationIfNeeded(after error: Error) {
+        guard let cameraError = error as? CameraError,
+              case .captureRecoveryRequired = cameraError else { return }
+        cameraConfigured = false
+        guard lifecycleGate.isActive else { return }
+        configureAndStart(generation: lifecycleGate.generation)
+    }
+
+    // MARK: - Daylight 60 fps (session-only)
+
+    /// True when the session-only frame-rate switch can run: the camera is live,
+    /// no lens/mode transition is in flight, and no take is pending, active or
+    /// draining. Mirrors the recording-stabilization gate.
+    var canChangeSessionFrameRate: Bool {
+        // A focal lens switch owns the device configuration just as a manual
+        // lens switch does, so the frame-rate transition cannot race it.
+        lifecycleGate.isActive && cameraConfigured && !isSwitchingCameraLens && !isChangingFrameRate
+            && !focalSwitchInFlight
+            && CameraFrameRatePolicy.canChange(recording: isRecording, starting: isStartingRecording,
+                                               finishing: isStoppingRecording)
+    }
+
+    /// Arm or disarm the break-glass daylight 60 fps mode. Refused while a take
+    /// is pending/active/draining, during a transition, or when the device is
+    /// ineligible (the control disables itself in that case). Never persisted.
+    func setDaylight60Enabled(_ enabled: Bool) {
+        let target: CameraFrameRate = enabled ? .daylight60 : .standard24
+        guard target != sessionFrameRate, canChangeSessionFrameRate else { return }
+        guard target == .standard24 || supportsDaylight60 else { return }
+        // The transition claims the device configuration; any idle pinch
+        // accumulation and its queued switch are stale once the format changes.
+        focalEngine.invalidate()
+        focalSwitchInFlight = false
+        isChangingFrameRate = true
+        frameRateGeneration &+= 1
+        let generation = frameRateGeneration
+        session.setFrameRate(target) { [weak self] error in
+            guard let self, self.frameRateGeneration == generation,
+                  self.lifecycleGate.isActive else { return }
+            self.isChangingFrameRate = false
+            if let error {
+                // The previous mode is preserved; never a silent downgrade.
+                self.errorMessage = "Failed to set the capture frame rate: \(error.localizedDescription)"
+                self.recoverCaptureConfigurationIfNeeded(after: error)
+                return
+            }
+            self.sessionFrameRate = target
+        }
+    }
+
+    /// The capture policy snapshotted for a completed take. The screen reads this
+    /// instead of the live mode, so a session-boundary reset cannot mislabel it.
+    func capturePolicy(for sourceURL: URL) -> RenderCapturePolicy? {
+        capturePolicies.policy(for: sourceURL)
+    }
+
+    /// Refresh the daylight-60 eligibility from the active device. Called after
+    /// the camera configures and after a lens switch settles. It never silently
+    /// disarms an armed mode.
+    private func refreshDaylight60Eligibility() {
+        guard lifecycleGate.isActive, cameraConfigured, !isSwitchingCameraLens else {
+            supportsDaylight60 = false
+            return
+        }
+        let generation = frameRateGeneration
+        session.supportsDaylight60 { [weak self] supported in
+            guard let self, self.frameRateGeneration == generation,
+                  self.lifecycleGate.isActive, self.cameraConfigured else { return }
+            self.supportsDaylight60 = supported
+        }
+    }
+
+    /// A foreground-session boundary always resets the session-only mode. The
+    /// runtime owns the device reset and defers it through any draining take; the
+    /// UI resets immediately, which is safe because the enqueued job reads the
+    /// policy captured at take start, not the live mode.
+    private func resetFrameRateForSessionBoundary() {
+        // Invalidate any in-flight transition: a backgrounded mode change must
+        // not restore 60 fps on the next foreground session.
+        frameRateGeneration &+= 1
+        isChangingFrameRate = false
+        sessionFrameRate = .standard24
+        supportsDaylight60 = false
+        // Per-URL take policies survive this reset until the queue snapshots them.
+        session.resetFrameRateForNextSession()
+    }
+
     // MARK: - Manual Exposure
 
     func setManualISO(_ iso: Float) {
@@ -483,6 +818,8 @@ final class CameraViewModel {
         // (`exposureChangeDuringRecording`), so an optimistic write here would
         // display an ISO the hardware never took. Refuse before mutating, matching
         // the silent gating the other transition-limited controls use.
+        // A frame-rate transition owns the exposure path; hold ISO changes too.
+        guard !isChangingFrameRate else { return }
         guard CameraManualExposureSelectionPolicy.canChangeISO(
             isStartingRecording: isStartingRecording, isRecording: isRecording,
             isStoppingRecording: isStoppingRecording) else { return }
@@ -511,7 +848,7 @@ final class CameraViewModel {
     }
 
     func setLensAperture(_ aperture: Float?) {
-        guard canSelectAperture else { return }
+        guard canSelectAperture, !isChangingFrameRate else { return }
         apertureCommandGeneration &+= 1
         let commandGeneration = apertureCommandGeneration
         let switchGeneration = cameraLensSwitchGeneration
@@ -612,6 +949,7 @@ final class CameraViewModel {
     /// lock uses custom exposure mode, where the device's own bias is always 0,
     /// and the shutter-priority re-meter resets it regardless.
     func setExposureBias(_ bias: Float) {
+        guard !isChangingFrameRate else { return }
         let range = session.exposureBiasRange
         let clamped = min(max(bias, range.lowerBound), range.upperBound)
         liveExposureBias = clamped
@@ -619,6 +957,8 @@ final class CameraViewModel {
     }
 
     func toggleManualExposure() {
+        // A frame-rate transition owns the exposure path; hold the toggle too.
+        guard !isChangingFrameRate else { return }
         if isManualExposure {
             exposureCommandGeneration &+= 1
             let generation = exposureCommandGeneration
@@ -752,6 +1092,8 @@ final class CameraViewModel {
         case .success(let completion):
             switch RecordingFinishPresentationPolicy.plan(for: completion) {
             case .render(let url):
+                // The destination's immutable policy was bound before capture;
+                // publishing this URL never consults the live/reset frame rate.
                 lastRecordedURL = url
                 if let warning = completion.warning {
                     let warningMessage = warning.localizedDescription
