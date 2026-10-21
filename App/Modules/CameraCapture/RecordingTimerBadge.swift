@@ -9,13 +9,15 @@ struct RecordingTimerBadge: View {
 
     var body: some View {
         Text(text)
+            .lineLimit(1)
             .font(.caption.monospacedDigit())
             .foregroundStyle(.white)
             .fixedSize()
             .padding(.horizontal, 8)
             .padding(.vertical, 2)
             .frame(width: 84, height: 24)
-            .background(isStopping ? Color.gray.opacity(0.85) : Color.red.opacity(0.8))
+            .background(isStopping ? Color.gray.opacity(0.85)
+                        : Color.red.opacity(0.8))
             .clipShape(Capsule())
             .rotationEffect(.degrees(rotationDegrees))
             // Reserve the swapped bounds so the capsule never crosses REC.

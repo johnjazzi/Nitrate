@@ -7,6 +7,125 @@ import Testing
 import UniformTypeIdentifiers
 
 struct CameraDesignRenderTests {
+    @MainActor @Test func daylightIndicatorPreservesRecordingStateBesideTheTimer() {
+        for (state, label) in [(RecordButtonPresentation.idle, "READY"), (.starting, "WAIT"),
+                               (.recording, "REC"), (.stopping, "STOP")] {
+            let face = RecordingStatusFace(presentation: state, text: "00:01.00", daylight60Active: true)
+            #expect(face.modeStatusLabel == label + " · 60FPS")
+            let standard = RecordingStatusFace(presentation: state, text: "00:01.00")
+            #expect(standard.modeStatusLabel == label)
+        }
+    }
+
+    /// Native proof of the idle off-ramp's restraint: the armed idle badge shows
+    /// its state/mode label but never a recording mark or elapsed timer, so a
+    /// take's timer text cannot leak into idle. The unarmed idle face keeps the
+    /// mark and timer and therefore differs.
+    @MainActor @Test func armedIdleBadgeCarriesNoRecordingDotOrTimer() throws {
+        func face(_ text: String, armed: Bool) -> some View {
+            RecordingStatusFace(presentation: .idle, text: text, daylight60Active: armed)
+                .padding(8)
+        }
+        let armedLong = try pixels(render(face("99:59.99", armed: true), name: "idle-armed-long"))
+        let armedShort = try pixels(render(face("00:00.00", armed: true), name: "idle-armed-short"))
+        #expect(armedLong == armedShort,
+                "The armed idle badge must not paint any timer digits.")
+        let unarmed = try pixels(render(face("99:59.99", armed: false), name: "idle-unarmed"))
+        #expect(armedLong != unarmed,
+                "The armed idle badge must still read differently from a plain idle face.")
+    }
+
+    @MainActor @Test func rescueButtonRendersInsideItsReservedBoundsInEveryHold() throws {
+        let size = CGSize(width: 390, height: 750)
+        let exposure = CGRect(x: 282, y: 560, width: 92, height: 168)
+        for degrees in [0.0, 90.0, -90.0] {
+            let rect = try #require(DaylightExposureRescueGeometry.buttonRect(
+                above: exposure, in: size, rotationDegrees: degrees))
+            let view = ZStack(alignment: .topLeading) {
+                Color.black
+                ExposureRescueButton(armed: false, enabled: true, action: {})
+                    .frame(width: 92, height: 44)
+                    .rotationEffect(.degrees(degrees))
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+            }
+            .frame(width: size.width, height: size.height)
+            let image = try render(view, name: "rescue-button-\(degrees)")
+            let data = try pixels(image)
+            let scale = CGFloat(image.width) / size.width
+            let bright = stride(from: 0, to: data.count, by: 4).filter {
+                data[$0] > 180 && data[$0 + 1] > 180 && data[$0 + 2] > 180
+            }
+            #expect(bright.count > 80, "The real rescue label must be visible in all holds.")
+            #expect(bright.allSatisfy { index in
+                rect.contains(CGPoint(x: CGFloat((index / 4) % image.width) / scale,
+                                      y: CGFloat((index / 4) / image.width) / scale))
+            }, "The complete rotated label must stay inside the reserved button slot.")
+        }
+    }
+
+    @MainActor @Test func rescueModalFitsItsButtonsAndWarningWithoutScrolling() throws {
+        for (armed, available) in [(false, true), (true, true), (false, false)] {
+            let view = DaylightExposureRescueModal(armed: armed, available: available,
+                                                  canChange: true, onSelect: { _ in }, onCancel: {})
+                .frame(width: 320)
+            let host = NSHostingView(rootView: view)
+            #expect(host.fittingSize.height <= 480, "Warning and both actions must fit the floating card.")
+            let image = try render(view, name: "rescue-modal-\(armed)-\(available)")
+            let data = try pixels(image)
+            let bright = stride(from: 0, to: data.count, by: 4).filter {
+                data[$0] > 180 && data[$0 + 1] > 180 && data[$0 + 2] > 180
+            }
+            #expect(bright.count > 250, "The real warning and confirmation must be rendered.")
+        }
+    }
+
+    /// The confirmation must dim the live canvas rather than replace the page:
+    /// the preview stays recognisable behind the card, and the scrim still pulls
+    /// its brightness down.
+    @MainActor @Test func rescueOverlayDimsTheCanvasWithoutHidingIt() throws {
+        let size = CGSize(width: 390, height: 750)
+        let preview = Color(red: 0.10, green: 0.85, blue: 0.20)
+
+        let plain = try pixels(try render(ZStack { preview }.frame(width: size.width, height: size.height),
+                                          name: "rescue-overlay-open"))
+        let dimmed = try pixels(try render(
+            ZStack {
+                preview
+                DaylightExposureRescueOverlay(armed: false, available: true, canChange: true,
+                                              onSelect: { _ in }, onCancel: {})
+            }
+            .frame(width: size.width, height: size.height), name: "rescue-overlay-dimmed"))
+
+        func greenPeak(_ data: [UInt8]) -> Int {
+            stride(from: 0, to: data.count, by: 4)
+                .filter { Int(data[$0 + 1]) > Int(data[$0]) + 30 }
+                .map { Int(data[$0 + 1]) }.max() ?? 0
+        }
+
+        #expect(greenPeak(dimmed) > 60, "The dimmed preview must stay visible behind the card.")
+        #expect(greenPeak(dimmed) < greenPeak(plain), "The canvas behind the card must actually be dimmed.")
+
+        // The card sits in the middle of the canvas, not pinned to an edge.
+        let image = try render(
+            ZStack {
+                preview
+                DaylightExposureRescueOverlay(armed: false, available: true, canChange: true,
+                                              onSelect: { _ in }, onCancel: {})
+            }
+            .frame(width: size.width, height: size.height), name: "rescue-overlay-geometry")
+        let data = try pixels(image)
+        let rows = stride(from: 0, to: data.count, by: 4).filter {
+            data[$0] > 200 && data[$0 + 1] > 200 && data[$0 + 2] > 200
+        }.map { CGFloat(($0 / 4) / image.width) / (CGFloat(image.width) / size.width) }
+        guard let firstRow = rows.min(), let lastRow = rows.max() else {
+            Issue.record("The card's label must render inside the overlay.")
+            return
+        }
+        #expect(firstRow <= size.height / 2 && lastRow >= size.height / 2,
+                "The card's label band must straddle the vertical centre of the canvas.")
+    }
+
     private let states: [RecordButtonPresentation] = [.idle, .starting, .recording, .stopping]
 
     @Test func geometryKeepsFullHeightCenteredAndSeparated() {

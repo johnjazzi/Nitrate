@@ -12,8 +12,12 @@ struct FocalPinchZoom: ViewModifier {
     @GestureState private var gestureInFlight = false
     @Environment(\.scenePhase) private var scenePhase
 
+    /// A live take and a frame-rate transition both own the device
+    /// configuration, so neither may run under a pinch. The frame-rate flag is
+    /// the same gate the view model applies to `setFocalLengthZoom`.
     private var captureBusy: Bool {
         camera.isStartingRecording || camera.isRecording || camera.isStoppingRecording
+            || camera.isChangingFrameRate
     }
 
     func body(content: Content) -> some View {

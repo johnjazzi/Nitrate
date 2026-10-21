@@ -104,6 +104,24 @@ struct LiveRecordingStatusTests {
         #expect(!screen.contains("cameraViewModel.isRecording && !cameraViewModel.isStoppingRecording"))
     }
 
+    /// The one idle off-ramp that survives the live-only timer: while the
+    /// session-only 60 fps mode is armed and no take is running, the armed badge
+    /// is the only way back to 24 fps once the rescue trigger has dropped below
+    /// its threshold. It is the status face in its idle-armed form, so it carries
+    /// no recording mark and no elapsed timer.
+    @Test func armedIdleBadgeIsTheOnlyIdleChromeAndCarriesNoTimer() throws {
+        let screen = try source("App/ContentView.swift")
+        #expect(screen.contains("!shouldOfferDaylightRescue, recordPresentation == .idle,"))
+        #expect(screen.contains("cameraViewModel.sessionFrameRate == .daylight60,"))
+        #expect(screen.contains("DaylightIdleBadgeGeometry.rect("))
+        #expect(screen.contains("statusFace(text: \"\")"),
+                "The idle badge must pass an empty timer text, never a placeholder.")
+        // A non-sizing sibling, exactly like the rescue button: never a slot.
+        let badge = try source("App/Modules/CameraCapture/ExposureRescueControl.swift")
+        #expect(badge.contains("enum DaylightIdleBadgeGeometry"))
+        #expect(badge.contains("static let badgeSize = CGSize(width: 112, height: 40)"))
+    }
+
     @Test func portraitReplacesTheLensWhileLandscapeKeepsTheEdgeOverlay() throws {
         let screen = try source("App/ContentView.swift")
         let layout = try source("App/Modules/CameraCapture/CameraTopPanelLayout.swift")

@@ -7,14 +7,19 @@ import Testing
 import UniformTypeIdentifiers
 
 struct ManualControlsOverlayTests {
-    @Test func manualPanelBouncesOnlyWhenContentActuallyOverflows() throws {
+    /// Supersedes the old bounce-tuning contract: the manual face must not have
+    /// a scroll viewport at all, so a lower control can never sit below a scrolled
+    /// fold. Fitting is proven by the native geometry regression below.
+    @Test func manualPanelHasNoScrollViewport() throws {
         let root = TestRepository.root
-        let source = try String(contentsOf: root.appendingPathComponent(
-            "App/Modules/CameraCapture/ManualControlsOverlay.swift"), encoding: .utf8)
-        #expect(source.contains("ScrollView([.horizontal, .vertical])"),
-                "Overflow still needs to be reachable on short and narrow viewports.")
-        #expect(source.contains(".scrollBounceBehavior(.basedOnSize, axes: [.horizontal, .vertical])"),
-                "Fitting controls should not rubber-band in either axis.")
+        for path in ["App/Modules/CameraCapture/ManualControlsOverlay.swift",
+                     "App/Modules/CameraCapture/ManualControlsSurface.swift"] {
+            let source = try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+            #expect(!source.contains("ScrollView"),
+                    "\(path) must fit its controls inside the granted face, not scroll to reach them.")
+            #expect(!source.contains("scrollBounceBehavior"),
+                    "Bounce tuning only applies to a scroll viewport that no longer exists.")
+        }
     }
 
     @Test func compactFootprintIsNotAvailableViewportSlab() {
@@ -47,10 +52,87 @@ struct ManualControlsOverlayTests {
         let source = try String(contentsOf: root.appendingPathComponent(
             "App/Modules/CameraCapture/ManualControlsSurface.swift"), encoding: .utf8)
         #expect(source.contains("private var compactTextRowHeight: CGFloat { 18 }"))
-        #expect(source.components(separatedBy: ".frame(height: expanded ? 44 : compactTextRowHeight)").count == 3,
+        #expect(source.contains("private var rowHeight: CGFloat { expandedLayout ? 44 : compactTextRowHeight }"),
+                "Labels and readouts must share the compact row height when not expanded.")
+        #expect(source.components(separatedBy: ".frame(height: rowHeight)").count == 3,
                 "Labels and readouts need genuinely smaller rows, not only a shorter face.")
         #expect(source.contains(".frame(maxWidth: .infinity, minHeight: 44)"),
                 "Interactive AF/MF and mode rows must retain 44pt targets.")
+    }
+
+    /// Native fitting regression (added before the scroll-free rewrite): the real
+    /// surface must render inside the granted face without a scroll viewport, and
+    /// its lowest control must stay visible rather than clipped below a scrolled
+    /// fold. Expanded is asserted where the face can hold it; genuinely short
+    /// faces fall back to the compact face, which this asserts still fits.
+    @MainActor @Test func nativePanelFitsItsGrantedFaceWithoutScrolling() throws {
+        let snapshot = CameraStabilizationSnapshot(
+            preferred: .standard,
+            capability: .init(connectionSupported: true, formatModes: [.standard, .cinematic, .extreme]),
+            activeRawValue: 1, cameraRevision: 1, changesAllowed: true)
+        func surface(expanded: Bool, landscape: Bool) -> ManualControlsSurface<Text> {
+            ManualControlsSurface(zoom: .constant(2.3), focus: .constant(0.6),
+                                  manualFocus: .constant(true), expanded: .constant(expanded),
+                                  landscape: landscape, zoomRange: 1...8,
+                                  exposure: "ISO 800 · 1/48", apertureReadout: "f/1.8",
+                                  stabilization: snapshot, canChangeStabilization: true,
+                                  selectStabilization: { _ in }, dismiss: {}) { Text("IRIS") }
+        }
+        for size in [CGSize(width: 402, height: 874), CGSize(width: 390, height: 844),
+                     CGSize(width: 430, height: 932), CGSize(width: 320, height: 568)] {
+            for degrees in [0.0, 90.0, -90.0] {
+                let landscape = degrees != 0
+                let status = RecordingStatusOverlayGeometry.rect(viewport: size, toolbarBottom: 110,
+                                                                 controlsTop: size.height - 180, rotationDegrees: degrees)
+                let rect = ManualControlsOverlayGeometry.rect(viewport: size, toolbarBottom: 110,
+                                                              controlsTop: size.height - 180, excluding: status,
+                                                              expanded: true, rotationDegrees: degrees)
+                let face = CGSize(width: landscape ? rect.height : rect.width,
+                                  height: landscape ? rect.width : rect.height)
+                // Mirrors ManualControlsLayout's bounded expanded minimum.
+                let expandedMinimum: CGFloat = landscape ? 300 : 326
+                let expandedFits = face.height >= expandedMinimum
+                let host = NSHostingView(rootView: surface(expanded: expandedFits, landscape: landscape)
+                    .frame(width: face.width))
+                #expect(host.fittingSize.height <= face.height + 0.5,
+                        "The real \(landscape ? "landscape" : "portrait") surface must fit its \(Int(face.height))pt face on \(Int(size.width))x\(Int(size.height)) without scrolling.")
+
+                let overlay = ManualControlsOverlay(viewport: size, toolbarBottom: 110,
+                                                    controlsTop: size.height - 180, excluding: status,
+                                                    expanded: true, rotationDegrees: degrees) {
+                    surface(expanded: true, landscape: landscape)
+                }
+                let image = try bitmap(overlay, size: size)
+                let ink = try whiteInk(image)
+                #expect(ink.count > 400, "The real manual face must render visible native controls, not a blank placeholder.")
+                let scale = CGFloat(image.width) / size.width
+                let bounds = rect.insetBy(dx: -1, dy: -1)
+                #expect(ink.allSatisfy { bounds.contains(CGPoint(x: CGFloat($0.x) / scale,
+                                                                 y: CGFloat($0.y) / scale)) },
+                        "No control may render outside the granted face; nothing scrolls into view.")
+                if degrees == 0, expandedFits {
+                    let rows = ink.map { CGFloat($0.y) / scale }
+                    #expect(rows.contains { $0 >= rect.minY && $0 <= rect.minY + 50 },
+                            "The header row must be visible inside the face.")
+                    #expect(rows.contains { $0 >= rect.maxY - 60 && $0 <= rect.maxY },
+                            "The lowest control row must be visible inside the face, not clipped below a fold.")
+                }
+                try save(image, name: "fitting-\(Int(size.width))x\(Int(size.height))-\(Int(degrees))")
+            }
+        }
+    }
+
+    /// The bounded fallback: a requested expanded face is used only when the
+    /// granted height can hold it; otherwise the compact face fits instead.
+    @Test func expandedFaceIsBoundedByGrantedHeightNotByRequest() {
+        #expect(ManualControlsLayout.usesExpanded(requested: true, landscape: false, availableHeight: 330))
+        #expect(ManualControlsLayout.usesExpanded(requested: true, landscape: false, availableHeight: 326))
+        #expect(!ManualControlsLayout.usesExpanded(requested: true, landscape: false, availableHeight: 128))
+        #expect(ManualControlsLayout.usesExpanded(requested: true, landscape: true, availableHeight: 306))
+        #expect(!ManualControlsLayout.usesExpanded(requested: true, landscape: true, availableHeight: 248))
+        #expect(!ManualControlsLayout.usesExpanded(requested: false, landscape: false, availableHeight: 330))
+        // Hosted standalone (no granted face) keeps the requested layout.
+        #expect(ManualControlsLayout.usesExpanded(requested: true, landscape: false, availableHeight: nil))
     }
 
     @MainActor @Test func defaultOverlayDoesNotStretchIntoAvailableSlab() throws {

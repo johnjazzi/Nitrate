@@ -12,6 +12,8 @@ struct ContentView: View {
     @State private var showStockSheet = false
     @State private var showQueueSheet = false
     @State private var showSettings = false
+    @State private var showDaylightRescue = false
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("showFramedPreview") private var showFramedPreview = false
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
     @State private var controlBounds: [String: CGRect] = [:]
@@ -103,9 +105,39 @@ struct ContentView: View {
 
                 if let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
                     RecordingStatusOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
-                                           rotationDegrees: statusRotationDegrees) {
+                                           rotationDegrees: statusRotationDegrees,
+                                           isInteractive: canManageDaylightMode) {
                         recordingStatus
                     }
+                }
+
+                // A canvas sibling, not a child painted beyond the shooting bar:
+                // visibility never resizes the preview and the whole button is hittable.
+                if shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
+                   let rect = DaylightExposureRescueGeometry.buttonRect(
+                    above: exposure, in: geometry.size, rotationDegrees: statusRotationDegrees) {
+                    ExposureRescueButton(armed: cameraViewModel.sessionFrameRate == .daylight60,
+                                         enabled: cameraViewModel.canChangeSessionFrameRate,
+                                         action: { showDaylightRescue = true })
+                        .frame(width: 92, height: 44)
+                        .rotationEffect(.degrees(statusRotationDegrees))
+                        .frame(width: rect.width, height: rect.height)
+                        .position(x: rect.midX, y: rect.midY)
+                }
+
+                // Below the threshold the rescue trigger is gone, but an armed
+                // session must still have a visible way back to 24 fps. This is
+                // the same status face in its idle-armed form: no dot, no timer,
+                // and a non-sizing sibling so it reserves no toolbar slot, never
+                // hides the lens key and cannot resize the preview.
+                if !shouldOfferDaylightRescue, recordPresentation == .idle,
+                   cameraViewModel.sessionFrameRate == .daylight60,
+                   let top = controlBounds["top"], let bottom = controlBounds["bottom"],
+                   let badge = DaylightIdleBadgeGeometry.rect(
+                    viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
+                    rotationDegrees: statusRotationDegrees) {
+                    statusFace(text: "")
+                        .position(x: badge.midX, y: badge.midY)
                 }
 
                 if showManualControls, let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
@@ -149,6 +181,22 @@ struct ContentView: View {
             .coordinateSpace(name: "cameraCanvas")
             .onPreferenceChange(CameraControlBoundsPreference.self) { controlBounds = $0 }
         }
+        // An in-camera overlay, not a sheet: the preview, toolbar and shooting bar
+        // keep their exact geometry and the scene stays visible behind the dim.
+        .overlay {
+            if showDaylightRescue {
+                DaylightExposureRescueOverlay(
+                    armed: cameraViewModel.sessionFrameRate == .daylight60,
+                    available: cameraViewModel.supportsDaylight60,
+                    canChange: cameraViewModel.canChangeSessionFrameRate,
+                    onSelect: { enabled in
+                        cameraViewModel.setDaylight60Enabled(enabled)
+                        withAnimation(.easeOut(duration: 0.18)) { showDaylightRescue = false }
+                    },
+                    onCancel: { withAnimation(.easeOut(duration: 0.18)) { showDaylightRescue = false } }
+                )
+            }
+        }
         .sheet(isPresented: $showStockSheet) { stockSheet }
         .sheet(isPresented: $showQueueSheet) { queueSheet }
         .sheet(isPresented: $showSettings) {
@@ -164,7 +212,8 @@ struct ContentView: View {
             } else {
                 // Durably queue the take before the sheet is shown, so leaving the
                 // sheet (Done/swipe), a second take, or a relaunch cannot strand it.
-                awaitingStockJobId = renderQueueViewModel.enqueueAwaitingStock(sourceURL: url)
+                awaitingStockJobId = renderQueueViewModel.enqueueAwaitingStock(
+                    sourceURL: url, capturePolicy: cameraViewModel.capturePolicy(for: url))
                 showStockSheet = true
             }
         }
@@ -198,7 +247,10 @@ struct ContentView: View {
         .onChange(of: showManualControls) { _, shown in
             if !shown { cameraViewModel.endSlowZoom() }
         }
-        .onChange(of: showSettings || showQueueSheet || showStockSheet) { _, shown in
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { showDaylightRescue = false }
+        }
+        .onChange(of: showSettings || showQueueSheet || showStockSheet || showDaylightRescue) { _, shown in
             if shown { cameraViewModel.endSlowZoom() }
         }
         .onChange(of: cameraViewModel.activeLens) { _, lens in
@@ -249,7 +301,8 @@ struct ContentView: View {
             sourceURL: sourceURL,
             stockId: stock.stockId,
             iso: currentISO,
-            gauge: library.lastGauge(for: stock.stockId)
+            gauge: library.lastGauge(for: stock.stockId),
+            capturePolicy: cameraViewModel.capturePolicy(for: sourceURL)
         )
     }
 
@@ -456,10 +509,25 @@ struct ContentView: View {
         CameraGlyphRotation.degrees(for: orientation.deviceOrientation)
     }
 
+    /// Same target as the live EV indicator: manual ISO targets zero; automatic
+    /// ISO compares against the user's selected EV bias, not an absolute +2 EV.
+    private var shouldOfferDaylightRescue: Bool {
+        DaylightExposureRescuePolicy.shouldOffer(
+            meteredEV: cameraViewModel.liveExposureTargetOffset,
+            targetEV: cameraViewModel.isManualExposure ? 0 : cameraViewModel.liveExposureBias,
+            isAvailable: cameraViewModel.hasExposureMeter)
+    }
+
+    private var canManageDaylightMode: Bool {
+        cameraViewModel.sessionFrameRate == .daylight60 && cameraViewModel.canChangeSessionFrameRate
+    }
+
     private func statusFace(text: String) -> some View {
         RecordingStatusFace(presentation: recordPresentation, text: text,
                             style: RecordingIndicatorStyle.resolved(recordingIndicatorStyle),
-                            rotationDegrees: CameraGlyphRotation.degrees(for: orientation.deviceOrientation))
+                            rotationDegrees: CameraGlyphRotation.degrees(for: orientation.deviceOrientation),
+                            daylight60Active: cameraViewModel.sessionFrameRate == .daylight60,
+                            onManageDaylight: canManageDaylightMode ? { showDaylightRescue = true } : nil)
     }
 
     private var lensMenu: some View {
@@ -583,6 +651,7 @@ struct ContentView: View {
             renderQueueViewModel: renderQueueViewModel,
             sourceURL: currentSourceURL,
             awaitingStockJobId: awaitingStockJobId,
+            capturePolicy: currentSourceURL.flatMap { cameraViewModel.capturePolicy(for: $0) },
             isPresented: $showStockSheet,
             selectedStock: $selectedStock,
             currentISO: $currentISO
@@ -615,14 +684,6 @@ struct ContentView: View {
     }
 }
 
-private struct CameraControlBoundsPreference: PreferenceKey {
-    static let defaultValue: [String: CGRect] = [:]
-
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
-    }
-}
-
 // MARK: - Stock Sheet
 
 private struct StockSheetView: View {
@@ -632,6 +693,9 @@ private struct StockSheetView: View {
     /// When set, rendering assigns the stock to this durable awaiting entry
     /// instead of creating a second job for the same take.
     var awaitingStockJobId: UUID?
+    /// The policy snapshotted for this take, read from the view model — never
+    /// from the live mode, which may already have reset for the next session.
+    var capturePolicy: RenderCapturePolicy?
     @Binding var isPresented: Bool
     @Binding var selectedStock: FilmStockConfig?
     @Binding var currentISO: Float
@@ -767,7 +831,8 @@ private struct StockSheetView: View {
                     sourceURL: sourceURL,
                     stockId: stock.stockId,
                     iso: stock.defaultISO,
-                    gauge: gauge
+                    gauge: gauge,
+                    capturePolicy: capturePolicy
                 )
             }
             isPresented = false

@@ -1079,7 +1079,8 @@ struct CameraSampleBufferRecorderTests {
 
     @available(macOS 14.2, iOS 17.2, *)
     private static func log2Sample(width: Int = 3840, height: Int = 2160,
-                                   pts: Double = 1) throws -> CMSampleBuffer {
+                                   pts: Double = 1,
+                                   duration: CMTime = CMTime(value: 1, timescale: 24)) throws -> CMSampleBuffer {
         var optionalBuffer: CVPixelBuffer?
         let attributes = [kCVPixelBufferIOSurfacePropertiesKey as String: [:]] as CFDictionary
         let status = CVPixelBufferCreate(kCFAllocatorDefault, width, height,
@@ -1096,7 +1097,7 @@ struct CameraSampleBufferRecorderTests {
             allocator: kCFAllocatorDefault, imageBuffer: buffer, formatDescriptionOut: &description
         )
         guard formatStatus == noErr, let description else { throw RecorderTestError.formatDescription(formatStatus) }
-        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 24),
+        var timing = CMSampleTimingInfo(duration: duration,
             presentationTimeStamp: CMTime(seconds: pts, preferredTimescale: 600), decodeTimeStamp: .invalid)
         var sample: CMSampleBuffer?
         let sampleStatus = CMSampleBufferCreateReadyWithImageBuffer(
@@ -1216,7 +1217,8 @@ struct CameraSampleBufferRecorderTests {
                        startAfter: CMTime = .invalid,
                        requiresAudioEvidence: Bool = false,
                        deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation = .unknown,
-                       captureRotationAngle: CGFloat? = nil) throws -> URL {
+                       captureRotationAngle: CGFloat? = nil,
+                       videoFrameDuration: CMTime = CMTime(value: 1, timescale: 24)) throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-\(UUID().uuidString).mov")
         recorder.begin(to: url, videoSettings: ["codec": "hevc"], audioSettings: audioSettings,
             acceptedPixelFormats: [kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange], metadata: [],
@@ -1225,6 +1227,7 @@ struct CameraSampleBufferRecorderTests {
             preservationProbeEnabled: false,
             requiresAudioEvidence: requiresAudioEvidence,
             startAfter: startAfter,
+            videoFrameDuration: videoFrameDuration,
             onStarted: { error in events.recordStarted(error?.localizedDescription) },
             onFinished: { result in
                 switch result {
@@ -1235,6 +1238,33 @@ struct CameraSampleBufferRecorderTests {
                 }
             })
         return url
+    }
+
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func sixtyFpsFallbackDurationDoesNotTruncateTheDrain() async throws {
+        // E9: a 60 fps take must not fall back to a 1/24 duration. The fallback
+        // is taken from the immutable take mode, so a sample that carries no
+        // duration still advances the video clock by one 1/60 tick and the
+        // normal drain/finish path is unaffected.
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"],
+                            videoFrameDuration: CameraFrameRate.daylight60.fallbackVideoSampleDuration)
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 1, duration: .invalid))
+        #expect(await rig.events.nextStarted() == nil)
+        // Audio ends between one 60fps frame and one legacy 24fps frame.
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmPacket(pts: 1, frames: 1_440))
+        rig.recorder.stop()
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+        #expect(!writer.finishWasRequested, "A 1/24 fallback would incorrectly finish before delayed frame two")
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 1 + 1.0 / 60, duration: .invalid))
+        await rig.drainSubmittedWork()
+        #expect(writer.appendedVideoCount == 2)
+        #expect(writer.finishWasRequested)
+        writer.completeFinalization(success: true)
+        #expect(await rig.events.nextFinished() == nil)
+        #expect(FileManager.default.fileExists(atPath: url.path))
     }
 
     private func makeRig(_ behavior: FakeWriterBehavior, deadlines: RecorderDrainDeadlines? = nil) -> RecorderRig {
@@ -1518,5 +1548,86 @@ private enum RecorderTestError: LocalizedError {
         case .sampleBuffer(let status): return "sample buffer \(status)"
         case .injected: return "injected writer failure"
         }
+    }
+}
+/// Source-level contract for the camera capture runtime's daylight 60 fps
+/// wiring. Device behaviour cannot be exercised here, so these assert the exact
+/// call sites the spec fixes: the session owns the mode, re-asserts the fixed
+/// rate under the exposure lock, starts the recorder with the take's fallback
+/// duration and reports the capture angle at the active fps.
+@Suite("Camera capture runtime source contract")
+struct CameraCaptureRuntimeSourceContractTests {
+    private func sessionSource() throws -> String {
+        try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraSession.swift"),
+                   encoding: .utf8)
+    }
+
+    @Test func sessionOwnsTheSessionOnlyFrameRateMode() throws {
+        let source = try sessionSource()
+        #expect(source.contains("private(set) var frameRate: CameraFrameRate = .standard24"))
+        #expect(source.contains("func setFrameRate(_ mode: CameraFrameRate,"))
+        #expect(source.contains("func supportsDaylight60(completion: @escaping @MainActor @Sendable (Bool) -> Void)"))
+        #expect(source.contains("func resetFrameRateForNextSession()"))
+        // Session-only: the mode is never persisted.
+        #expect(!source.contains("UserDefaults.standard.set(frameRate"))
+    }
+
+    @Test func modeChangeIsRefusedWhileATakeIsPendingActiveOrDraining() throws {
+        let source = try sessionSource()
+        let start = try #require(source.range(of: "func setFrameRate(_ mode: CameraFrameRate,"))
+        let end = try #require(source.range(of: "func supportsDaylight60(completion:"))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        #expect(body.contains("CameraFrameRatePolicy.canChange(recording: self.recordingActive"))
+        #expect(body.contains("guard !self.frameRateTransitionPending"))
+        #expect(body.contains("applyFrameRateMode(mode)"))
+    }
+
+    @Test func everyCustomExposureWriteReassertsTheFixedFrameDuration() throws {
+        let source = try sessionSource()
+        #expect(source.contains("func reassertFrameDuration(on device: AVCaptureDevice, mode: CameraFrameRate) throws"))
+        let reasserts = source.components(separatedBy: "reassertFrameDuration(").count - 1
+        #expect(reasserts >= 6)
+        #expect(source.contains("try reassertFrameDuration(on: device, mode: frameRate)"))
+        // The exposure completion is the last writer of the frame durations, so
+        // the start path re-asserts after it lands, not only before.
+        #expect(source.contains("try session.reassertFrameDuration(on: device, mode: session.frameRate)"))
+    }
+
+    @Test func recorderFallbackDurationComesFromTheTakeMode() throws {
+        let source = try sessionSource()
+        #expect(source.contains("videoFrameDuration: frameRate.fallbackVideoSampleDuration"))
+    }
+
+    @Test func captureAngleUsesTheActiveFrameRate() throws {
+        let source = try sessionSource()
+        #expect(source.contains("let angle = Int((shutterSeconds * Double(frameRate.fps) * 360.0).rounded())"))
+        #expect(!source.contains("* 24.0 * 360.0"))
+        // The fixed shutter now tracks the mode.
+        #expect(source.contains("private var filmShutterDuration: CMTime { frameRate.filmShutterDuration }"))
+        #expect(!source.contains("Self.filmShutterDuration"))
+    }
+
+    @Test func daylight60FailureIsDistinctAndNeverDowngrades() throws {
+        let source = try sessionSource()
+        #expect(source.contains("case daylight60Unsupported(String)"))
+        #expect(source.contains("CameraError.daylight60Unsupported(CameraError.daylight60Reason)"))
+        // A 24-eligible format must not be selected when 60 was requested.
+        #expect(source.contains("CameraCaptureFormatPolicy.appleLog2SixtyCandidateIndexes"))
+    }
+
+    @Test func modeChangeRestoresThePreviousStateAtomically() throws {
+        let source = try sessionSource()
+        #expect(source.contains("restoreFrameRateSnapshot"))
+        #expect(source.contains("if let rejection = configureDataOutputForActiveFormat(activeFormat: format)"))
+        // Lens rollback restores the mode's target, not the stale device values.
+        #expect(!source.contains("activeVideoMinFrameDuration = previousMinFrameDuration"))
+    }
+
+    @Test func recorderFallbackIsParameterisedNotHardcoded() throws {
+        let source = try String(contentsOf: TestRepository.url(
+            for: "App/Modules/CameraCapture/CameraSampleBufferRecorder.swift"), encoding: .utf8)
+        #expect(source.contains("videoFrameDuration: CMTime = CMTime(value: 1, timescale: 24)"))
+        #expect(source.contains("fallbackDuration: videoFallbackDuration)"))
+        #expect(!source.contains("fallbackDuration: CMTime(value: 1, timescale: 24)"))
     }
 }

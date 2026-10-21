@@ -90,6 +90,8 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Tests/CameraDesignTests.swift
+      - path: Tests/DaylightExposureRescueTests.swift
+      - path: App/Modules/CameraCapture/ExposureRescueControl.swift
       - path: Tests/CameraDesignRenderTests.swift
       - path: Tests/ManualControlsOverlayTests.swift
       - path: Tests/CameraZoomPolicyTests.swift
@@ -234,6 +236,7 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: Tests
+      - path: App/Modules/CameraCapture/ExposureRescueControl.swift
       - path: App/AppIdentity.swift
       - path: App/SplashEdgeDetails.swift
       - path: App/SplashEdgeOverlay.swift
@@ -258,6 +261,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraZoomPolicy.swift
       - path: App/Modules/CameraCapture/CameraFocalZoomPolicy.swift
       - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
+      - path: App/Modules/CameraCapture/CameraFrameRatePolicy.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
       - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
       - path: App/Modules/CameraCapture/ManualControlsOverlay.swift
