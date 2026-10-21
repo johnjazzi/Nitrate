@@ -181,19 +181,21 @@ struct ContentView: View {
             .coordinateSpace(name: "cameraCanvas")
             .onPreferenceChange(CameraControlBoundsPreference.self) { controlBounds = $0 }
         }
-        .sheet(isPresented: $showDaylightRescue) {
-            DaylightExposureRescueModal(
-                armed: cameraViewModel.sessionFrameRate == .daylight60,
-                available: cameraViewModel.supportsDaylight60,
-                canChange: cameraViewModel.canChangeSessionFrameRate,
-                onSelect: { enabled in
-                    cameraViewModel.setDaylight60Enabled(enabled)
-                    showDaylightRescue = false
-                },
-                onCancel: { showDaylightRescue = false }
-            )
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
+        // An in-camera overlay, not a sheet: the preview, toolbar and shooting bar
+        // keep their exact geometry and the scene stays visible behind the dim.
+        .overlay {
+            if showDaylightRescue {
+                DaylightExposureRescueOverlay(
+                    armed: cameraViewModel.sessionFrameRate == .daylight60,
+                    available: cameraViewModel.supportsDaylight60,
+                    canChange: cameraViewModel.canChangeSessionFrameRate,
+                    onSelect: { enabled in
+                        cameraViewModel.setDaylight60Enabled(enabled)
+                        withAnimation(.easeOut(duration: 0.18)) { showDaylightRescue = false }
+                    },
+                    onCancel: { withAnimation(.easeOut(duration: 0.18)) { showDaylightRescue = false } }
+                )
+            }
         }
         .sheet(isPresented: $showStockSheet) { stockSheet }
         .sheet(isPresented: $showQueueSheet) { queueSheet }

@@ -8,9 +8,17 @@ struct CameraDesignTests {
         #expect(screen.contains("DaylightExposureRescuePolicy.shouldOffer("))
         #expect(screen.contains("DaylightExposureRescueGeometry.buttonRect("))
         #expect(screen.contains("controlBounds[\"exposure\"]"))
-        #expect(screen.contains(".sheet(isPresented: $showDaylightRescue)"))
-        #expect(screen.contains("DaylightExposureRescueModal("))
+        // An in-camera overlay, not a system sheet: no page-level presentation.
+        #expect(screen.contains("DaylightExposureRescueOverlay("))
+        #expect(!screen.contains(".sheet(isPresented: $showDaylightRescue)"))
+        #expect(!screen.contains("presentationDetents([.large])"))
         #expect(screen.contains("cameraViewModel.setDaylight60Enabled(enabled)"))
+        // The confirmation is a card with padded actions, not a cramped sheet row.
+        let card = try source("App/Modules/CameraCapture/ExposureRescueControl.swift")
+        #expect(card.contains("padding(.horizontal, 18)"))
+        #expect(card.contains("frame(maxWidth: .infinity, minHeight: 52)"))
+        #expect(card.contains("Color.black.opacity(0.55)"),
+                "The canvas behind the card must be dimmed, not replaced by an opaque page.")
         #expect(!screen.contains("daylight60UnavailableReason: Daylight60Control"))
         // Below the threshold the armed 60 badge is the idle-only return path.
         #expect(screen.contains("DaylightIdleBadgeGeometry.rect("))

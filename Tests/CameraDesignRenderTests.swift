@@ -70,7 +70,7 @@ struct CameraDesignRenderTests {
                                                   canChange: true, onSelect: { _ in }, onCancel: {})
                 .frame(width: 320)
             let host = NSHostingView(rootView: view)
-            #expect(host.fittingSize.height <= 450, "Warning and both actions must fit the large sheet.")
+            #expect(host.fittingSize.height <= 480, "Warning and both actions must fit the floating card.")
             let image = try render(view, name: "rescue-modal-\(armed)-\(available)")
             let data = try pixels(image)
             let bright = stride(from: 0, to: data.count, by: 4).filter {
@@ -78,6 +78,52 @@ struct CameraDesignRenderTests {
             }
             #expect(bright.count > 250, "The real warning and confirmation must be rendered.")
         }
+    }
+
+    /// The confirmation must dim the live canvas rather than replace the page:
+    /// the preview stays recognisable behind the card, and the scrim still pulls
+    /// its brightness down.
+    @MainActor @Test func rescueOverlayDimsTheCanvasWithoutHidingIt() throws {
+        let size = CGSize(width: 390, height: 750)
+        let preview = Color(red: 0.10, green: 0.85, blue: 0.20)
+
+        let plain = try pixels(try render(ZStack { preview }.frame(width: size.width, height: size.height),
+                                          name: "rescue-overlay-open"))
+        let dimmed = try pixels(try render(
+            ZStack {
+                preview
+                DaylightExposureRescueOverlay(armed: false, available: true, canChange: true,
+                                              onSelect: { _ in }, onCancel: {})
+            }
+            .frame(width: size.width, height: size.height), name: "rescue-overlay-dimmed"))
+
+        func greenPeak(_ data: [UInt8]) -> Int {
+            stride(from: 0, to: data.count, by: 4)
+                .filter { Int(data[$0 + 1]) > Int(data[$0]) + 30 }
+                .map { Int(data[$0 + 1]) }.max() ?? 0
+        }
+
+        #expect(greenPeak(dimmed) > 60, "The dimmed preview must stay visible behind the card.")
+        #expect(greenPeak(dimmed) < greenPeak(plain), "The canvas behind the card must actually be dimmed.")
+
+        // The card sits in the middle of the canvas, not pinned to an edge.
+        let image = try render(
+            ZStack {
+                preview
+                DaylightExposureRescueOverlay(armed: false, available: true, canChange: true,
+                                              onSelect: { _ in }, onCancel: {})
+            }
+            .frame(width: size.width, height: size.height), name: "rescue-overlay-geometry")
+        let data = try pixels(image)
+        let rows = stride(from: 0, to: data.count, by: 4).filter {
+            data[$0] > 200 && data[$0 + 1] > 200 && data[$0 + 2] > 200
+        }.map { CGFloat(($0 / 4) / image.width) / (CGFloat(image.width) / size.width) }
+        guard let firstRow = rows.min(), let lastRow = rows.max() else {
+            Issue.record("The card's label must render inside the overlay.")
+            return
+        }
+        #expect(firstRow <= size.height / 2 && lastRow >= size.height / 2,
+                "The card's label band must straddle the vertical centre of the canvas.")
     }
 
     private let states: [RecordButtonPresentation] = [.idle, .starting, .recording, .stopping]

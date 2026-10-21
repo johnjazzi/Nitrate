@@ -127,11 +127,16 @@ struct ExposureRescueButton: View {
     }
 }
 
-/// The rescue confirmation. Normal mode offers the 60 fps switch; armed mode offers
-/// the return to 24 fps, so the active badge stays tappable even after the meter
-/// drops back below the threshold. Fixed, short content — no `ScrollView`, so it
-/// cannot be trapped by a scroll that never fits. No orientation modifier: it is a
-/// plain centred SwiftUI panel.
+/// The rescue confirmation card. Normal mode offers the 60 fps switch; armed mode
+/// offers the return to 24 fps, so the active badge stays tappable even after the
+/// meter drops back below the threshold. Fixed, short content — no `ScrollView`,
+/// so it cannot be trapped by a scroll that never fits.
+///
+/// It is rendered by `DaylightExposureRescueOverlay`, which dims the camera canvas
+/// behind it: this is an in-camera confirmation, not a page. The card reuses the
+/// same translucent face as the rest of the chrome so the preview still reads
+/// through, and its actions are deliberately wider and taller than the toolbar
+/// keys because they are read and tapped while watching a bright scene.
 struct DaylightExposureRescueModal: View {
     /// True while the session-only 60 fps mode is active.
     var armed: Bool
@@ -159,16 +164,24 @@ struct DaylightExposureRescueModal: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(armed ? "Daylight 60 fps is on" : "Rescue a too-bright scene")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 14) {
+            Text(armed ? "Daylight 60 fps is on" : "Protect the highlights")
+                .font(.system(size: 19, weight: .semibold))
                 .foregroundStyle(.white)
 
-            Text("60 fps drops the fixed shutter to 1/120 — about 1.3 stops less light. "
-                 + "Motion looks less cinematic than 24 fps. An ND filter is recommended "
-                 + "to keep 24 fps motion in daylight.")
+            if !armed {
+                Text("Negative stock had a long shoulder, so a blown highlight still printed. "
+                     + "Here the highlight simply clips, and a fixed 1/48 shutter is what puts it over.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.88))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text("60 fps drops the shutter to 1/120 — about 1.3 stops less light. "
+                 + "Motion looks less cinematic than 24 fps; an ND filter is the better answer "
+                 + "when you can use one.")
                 .font(.footnote)
-                .foregroundStyle(.white.opacity(0.85))
+                .foregroundStyle(.white.opacity(0.88))
                 .fixedSize(horizontal: false, vertical: true)
 
             Text("Session-only: it reverts to 24 fps when the camera session ends and is never saved.")
@@ -183,18 +196,83 @@ struct DaylightExposureRescueModal: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack(spacing: 10) {
-                Button(armed ? "Keep 60 fps" : "Keep 24 fps", action: onCancel)
-                    .buttonStyle(CameraRaisedButtonStyle())
-                Button(armed ? "Return to 24 fps" : "Use 60 fps") { onSelect(!armed) }
-                    .buttonStyle(CameraRaisedButtonStyle(faceColor: canConfirm ? .orange : nil))
-                    .disabled(!canConfirm)
+            HStack(spacing: 12) {
+                actionButton(armed ? "Keep 60 fps" : "Keep 24 fps", tint: nil, enabled: true,
+                             action: onCancel)
+                actionButton(armed ? "Return to 24 fps" : "Use 60 fps",
+                             tint: canConfirm ? .orange : nil, enabled: canConfirm,
+                             action: { onSelect(!armed) })
             }
             .frame(maxWidth: .infinity)
         }
-        .padding(20)
-        .frame(maxWidth: 340)
-        .modifier(CameraRaisedSurface(cornerRadius: 18))
+        .padding(.horizontal, 22)
+        .padding(.vertical, 20)
+        .frame(maxWidth: 360)
+        .background(cardFace)
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(.white.opacity(0.16), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.55), radius: 18, x: 0, y: 8)
         .accessibilityElement(children: .contain)
+    }
+
+    /// Readable over a dimmed preview: the shared material, plus one extra dark
+    /// layer, because this card carries a warning that must stay legible.
+    private var cardFace: some View {
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .fill(.ultraThinMaterial)
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color.black.opacity(0.55))
+            }
+    }
+
+    /// Deliberately larger than a 44pt toolbar key: wide horizontal padding so the
+    /// label is never crowded by the bevel, and a 52pt minimum height.
+    private func actionButton(_ title: String, tint: Color?, enabled: Bool,
+                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 14)
+                .frame(maxWidth: .infinity, minHeight: 52)
+        }
+        .buttonStyle(CameraRaisedButtonStyle(faceColor: tint, cornerRadius: 12))
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+    }
+}
+
+/// The rescue confirmation as it appears in the camera: a dim scrim over the live
+/// canvas with the card floating in the middle.
+///
+/// This is an overlay on the camera canvas rather than a system sheet, so the
+/// framed preview and the shooting bar are never re-laid-out and the user keeps
+/// seeing the scene they are metering while they decide. Tapping outside the card
+/// dismisses it without changing the mode, which is the same outcome as the
+/// cancel action.
+struct DaylightExposureRescueOverlay: View {
+    var armed: Bool
+    var available: Bool
+    var canChange: Bool
+    var onSelect: (Bool) -> Void
+    var onCancel: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.55)
+                .ignoresSafeArea()
+                .onTapGesture(perform: onCancel)
+                .accessibilityHidden(true)
+
+            DaylightExposureRescueModal(armed: armed, available: available, canChange: canChange,
+                                        onSelect: onSelect, onCancel: onCancel)
+                .padding(.horizontal, 28)
+        }
+        .transition(.opacity)
     }
 }

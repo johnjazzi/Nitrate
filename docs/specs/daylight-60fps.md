@@ -613,10 +613,18 @@ This user-directed revision supersedes §10 and the Manual-controls placement in
   `meteredEV - targetEV >= 2`. The target is the same as the displayed indicator:
   selected EV bias in automatic ISO, zero in manual ISO. Invalid/unavailable
   readings, underexposure and values below the threshold do not offer rescue.
-- The button opens a modal; it never switches capture automatically. Explain that
-  an **ND filter is recommended**, and temporary 60fps / 1/120 has **less cinematic
-  motion**. Explicitly confirm 60fps or cancel/keep 24fps. Unsupported hardware
-  has a visible reason and no enable action. Take/transition gates remain in force.
+- The button opens a confirmation **overlay inside the camera canvas**, never a
+  system sheet or full page: the preview, toolbar and shooting bar keep their
+  exact geometry and the scene stays visible behind a dim scrim (currently a 55%
+  black wash). The card floats centred over the dim; tapping outside it dismisses
+  without changing the mode. Explain that an **ND filter is recommended**, that
+  temporary 60fps / 1/120 has **less cinematic motion**, and give the overexposure
+  reason in film terms: negative stock's long shoulder used to hold a blown
+  highlight, while a fixed 1/48 shutter here clips it. Explicitly confirm 60fps or
+  cancel/keep 24fps. Card actions are deliberately larger than a 44pt toolbar key
+  (min 52pt tall with 18pt horizontal padding) so the labels are never crowded.
+  Unsupported hardware has a visible reason and no enable action. Take/transition
+  gates remain in force.
 - Place the button as a real, hit-testable sibling on the camera canvas, above
   the measured exposure bounds. It must not enlarge the shooting bar, resize the
   framed preview, or draw an unclickable control outside a small parent's bounds.
@@ -638,6 +646,9 @@ Validation before delivery:
    NaN/infinity, over/under and manual target zero. No absolute-EV shortcut.
 2. Native rescue-button/modal renders and geometry through portrait and both
    landscape holds; real hit region and no preview/shooting-bar size change.
+   The confirmation is rendered as an in-canvas overlay, so its native fixture
+   must show the stand-in preview still visible around the dimmed card rather
+   than an opaque page.
 3. Native compact/expanded Manual surfaces, including constrained viewports,
    verify full relevant control visibility with no scroll container.
 4. Source wiring tests distinguish them from actual touch/device evidence.
