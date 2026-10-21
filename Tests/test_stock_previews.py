@@ -44,10 +44,16 @@ STOCK_LUTS = {
 SCENE_IDS = ["neon", "forest", "harvest", "fireworks", "nightride",
              "race", "shoreline", "flyover"]
 
-# Image-quality gates (fractions of a 540x810 frame).
+# Image-quality gates (fractions of a 1080x1620 frame).
 MAX_WHITE_FRACTION = 0.35      # all three channels > 0.97 -> over-exposed
 MIN_MIDTONE_FRACTION = 0.25    # mean channel within 0.08..0.94
 MIN_PALETTE = 500              # distinct 8-bit colours -> not posterised / blank
+
+# Shipped-asset budgets. 1080x1620 (2:3, the card's native 3x shape) at moderate JPEG
+# quality; flat Log plates compress well, so these hold with headroom.
+PLATE_WIDTH, PLATE_HEIGHT = 1080, 1620
+MAX_PLATE_BYTES = 384 * 1024   # per-plate bundle budget
+MAX_TOTAL_BYTES = 1280 * 1024  # whole set
 
 
 def _load_generator():
@@ -102,8 +108,44 @@ class ManifestContractTests(unittest.TestCase):
             self.assertEqual(stats["sha256"], GEN.source_sha256(path))
             self.assertLess(stats["whiteFraction"], 0.35, f"{scene['id']} plate is blown")
             self.assertGreater(stats["midtoneFraction"], 0.25, f"{scene['id']} plate is flat")
-            self.assertLess(stats["roundTripMeanAbsError8bit"], 3.0,
-                            f"{scene['id']}: plate does not survive the neutral round trip")
+
+    def test_plate_stats_are_measured_on_the_stored_jpeg(self):
+        """The reported statistics must come from the stored JPEG, not the pre-JPEG float.
+
+        Decoding the committed JPEG and recomputing the same quantities from it has to
+        reproduce the manifest to within a code unit. This is what stops a pre-compression
+        metric (which understates real error) from being shipped as the truth.
+        """
+        for scene in self.manifest["scenes"]:
+            stats = scene["plateStats"]
+            path = STOCK_DIR / scene["plate"]
+            img = _read(path)
+            self.assertAlmostEqual(float(img.mean()), stats["meanCode"], delta=1.0 / 255.0,
+                                   msg=f"{scene['id']}: meanCode is not from the stored JPEG")
+            self.assertAlmostEqual(float((img >= 0.999).any(axis=-1).mean()),
+                                   stats["whiteFraction"], delta=1e-6,
+                                   msg=f"{scene['id']}: whiteFraction is not from the stored JPEG")
+            self.assertEqual(int(path.stat().st_size), stats["jpegBytes"],
+                             f"{scene['id']}: jpegBytes does not match the committed file")
+
+    def test_stored_jpeg_roundtrip_and_encode_error_are_recorded(self):
+        """Every plate records the error its own JPEG compression introduced, and the
+        display round-trip measured *on that JPEG*."""
+        for scene in self.manifest["scenes"]:
+            stats = scene["plateStats"]
+            for key in ("jpegEncodeMeanAbsError8bit", "jpegEncodeP99AbsError8bit",
+                        "roundTripMeanAbsError8bit", "roundTripP99AbsError8bit"):
+                self.assertIn(key, stats, f"{scene['id']}: {key} missing")
+                self.assertTrue(math.isfinite(stats[key]), f"{scene['id']}: {key} not finite")
+            # moderate quality on flat Log plates: the mean encode error stays within a few
+            # code units, and the JPEG round trip stays small (a collapse in quality shows up
+            # immediately here).
+            self.assertLess(stats["jpegEncodeMeanAbsError8bit"], 5.0,
+                            f"{scene['id']}: JPEG encode error too large for the budget")
+            self.assertLess(stats["roundTripMeanAbsError8bit"], 8.0,
+                            f"{scene['id']}: stored JPEG does not survive the neutral round trip")
+            self.assertIn("stored", stats["roundTripNote"].lower(),
+                          f"{scene['id']}: round trip must be measured on the stored JPEG")
 
     def test_sources_are_identified_supplied_raws(self):
         for scene in self.manifest["scenes"]:
@@ -117,15 +159,35 @@ class ManifestContractTests(unittest.TestCase):
             for key in ("exposureTime", "fNumber", "iso", "originalDate"):
                 self.assertTrue(nef.get(key), f"{scene['id']}: capture metadata {key} missing")
 
+    def test_as_shot_white_balance_is_recorded_not_invented(self):
+        """The RAW's own as-shot WB multipliers are recorded, and no Kelvin is derived
+        from them (the per-scene Kelvin is explicitly labelled assumed)."""
+        for scene in self.manifest["scenes"]:
+            wb = scene["source"]["nef"]["asShotWhiteBalance"]
+            self.assertIn("as-shot", wb["source"].lower())
+            self.assertIn("no colour temperature", wb["note"].lower())
+            mult = wb.get("multipliersRGB")
+            self.assertIsInstance(mult, list, f"{scene['id']}: as-shot multipliers missing")
+            # Nikon's WhiteBalanceRBCoeff carries R, G, B and a second green (G2).
+            self.assertIn(len(mult), (3, 4), f"{scene['id']}: unexpected multiplier count")
+            self.assertTrue(all(m > 0 for m in mult), f"{scene['id']}: non-positive multiplier")
+            derivation = scene["derivation"]
+            self.assertEqual(derivation["sceneIlluminantProvenance"],
+                             "assumed for this scene, not measured")
+            self.assertEqual(derivation["whiteBalance"]["rebalancing"],
+                             "none (auto white-patch removed)")
+
     def test_every_shipped_plate_records_its_compression_budget(self):
         for scene in self.manifest["scenes"]:
             path = STOCK_DIR / scene["plate"]
-            self.assertLess(path.stat().st_size, 160 * 1024,
+            self.assertLess(path.stat().st_size, MAX_PLATE_BYTES,
                             f"{path.name} exceeds the per-plate bundle budget")
+
     def test_total_bundle_stays_small(self):
         total = sum(f.stat().st_size for f in STOCK_DIR.glob("*.jpg"))
-        self.assertLess(total, 600 * 1024,
-                        f"stock previews total {total/1024:.0f} KB; budget is 600 KB")
+        self.assertLess(total, MAX_TOTAL_BYTES,
+                        f"stock previews total {total/1024:.0f} KB; budget is "
+                        f"{MAX_TOTAL_BYTES/1024:.0f} KB")
 
     def test_labelling_is_honest_not_calibration(self):
         blob = json.dumps(self.manifest).lower()
@@ -154,7 +216,14 @@ class ImageQualityTests(unittest.TestCase):
         for _sid, path in self._paths():
             with Image.open(path) as im:
                 self.assertEqual(im.format, "JPEG")
-                self.assertEqual(im.size, (720, 1080))
+                self.assertEqual(im.size, (PLATE_WIDTH, PLATE_HEIGHT))
+
+    def test_native_2to3_aspect(self):
+        for _sid, path in self._paths():
+            with Image.open(path) as im:
+                width, height = im.size
+            self.assertAlmostEqual(width / height, 2.0 / 3.0, places=4,
+                                   msg=f"{path.name}: not the card's native 2:3 aspect")
 
     def test_images_are_present_and_not_blank(self):
         for sid, path in self._paths():
@@ -187,8 +256,87 @@ class ImageQualityTests(unittest.TestCase):
 
     def test_plates_total_stays_within_budget(self):
         total = sum(f.stat().st_size for f in STOCK_DIR.glob("*.jpg"))
-        self.assertLess(total, 800 * 1024,
-                        f"plates total {total/1024:.0f} KB; budget is 800 KB")
+        self.assertLess(total, MAX_TOTAL_BYTES,
+                        f"plates total {total/1024:.0f} KB; budget is "
+                        f"{MAX_TOTAL_BYTES/1024:.0f} KB")
+
+
+class NoAutoWhitePatchTests(unittest.TestCase):
+    """The removed white-patch / grey-world balance must not come back silently.
+
+    An earlier revision picked the brightest desaturated pixels of a gamma-encoded RGB
+    render as a "neutral" reference and scaled the channels to it. Gamma-encoded values are
+    not scene-linear and a bright non-neutral surface passes the filter, so the reference
+    was unreliable and could re-tint every plate. The plate must keep the RAW's as-shot
+    white balance and the scene's own chroma.
+    """
+
+    def test_generator_has_no_white_patch_rebalancing(self):
+        for name in dir(GEN):
+            self.assertNotIn("white_patch", name.lower(),
+                             f"generator still exposes {name}")
+            self.assertNotIn("white_reference_balance", name.lower(),
+                             f"generator still exposes {name}")
+
+    def test_manifest_declares_the_no_rebalancing_policy(self):
+        manifest = json.loads(MANIFEST.read_text())
+        self.assertIn("no white-patch", manifest["whiteBalancePolicy"].lower())
+        for scene in manifest["scenes"]:
+            self.assertNotIn("whiteReference", scene["derivation"],
+                             "white-patch evidence must be gone from the derivation")
+
+    def test_encoding_preserves_scene_chroma(self):
+        """A strongly tinted scene must stay tinted: no channel equalisation."""
+        tint = np.array([[[0.35, 0.12, 0.05], [0.10, 0.28, 0.08]]], dtype=np.float64)
+        plate = GEN.exact_apple_log_plate(tint)
+        channel_means = plate[0].mean(axis=0)
+        self.assertGreater(channel_means[0], channel_means[1])
+        self.assertGreater(channel_means[1], channel_means[2])
+        # A grey input stays grey (the transform is not applying a cast of its own).
+        grey = np.full((1, 2, 3), 0.18, dtype=np.float64)
+        grey_plate = GEN.exact_apple_log_plate(grey)[0]
+        self.assertTrue(np.allclose(grey_plate[:, 0], grey_plate[:, 1], atol=1e-6))
+        self.assertTrue(np.allclose(grey_plate[:, 1], grey_plate[:, 2], atol=1e-6))
+
+
+class AppleLog2EncodeTests(unittest.TestCase):
+    """The exact forward encode replaces the display-LUT inverse; pin its maths."""
+
+    def test_published_18_percent_reflection_lands_at_apple_code(self):
+        # Apple's own white paper example: 18% reflectance encodes to ~0.4883.
+        self.assertAlmostEqual(float(GEN.apple_log_encode(0.18)), 0.4882724, places=5)
+
+    def test_curve_is_monotonic_and_bounded(self):
+        x = np.linspace(0.0, 4.0, 5000)
+        p = GEN.apple_log_encode(x)
+        self.assertTrue(np.all(np.diff(p) >= -1e-12), "Apple Log 2 encode is not monotonic")
+        self.assertGreaterEqual(float(p.min()), 0.0)
+        self.assertLessEqual(float(p.max()), 1.0)
+
+    def test_toe_floor_and_continuity(self):
+        # Below R_0 the encode floors at 0; at R_t the toe and log segment agree.
+        self.assertEqual(float(GEN.apple_log_encode(np.array(-0.2))), 0.0)
+        c = GEN.APPLE_LOG_CONSTANTS
+        left = c["sigma"] * (c["R_t"] - c["R_0"]) ** 2
+        right = c["gamma"] * math.log2(c["R_t"] + c["beta"]) + c["delta"]
+        self.assertAlmostEqual(left, right, places=6)
+
+    def test_apple_wide_gamut_matrix_maps_white_to_white(self):
+        # Neutral grey must stay neutral through the sRGB -> Apple Wide Gamut rotation.
+        for value in (0.18, 0.5, 1.0):
+            out = GEN.srgb_linear_to_apple_wide_gamut(np.array([[value, value, value]]))
+            self.assertTrue(np.allclose(out, value, atol=1e-9),
+                            f"grey {value} picked up a cast in Apple Wide Gamut")
+
+    def test_manifest_records_the_exact_encode(self):
+        manifest = json.loads(MANIFEST.read_text())
+        meta = manifest["appleLog2"]
+        self.assertIn("Apple Log 2", meta["transfer"])
+        self.assertEqual(len(meta["primariesXY"]), 3)
+        self.assertAlmostEqual(meta["encoded18PercentReflection"], 0.4882724, places=5)
+        self.assertEqual(len(meta["sourceToAppleWideGamutMatrix"]), 3)
+        self.assertLess(manifest["curveRoundTrip"]["maxLinearAbsError"], 1e-9,
+                        "Apple Log 2 encode/decode round trip should be exact")
 
 
 class DistinctnessTests(unittest.TestCase):
