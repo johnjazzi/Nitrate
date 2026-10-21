@@ -91,7 +91,13 @@ final class CameraViewModel {
     var manualISO: Float = 400
     /// Auto-exposure target bias in EV (live value; polled with the exposure
     /// readout). Only drives the scene while the device meters automatically.
-    var liveExposureBias: Float = 0
+    ///
+    /// Unlike the session-only 60 fps mode this is a persisted preference: it
+    /// starts from `CameraExposureBiasPreference` (a house default of -1.2 EV for
+    /// anyone who has never moved the control) and every user change is saved, so
+    /// it survives camera sessions and app launches. It is deliberately NOT reset
+    /// at the foreground-session boundary.
+    var liveExposureBias: Float = CameraExposureBiasPreference.load()
     /// Live metered exposure offset from the device target, in EV (positive =
     /// over). Drives the under/over indicator. `hasExposureMeter` is false until
     /// the device is configured, so the indicator can fall back cleanly.
@@ -320,6 +326,11 @@ final class CameraViewModel {
         startExposurePolling()
         startSpacePolling()
         refreshExposure()
+        // Apply the persisted compensation to the freshly configured session
+        // before shutter priority pins, so the first metered frame already
+        // carries it. Queued ahead of `enableShutterPriority` on the same serial
+        // session queue, so the pin reads the new value.
+        session.setExposureBiasEV(liveExposureBias)
         if isManualExposure {
             session.lockManualExposure(iso: manualISO) { [weak self] error in
                 guard let self else { return }
@@ -953,6 +964,9 @@ final class CameraViewModel {
         let range = session.exposureBiasRange
         let clamped = min(max(bias, range.lowerBound), range.upperBound)
         liveExposureBias = clamped
+        // Persist what the user actually holds, after clamping, so the value
+        // survives the session and the next launch.
+        CameraExposureBiasPreference.save(clamped)
         session.setExposureBiasEV(clamped)
     }
 
