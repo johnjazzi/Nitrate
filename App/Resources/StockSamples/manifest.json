@@ -2,6 +2,7 @@
   "schemaVersion": 2,
   "disclaimer": "Illustrative plates \u00b7 your LUT applied live",
   "generator": "scripts/generate_stock_previews.py",
+  "pipeline": "exact",
   "stocks": [
     "kodak5207",
     "kodak5219"
@@ -12,6 +13,63 @@
   },
   "neutralLutSHA256": "831b0e32a18ceba3d93fdf0c2816c01163a67fadd48550a3276167b3b2b1e7f2",
   "runtimeNote": "Plates are Apple Log 2 encoded. The app applies the selected stock LUT to the plate live, so previews track a user LUT, a grade tweak or a gauge change without new assets.",
+  "appleLog2": {
+    "transfer": "Apple Log 2 (same curve as Apple Log)",
+    "primaries": "Apple Wide Gamut (published in the Apple Log 2 Profile)",
+    "primariesXY": [
+      [
+        0.725,
+        0.301
+      ],
+      [
+        0.221,
+        0.814
+      ],
+      [
+        0.068,
+        -0.076
+      ]
+    ],
+    "whiteXY": [
+      0.3127,
+      0.329
+    ],
+    "curve": {
+      "R_0": -0.05641088,
+      "R_t": 0.01,
+      "sigma": 47.28711236,
+      "beta": 0.00964052,
+      "gamma": 0.08550479,
+      "delta": 0.69336945
+    },
+    "curveFormula": "R>=R_t: gamma*log2(R+beta)+delta; R_0<=R<R_t: sigma*(R-R_0)^2; else 0",
+    "encoded18PercentReflection": 0.4882724585268676,
+    "sourceToAppleWideGamutMatrix": [
+      [
+        0.6081040099936039,
+        0.25935339223922904,
+        0.132542597767167
+      ],
+      [
+        0.06231553359437748,
+        0.8046088497421261,
+        0.1330756166634963
+      ],
+      [
+        0.031132614739489764,
+        0.13375584508106161,
+        0.8351115401794484
+      ]
+    ],
+    "note": "primaries/white are published; the RGB<->XYZ matrix is derived from them (same derivation opencolorio-config-aces uses)."
+  },
+  "curveRoundTrip": {
+    "samples": 20000,
+    "maxLinearAbsError": 5.551115123125783e-16,
+    "note": "encode -> decode of the Apple Log 2 curve; validates the toe/log split"
+  },
+  "whiteBalancePolicy": "RAW as-shot camera white balance; no white-patch / grey-world rebalancing is applied, so scene chroma is not inferred.",
+  "exposurePolicy": "LibRaw no_auto_bright=False (as-shot exposure; scene-referred encode)",
   "scenes": [
     {
       "id": "neon",
@@ -29,39 +87,54 @@
           "iso": "280",
           "focalLength": "28",
           "originalDate": "2023:09:02 17:47:24",
-          "whiteBalance": "Auto"
+          "whiteBalance": "Auto",
+          "asShotWhiteBalance": {
+            "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+            "exifMode": "Auto",
+            "makerNoteMode": "AUTO",
+            "makerNoteRBCoeff": "[63/32, 149/128, 1, 1]",
+            "multipliersRGB": [
+              1.96875,
+              1.1640625,
+              1.0,
+              1.0
+            ],
+            "bias": "[0, 0]",
+            "note": "recorded as-shot multipliers; no colour temperature is inferred from them"
+          }
         },
         "note": "Tungsten signage against a dusk sky"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "recipe": "RAW -> LibRaw scene-linear sRGB (gamma=(1,1), 16-bit, as-shot white balance, no auto-bright) -> linear-light centre 2:3 crop + Lanczos -> Apple Wide Gamut matrix (derived from the published primaries) -> exact Apple Log 2 curve encode (quadratic toe) -> Log plate",
         "sceneIlluminantKelvin": 3600,
         "sceneIlluminantProvenance": "assumed for this scene, not measured",
-        "whiteReference": {
-          "applied": true,
-          "candidateFraction": 0.0013978909465020577,
-          "gainsRGB": [
-            1.0,
-            1.0061553283733826,
-            1.13114902066973
-          ]
+        "whiteBalance": {
+          "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+          "rebalancing": "none (auto white-patch removed)"
         },
-        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "crop": "centre 1080x1620 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          720,
-          1080
+          1080,
+          1620
         ],
-        "jpegQuality": 60,
-        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+        "jpegQuality": 76,
+        "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "b681852e59ff1126d185243b1fc36e2a6aae0f36ce9806b09b2763a71482b6f3",
-        "meanCode": 0.3052791740229244,
-        "whiteFraction": 4.243827160493827e-05,
-        "midtoneFraction": 0.991644804526749,
-        "clippedChannelFraction": 5.529835390946502e-05,
-        "roundTripMeanAbsError8bit": 0.2068964098170702,
-        "roundTripP99AbsError8bit": 5.0
+        "sha256": "2d59e7c8f33bb4a943a379ae1083012ecd131dda4f701cea0993bef0195906f6",
+        "meanCode": 0.29654466978073046,
+        "whiteFraction": 0.0,
+        "midtoneFraction": 1.0,
+        "clippedChannelFraction": 0.0,
+        "jpegBytes": 100616,
+        "jpegEncodeMeanAbsError8bit": 1.3094888905990294,
+        "jpegEncodeP99AbsError8bit": 8.223035536594537,
+        "roundTripMeanAbsError8bit": 1.7148806155804315,
+        "roundTripP99AbsError8bit": 13.808987585755638,
+        "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
+        "displayToneDeltaMeanAbsError8bit": 15.701854843104435,
+        "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     },
     {
@@ -80,39 +153,54 @@
           "iso": "2200",
           "focalLength": "28",
           "originalDate": "2023:09:17 12:19:40",
-          "whiteBalance": "Auto"
+          "whiteBalance": "Auto",
+          "asShotWhiteBalance": {
+            "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+            "exifMode": "Auto",
+            "makerNoteMode": "AUTO",
+            "makerNoteRBCoeff": "[461/256, 479/256, 1, 1]",
+            "multipliersRGB": [
+              1.80078125,
+              1.87109375,
+              1.0,
+              1.0
+            ],
+            "bias": "[0, 0]",
+            "note": "recorded as-shot multipliers; no colour temperature is inferred from them"
+          }
         },
         "note": "Daylight under a canopy"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "recipe": "RAW -> LibRaw scene-linear sRGB (gamma=(1,1), 16-bit, as-shot white balance, no auto-bright) -> linear-light centre 2:3 crop + Lanczos -> Apple Wide Gamut matrix (derived from the published primaries) -> exact Apple Log 2 curve encode (quadratic toe) -> Log plate",
         "sceneIlluminantKelvin": 5600,
         "sceneIlluminantProvenance": "assumed for this scene, not measured",
-        "whiteReference": {
-          "applied": true,
-          "candidateFraction": 0.021300154320987655,
-          "gainsRGB": [
-            1.0070337385338484,
-            1.0,
-            1.0428728326871746
-          ]
+        "whiteBalance": {
+          "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+          "rebalancing": "none (auto white-patch removed)"
         },
-        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "crop": "centre 1080x1620 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          720,
-          1080
+          1080,
+          1620
         ],
-        "jpegQuality": 60,
-        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+        "jpegQuality": 76,
+        "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "3551bd2b568ebc33dc29f4800e696fe78511933e10c258cd89a804a3906f3274",
-        "meanCode": 0.32894696128715045,
-        "whiteFraction": 0.0029732510288065844,
-        "midtoneFraction": 0.9895897633744856,
-        "clippedChannelFraction": 0.007064043209876543,
-        "roundTripMeanAbsError8bit": 0.12947612027928773,
-        "roundTripP99AbsError8bit": 4.171491330748697
+        "sha256": "394925925cd1179bee1f47678c2d115538898016803094662d4ce66737fb841c",
+        "meanCode": 0.3211587739195663,
+        "whiteFraction": 0.0,
+        "midtoneFraction": 0.9999994284407865,
+        "clippedChannelFraction": 0.0,
+        "jpegBytes": 305547,
+        "jpegEncodeMeanAbsError8bit": 3.960783848193661,
+        "jpegEncodeP99AbsError8bit": 16.862339622597663,
+        "roundTripMeanAbsError8bit": 5.0930694776229615,
+        "roundTripP99AbsError8bit": 27.480760881750786,
+        "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
+        "displayToneDeltaMeanAbsError8bit": 17.922339936407596,
+        "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     },
     {
@@ -121,7 +209,7 @@
       "plate": "harvest-log.jpg",
       "source": {
         "provider": "John Azzinaro (Nikon D700) \u2014 supplied for Nitrate",
-        "file": "DSC_2186.nef",
+        "file": "DSC_2186.NEF",
         "license": "\u00a9 John Azzinaro, used with permission in Nitrate",
         "sha256": "c31e7d3527252f2dee0b4e5f07034a180bf351b546e106fa1558c61936eef8d0",
         "nef": {
@@ -131,39 +219,54 @@
           "iso": "200",
           "focalLength": "28",
           "originalDate": "2025:10:19 09:25:59",
-          "whiteBalance": "Auto"
+          "whiteBalance": "Auto",
+          "asShotWhiteBalance": {
+            "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+            "exifMode": "Auto",
+            "makerNoteMode": "AUTO",
+            "makerNoteRBCoeff": "[243/128, 169/128, 1, 1]",
+            "multipliersRGB": [
+              1.8984375,
+              1.3203125,
+              1.0,
+              1.0
+            ],
+            "bias": "[0, 0]",
+            "note": "recorded as-shot multipliers; no colour temperature is inferred from them"
+          }
         },
         "note": "Daylight, saturated warm subject"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "recipe": "RAW -> LibRaw scene-linear sRGB (gamma=(1,1), 16-bit, as-shot white balance, no auto-bright) -> linear-light centre 2:3 crop + Lanczos -> Apple Wide Gamut matrix (derived from the published primaries) -> exact Apple Log 2 curve encode (quadratic toe) -> Log plate",
         "sceneIlluminantKelvin": 5600,
         "sceneIlluminantProvenance": "assumed for this scene, not measured",
-        "whiteReference": {
-          "applied": true,
-          "candidateFraction": 0.024521604938271605,
-          "gainsRGB": [
-            1.0746246232252203,
-            1.0404126490664247,
-            1.0
-          ]
+        "whiteBalance": {
+          "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+          "rebalancing": "none (auto white-patch removed)"
         },
-        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "crop": "centre 1080x1620 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          720,
-          1080
+          1080,
+          1620
         ],
-        "jpegQuality": 60,
-        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+        "jpegQuality": 76,
+        "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "bb9c91f15cdd0ff0df288c9833cdc8b84895b6c7cd2c6e9af5d0afa197b40b57",
-        "meanCode": 0.41818533136888897,
-        "whiteFraction": 1.02880658436214e-05,
-        "midtoneFraction": 0.9995498971193416,
-        "clippedChannelFraction": 5.1440329218106995e-05,
-        "roundTripMeanAbsError8bit": 0.19122552725405048,
-        "roundTripP99AbsError8bit": 6.0
+        "sha256": "63b9e506b32990c76de77125dc4e18fec236efbcdbee9d03363c98e1d46997f1",
+        "meanCode": 0.40561739079109776,
+        "whiteFraction": 0.0,
+        "midtoneFraction": 1.0,
+        "clippedChannelFraction": 0.0,
+        "jpegBytes": 132833,
+        "jpegEncodeMeanAbsError8bit": 1.4383950089224626,
+        "jpegEncodeP99AbsError8bit": 6.707107649746027,
+        "roundTripMeanAbsError8bit": 2.259418172190918,
+        "roundTripP99AbsError8bit": 10.389428222915502,
+        "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
+        "displayToneDeltaMeanAbsError8bit": 19.26906744894406,
+        "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     },
     {
@@ -172,7 +275,7 @@
       "plate": "fireworks-log.jpg",
       "source": {
         "provider": "John Azzinaro (Nikon D700) \u2014 supplied for Nitrate",
-        "file": "DSC_2077.nef",
+        "file": "DSC_2077.NEF",
         "license": "\u00a9 John Azzinaro, used with permission in Nitrate",
         "sha256": "f870dd104369c346f55603ac4322cda84905c78f3cbb7ce41467519ce08f2c0c",
         "nef": {
@@ -182,39 +285,54 @@
           "iso": "2500",
           "focalLength": "50",
           "originalDate": "2025:07:05 20:19:27",
-          "whiteBalance": "Auto"
+          "whiteBalance": "Auto",
+          "asShotWhiteBalance": {
+            "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+            "exifMode": "Auto",
+            "makerNoteMode": "AUTO",
+            "makerNoteRBCoeff": "[89/64, 467/256, 1, 1]",
+            "multipliersRGB": [
+              1.390625,
+              1.82421875,
+              1.0,
+              1.0
+            ],
+            "bias": "[0, 0]",
+            "note": "recorded as-shot multipliers; no colour temperature is inferred from them"
+          }
         },
         "note": "Night highlights on a dark ground"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "recipe": "RAW -> LibRaw scene-linear sRGB (gamma=(1,1), 16-bit, as-shot white balance, no auto-bright) -> linear-light centre 2:3 crop + Lanczos -> Apple Wide Gamut matrix (derived from the published primaries) -> exact Apple Log 2 curve encode (quadratic toe) -> Log plate",
         "sceneIlluminantKelvin": 3600,
         "sceneIlluminantProvenance": "assumed for this scene, not measured",
-        "whiteReference": {
-          "applied": true,
-          "candidateFraction": 0.01800925925925926,
-          "gainsRGB": [
-            1.001720993610067,
-            1.0,
-            1.0516257656488055
-          ]
+        "whiteBalance": {
+          "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+          "rebalancing": "none (auto white-patch removed)"
         },
-        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "crop": "centre 1080x1620 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          720,
-          1080
+          1080,
+          1620
         ],
-        "jpegQuality": 60,
-        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+        "jpegQuality": 76,
+        "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "3f4355632d193861c95ac9eb6c5cad7b08aa91662bdf2f2d14dcfd53a5867b01",
-        "meanCode": 0.2506311682838627,
-        "whiteFraction": 0.0025257201646090533,
-        "midtoneFraction": 0.9900938786008231,
-        "clippedChannelFraction": 0.003221450617283951,
-        "roundTripMeanAbsError8bit": 0.5589117964839799,
-        "roundTripP99AbsError8bit": 8.324167725000008
+        "sha256": "1a1ba538b3d7be841bc5b27995bdadff8c9aa625ba4e67065289e44695953cca",
+        "meanCode": 0.2531148460451091,
+        "whiteFraction": 0.0,
+        "midtoneFraction": 1.0,
+        "clippedChannelFraction": 0.0,
+        "jpegBytes": 101076,
+        "jpegEncodeMeanAbsError8bit": 1.862222451452961,
+        "jpegEncodeP99AbsError8bit": 9.178669595897542,
+        "roundTripMeanAbsError8bit": 2.0337995961656623,
+        "roundTripP99AbsError8bit": 14.188259318705784,
+        "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
+        "displayToneDeltaMeanAbsError8bit": 15.030952544881702,
+        "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     },
     {
@@ -223,7 +341,7 @@
       "plate": "nightride-log.jpg",
       "source": {
         "provider": "John Azzinaro (Nikon D700) \u2014 supplied for Nitrate",
-        "file": "DSC_3488.nef",
+        "file": "DSC_3488.NEF",
         "license": "\u00a9 John Azzinaro, used with permission in Nitrate",
         "sha256": "86a4a9aef1dacf522c40ce4a6b85e1ba6ad1567290a13c8cf2857ed528468183",
         "nef": {
@@ -233,39 +351,54 @@
           "iso": "200",
           "focalLength": "23",
           "originalDate": "2026:04:11 19:07:50",
-          "whiteBalance": "Auto"
+          "whiteBalance": "Auto",
+          "asShotWhiteBalance": {
+            "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+            "exifMode": "Auto",
+            "makerNoteMode": "AUTO",
+            "makerNoteRBCoeff": "[123/64, 323/256, 1, 1]",
+            "multipliersRGB": [
+              1.921875,
+              1.26171875,
+              1.0,
+              1.0
+            ],
+            "bias": "[0, 0]",
+            "note": "recorded as-shot multipliers; no colour temperature is inferred from them"
+          }
         },
         "note": "Night speed, skin under sodium light"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "recipe": "RAW -> LibRaw scene-linear sRGB (gamma=(1,1), 16-bit, as-shot white balance, no auto-bright) -> linear-light centre 2:3 crop + Lanczos -> Apple Wide Gamut matrix (derived from the published primaries) -> exact Apple Log 2 curve encode (quadratic toe) -> Log plate",
         "sceneIlluminantKelvin": 3600,
         "sceneIlluminantProvenance": "assumed for this scene, not measured",
-        "whiteReference": {
-          "applied": true,
-          "candidateFraction": 0.06770061728395062,
-          "gainsRGB": [
-            1.037169355749392,
-            1.018144928105745,
-            1.0
-          ]
+        "whiteBalance": {
+          "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+          "rebalancing": "none (auto white-patch removed)"
         },
-        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "crop": "centre 1080x1620 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          720,
-          1080
+          1080,
+          1620
         ],
-        "jpegQuality": 60,
-        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+        "jpegQuality": 76,
+        "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "970c3756b6a166be7d30163368b18681a06aa5f548553a60868dce21084a67dd",
-        "meanCode": 0.298615254741139,
-        "whiteFraction": 0.010169753086419753,
-        "midtoneFraction": 0.9683654835390947,
-        "clippedChannelFraction": 0.01159593621399177,
-        "roundTripMeanAbsError8bit": 0.5691170630798008,
-        "roundTripP99AbsError8bit": 9.163304352951705
+        "sha256": "945ba2fa7409f9e62aab721a5e1a23fd1aba96a210dcf993211bab32d38d9d3e",
+        "meanCode": 0.29552726673659857,
+        "whiteFraction": 0.0,
+        "midtoneFraction": 0.9999994284407865,
+        "clippedChannelFraction": 0.0,
+        "jpegBytes": 78052,
+        "jpegEncodeMeanAbsError8bit": 1.2594577580157829,
+        "jpegEncodeP99AbsError8bit": 5.194230444793559,
+        "roundTripMeanAbsError8bit": 1.4542384731250717,
+        "roundTripP99AbsError8bit": 7.063182784989307,
+        "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
+        "displayToneDeltaMeanAbsError8bit": 16.01710553691627,
+        "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     },
     {
@@ -284,39 +417,54 @@
           "iso": "200",
           "focalLength": "200",
           "originalDate": "2023:08:06 09:09:41",
-          "whiteBalance": "Auto"
+          "whiteBalance": "Auto",
+          "asShotWhiteBalance": {
+            "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+            "exifMode": "Auto",
+            "makerNoteMode": "AUTO",
+            "makerNoteRBCoeff": "[441/256, 361/256, 1, 1]",
+            "multipliersRGB": [
+              1.72265625,
+              1.41015625,
+              1.0,
+              1.0
+            ],
+            "bias": "[0, 0]",
+            "note": "recorded as-shot multipliers; no colour temperature is inferred from them"
+          }
         },
         "note": "Daylight skin tones, saturated crowd colour"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "recipe": "RAW -> LibRaw scene-linear sRGB (gamma=(1,1), 16-bit, as-shot white balance, no auto-bright) -> linear-light centre 2:3 crop + Lanczos -> Apple Wide Gamut matrix (derived from the published primaries) -> exact Apple Log 2 curve encode (quadratic toe) -> Log plate",
         "sceneIlluminantKelvin": 5600,
         "sceneIlluminantProvenance": "assumed for this scene, not measured",
-        "whiteReference": {
-          "applied": true,
-          "candidateFraction": 0.05568672839506173,
-          "gainsRGB": [
-            1.016194415357553,
-            1.0,
-            1.0191685831626418
-          ]
+        "whiteBalance": {
+          "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+          "rebalancing": "none (auto white-patch removed)"
         },
-        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "crop": "centre 1080x1620 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          720,
-          1080
+          1080,
+          1620
         ],
-        "jpegQuality": 60,
-        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+        "jpegQuality": 76,
+        "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "06ac790594872294149af2ae9af2332edc606ad5538e796424a9546005ff8d17",
-        "meanCode": 0.43490002956866924,
-        "whiteFraction": 0.0068467078189300415,
-        "midtoneFraction": 0.9907201646090535,
-        "clippedChannelFraction": 0.009229681069958848,
-        "roundTripMeanAbsError8bit": 0.06668357354439772,
-        "roundTripP99AbsError8bit": 0.9370971409443802
+        "sha256": "052966a681cecbcd29042ca7a50c9204f2f07613a76be5a7af73d45e7ee02389",
+        "meanCode": 0.4142822329510984,
+        "whiteFraction": 0.0,
+        "midtoneFraction": 1.0,
+        "clippedChannelFraction": 0.0,
+        "jpegBytes": 139269,
+        "jpegEncodeMeanAbsError8bit": 1.4433140003905673,
+        "jpegEncodeP99AbsError8bit": 7.090364648309181,
+        "roundTripMeanAbsError8bit": 2.397440344443459,
+        "roundTripP99AbsError8bit": 12.530650308237627,
+        "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
+        "displayToneDeltaMeanAbsError8bit": 20.751408336397475,
+        "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     },
     {
@@ -335,39 +483,54 @@
           "iso": "200",
           "focalLength": "50",
           "originalDate": "2023:09:04 15:09:21",
-          "whiteBalance": "Auto"
+          "whiteBalance": "Auto",
+          "asShotWhiteBalance": {
+            "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+            "exifMode": "Auto",
+            "makerNoteMode": "AUTO",
+            "makerNoteRBCoeff": "[121/64, 85/64, 1, 1]",
+            "multipliersRGB": [
+              1.890625,
+              1.328125,
+              1.0,
+              1.0
+            ],
+            "bias": "[0, 0]",
+            "note": "recorded as-shot multipliers; no colour temperature is inferred from them"
+          }
         },
         "note": "Daylight water and a hazy skyline"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "recipe": "RAW -> LibRaw scene-linear sRGB (gamma=(1,1), 16-bit, as-shot white balance, no auto-bright) -> linear-light centre 2:3 crop + Lanczos -> Apple Wide Gamut matrix (derived from the published primaries) -> exact Apple Log 2 curve encode (quadratic toe) -> Log plate",
         "sceneIlluminantKelvin": 5600,
         "sceneIlluminantProvenance": "assumed for this scene, not measured",
-        "whiteReference": {
-          "applied": true,
-          "candidateFraction": 0.03551054526748971,
-          "gainsRGB": [
-            1.0840005783749977,
-            1.0276551224097739,
-            1.0
-          ]
+        "whiteBalance": {
+          "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+          "rebalancing": "none (auto white-patch removed)"
         },
-        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "crop": "centre 1080x1620 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          720,
-          1080
+          1080,
+          1620
         ],
-        "jpegQuality": 60,
-        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+        "jpegQuality": 76,
+        "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "69bc5ffc9509743c902846785414da2afa600dc1d93904c6df915b703950c05f",
-        "meanCode": 0.5492303882458318,
-        "whiteFraction": 0.012055041152263374,
-        "midtoneFraction": 0.964130658436214,
-        "clippedChannelFraction": 0.035002572016460905,
-        "roundTripMeanAbsError8bit": 0.08915949688526816,
-        "roundTripP99AbsError8bit": 3.3241677249999975
+        "sha256": "519b980eacfd8c402416589fc362757c8f023515628e2f2d375791a3c20d7781",
+        "meanCode": 0.4888740395563804,
+        "whiteFraction": 0.0,
+        "midtoneFraction": 1.0,
+        "clippedChannelFraction": 0.0,
+        "jpegBytes": 180803,
+        "jpegEncodeMeanAbsError8bit": 2.0529603674500696,
+        "jpegEncodeP99AbsError8bit": 9.676457492929902,
+        "roundTripMeanAbsError8bit": 3.3270051316189764,
+        "roundTripP99AbsError8bit": 15.51733734900601,
+        "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
+        "displayToneDeltaMeanAbsError8bit": 27.60957538511498,
+        "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     },
     {
@@ -376,7 +539,7 @@
       "plate": "flyover-log.jpg",
       "source": {
         "provider": "John Azzinaro (Nikon D700) \u2014 supplied for Nitrate",
-        "file": "DSC_4498.nef",
+        "file": "DSC_4498.NEF",
         "license": "\u00a9 John Azzinaro, used with permission in Nitrate",
         "sha256": "fb4961a50e2db75e7b3b9830ab57c7cbd74a7bceec7801ee576696fa55418c97",
         "nef": {
@@ -386,39 +549,54 @@
           "iso": "200",
           "focalLength": "90",
           "originalDate": "2026:07:04 09:02:28",
-          "whiteBalance": "Auto"
+          "whiteBalance": "Auto",
+          "asShotWhiteBalance": {
+            "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+            "exifMode": "Auto",
+            "makerNoteMode": "AUTO",
+            "makerNoteRBCoeff": "[499/256, 325/256, 1, 1]",
+            "multipliersRGB": [
+              1.94921875,
+              1.26953125,
+              1.0,
+              1.0
+            ],
+            "bias": "[0, 0]",
+            "note": "recorded as-shot multipliers; no colour temperature is inferred from them"
+          }
         },
         "note": "Bright daylight sky and distant detail"
       },
       "derivation": {
-        "recipe": "RAW -> developer render (LibRaw camera matrix, its tone curve, as-shot white balance) -> white-patch neutral balance -> centre 2:3 crop -> approximate inverse of the official neutral Apple Log 2 -> Rec.709 LUT -> Log plate",
+        "recipe": "RAW -> LibRaw scene-linear sRGB (gamma=(1,1), 16-bit, as-shot white balance, no auto-bright) -> linear-light centre 2:3 crop + Lanczos -> Apple Wide Gamut matrix (derived from the published primaries) -> exact Apple Log 2 curve encode (quadratic toe) -> Log plate",
         "sceneIlluminantKelvin": 5600,
         "sceneIlluminantProvenance": "assumed for this scene, not measured",
-        "whiteReference": {
-          "applied": true,
-          "candidateFraction": 0.07999485596707819,
-          "gainsRGB": [
-            1.0,
-            1.0100456715394737,
-            1.0279144731061707
-          ]
+        "whiteBalance": {
+          "source": "RAW as-shot camera white balance (LibRaw use_camera_wb=True)",
+          "rebalancing": "none (auto white-patch removed)"
         },
-        "crop": "centre 720x1080 (2:3) from the full frame, Lanczos",
+        "crop": "centre 1080x1620 (2:3) from the full frame, Lanczos",
         "outputSize": [
-          720,
-          1080
+          1080,
+          1620
         ],
-        "jpegQuality": 60,
-        "plateLabel": "Apple Log 2 encoded plate (approximate; NOT a camera original)"
+        "jpegQuality": 76,
+        "plateLabel": "Apple Log 2 encoded plate (illustrative; NOT a camera original)"
       },
       "plateStats": {
-        "sha256": "21ecdc65c02978f6cb064b2744fa0efd88c9b55ecb2e08f98f9fada42aedd90d",
-        "meanCode": 0.7033662480486734,
-        "whiteFraction": 0.054021347736625515,
-        "midtoneFraction": 0.9150012860082305,
-        "clippedChannelFraction": 0.06068287037037037,
-        "roundTripMeanAbsError8bit": 0.2083449018097381,
-        "roundTripP99AbsError8bit": 7.219042582224163
+        "sha256": "12a475453e52708bd085965272dfaeee67906289708ca642d2a34b28fd34592f",
+        "meanCode": 0.5857612197447186,
+        "whiteFraction": 0.0,
+        "midtoneFraction": 1.0,
+        "clippedChannelFraction": 0.0,
+        "jpegBytes": 52457,
+        "jpegEncodeMeanAbsError8bit": 0.8449834833543614,
+        "jpegEncodeP99AbsError8bit": 3.7104500077795084,
+        "roundTripMeanAbsError8bit": 1.5755745459014743,
+        "roundTripP99AbsError8bit": 6.9166060140003385,
+        "roundTripNote": "display-space difference between the STORED JPEG and the lossless plate (both through the official neutral LUT); this is the real JPEG round-trip error.",
+        "displayToneDeltaMeanAbsError8bit": 40.388531121987725,
+        "displayToneDeltaNote": "official neutral LUT applied to the stored plate vs a plain sRGB display render of the same as-shot linear; an informational look difference (exposure isolated), not an error."
       }
     }
   ],
