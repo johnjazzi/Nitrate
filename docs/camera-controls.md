@@ -10,6 +10,8 @@
 - The LCD sits above a recessed stock/gauge well. A confirmed live take shows **RECORDING** on the LCD and lights a red tally at the top-right of the preview area. Pending start and finalization do not claim live recording. Queue/storage access remains available during a take.
 - The dot and elapsed timer are absent when not actively recording. In portrait, the timer floats horizontally centered over the top bar without reserving a control slot. In landscape, it floats over the preview at the physical top edge. The lens selector remains hidden during the take.
 - Debug/Fault buttons float over the capture frame, below the stationary toolbar. They do not reserve toolbar height or change preview size.
+- Tapping the stock/gauge well opens the stock browser. The selected stock is centered in a snapping horizontal carousel; tapping a neighboring stock or swiping updates the selection and restores that stock's remembered gauge. Selecting the same stock does not reset its gauge.
+- An independent photo carousel previews the selected stock's color LUT. Changing stock preserves the selected example scene. These are bundled, offline illustrative photos, not captured Apple Log originals; they preview color only, not grain, gauge, glow, or halation. The vertically scrolling sheet keeps gauge and Render reachable on smaller screens.
 
 ## Automated checks
 
@@ -30,5 +32,7 @@ Open **Nitrate Dev**, not the TestFlight Nitrate app. Dismiss the Debug Single F
 2. While idle, pinch outward/inward across 24 and 96 mm and back. Check the selected physical lens, continuous focal ruler, requested major marks, and haptic ticks. Reach 13 and 150 mm where the installed lenses support them; repeat on front and verify it stays front.
 3. Move EV, long-press to lock ISO, move ISO, then unlock. Check detent feedback and distinct lock/unlock feedback with capture audio active.
 4. Before recording, confirm there is no dot or elapsed timer. Start a short take: the LCD reads RECORDING, the top-right tally lights, the portrait timer is screen-centered over the top bar, and the lens selector is hidden. In landscape, the timer floats over the preview. Neither timer placement changes the frame. Pinch must not change zoom. Stop: dot and timer disappear immediately while finalizing, and the lens selector returns. Check the clip plays and queue/storage access still works.
+
+5. Tap the stock/gauge well below the LCD. Swipe the stock strip and tap its neighboring card: the selection should snap to center, tick once, and update the photo's color. Swipe the example photos, then change stock; the same scene should stay selected. Change gauge, choose another stock, and return; each stock should remember its gauge. Scroll down to reach Render on a small phone, dismiss with Done, and reopen: the selected stock should still be centered. With a completed take, confirm Render still resumes its existing queued entry rather than creating a duplicate.
 
 Record the hold, lens, displayed focal length, action, and a screen recording if a transition fails. Visual preference, haptic feel, and physical camera transitions require hands-on acceptance; passing builds and policy tests do not establish those.
