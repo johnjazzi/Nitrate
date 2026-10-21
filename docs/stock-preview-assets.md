@@ -8,8 +8,9 @@ without shipping a camera-original shot that does not exist.
 
 > **Honest labelling.** These are **illustrative photos** assembled from public CC0
 > photographic HDRIs. The graded variants are the **real bundled colour LUTs applied to an
-> illustrative synthetic Log input** — not Apple Log 2 camera originals and **not a
-> calibration**. Only the colour LUT is simulated: no grain, halation or gauge.
+> illustrative synthetic Log input**, plus the **locked white balance the app uses for that
+> stock** — not Apple Log 2 camera originals and **not a calibration**. Only colour and the
+> white-balance lock are simulated: no grain, halation or gauge.
 
 ## Files
 
@@ -39,6 +40,7 @@ CC0 HDRI source (Poly Haven, actual asset)
        (KD-tree kNN in the cube's output space, then bounded damped-Newton refinement
         against the cube's own trilinear model)  → illustrative synthetic Log input
   └─ synthetic Log input ─► real stock .cube, red-fastest trilinear  → <scene>-<stockId>.jpg
+  └─ locked white balance for that stock, applied in linear light   → <scene>-<stockId>.jpg
 ```
 
 The **only** non-real step is the middle one: there are no Apple Log 2 originals for these
@@ -46,6 +48,54 @@ scenes, so we reconstruct a plausible Log-domain input by inverting the licensed
 transform. We do **not** guess Apple gamut primaries — the neutral LUT already encodes the
 exact Apple Log 2 / Apple Wide Gamut → Rec. 709 mapping, so we invert *it* rather than
 re-implement a colour science we cannot verify.
+
+## Locked white balance
+
+The app does not shoot a neutral scene. `CameraSession.setWhiteBalance` locks the sensor to
+the selected stock's `colorTemperature` with `tint: 0` — 5600 K for `kodak5207` (250D) and
+3200 K for `kodak5219` (500T). Two stocks therefore see *different* white balances on the
+same scene, and a preview that ignored this would understate the difference between a
+daylight and a tungsten stock. The previews include it:
+
+```
+gain = I(scene illuminant) / I(locked Kelvin)
+```
+
+with each illuminant placed on the Planckian locus (Kim et al. 1997 xy approximation),
+converted to XYZ, displaced by a **Bradford** chromatic adaptation, and applied as a
+per-channel gain in linear sRGB, normalised to preserve luminance so this models a white
+balance change rather than a re-exposure. Recorded per asset in the manifest as
+`whiteBalance` (`sceneIlluminantKelvin`, `lockedKelvin`, `gainLinearRGB`).
+
+Measured behaviour on the shipped scenes:
+
+| scene (assumed illuminant) | kodak5207 lock 5600 K | kodak5219 lock 3200 K |
+|---|---|---|
+| daylight (5600 K) | gain ≈ 1.00 → neutral | gain 0.46 / 1.03 / 2.27 → cool |
+| city (5500 K) | gain ≈ 1.01 / 1.00 / 0.98 → neutral | gain 0.47 / 1.03 / 2.23 → cool |
+| night (3000 K) | gain 1.63 / 0.88 / 0.32 → warm | gain 1.09 / 0.99 / 0.87 → close to neutral |
+
+Three things are approximate and declared rather than hidden:
+
+1. **The scene illuminant is assumed, not measured** (5600 K / 5500 K / 3000 K). These are
+   the illuminants these three scenes were lit by; nothing in the pipeline recovers them
+   from the pixels.
+2. **Bradford stands in for the device's real sensor gains.** The capture device's gains are
+   normalised and clipped in ways this generator cannot query, so the magnitude is a
+   standard-model estimate of the direction and size of the shift, not a colorimetric
+   prediction.
+3. **The gain is applied at display scale, after the stock LUT**, although a camera applies
+   it before the tone curve. The physical placement was tried first and rejected on
+   measurement: for a mismatched pair the requested cast lies partly outside the neutral
+   transform's reachable gamut, and inverting there moved 9.6 % of a daylight frame's pixels
+   (up to 0.95) at the gamut boundary, which banded visibly as cyan blotches. Applying the
+   same gain in linear light after the LUT keeps the direction and magnitude without those
+   artifacts. `project_into_reachable` is retained for that diagnostic.
+
+Channel clipping at full scale is expected and left alone: a 3200 K lock on a 5600 K scene
+clips blue, exactly as the camera does. `clippedChannelFraction` is recorded per asset, and
+the suite bounds it so a preview cannot clip so much of the frame that the stock stops being
+visible.
 
 The inverse is not a random filter and not merely "lower contrast / desaturate": it is a
 deterministic numerical inversion of the actual monitoring transform, refined per pixel

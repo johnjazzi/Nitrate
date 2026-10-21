@@ -69,7 +69,8 @@ class ManifestContractTests(unittest.TestCase):
 
     def test_schema_and_disclaimer(self):
         self.assertEqual(self.manifest["schemaVersion"], 1)
-        self.assertEqual(self.manifest["disclaimer"], "Illustrative photos \u00b7 color LUT only")
+        self.assertEqual(self.manifest["disclaimer"],
+                         "Illustrative photos \u00b7 color LUT + white balance only")
 
     def test_scene_coverage(self):
         ids = [s["id"] for s in self.manifest["scenes"]]
@@ -308,6 +309,125 @@ class ReprojectionTests(unittest.TestCase):
         band = img.shape[0] // 5
         cols = [int(np.argmax(prof[i * band:(i + 1) * band].mean(axis=0))) for i in range(5)]
         self.assertLess(max(cols) - min(cols), 2, "vertical line curves in crop -> equirect distortion")
+
+
+class WhiteBalanceTests(unittest.TestCase):
+    """The app locks the sensor white balance per stock, so the previews must show it.
+
+    Rigour matters here: the neutral reference has *no* LUT applied, so comparing a
+    shipped variant against it measures the LUT and the white balance together. These
+    tests instead rebuild each stock's LUT-only output and require the shipped asset to
+    be exactly that output with the recorded gain applied -- which pins the cast to the
+    white balance and nothing else.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.manifest = json.loads(MANIFEST.read_text())
+        cls.scene = {s["id"]: s for s in cls.manifest["scenes"]}
+        cls.neutral_inv = GEN.InverseNeutral(NEUTRAL_LUT)
+        cls.cubes = {sid: GEN._parse_cube(path) for sid, path in STOCK_LUTS.items()}
+        cls.lut_only = {}
+        for scene in cls.manifest["scenes"]:
+            base = _read(STOCK_DIR / scene["neutralFile"])
+            log_input = cls.neutral_inv.apply(base)
+            for sid, (size, cube) in cls.cubes.items():
+                cls.lut_only[(scene["id"], sid)] = GEN._trilinear(cube, size, log_input)
+
+    def setUp(self):
+        self.stocks = json.loads((REPO / "App" / "Resources" / "stocks.json").read_text())["stocks"]
+
+    def _shipped(self, scene_id, sid):
+        return _read(STOCK_DIR / self.scene[scene_id]["previews"][sid])
+
+    def _gain(self, scene_id, sid):
+        return np.array(self.scene[scene_id]["assets"][sid]["whiteBalance"]["gainLinearRGB"])
+
+    def test_locks_match_the_app_stock_config(self):
+        configured = {s["stockId"]: float(s["colorTemperature"]) for s in self.stocks}
+        for sid in STOCK_LUTS:
+            self.assertEqual(self.manifest["lockedKelvin"][sid], configured[sid],
+                             f"{sid} previews must use the Kelvin the capture session locks")
+
+    def test_every_stock_variant_records_its_simulation(self):
+        for scene in self.manifest["scenes"]:
+            for sid in STOCK_LUTS:
+                wb = scene["assets"][sid]["whiteBalance"]
+                self.assertEqual(wb["lockedKelvin"], self.manifest["lockedKelvin"][sid])
+                self.assertEqual(wb["sceneIlluminantKelvin"],
+                                 scene["derivation"]["sceneIlluminantKelvin"])
+                self.assertEqual(len(wb["gainLinearRGB"]), 3)
+                for gain in wb["gainLinearRGB"]:
+                    self.assertTrue(0.0 < gain < 8.0, "implausible white-balance gain")
+        self.assertIn("illustrative", self.manifest["whiteBalanceSimulation"]["label"])
+
+    def test_recorded_gains_are_reproducible_from_the_scene_and_the_lock(self):
+        # The shipped cast must be exactly what the documented model produces: same scene
+        # illuminant, same Kelvin the capture session locks. A missing or duplicated gain
+        # changes these numbers, so this pins the simulation without depending on JPEG
+        # quantisation (which the gain amplifies in the clipped regions).
+        for scene in self.manifest["scenes"]:
+            illuminant = scene["derivation"]["sceneIlluminantKelvin"]
+            for sid in STOCK_LUTS:
+                expected = GEN.white_balance_factor(illuminant, self.manifest["lockedKelvin"][sid])
+                recorded = self._gain(scene["id"], sid)
+                np.testing.assert_allclose(
+                    recorded, expected, atol=1e-9,
+                    err_msg=f"{scene['id']}/{sid}: recorded gain is not the documented model's")
+
+    def test_applying_a_mismatched_gain_moves_channels_in_the_expected_direction(self):
+        patch = np.full((4, 4, 3), 0.5)
+        cooled = GEN.apply_display_white_balance(patch, self._gain("daylight", "kodak5219"))
+        warmed = GEN.apply_display_white_balance(patch, self._gain("night", "kodak5207"))
+        self.assertLess(cooled[..., 0].mean(), 0.5, "tungsten lock invalidates red")
+        self.assertGreater(cooled[..., 2].mean(), 0.5, "tungsten lock must lift blue")
+        self.assertGreater(warmed[..., 0].mean(), 0.5, "daylight lock must lift red")
+        self.assertLess(warmed[..., 2].mean(), 0.5, "daylight lock invalidates blue")
+
+    def test_matching_lock_leaves_a_daylight_scene_on_its_white_balance(self):
+        for scene_id in ("daylight", "city"):
+            for gain in self._gain(scene_id, "kodak5207"):
+                self.assertAlmostEqual(gain, 1.0, delta=0.03,
+                                       msg="a daylight stock on a daylight scene must not cast")
+
+    def test_tungsten_stock_reads_cooler_than_its_own_lut_on_a_daylight_scene(self):
+        for scene_id in ("daylight", "city"):
+            lut_only = self.lut_only[(scene_id, "kodak5219")]
+            shipped = self._shipped(scene_id, "kodak5219")
+            self.assertLess(shipped[..., 0].mean(), lut_only[..., 0].mean() - 0.02,
+                            f"{scene_id}: tungsten lock must reduce red below the LUT's own output")
+            self.assertGreater(shipped[..., 2].mean(), lut_only[..., 2].mean() + 0.02,
+                               f"{scene_id}: tungsten lock must raise blue above the LUT's own output")
+
+    def test_daylight_stock_reads_warmer_than_its_own_lut_on_a_warm_night_scene(self):
+        lut_only = self.lut_only[("night", "kodak5207")]
+        shipped = self._shipped("night", "kodak5207")
+        self.assertGreater(shipped[..., 0].mean(), lut_only[..., 0].mean() + 0.02,
+                           "daylight lock on a warm scene must raise red")
+        self.assertLess(shipped[..., 2].mean(), lut_only[..., 2].mean() - 0.02,
+                        "daylight lock on a warm scene must reduce blue")
+
+    def test_a_matching_lock_casts_less_than_a_mismatched_one(self):
+        night_tungsten = self._gain("night", "kodak5219")
+        night_daylight = self._gain("night", "kodak5207")
+        self.assertLess(float(np.abs(night_tungsten - 1.0).max()),
+                        float(np.abs(night_daylight - 1.0).max()),
+                        "on a warm scene the tungsten lock must cast less than the daylight lock")
+        self.assertLess(float(np.abs(night_tungsten - 1.0).max()), 0.2,
+                        "a matching lock should be close to neutral")
+
+    def test_mismatched_casts_do_not_clip_the_frame_away(self):
+        # A locked white balance does clip a channel, but a preview that clips most of the
+        # frame stops showing the stock at all. Bound it and keep the frame readable.
+        for scene in self.manifest["scenes"]:
+            for sid in STOCK_LUTS:
+                asset = scene["assets"][sid]
+                self.assertLess(asset["clippedChannelFraction"], 0.45,
+                                f"{scene['id']}/{sid} clips most of the frame")
+                image = _read(STOCK_DIR / asset["file"])
+                self.assertGreater(len(np.unique((image * 255).astype(np.uint8).reshape(-1, 3),
+                                                 axis=0)), MIN_PALETTE,
+                                   f"{scene['id']}/{sid} is posterised")
 
 
 if __name__ == "__main__":

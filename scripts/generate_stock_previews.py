@@ -60,9 +60,11 @@ STOCK_LUTS = {
 SOURCE_CACHE = Path.home() / ".cache" / "nitrate-stock-preview-sources"
 
 SCHEMA_VERSION = 1
-DISCLAIMER = "Illustrative photos \u00b7 color LUT only"
+DISCLAIMER = "Illustrative photos \u00b7 color LUT + white balance only"
 OUT_W, OUT_H = 540, 810
 STOCKS = ["kodak5207", "kodak5219"]
+STOCKS_JSON = RES / "stocks.json"
+REC709_LUMA = np.array([0.2126, 0.7152, 0.0722])
 
 # Poly Haven assets -- verified CC0. scene id -> source recipe (probed with the vision tool).
 SCENES = {
@@ -76,6 +78,10 @@ SCENES = {
         "credit": "Poly Haven \u2014 yellow_field (CC0)",
         "yaw": 0.0, "pitch": 0.0, "fov_deg": 68.0,
         "ev_bias": -0.8,
+        # Assumed illuminant of the scene, used only to place the scene and the
+        # camera's locked white balance on the same Planckian locus. Assumed, not
+        # measured -- see docs/stock-preview-assets.md.
+        "illuminant_kelvin": 5600,
     },
     "city": {
         "title": "City",
@@ -87,6 +93,7 @@ SCENES = {
         "credit": "Poly Haven \u2014 urban_street_04 (CC0)",
         "yaw": 0.0, "pitch": 0.0, "fov_deg": 62.0,
         "ev_bias": -0.8,
+        "illuminant_kelvin": 5500,
     },
     "night": {
         "title": "Night",
@@ -98,6 +105,8 @@ SCENES = {
         "credit": "Poly Haven \u2014 cobblestone_street_night (CC0)",
         "yaw": 0.0, "pitch": 0.0, "fov_deg": 66.0,
         "ev_bias": -0.7,
+        # Warm street lighting, the case a tungsten stock is built for.
+        "illuminant_kelvin": 3000,
     },
 }
 
@@ -259,6 +268,128 @@ def base_photo_display(hdr: np.ndarray, yaw: float, pitch: float, fov_deg: float
     return tone_map_display(reproject_linear(hdr, yaw, pitch, fov_deg), ev_bias)
 
 
+# ------------------------------------------------------- locked white balance (offline)
+def _planckian_xy(kelvin: float) -> tuple[float, float]:
+    """CIE 1931 (x, y) on the Planckian locus -- Kim et al. (1997) approximation.
+
+    Used only to put a scene illuminant and the camera's locked white balance on one
+    locus so the *relative* white-balance difference between two stocks can be
+    simulated offline. It is the published approximation, not a measured SPD.
+    """
+    t = float(kelvin)
+    if not 1667.0 <= t <= 25000.0:
+        raise ValueError(f"Planckian approximation is quoted for 1667-25000 K, got {t}")
+    if t <= 4000.0:
+        x = -0.2661239e9 / t**3 - 0.2343589e6 / t**2 + 0.8776956e3 / t + 0.179910
+    else:
+        x = -3.0258469e9 / t**3 + 2.1070379e6 / t**2 + 0.2226347e3 / t + 0.240390
+    if t <= 2222.0:
+        y = -1.1063814 * x**3 - 1.34811020 * x**2 + 2.18555832 * x - 0.20219683
+    elif t <= 4000.0:
+        y = -0.9549476 * x**3 - 1.37418593 * x**2 + 2.09137015 * x - 0.16748867
+    else:
+        y = 3.0817580 * x**3 - 5.87338670 * x**2 + 3.75112997 * x - 0.37001483
+    return float(x), float(y)
+
+
+def _illuminant_xyz(kelvin: float) -> np.ndarray:
+    """XYZ of a blackbody at `kelvin`, normalised to Y = 1."""
+    x, y = _planckian_xy(kelvin)
+    return np.array([x / y, 1.0, (1.0 - x - y) / y])
+
+
+# Bradford cone-response matrix: the standard chromatic-adaptation transform used by
+# ICC-style colour management.
+_BRADFORD = np.array([
+    [0.8951, 0.2664, -0.1614],
+    [-0.7502, 1.7135, 0.0367],
+    [0.0389, -0.0685, 1.0296],
+])
+_XYZ_TO_LINEAR_SRGB = np.array([
+    [3.2406, -1.5372, -0.4986],
+    [-0.9689, 1.8758, 0.0415],
+    [0.0557, -0.2040, 1.0570],
+])
+
+
+def white_balance_factor(scene_kelvin: float, locked_kelvin: float) -> np.ndarray:
+    """Linear-sRGB per-channel gain modelling the app's locked white balance.
+
+    The capture session locks the sensor to `locked_kelvin` (stocks.json
+    ``colorTemperature``, tint 0), so a scene lit at `scene_kelvin` records with its
+    neutral axis displaced by ``I(scene) / I(locked)``: matching illuminants stay
+    neutral, a mismatch tints the frame.
+
+    The displacement is computed with a Bradford chromatic adaptation (the standard
+    ICC-era transform) from the locked illuminant to the scene illuminant, then applied
+    as a per-channel gain in linear sRGB. Bradford is a *proxy* for the device's real
+    sensor gains, which this generator cannot measure -- see
+    docs/stock-preview-assets.md.
+    """
+    source = _BRADFORD @ _illuminant_xyz(locked_kelvin)
+    destination = _BRADFORD @ _illuminant_xyz(scene_kelvin)
+    adaptation = np.linalg.inv(_BRADFORD) @ np.diag(destination / source) @ _BRADFORD
+    to_linear_srgb = _XYZ_TO_LINEAR_SRGB @ adaptation @ np.linalg.inv(_XYZ_TO_LINEAR_SRGB)
+    # Where a neutral input lands: the recorded frame's own white. Clamped at zero
+    # because a very warm/cool illuminant leaves the sRGB gamut, and a negative channel
+    # is not something the display chain can represent.
+    white = np.maximum(to_linear_srgb @ np.ones(3), 1e-6)
+    if not np.all(np.isfinite(white)):
+        raise ValueError(f"white-balance gain is not finite for {scene_kelvin}K / {locked_kelvin}K")
+    # Luminance-normalised: a neutral input keeps its luminance, so this models a white
+    # balance change rather than a re-exposure.
+    return white / float(white @ REC709_LUMA)
+
+
+def apply_gain(linear: np.ndarray, gain: np.ndarray) -> np.ndarray:
+    """Apply a linear-sRGB white-balance gain to a linear scene image."""
+    return linear * gain
+
+
+def _srgb_decode(display: np.ndarray) -> np.ndarray:
+    a = np.clip(display, 0.0, 1.0)
+    return np.where(a <= 0.04045, a / 12.92, np.power((a + 0.055) / 1.055, 2.4))
+
+
+def apply_display_white_balance(display: np.ndarray, gain: np.ndarray) -> np.ndarray:
+    """Apply the locked-white-balance gain to a finished display-space image.
+
+    Applied after the stock LUT, in linear light, rather than in front of the neutral
+    transform's inversion. The camera applies it first, but the requested cast for a
+    mismatched pair lies partly outside the neutral transform's reachable gamut, and
+    inverting there banded the frame (measured, see `project_into_reachable`). Channel
+    clipping at full scale is left as-is: that is what the camera does too.
+    """
+    return np.clip(_srgb_encode(_srgb_decode(display) * gain), 0.0, 1.0)
+
+
+def project_into_reachable(neutral_inv: InverseNeutral, display: np.ndarray,
+                           iterations: int = 3) -> np.ndarray:
+    """Retract a display colour onto the set the neutral transform can produce.
+
+    Retained for diagnostics: measuring how far a requested colour lies outside the
+    reachable volume is how the ordering below was chosen. See
+    docs/stock-preview-assets.md -- routing a strong locked-white-balance cast through
+    the inversion moved ~10% of a daylight frame's pixels (up to 0.95) at the gamut
+    boundary, which banded visibly.
+    """
+    out = np.clip(display, 0.0, 1.0)
+    for _ in range(iterations):
+        out = _trilinear(neutral_inv.cube, neutral_inv.size, neutral_inv.apply(out))
+    return out
+
+
+def locked_kelvin_by_stock() -> dict[str, float]:
+    """Locked white balance per stock, read from the app's own stock config."""
+    data = json.loads(STOCKS_JSON.read_text())
+    temps = {s["stockId"]: float(s["colorTemperature"])
+             for s in data["stocks"] if s["stockId"] in STOCKS}
+    missing = [s for s in STOCKS if s not in temps]
+    if missing:
+        raise SystemExit(f"{STOCKS_JSON} has no colorTemperature for {missing}")
+    return temps
+
+
 # ------------------------------------------------------------------ display <-> synthetic Log
 def _parse_cube(path: Path):
     size = None; data = []
@@ -397,6 +528,12 @@ class InverseNeutral:
     filter -- it inverts the actual neutral transform, per pixel, to within the reported
     round-trip error. Near black the transform is not injective (many Log codes share one
     display value), so the residual there is reported honestly rather than hidden.
+
+    Only colours the forward transform can actually produce are invertible. A locked
+    white balance can push a scene outside that set; `project` pulls such colours back
+    onto the reachable surface so the synthetic Log input is always a frame the monitor
+    transform would really have produced, instead of the noise an unconstrained
+    nearest-neighbour inverse returns there.
     """
 
     def __init__(self, cube_path: Path):
@@ -426,6 +563,7 @@ class InverseNeutral:
 def build_assets(neutral_inv: InverseNeutral, contact_sheet: bool) -> dict:
     STOCK_DIR.mkdir(parents=True, exist_ok=True)
     stock_cubes = {sid: _parse_cube(p) for sid, p in STOCK_LUTS.items()}
+    locked_kelvin = locked_kelvin_by_stock()
 
     manifest = {
         "schemaVersion": SCHEMA_VERSION,
@@ -434,6 +572,26 @@ def build_assets(neutral_inv: InverseNeutral, contact_sheet: bool) -> dict:
         "stocks": STOCKS,
         "lutSHA256": {sid: source_sha256(p) for sid, p in STOCK_LUTS.items()},
         "neutralLutSHA256": source_sha256(NEUTRAL_LUT),
+        # The app locks the sensor white balance to each stock's colorTemperature
+        # (CameraSession.setWhiteBalance, tint 0). A preview that ignored that would
+        # understate the difference between a daylight and a tungsten stock.
+        "whiteBalanceSimulation": {
+            "method": "Planckian-locus blackbody chroma (Kim et al. 1997 xy approximation) "
+                      "-> linear sRGB, displaced with a Bradford chromatic adaptation; "
+                      "gain = I(scene)/I(locked), luminance-normalised, applied in linear "
+                      "light after the stock LUT (the camera applies it first; routing a "
+                      "mismatched cast through the neutral inversion banded the frame)",
+            "orderingNote": "The gain is physically a capture-side white balance; it is "
+                            "applied at display scale here so the preview stays free of "
+                            "gamut-clipping artifacts.",
+            "tint": 0,
+            "luminanceNormalized": True,
+            "lockedKelvinSource": "App/Resources/stocks.json colorTemperature "
+                                  "(the same value the capture session locks)",
+            "sceneIlluminant": "assumed per scene, not measured",
+            "label": "illustrative white-balance simulation (approximate)",
+        },
+        "lockedKelvin": locked_kelvin,
         "scenes": [],
     }
 
@@ -471,13 +629,17 @@ def build_assets(neutral_inv: InverseNeutral, contact_sheet: bool) -> dict:
         if not src.exists():
             raise SystemExit(f"missing source {src}; run with --fetch first")
         hdr = load_hdr_linear(src)
-        base = base_photo_display(hdr, scene["yaw"], scene["pitch"], scene["fov_deg"], scene["ev_bias"])
+        linear = reproject_linear(hdr, scene["yaw"], scene["pitch"], scene["fov_deg"])
+        base = tone_map_display(linear, scene["ev_bias"])
 
         neutral_jpg = STOCK_DIR / f"{sid}-neutral.jpg"
         _save_jpg(base, neutral_jpg)
 
-        # illustrative synthetic Log input (the one non-real step), computed once per scene
+        # Illustrative synthetic Log input (the one non-real step), computed once per scene.
+        # The locked white balance is applied later, at display scale: see
+        # apply_display_white_balance for why it is not routed through this inversion.
         log_input = neutral_inv.apply(base)
+        gains = {s: white_balance_factor(scene["illuminant_kelvin"], locked_kelvin[s]) for s in STOCKS}
 
         entry = {
             "id": sid,
@@ -497,9 +659,12 @@ def build_assets(neutral_inv: InverseNeutral, contact_sheet: bool) -> dict:
             "derivation": {
                 "recipe": "display-space base photo -> approximate inverse of official neutral LUT "
                           "(KD-tree kNN in cube-output space + bounded within-cell trilinear "
-                          "refinement) -> real stock .cube via red-fastest trilinear",
+                          "refinement) -> real stock .cube via red-fastest trilinear -> locked "
+                          "white balance for this stock, applied in linear light",
                 "cropYawDeg": scene["yaw"], "cropPitchDeg": scene["pitch"],
                 "fovDeg": scene["fov_deg"], "exposureEV": scene["ev_bias"],
+                "sceneIlluminantKelvin": scene["illuminant_kelvin"],
+                "sceneIlluminantProvenance": "assumed for this scene, not measured",
                 "outputSize": [OUT_W, OUT_H],
                 "inputLabel": "illustrative synthetic Log input (NOT Apple Log 2 camera original)",
             },
@@ -509,7 +674,7 @@ def build_assets(neutral_inv: InverseNeutral, contact_sheet: bool) -> dict:
         variants = {"neutral": base}
         for s in STOCKS:
             size, cube = stock_cubes[s]
-            variants[s] = _trilinear(cube, size, log_input)
+            variants[s] = apply_display_white_balance(_trilinear(cube, size, log_input), gains[s])
 
         for label, img in variants.items():
             path = STOCK_DIR / f"{sid}-{label}.jpg"
@@ -519,12 +684,20 @@ def build_assets(neutral_inv: InverseNeutral, contact_sheet: bool) -> dict:
                 "sha256": source_sha256(path),
                 "whiteFraction": float(_white_fraction(img)),
                 "midtoneFraction": float(_midtone_fraction(img)),
+                "clippedChannelFraction": float(_clipped_channel_fraction(img)),
             }
+            if label in STOCKS:
+                entry["assets"][label]["whiteBalance"] = {
+                    "sceneIlluminantKelvin": scene["illuminant_kelvin"],
+                    "lockedKelvin": locked_kelvin[label],
+                    "gainLinearRGB": [float(v) for v in gains[label]],
+                }
         for s in STOCKS:
             entry["previews"][s] = f"{sid}-{s}.jpg"
 
-        back_scene = _trilinear(neutral_inv.cube, neutral_inv.size, neutral_inv.apply(base))
-        rt_scene = np.abs(back_scene - base) * 255.0
+        wb_scene = base
+        back_scene = _trilinear(neutral_inv.cube, neutral_inv.size, neutral_inv.apply(wb_scene))
+        rt_scene = np.abs(back_scene - wb_scene) * 255.0
         entry["inverseRoundTripOnScene"] = {
             "meanAbsError8bit": float(rt_scene.mean()),
             "maxAbsError8bit": float(rt_scene.max()),
@@ -548,6 +721,16 @@ def _white_fraction(img: np.ndarray) -> float:
 def _midtone_fraction(img: np.ndarray) -> float:
     m = img.mean(axis=-1)
     return float(((m > 0.08) & (m < 0.94)).mean())
+
+
+def _clipped_channel_fraction(img: np.ndarray) -> float:
+    """Fraction of pixels with at least one channel at/above full scale.
+
+    Reported rather than removed: a locked white balance genuinely clips a channel
+    when the scene illuminant is far from the lock, and hiding that would misrepresent
+    what the stock does.
+    """
+    return float((img >= 0.999).any(axis=-1).mean())
 
 
 def _save_jpg(img: np.ndarray, path: Path, quality: int = 88) -> None:
