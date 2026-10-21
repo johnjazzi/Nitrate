@@ -7,6 +7,13 @@ struct CameraZoomSnapshot: Equatable, Sendable {
     let maximumDisplayFactor: Double
     let isRamping: Bool
     let isPerLens: Bool
+    /// The active device's display multiplier: the session publishes
+    /// `displayFactor == device.videoZoomFactor * displayMultiplier`. Converting
+    /// between a display factor and a lens-native focal length needs the real
+    /// value, because one global 24 mm reference is not exact (the ultrawide's
+    /// own 0.5x is 13 mm, not 12 mm). Defaults to 1, which is both the per-lens
+    /// (iOS 17) value and a valid value for any construction that predates it.
+    var displayMultiplier: Double = 1
 
     var isAvailable: Bool { maximumDisplayFactor >= minimumDisplayFactor }
     func accepting(_ incoming: CameraZoomSnapshot) -> CameraZoomSnapshot {

@@ -67,7 +67,7 @@ Use disposable footage first. Record OS, device, app build and available space w
 - [ ] Exercise background/foreground, interruption, screen locking and queue recovery without deleting media.
 - [ ] Test render → Photos, optional original delivery, partial save failure and retry; check no unexpected duplicates or lost originals.
 - [ ] Dismiss a render error, finish a later successful render and confirm the old banner stays dismissed; a genuinely new failure must still alert.
-- [ ] Tele zoom shows its actual minimum and up to 16×, wide stays at 5×; hold/release, slider and pinch agree. Hardware limits can lower the maximum.
+- [ ] Manual-panel tele zoom shows its actual minimum and up to 16×, wide stays at 5×; hold/release and slider agree. Idle preview pinch instead follows the 13–150 mm focal ruler, switches rear lenses at 24/96 mm, stays on front when front is selected, and is blocked during capture. Hardware limits can lower either maximum; see [camera controls](../camera-controls.md).
 - [ ] Try storage warnings, a safely constrained low-storage case, heat and long sessions; note render time and battery impact without claiming benchmarks from one run.
 - [ ] Test restore/expiry/refund and trial behavior under the intended beta entitlement policy. TestFlight purchases run in Apple's sandbox; explain the testing behavior to testers rather than implying a real charge.[14]
 - [ ] Confirm UI remains usable at supported text sizes and VoiceOver; do not substitute image fixtures for touch/accessibility testing.

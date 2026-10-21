@@ -55,6 +55,39 @@ enum DaylightExposureRescueGeometry {
     }
 }
 
+/// Pure placement for the idle-only armed 60 fps badge. When the rescue trigger
+/// is gone (the meter dropped back below the threshold) an armed session must
+/// still have a visible way back to 24 fps. The badge mirrors the mood timer's
+/// placement rules exactly: on the physical top edge in a quarter-turn hold,
+/// otherwise floating centred in the stationary toolbar row. It is a full-canvas
+/// sibling — never a toolbar slot — so it reserves no toolbar height, never hides
+/// the lens key and cannot resize the framed preview.
+enum DaylightIdleBadgeGeometry {
+    static let badgeSize = CGSize(width: 112, height: 40)
+
+    /// Reserved bounds for the badge in the shared `cameraCanvas` space, or nil
+    /// when the canvas cannot hold it (the caller then omits the badge rather
+    /// than drawing it over the preview or off-screen).
+    static func rect(viewport: CGSize, toolbarBottom: CGFloat, controlsTop: CGFloat,
+                     rotationDegrees: Double) -> CGRect? {
+        guard viewport.width >= badgeSize.width, viewport.height >= badgeSize.height else { return nil }
+        if abs(rotationDegrees.truncatingRemainder(dividingBy: 180)) == 90 {
+            // Physical top edge, the same anchor the live timer floats on.
+            guard let edge = RecordingStatusOverlayGeometry.rect(
+                viewport: viewport, toolbarBottom: toolbarBottom, controlsTop: controlsTop,
+                rotationDegrees: rotationDegrees) else { return nil }
+            return CGRect(x: edge.midX - badgeSize.width / 2, y: edge.midY - badgeSize.height / 2,
+                          width: badgeSize.width, height: badgeSize.height)
+        }
+        // Portrait: the face is the self-rotating status face, so the slot is
+        // recorded upright and centred in the stationary toolbar row.
+        guard toolbarBottom >= badgeSize.height else { return nil }
+        return CGRect(x: (viewport.width - badgeSize.width) / 2,
+                      y: toolbarBottom - badgeSize.height - 5,
+                      width: badgeSize.width, height: badgeSize.height)
+    }
+}
+
 /// The compact "too bright" affordance. Shown above the live EV column only when
 /// `DaylightExposureRescuePolicy.shouldOffer` is true. Active mode management
 /// below that threshold uses the status badge. Minimum 44pt height, 92pt wide.

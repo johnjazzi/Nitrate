@@ -19,6 +19,7 @@ struct NitrateApp: App {
     }
 
     init() {
+        CameraHaptics.prepareForCaptureFeedback()
         let library = FilmStockLibrary()
         var loadError: String?
         do { try library.load() }
@@ -70,6 +71,7 @@ struct NitrateApp: App {
             }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
+                    CameraHaptics.prepareForCaptureFeedback()
                     purchaseViewModel.onSceneActive()
                     renderQueueViewModel.renderAccessDidChange()
                 }

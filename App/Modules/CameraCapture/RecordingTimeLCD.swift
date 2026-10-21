@@ -1,60 +1,54 @@
 import SwiftUI
 
+/// What the LCD's centre reports. A confirmed, still-live take outranks render
+/// queue activity; the pending-start and finalising windows never read as an
+/// active recording.
+enum RecordingTimeLCDFocus: Equatable, Sendable {
+    case recording
+    case rendering
+    case remaining
+
+    static func resolve(isRecording: Bool, isStopping: Bool, isProcessing: Bool) -> Self {
+        if isRecording && !isStopping { return .recording }
+        if isProcessing { return .rendering }
+        return .remaining
+    }
+}
+
 /// White information on dark green; the entire face is one queue control.
+///
+/// The headline is the highest-priority state on the bar: an active take owns
+/// it as `RECORDING`, but the queue count, the storage warning and the tap
+/// target stay live throughout, and the remaining recording time is never
+/// displaced.
 struct RecordingTimeLCD: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let estimatedSeconds: TimeInterval?
     let isStorageLow: Bool
     let queueStatus: CameraStatusPresentation
+    /// Active capture only: true between a confirmed start and the stop tap.
+    var isRecording = false
+    /// Stop acknowledged, recorder still finalising. The take is live but is no
+    /// longer an active recording, so the headline must drop back.
+    var isStopping = false
+
+    private var focus: RecordingTimeLCDFocus {
+        .resolve(isRecording: isRecording, isStopping: isStopping, isProcessing: queueStatus.isProcessing)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 2) {
-                Text("REC LEFT")
-                    .font(.system(size: 8, weight: .semibold))
-                Spacer(minLength: 0)
-                Image(systemName: "list.bullet")
-                    .font(.system(size: 8, weight: .semibold))
-                if let count = queueStatus.countText {
-                    Text(count)
-                        .font(.system(size: 8, weight: .semibold).monospacedDigit())
-                }
-            }
-            .foregroundStyle(.white.opacity(0.75))
-
+            headline
             Rectangle()
                 .fill(.white.opacity(0.22))
                 .frame(height: 0.5)
-
-            if queueStatus.isProcessing {
+            if focus == .rendering {
                 renderingActivity
             } else {
                 remainingTime(fontSize: 20)
                     .frame(maxHeight: .infinity)
             }
-
-            HStack(spacing: 3) {
-                if queueStatus.isProcessing {
-                    remainingTime(fontSize: 11)
-                }
-                if queueStatus.hasError {
-                    Image(systemName: "exclamationmark.circle.fill")
-                        .foregroundStyle(.red)
-                } else if queueStatus.isSaved {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                }
-                if !queueStatus.isProcessing {
-                    Text(queueStatus.label)
-                }
-                Spacer(minLength: 0)
-                if isStorageLow {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                }
-            }
-            .font(.system(size: 8, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.8))
+            statusRow
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 6)
@@ -73,6 +67,55 @@ struct RecordingTimeLCD: View {
                         )
                 }
         }
+    }
+
+    /// Recording owns this line. The queue count stays beside it so the queue is
+    /// reachable and visible during a take.
+    private var headline: some View {
+        HStack(spacing: 3) {
+            if focus == .recording {
+                Circle().fill(.red).frame(width: 5, height: 5)
+            }
+            Text(focus == .recording ? "RECORDING" : "REC LEFT")
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Spacer(minLength: 0)
+            Image(systemName: "list.bullet")
+            if let count = queueStatus.countText {
+                Text(count)
+                    .font(.system(size: 8, weight: .semibold).monospacedDigit())
+            }
+        }
+        .font(.system(size: 8, weight: .semibold))
+        .foregroundStyle(.white.opacity(focus == .recording ? 0.95 : 0.75))
+    }
+
+    /// Queue, delivery and storage state. Rendering is the only state that shows
+    /// the abbreviated remaining time here, because it owns the centre instead.
+    private var statusRow: some View {
+        HStack(spacing: 3) {
+            if focus == .rendering {
+                remainingTime(fontSize: 11)
+            }
+            if queueStatus.hasError {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundStyle(.red)
+            } else if queueStatus.isSaved {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
+            if focus != .rendering {
+                Text(queueStatus.label)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if isStorageLow {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+        }
+        .font(.system(size: 8, weight: .semibold))
+        .foregroundStyle(.white.opacity(0.8))
     }
 
     private func remainingTime(fontSize: CGFloat) -> some View {

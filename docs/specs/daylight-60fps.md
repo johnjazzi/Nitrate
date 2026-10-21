@@ -662,3 +662,14 @@ Revision verification (2026-10-20):
 - Extremely short synthetic camera canvases with less than the compact panel's
   approximately 160pt minimum band can still clip. Tested supported phone-sized
   portrait-locked viewports fit; touch targets were not shrunk to hide this limit.
+
+Revision note (integration with the live-only timer contract): the portrait/live
+timer and its tally dot remain exclusive to a confirmed take, so the active 60 fps
+badge was given an idle-only form. Below the rescue threshold — and only at idle —
+`DaylightIdleBadgeGeometry` floats the same `RecordingStatusFace` (state + mode
+label, no mark, no timer) centered on the stationary toolbar row in portrait and at
+the physical top edge in landscape. It is a non-sizing canvas sibling, exactly like
+the rescue button, so it never reserves a control slot, never hides the lens key and
+never resizes the framed preview. Arming or disarming the frame rate invalidates any
+in-flight focal gesture, and a pinch cannot start or continue while
+`isChangingFrameRate`, so the two device-config paths cannot race.

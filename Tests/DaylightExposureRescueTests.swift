@@ -51,6 +51,48 @@ struct DaylightExposureRescuePolicyTests {
     }
 }
 
+/// Pure placement for the idle-only armed 60 fps badge. It mirrors the mood
+/// timer: centred in the stationary toolbar row in portrait, at the physical top
+/// edge in a quarter-turn hold. It can never claim a control slot and so never
+/// hides the lens key or reserves toolbar height.
+struct DaylightIdleBadgeGeometryTests {
+    private let viewport = CGSize(width: 390, height: 844)
+
+    @Test func portraitBadgeIsCenteredInTheStationaryToolbarRowWithoutASlot() throws {
+        let rect = try #require(DaylightIdleBadgeGeometry.rect(
+            viewport: viewport, toolbarBottom: 58, controlsTop: 664, rotationDegrees: 0))
+        #expect(rect.size == DaylightIdleBadgeGeometry.badgeSize)
+        #expect(rect.midX == viewport.width / 2)
+        // Wholly inside the 50pt stationary row above the measured bottom edge.
+        #expect(rect.maxY <= 58)
+        #expect(rect.minY >= 8)
+        // It never touches the leading keys (settings/manual) or the trailing lens.
+        #expect(rect.minX > CameraTopPanelGeometry(width: viewport.width - 32, statusSize: .zero,
+                                                   diagnosticsHeight: 0).manual.maxX + 16)
+    }
+
+    @Test func quarterTurnBadgeFloatsAtThePhysicalTopEdge() throws {
+        for degrees in [90.0, -90.0] {
+            let rect = try #require(DaylightIdleBadgeGeometry.rect(
+                viewport: viewport, toolbarBottom: 150, controlsTop: 664, rotationDegrees: degrees))
+            let edge = try #require(RecordingStatusOverlayGeometry.rect(
+                viewport: viewport, toolbarBottom: 150, controlsTop: 664, rotationDegrees: degrees))
+            #expect(abs(rect.midX - edge.midX) < 0.001)
+            #expect(abs(rect.midY - edge.midY) < 0.001)
+            #expect(!rect.intersects(CGRect(x: 0, y: 0, width: viewport.width, height: 58)))
+        }
+    }
+
+    @Test func badgeIsOmittedWhenTheCanvasCannotHoldIt() {
+        #expect(DaylightIdleBadgeGeometry.rect(viewport: CGSize(width: 390, height: 20),
+                                               toolbarBottom: 58, controlsTop: 664,
+                                               rotationDegrees: 0) == nil)
+        #expect(DaylightIdleBadgeGeometry.rect(viewport: CGSize(width: 80, height: 844),
+                                               toolbarBottom: 58, controlsTop: 664,
+                                               rotationDegrees: 0) == nil)
+    }
+}
+
 /// Pure placement for the rescue button: a full-canvas sibling above the measured
 /// exposure column, never a child of `CameraShootingLayout`, so it cannot enlarge
 /// the control bar's measured footprint. 92×44 portrait, 44×92 when held on a

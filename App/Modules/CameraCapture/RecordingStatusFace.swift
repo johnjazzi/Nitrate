@@ -16,8 +16,9 @@ struct RecordingStatusFace: View {
     let text: String
     var style: RecordingIndicatorStyle = .red
     var rotationDegrees: Double = 0
-    /// Armed daylight 60 fps. Shown whether idle or recording, so the mode is
-    /// unmistakable before and during a take.
+    /// Armed daylight 60 fps. Shown during a take, and at idle through the
+    /// idle-only armed badge, so the mode is unmistakable before and during a
+    /// take and can always be returned to 24 fps.
     var daylight60Active = false
     /// Existing active badge is the way back to 24fps when rescue has reduced
     /// exposure below the offer threshold. Never interactive during a take.
@@ -33,6 +34,12 @@ struct RecordingStatusFace: View {
     }
 
     var modeStatusLabel: String { daylight60Active ? stateLabel + " · 60FPS" : stateLabel }
+
+    /// Idle-only armed badge. When `.daylight60` is armed and no take is running
+    /// this face *is* the return off-ramp to 24 fps (the timer/dot are exclusive
+    /// to a confirmed take and are never restored here). It therefore renders the
+    /// state and mode label alone: no recording mark, no elapsed timer text.
+    private var isArmedIdleBadge: Bool { daylight60Active && presentation == .idle }
 
     var accessibilityStatus: String {
         switch presentation {
@@ -61,12 +68,16 @@ struct RecordingStatusFace: View {
 
     var body: some View {
         VStack(spacing: 2) {
-            HStack(spacing: 6) {
-                statusMark.frame(width: 10, height: 10)
-                Text(text)
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced).monospacedDigit())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
+            // The armed idle badge carries no recording mark and no timer: both
+            // stay exclusive to a confirmed take (mood contract).
+            if !isArmedIdleBadge {
+                HStack(spacing: 6) {
+                    statusMark.frame(width: 10, height: 10)
+                    Text(text)
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced).monospacedDigit())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                }
             }
             Text(modeStatusLabel)
                 .font(.system(size: 8, weight: .bold, design: .rounded)).tracking(1)
@@ -81,7 +92,8 @@ struct RecordingStatusFace: View {
                height: abs(rotationDegrees) == 90 ? 112 : 40)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Recording status")
-        .accessibilityValue("\(accessibilityStatus). \(text)"
+        .accessibilityValue(accessibilityStatus
+                            + (text.isEmpty || isArmedIdleBadge ? "" : ". \(text)")
                             + (daylight60Active ? ". Daylight 60 fps armed." : ""))
         .contentShape(RoundedRectangle(cornerRadius: 10))
         .onTapGesture { onManageDaylight?() }
@@ -113,13 +125,15 @@ struct CameraTopPanel<Settings: View, Manual: View, Lens: View, Status: View, Di
 
     var body: some View {
         CameraTopPanelLayout() {
-            settings()
-            manual()
-            lens()
-            Group {
-                if statusInToolbar { status() } else { Color.clear.frame(width: 0, height: 0) }
+            // Layout requires five stable slots. Group/EmptyView flatten their
+            // children, so an absent timer must live in a concrete container.
+            ZStack { settings() }
+            ZStack { manual() }
+            ZStack { lens() }
+            ZStack {
+                if statusInToolbar { status() }
             }
-            diagnostics()
+            ZStack { diagnostics() }
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
