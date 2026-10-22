@@ -67,6 +67,10 @@ final class StockSelectorHintModel {
         let elapsed = StockSelectorHintPolicy.creditedElapsed(gapSeconds: gap, wasActive: context.isActive)
         lastTick = now
         context = inputs
+        if !inputs.isActive || inputs.isSelectorOpened {
+            cueGeneration &+= 1
+            isCueVisible = false
+        }
         let frame = StockSelectorHintEngine.Frame(
             elapsed: elapsed,
             isActive: inputs.isActive,

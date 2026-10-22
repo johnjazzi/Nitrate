@@ -1341,6 +1341,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
     struct NeutralSceneEstimate: Equatable, Sendable {
         /// Device-independent correlated colour temperature, in Kelvin.
         let kelvin: Float
+        /// Sample time on the session queue, not its eventual main-queue delivery.
+        let capturedAt: Date
         /// Configuration revision the reading belongs to, so a snapshot queued
         /// before a lens/format change can be discarded.
         let cameraRevision: UInt64
@@ -1367,7 +1369,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
                                                       maximumGain: Double(device.maxWhiteBalanceGain)) {
                 let kelvin = Double(device.temperatureAndTintValues(for: gains).temperature)
                 estimate = StockSelectorHintPolicy.plausibleKelvin.contains(kelvin)
-                    ? NeutralSceneEstimate(kelvin: Float(kelvin), cameraRevision: self.apertureCameraRevision)
+                    ? NeutralSceneEstimate(kelvin: Float(kelvin), capturedAt: Date(),
+                                           cameraRevision: self.apertureCameraRevision)
                     : nil
             } else {
                 estimate = nil

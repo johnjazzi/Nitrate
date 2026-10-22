@@ -1029,12 +1029,17 @@ final class CameraViewModel {
         hintTick &+= 1
         neutralSceneRequestGeneration &+= 1
         let neutralGeneration = neutralSceneRequestGeneration
+        let neutralLensGeneration = cameraLensSwitchGeneration
+        let neutralFrameRateGeneration = frameRateGeneration
         session.readNeutralSceneEstimate { [weak self] estimate in
-            guard let self, self.neutralSceneRequestGeneration == neutralGeneration else { return }
-            // A nil estimate clears both fields, so the hint's classifier sees no
-            // usable sample rather than a stale one.
-            self.neutralSceneKelvin = estimate?.kelvin
-            self.neutralSceneCapturedAt = estimate == nil ? nil : Date()
+            guard let self, self.neutralSceneRequestGeneration == neutralGeneration,
+                  self.cameraLensSwitchGeneration == neutralLensGeneration,
+                  self.frameRateGeneration == neutralFrameRateGeneration else { return }
+            // Reject an older device revision, and preserve the actual read time
+            // so a delayed callback cannot make an old scene estimate fresh again.
+            let current = estimate.flatMap { $0.cameraRevision >= self.apertureCameraRevision ? $0 : nil }
+            self.neutralSceneKelvin = current?.kelvin
+            self.neutralSceneCapturedAt = current?.capturedAt
         }
         apertureSnapshotRequestGeneration &+= 1
         let requestGeneration = apertureSnapshotRequestGeneration
