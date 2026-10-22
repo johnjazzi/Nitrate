@@ -833,3 +833,43 @@ enum ExposureIndicatorPolicy {
         return abs(meteredEV - targetEV) <= tolerance
     }
 }
+
+/// Persisted auto-exposure compensation.
+///
+/// Every session starts from this value, and unlike the session-only 60 fps mode
+/// the chosen compensation outlives the camera session and the app launch: it is
+/// a preference, not a per-session mode. A user who has never touched the EV
+/// control gets `defaultValue`, so the app ships with one house exposure instead
+/// of a neutral 0.
+enum CameraExposureBiasPreference {
+    static let preferenceKey = "camera.exposureBiasEV"
+
+    /// A little over a stop under the meter. It holds highlight detail in the
+    /// ordinary daylight this camera is usually pointed at, and it sits inside
+    /// the ±3 EV span `CameraSession.exposureBiasRange` permits on every device.
+    static let defaultValue: Float = -1.2
+
+    /// The compensation to use. A missing, non-numeric or non-finite stored value
+    /// falls back to the default — never silently to 0, which would be
+    /// indistinguishable from the preference having been reset.
+    static func resolved(_ stored: Float?) -> Float {
+        guard let stored, stored.isFinite else { return defaultValue }
+        return stored
+    }
+
+    /// Read the persisted value. `object(forKey:)` distinguishes "never set" from
+    /// a stored 0, so a user who deliberately chose neutral keeps it.
+    static func storedValue(in defaults: UserDefaults = .standard) -> Float? {
+        (defaults.object(forKey: preferenceKey) as? NSNumber).map { $0.floatValue }
+    }
+
+    static func load(from defaults: UserDefaults = .standard) -> Float {
+        resolved(storedValue(in: defaults))
+    }
+
+    /// Persist the value the app is actually holding, i.e. after device clamping.
+    static func save(_ ev: Float, to defaults: UserDefaults = .standard) {
+        guard ev.isFinite else { return }
+        defaults.set(ev, forKey: preferenceKey)
+    }
+}

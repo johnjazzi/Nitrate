@@ -685,3 +685,17 @@ the rescue button, so it never reserves a control slot, never hides the lens key
 never resizes the framed preview. Arming or disarming the frame rate invalidates any
 in-flight focal gesture, and a pinch cannot start or continue while
 `isChangingFrameRate`, so the two device-config paths cannot race.
+
+House exposure default (2026-10-21): auto-exposure compensation now ships at
+**-1.2 EV** and is persisted (`CameraExposureBiasPreference`, key
+`camera.exposureBiasEV`). Every session starts from the stored value, a first
+launch with nothing stored gets the house default, and a user change is saved
+after device clamping. Unlike the session-only 60 fps mode it is never reset at
+the foreground-session boundary. Two consequences of note:
+
+1. The rescue threshold is relative to the *selected* target, so with the house
+   default in force the meter must reach about **+0.8 EV over the device target**
+   (that is -1.2 + 2) before the rescue button is offered. That is intended: the
+   default already buys the stops, so the offer arrives later.
+2. The EV control, not the mode, is now the first thing to reach for: an
+   under-honoured default is a normal preference change, not a rescue.
