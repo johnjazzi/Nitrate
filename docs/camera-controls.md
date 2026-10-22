@@ -15,6 +15,14 @@
 - Tapping the stock/gauge well opens the stock browser. The selected stock is centered in a snapping horizontal carousel; tapping a neighboring stock or swiping updates the selection and restores that stock's remembered gauge. Selecting the same stock does not reset its gauge.
 - An independent photo carousel previews the selected stock: one bundled Apple Log 2 plate per scene with the stock's own LUT applied live on the GPU (`platePreviewFragment`), so a user-supplied cube, a grade tweak or a gauge change needs no new asset. Changing stock preserves the selected example scene. Plates are illustrative — your own photographs pushed through the licensed neutral transform, not camera originals and not a calibration — and they preview colour plus the grain of the selected stock and print gauge, sampled from the shipped grain volume with the same footprint the renderer uses. Halation and glow are still to come. The vertically scrolling sheet keeps gauge and Render reachable on smaller screens.
 
+## Decisions
+
+### ISO lock is not persisted across app restarts — accepted October 21, 2026
+
+Keep the current behavior: a full app restart begins with automatic ISO. Do not persist either the manual ISO lock or its selected value between launches. Returning from the background while the same app instance remains alive may retain and reapply its in-memory lock; this decision does not introduce a new reset on every foreground transition. The saved auto-exposure compensation preference is independent and remains persistent.
+
+A manual lock still provides steady ISO during a shot. The owner considered remembering the lock between launches but rejected it for usability: different cameras have different ISO ranges, so a remembered selection may be limited on another lens, and someone repeatedly switching cameras may forget that a wider range is available elsewhere. A forgotten lock also makes returning to automatic exposure harder to discover. Those risks outweigh consistency between launches. Existing per-camera ISO limits and lock/unlock behavior remain unchanged; no exposure code change is required for this decision.
+
 ## Automated checks
 
 ```sh
