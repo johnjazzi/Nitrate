@@ -162,6 +162,7 @@ extension StockSelectorHintModel {
     /// blocking state (`update`) or a newer cue ends it early.
     @discardableResult
     func beginDebugPreview() -> UInt64 {
+        guard context.isActive else { return previewGeneration }
         cueGeneration &+= 1
         previewGeneration &+= 1
         let token = previewGeneration

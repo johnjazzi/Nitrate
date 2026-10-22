@@ -310,6 +310,9 @@ struct ContentView: View {
     private func firePendingStockOutlinePreview() {
         guard pendingStockOutlinePreview else { return }
         pendingStockOutlinePreview = false
+        // Refresh the safety state after dismissal instead of reusing the
+        // inactive context from when DEBUG was covering the camera.
+        stockSelectorHint.update(stockHintInputs)
         stockSelectorHint.beginDebugPreview()
     }
 

@@ -369,7 +369,7 @@ struct DebugFrameSheet: View {
             .buttonStyle(.borderedProminent)
             if let hintDiagnostics {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Hint diagnostics (snapshot at open)")
+                    Text("Hint status at open")
                         .font(.caption.bold())
                     ForEach(hintDiagnostics.lines, id: \.self) { line in
                         Text(line)
@@ -377,9 +377,7 @@ struct DebugFrameSheet: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text("A frozen snapshot taken when this sheet opened, not a live "
-                     + "readout. The scene figure is the Gray-World estimate and "
-                     + "does not reliably identify a subject's colour.")
+                Text("Scene estimates can be inaccurate for colored subjects.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

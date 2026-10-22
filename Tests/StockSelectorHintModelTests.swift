@@ -26,6 +26,7 @@ struct StockSelectorHintModelTests {
         let (store, name) = try defaults()
         defer { store.removePersistentDomain(forName: name) }
         let model = StockSelectorHintModel(userDefaults: store)
+        model.update(inputs(tick: 0, at: Date()))
         let base = Date()
         showCue(model, from: base)
         #expect(model.isCueVisible)
@@ -43,6 +44,7 @@ struct StockSelectorHintModelTests {
         let (store, name) = try defaults()
         defer { store.removePersistentDomain(forName: name) }
         let model = StockSelectorHintModel(userDefaults: store)
+        model.update(inputs(tick: 0, at: Date()))
         let base = Date()
         showCue(model, from: base)
         #expect(model.isCueVisible)
@@ -63,6 +65,7 @@ struct StockSelectorHintModelTests {
         defer { store.removePersistentDomain(forName: name) }
         seededLaunch(store, ordinal: 4)
         let model = StockSelectorHintModel(userDefaults: store)
+        model.update(inputs(tick: 0, at: Date()))
         #expect(model.launch == 4)
         #expect(!model.isEligibleLaunch)
         model.beginDebugPreview()
@@ -79,6 +82,7 @@ struct StockSelectorHintModelTests {
         let (store, name) = try defaults()
         defer { store.removePersistentDomain(forName: name) }
         let model = StockSelectorHintModel(userDefaults: store)
+        model.update(inputs(tick: 0, at: Date()))
         let base = Date()
         model.update(inputs(tick: 1, at: base, opened: true), now: base)
         #expect(!model.isArmed)
@@ -94,6 +98,7 @@ struct StockSelectorHintModelTests {
         let (store, name) = try defaults()
         defer { store.removePersistentDomain(forName: name) }
         let model = StockSelectorHintModel(userDefaults: store)
+        model.update(inputs(tick: 0, at: Date()))
         #expect(model.isArmed)
         model.beginDebugPreview()
         #expect(model.isCueVisible)
@@ -114,6 +119,7 @@ struct StockSelectorHintModelTests {
         let (store, name) = try defaults()
         defer { store.removePersistentDomain(forName: name) }
         let model = StockSelectorHintModel(userDefaults: store)
+        model.update(inputs(tick: 0, at: Date()))
         model.beginDebugPreview()
         #expect(model.isCueVisible)
         let base = Date()
@@ -122,10 +128,25 @@ struct StockSelectorHintModelTests {
         #expect(!model.isDebugPreviewing)
     }
 
+    @Test func debugPreviewDoesNotStartWhileTheCameraIsBlocked() throws {
+        let (store, name) = try defaults()
+        defer { store.removePersistentDomain(forName: name) }
+        let model = StockSelectorHintModel(userDefaults: store)
+        model.update(inputs(tick: 0, at: Date()))
+        let date = Date()
+        model.update(inputs(tick: 0, at: date, active: false), now: date)
+        model.beginDebugPreview()
+        #expect(!model.isCueVisible)
+        #expect(!model.isDebugPreviewing)
+        #expect(model.isArmed)
+        #expect(store.integer(forKey: StockSelectorHintLaunchTracker.launchCountKey) == 1)
+    }
+
     @Test func aSupersededPreviewTimerCannotHideANewerPreview() throws {
         let (store, name) = try defaults()
         defer { store.removePersistentDomain(forName: name) }
         let model = StockSelectorHintModel(userDefaults: store)
+        model.update(inputs(tick: 0, at: Date()))
         let first = model.beginDebugPreview()
         let second = model.beginDebugPreview()
         #expect(first != second)
