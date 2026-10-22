@@ -31,6 +31,10 @@ struct CameraControlBar: View {
     let selectedGauge: PrintGauge
     let onShowQueueSheet: () -> Void
     let onShowStockSheet: () -> Void
+    /// One brief outline around the whole stock-selector well, a discoverability
+    /// hint only. It adds no layout or hit target: the ring is a non-hit-testing
+    /// overlay and never repeats.
+    let showsStockHint: Bool
 
     var body: some View {
         CameraShootingLayout() {
@@ -57,6 +61,17 @@ struct CameraControlBar: View {
             }
         }
         .cameraControlWell(cornerRadius: 12)
+        // A non-hit-testing overlay, so the well's layout and touch targets are
+        // unchanged. Reduce Motion gets a steady ring instead of a fade. The
+        // parent keeps it on screen for ~3 seconds exactly once per launch.
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(.white.opacity(0.9), lineWidth: 1.5)
+                .shadow(color: .white.opacity(0.45), radius: 4)
+                .opacity(showsStockHint ? 1 : 0)
+                .allowsHitTesting(false)
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: showsStockHint)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 

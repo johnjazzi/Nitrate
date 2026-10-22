@@ -6,6 +6,9 @@ struct NitrateApp: App {
     @State private var renderQueueViewModel: RenderQueueViewModel
     @State private var purchaseViewModel: PurchaseViewModel
     @State private var library: FilmStockLibrary
+    /// Owns the first-three-launch stock-selector hint. Created here so its launch
+    /// counter increments exactly once per process, never on a view appearance.
+    @State private var stockSelectorHint: StockSelectorHintModel
     private let stockLibraryError: String?
     @State private var showsStartupSplash = true
     @Environment(\.scenePhase) private var scenePhase
@@ -30,6 +33,7 @@ struct NitrateApp: App {
         _cameraViewModel = State(initialValue: cameraViewModel)
         _renderQueueViewModel = State(initialValue: RenderQueueViewModel())
         _purchaseViewModel = State(initialValue: PurchaseViewModel())
+        _stockSelectorHint = State(initialValue: StockSelectorHintModel())
         stockLibraryError = loadError
 
         #if DEBUG
@@ -47,7 +51,8 @@ struct NitrateApp: App {
                 cameraViewModel: cameraViewModel,
                 library: library,
                 renderQueueViewModel: renderQueueViewModel,
-                purchaseViewModel: purchaseViewModel
+                purchaseViewModel: purchaseViewModel,
+                stockSelectorHint: stockSelectorHint
             )
             .preferredColorScheme(.dark)
             .allowsHitTesting(!showsStartupSplash)

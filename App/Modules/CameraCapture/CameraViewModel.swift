@@ -103,6 +103,13 @@ final class CameraViewModel {
     /// the device is configured, so the indicator can fall back cleanly.
     var liveExposureTargetOffset: Float = 0
     var hasExposureMeter = false
+    // Stock-selector hint. The scene's Gray-World neutral estimate is refreshed
+    // with the exposure poll and is nil whenever it is unavailable, so a hint can
+    // never ride a stale reading. `hintTick` advances on every poll so the hint's
+    // active-use clock still runs while an estimate happens to be unavailable.
+    private(set) var neutralSceneKelvin: Float?
+    private(set) var neutralSceneCapturedAt: Date?
+    private(set) var hintTick: UInt64 = 0
     /// Normalised (0–1) preview point where exposure is metered: the frame
     /// centre by default, the tapped point after a tap-to-focus. Anchors the
     /// exposure box on the preview.
@@ -141,6 +148,7 @@ final class CameraViewModel {
     private var exposureCommandGeneration: UInt64 = 0
     private var apertureSnapshotRequestGeneration: UInt64 = 0
     private var apertureCameraRevision: UInt64 = 0
+    private var neutralSceneRequestGeneration: UInt64 = 0
     private var stabilizationSnapshotRequestGeneration: UInt64 = 0
     private var cameraLensSwitchGeneration: UInt64 = 0
     private var pendingLensSwitchCount = 0
@@ -1018,6 +1026,16 @@ final class CameraViewModel {
         liveShutterSeconds = session.currentShutterSeconds
         liveExposureTargetOffset = session.currentExposureTargetOffset
         hasExposureMeter = session.hasExposureMeter
+        hintTick &+= 1
+        neutralSceneRequestGeneration &+= 1
+        let neutralGeneration = neutralSceneRequestGeneration
+        session.readNeutralSceneEstimate { [weak self] estimate in
+            guard let self, self.neutralSceneRequestGeneration == neutralGeneration else { return }
+            // A nil estimate clears both fields, so the hint's classifier sees no
+            // usable sample rather than a stale one.
+            self.neutralSceneKelvin = estimate?.kelvin
+            self.neutralSceneCapturedAt = estimate == nil ? nil : Date()
+        }
         apertureSnapshotRequestGeneration &+= 1
         let requestGeneration = apertureSnapshotRequestGeneration
         session.readApertureSnapshot { [weak self] snapshot in

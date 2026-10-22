@@ -233,6 +233,9 @@ targets:
       - path: CLI/
       - path: App/Modules/ProcessingPipeline/
       - path: App/Modules/FilmStockLibrary/
+      # Foundation-only hint policy, shared so its pure logic compiles and is
+      # testable on macOS (the AVFoundation call site stays in the iOS session).
+      - path: App/Modules/CameraCapture/StockSelectorHintPolicy.swift
       - path: Resources/Shaders/
         type: metal
       - path: Resources/Grain/grain3d.raw
@@ -282,6 +285,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraFocalZoomPolicy.swift
       - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
       - path: App/Modules/CameraCapture/CameraFrameRatePolicy.swift
+      - path: App/Modules/CameraCapture/StockSelectorHintPolicy.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
       - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
       - path: App/Modules/CameraCapture/ManualControlsOverlay.swift

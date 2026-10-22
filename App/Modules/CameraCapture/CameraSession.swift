@@ -1335,6 +1335,47 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
     }
 
+    /// A Gray-World estimate of the scene's neutral white point, read on the
+    /// session queue. Used only for the soft stock-selector hint; it is never
+    /// applied to the device, so the locked per-stock white balance is untouched.
+    struct NeutralSceneEstimate: Equatable, Sendable {
+        /// Device-independent correlated colour temperature, in Kelvin.
+        let kelvin: Float
+        /// Configuration revision the reading belongs to, so a snapshot queued
+        /// before a lens/format change can be discarded.
+        let cameraRevision: UInt64
+    }
+
+    /// Read the scene's Gray-World neutral estimate on the session queue.
+    ///
+    /// Read-only: `grayWorldDeviceWhiteBalanceGains` is valid regardless of the
+    /// white-balance mode, so this never unlocks, perturbs, or re-applies white
+    /// balance. Returns nil when there is no active device, the gains are
+    /// non-finite/non-positive/out of range, or the converted temperature is
+    /// implausible — so an unusable reading can never produce a hint.
+    func readNeutralSceneEstimate(completion: @escaping @MainActor @Sendable (NeutralSceneEstimate?) -> Void) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.activeDevice else {
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(nil) } }
+                return
+            }
+            let gains = device.grayWorldDeviceWhiteBalanceGains
+            let estimate: NeutralSceneEstimate?
+            if StockSelectorHintPolicy.gainsAreUsable(red: Double(gains.redGain),
+                                                      green: Double(gains.greenGain),
+                                                      blue: Double(gains.blueGain),
+                                                      maximumGain: Double(device.maxWhiteBalanceGain)) {
+                let kelvin = Double(device.temperatureAndTintValues(for: gains).temperature)
+                estimate = StockSelectorHintPolicy.plausibleKelvin.contains(kelvin)
+                    ? NeutralSceneEstimate(kelvin: Float(kelvin), cameraRevision: self.apertureCameraRevision)
+                    : nil
+            } else {
+                estimate = nil
+            }
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(estimate) } }
+        }
+    }
+
     @available(iOS 27.0, *)
     private static func apertureCapability(for device: AVCaptureDevice) -> CameraAperturePolicy.Capability {
         let format = device.activeFormat
