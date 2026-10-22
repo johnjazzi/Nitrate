@@ -251,6 +251,15 @@ struct CameraPreviewPolicyTests {
         #expect(!source.contains("HLGTo"))
     }
 
+    @Test func expectedLensHandoffDoesNotDisableTheLUTPreview() throws {
+        let source = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraView.swift"), encoding: .utf8)
+        #expect(!source.contains("active: scenePhase == .active && !viewModel.isSwitchingCameraLens"),
+                "An expected lens handoff must not be treated as leaving the active scene")
+        #expect(source.contains("transitioning: viewModel.isSwitchingCameraLens"),
+                "Pass the expected handoff separately so the preview can retain its last valid image")
+    }
+
     @Test func independentPreviewDoesNotReplaceTheWriter() throws {
         let root = TestRepository.root
         let recorder = try String(contentsOf: root.appendingPathComponent(
@@ -415,7 +424,8 @@ struct CameraPreviewPolicyTests {
         #expect(renderer.contains("if nameChanged { renderQueue.async"))
         #expect(renderer.contains("guard isSelected(requested) else { return }"))
         #expect(renderer.contains("loadedSelection == selected"))
-        #expect(renderer.contains("guard let self, self.isCurrent(current) else { return }"))
+        #expect(renderer.contains("guard let self, self.isCurrentStatus(key, revision: current) else { return }"))
+        #expect(renderer.contains("return active && revision == current && publishedStatus == key"))
         #expect(renderer.contains("CameraPreviewCube.parse"))
         #expect(renderer.contains("subdirectory: \"Preview\""))
         #expect(renderer.contains("Preview LUT active [\\(selectedName)]"))
@@ -425,6 +435,262 @@ struct CameraPreviewPolicyTests {
         for forbidden in ["PipelineRenderer(", "grain", "halation", "toneMapper", "CIImage"] {
             #expect(!renderer.contains(forbidden))
         }
+    }
+
+    @Test func handoffNoticeMatchesTheFaultHeadlineFontAndCentersOverTheFrame() throws {
+        let view = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraView.swift"), encoding: .utf8)
+        #expect(view.contains("handoffLabel.font = .systemFont(ofSize: 46, weight: .black, width: .compressed)"))
+        #expect(view.contains("handoffLabel.textAlignment = .center"))
+        #expect(view.contains("handoffLabel.center = CGPoint(x: bounds.midX, y: bounds.midY)"))
+        #expect(view.contains("handoffLabel.isUserInteractionEnabled = false"))
+        #expect(view.contains("self.handoffLabel.text = lutActive ? warning : nil"),
+                "Only an informational notice belongs in the centered treatment")
+        #expect(view.contains("self.monitorLabel.text = lutActive ? nil : warning"),
+                "Real errors must retain their separate warning treatment")
+    }
+
+    @Test func aHeldLensHandoffHasAnExplicitNotice() throws {
+        let renderer = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraPreviewRenderer.swift"), encoding: .utf8)
+        let policy = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraPreviewPolicy.swift"), encoding: .utf8)
+        #expect(policy.contains("Switching lenses…"),
+                "A held lens switch must be explained instead of silently freezing")
+        #expect(renderer.contains("handoff.notice"),
+                "The renderer must publish the notice while retaining the graded image")
+    }
+
+    @Test func handoffPolicyLensNoticePersistsUntilTheFirstGradedFrame() {
+        var policy = CameraPreviewHandoffPolicy()
+        _ = policy.graded(at: 0)
+        // An explicit lens switch begins the hold and names itself.
+        #expect(policy.beginHold(at: 1, lensSwitch: true) == .hold)
+        #expect(policy.notice == CameraPreviewHandoffPolicy.lensSwitchText)
+        // Completion of the hardware switch alone does not clear the notice.
+        #expect(policy.handoffCompleted(at: 2) == .hold)
+        #expect(policy.notice == CameraPreviewHandoffPolicy.lensSwitchText)
+        // Only the first valid graded frame clears it.
+        #expect(policy.graded(at: 3) == .show(nil))
+        #expect(policy.notice == nil)
+    }
+
+    @Test func handoffPolicyNoticeClearsOnExpiryFatalAndLifecycle() {
+        var expired = CameraPreviewHandoffPolicy()
+        _ = expired.graded(at: 0)
+        _ = expired.beginHold(at: 0, lensSwitch: true)
+        #expect(expired.notice == CameraPreviewHandoffPolicy.lensSwitchText)
+        #expect(expired.deadlineReached(at: CameraPreviewHandoffPolicy.grace)
+                == .show(CameraPreviewHandoffPolicy.sourceUnavailableText))
+        #expect(expired.notice == nil)
+
+        var faulted = CameraPreviewHandoffPolicy()
+        _ = faulted.graded(at: 0)
+        _ = faulted.beginHold(at: 0, lensSwitch: true)
+        let gpuError = "Preview LUT GPU error — showing Log"
+        #expect(faulted.rejected(.fatal(gpuError), at: 0.1) == .show(gpuError))
+        #expect(faulted.notice == nil)
+
+        var left = CameraPreviewHandoffPolicy()
+        _ = left.graded(at: 0)
+        _ = left.beginHold(at: 0, lensSwitch: true)
+        left.invalidate()
+        #expect(left.notice == nil)
+    }
+
+    @Test func handoffPolicyGenericHoldNeverClaimsALensSwitch() {
+        var policy = CameraPreviewHandoffPolicy()
+        _ = policy.graded(at: 0)
+        // A source reconfiguration or a lost frame is not a lens switch.
+        #expect(policy.beginHold(at: 0) == .hold)
+        #expect(policy.notice == CameraPreviewHandoffPolicy.updatingPreviewText)
+        #expect(policy.notice != CameraPreviewHandoffPolicy.lensSwitchText)
+        #expect(policy.suspended(at: 0.1) == .hold)
+        #expect(policy.notice == CameraPreviewHandoffPolicy.updatingPreviewText)
+        // After recovery a real lens switch names itself again.
+        _ = policy.graded(at: 0.2)
+        #expect(policy.beginHold(at: 0.3, lensSwitch: true) == .hold)
+        #expect(policy.notice == CameraPreviewHandoffPolicy.lensSwitchText)
+    }
+
+    @Test func actualLensSwitchRenamesAnExistingGenericHoldWithoutExtendingIt() {
+        var policy = CameraPreviewHandoffPolicy()
+        _ = policy.graded(at: 0)
+        _ = policy.suspended(at: 1)
+        let deadline = policy.holdDeadline
+        #expect(policy.notice == CameraPreviewHandoffPolicy.updatingPreviewText)
+        _ = policy.beginHold(at: 1.1, lensSwitch: true)
+        #expect(policy.notice == CameraPreviewHandoffPolicy.lensSwitchText)
+        #expect(policy.holdDeadline == deadline)
+    }
+
+    @Test func aQueuedInformationalNoticeCannotRestoreAFailedPreview() throws {
+        let renderer = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraPreviewRenderer.swift"), encoding: .utf8)
+        let start = try #require(renderer.range(of: "private func publish(lutActive:"))
+        let end = try #require(renderer.range(of: "private func initialize()"))
+        let publication = String(renderer[start.lowerBound..<end.lowerBound])
+        #expect(publication.contains("handoff.hasGradableFrame && handoff.notice == warning"),
+                "Publishing an informational hold must check the live policy under the publication lock")
+        #expect(publication.contains("self.isCurrentStatus(key, revision: current)"),
+                "Recheck the queued status on the main thread so a late notice cannot replace a newer error")
+    }
+
+    @Test func handoffPolicyNoticeIsNilWhileNoHoldIsLive() {
+        var policy = CameraPreviewHandoffPolicy()
+        #expect(policy.notice == nil)
+        // A cold-start begin publishes pending text and holds nothing.
+        #expect(policy.beginHold(at: 0, lensSwitch: true) == .show(CameraPreviewHandoffPolicy.pendingText))
+        #expect(policy.notice == nil)
+        _ = policy.graded(at: 0)
+        #expect(policy.notice == nil)
+    }
+
+    @Test func rendererPublishesTheHoldNoticeWhileKeepingTheGradedLayerActive() throws {
+        let renderer = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraPreviewRenderer.swift"), encoding: .utf8)
+        // A held handoff keeps `lutActive: true` (graded layer retained) and
+        // publishes the informational notice read under the lock.
+        #expect(renderer.contains("publish(lutActive: true, warning: handoffNotice()"))
+        #expect(renderer.contains("return handoff.notice"))
+        // A real lens handoff is marked as such; the generic path is not.
+        #expect(renderer.contains("lensSwitch: true"))
+        #expect(renderer.contains("handoff.beginHold(at: now)"))
+        // The publish key includes the notice so active -> holding -> active
+        // each delivers.
+        #expect(renderer.contains("(lutActive ? \"active:\" : \"log:\") + (warning ?? \"\")"))
+    }
+
+    @Test func handoffPolicyHoldsTheLastGradedDrawableThenRecovers() {
+        var policy = CameraPreviewHandoffPolicy()
+        // Cold start: no graded drawable yet, so a suspension is immediate.
+        #expect(policy.beginHold(at: 0) == .show(CameraPreviewHandoffPolicy.pendingText))
+        #expect(policy.suspended(at: 0) == .show(CameraPreviewHandoffPolicy.sourceUnavailableText))
+        #expect(!policy.isHolding)
+        #expect(policy.graded(at: 0.1) == .show(nil))
+        // An expected handoff holds the graded drawable and publishes nothing.
+        #expect(policy.beginHold(at: 0.2) == .hold)
+        #expect(policy.suspended(at: 0.3) == .hold)
+        #expect(policy.holdDeadline == 0.2 + CameraPreviewHandoffPolicy.grace)
+        // A conforming frame before the deadline recovers cleanly.
+        #expect(policy.graded(at: 0.4) == .show(nil))
+        #expect(policy.holdDeadline == nil)
+        #expect(!policy.isHolding)
+    }
+
+    @Test func handoffPolicyNeverExtendsTheDeadlineOnRepeatedBadFrames() {
+        var policy = CameraPreviewHandoffPolicy()
+        _ = policy.graded(at: 0)
+        #expect(policy.beginHold(at: 0) == .hold)
+        let deadline = policy.holdDeadline
+        #expect(deadline == CameraPreviewHandoffPolicy.grace)
+        let unsupported = "Preview LUT unsupported for this source — showing Log"
+        // Repeated transitional rejections and suspensions must not move it.
+        #expect(policy.rejected(.transitional(unsupported), at: 0.5) == .hold)
+        #expect(policy.rejected(.transitional(unsupported), at: 1.0) == .hold)
+        #expect(policy.suspended(at: 1.1) == .hold)
+        #expect(policy.holdDeadline == deadline)
+        // The bounded deadline then publishes the persistent reason.
+        #expect(policy.deadlineReached(at: 1.5) == .show(unsupported))
+        #expect(!policy.isHolding)
+    }
+
+    @Test func handoffPolicyDeadlineSurfacesMissingSourceWhenFramesStop() {
+        var policy = CameraPreviewHandoffPolicy()
+        _ = policy.graded(at: 0)
+        _ = policy.beginHold(at: 0)
+        // Before the deadline the hold stands; at it, the missing source shows.
+        #expect(policy.deadlineReached(at: 1.4) == .hold)
+        #expect(policy.isHolding)
+        #expect(policy.deadlineReached(at: 1.5) == .show(CameraPreviewHandoffPolicy.sourceUnavailableText))
+        #expect(!policy.isHolding)
+    }
+
+    @Test func handoffPolicyExplicitChangesDropTheHeldFrame() {
+        var policy = CameraPreviewHandoffPolicy()
+        _ = policy.graded(at: 0)
+        #expect(policy.beginHold(at: 0) == .hold)
+        // Leaving the active scene, entering Log mode, or choosing a new LUT.
+        policy.invalidate()
+        #expect(!policy.isHolding)
+        #expect(!policy.hasGradableFrame)
+        // A suspension right after an explicit change is a real condition, not a
+        // hold: nothing valid remains to show.
+        #expect(policy.suspended(at: 0.1) == .show(CameraPreviewHandoffPolicy.sourceUnavailableText))
+    }
+
+    @Test func handoffPolicySurfacesFatalErrorsEvenWhileHolding() {
+        var policy = CameraPreviewHandoffPolicy()
+        _ = policy.graded(at: 0)
+        _ = policy.beginHold(at: 0)
+        let gpuError = "Preview LUT GPU error — showing Log"
+        #expect(policy.rejected(.fatal(gpuError), at: 0.2) == .show(gpuError))
+        #expect(!policy.isHolding)
+        // A later conforming frame recovers from the fault.
+        #expect(policy.graded(at: 0.5) == .show(nil))
+    }
+
+    @Test func handoffPolicyReanchorsOnlyOnCompletedHandoff() {
+        var policy = CameraPreviewHandoffPolicy()
+        _ = policy.graded(at: 0)
+        #expect(policy.beginHold(at: 10) == .hold)
+        #expect(policy.holdDeadline == 10 + CameraPreviewHandoffPolicy.grace)
+        // Repeated begins (layout churn while a handoff is expected) never extend.
+        #expect(policy.beginHold(at: 10.5) == .hold)
+        #expect(policy.holdDeadline == 10 + CameraPreviewHandoffPolicy.grace)
+        // Completing the handoff restarts the bounded grace from completion.
+        #expect(policy.handoffCompleted(at: 11) == .hold)
+        #expect(policy.holdDeadline == 11 + CameraPreviewHandoffPolicy.grace)
+        #expect(policy.graded(at: 11.2) == .show(nil))
+        #expect(policy.holdDeadline == nil)
+    }
+
+    @Test func handoffPolicyRapidTransitionsKeepTheLatestDeadline() {
+        var policy = CameraPreviewHandoffPolicy()
+        _ = policy.graded(at: 0)
+        #expect(policy.beginHold(at: 0) == .hold)      // lens A -> B
+        #expect(policy.holdDeadline == CameraPreviewHandoffPolicy.grace)
+        _ = policy.graded(at: 0.2)                      // B graded
+        #expect(policy.beginHold(at: 0.3) == .hold)    // B -> A (rollback)
+        #expect(policy.holdDeadline == 0.3 + CameraPreviewHandoffPolicy.grace)
+        // A late suspension from the superseded source cannot publish a warning.
+        #expect(policy.suspended(at: 0.4) == .hold)
+        #expect(policy.deadlineReached(at: 1.8) == .show(CameraPreviewHandoffPolicy.sourceUnavailableText))
+    }
+
+    @Test func rendererHoldsTheGradedDrawableThroughAnExpectedHandoff() throws {
+        let renderer = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraPreviewRenderer.swift"), encoding: .utf8)
+        #expect(renderer.contains("private var handoff = CameraPreviewHandoffPolicy()"))
+        #expect(renderer.contains("func configure(active: Bool, transitioning: Bool"))
+        #expect(renderer.contains("handoff.beginHold(at:"))
+        #expect(renderer.contains("handoff.handoffCompleted(at:"))
+        #expect(renderer.contains("handoff.suspended(at:"))
+        // A hold publishes nothing; the graded drawable stays on screen.
+        #expect(renderer.contains("case .hold"))
+        // The bounded deadline is scheduled (not frame-dependent) and only the
+        // newest arm may fire, so rapid transitions leave no stale callback.
+        #expect(renderer.contains("DispatchQueue.main.asyncAfter"))
+        #expect(renderer.contains("token == deadlineToken"))
+        let timerStart = try #require(renderer.range(of: "private func deadlineFired(_ token: UInt64)"))
+        let timerEnd = try #require(renderer.range(of: "private func isCurrent(_ current: UInt64)"))
+        let timer = String(renderer[timerStart.lowerBound..<timerEnd.lowerBound])
+        let clearedArm = try #require(timer.range(of: "armedDeadline = nil"),
+                                    "A timer that fires slightly early must be able to re-arm")
+        let checkedDeadline = try #require(timer.range(of: "handoff.deadlineReached"))
+        #expect(clearedArm.lowerBound < checkedDeadline.lowerBound)
+        // Real errors are never routed through the holdable transitional path.
+        #expect(renderer.contains("reject(.fatal(\"Preview LUT GPU error"))
+        #expect(renderer.contains("reject(.transitional(\"Preview LUT unsupported for this source"))
+    }
+
+    @Test func previewViewForwardsTheExpectedHandoffSeparately() throws {
+        let view = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraView.swift"), encoding: .utf8)
+        #expect(view.contains("transitioning: viewModel.isSwitchingCameraLens"))
+        #expect(view.contains("uiView.update(mode: mode, active: active, transitioning: transitioning"))
+        // A lens change alone must no longer synchronously reset the drawable.
+        #expect(!view.contains("activeLens != lens || resolvedLUTName != lutName"))
     }
 
     private func expectScale(source: SIMD2<Float>, view: SIMD2<Float>, turns: Int,
