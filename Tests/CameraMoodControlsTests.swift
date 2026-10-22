@@ -14,6 +14,48 @@ struct CameraMoodControlsTests {
     private let screenWidths: [CGFloat] = [320, 375, 430]
     private let barHeights: [CGFloat] = [168, 180, 200]
 
+    @Test func exposureControlKeepsNumbersWithoutRepeatedVisibleCaptions() throws {
+        let root = TestRepository.root
+        let bar = try String(contentsOf: root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraControlBar.swift"), encoding: .utf8)
+        let meter = try String(contentsOf: root.appendingPathComponent(
+            "App/Modules/CameraCapture/ExposureOverlay.swift"), encoding: .utf8)
+        #expect(!bar.contains("Text(cameraViewModel.isManualExposure ? \"ISO\" : \"EV\")"))
+        #expect(bar.contains("return \"ISO \\(Int(cameraViewModel.liveISO))\""),
+                "Keep the existing ISO readout above its ruler")
+        #expect(!meter.contains("directionLabel(\"OVER\")"))
+        #expect(!meter.contains("directionLabel(\"UNDER\")"))
+        #expect(!meter.contains("Text(statusText)"))
+        #expect(meter.contains(".accessibilityLabel("), "Retain nonvisual meter information")
+    }
+
+    @Test func exposureLongPressHasVisibleProgressAsWellAsCommittedHaptics() throws {
+        let bar = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraControlBar.swift"), encoding: .utf8)
+        #expect(bar.contains("@GestureState private var isExposureHolding = false"))
+        #expect(bar.contains(".updating($isExposureHolding)"),
+                "Release or cancellation must reset the visual hold state")
+        #expect(bar.contains(".scaleEffect("))
+        #expect(bar.contains("value: isExposureHolding"))
+        #expect(bar.contains(".sensoryFeedback(trigger: cameraViewModel.isManualExposure)"))
+        #expect(bar.contains("LongPressGesture(minimumDuration: 0.5, maximumDistance: 3)"))
+    }
+
+    @Test func removingCaptionsPreservesTheShootingBarHeight() throws {
+        let bar = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraControlBar.swift"), encoding: .utf8)
+        #expect(bar.contains("Text(\" \")"),
+                "Reserve the old footer's font metrics without visible words so the preview does not resize")
+        #expect(bar.contains(".accessibilityHidden(true)"))
+    }
+
+    @Test func aBusyCaptureDoesNotAcknowledgeAnExposureHold() throws {
+        let bar = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraControlBar.swift"), encoding: .utf8)
+        #expect(bar.contains("state = current && exposureHoldEnabled"))
+        #expect(bar.contains("guard exposureHoldEnabled else { return }"))
+    }
+
     @Test func lcdSlotSitsAboveTheStockWellAndClearOfRecord() {
         for screenWidth in screenWidths {
             for height in barHeights {

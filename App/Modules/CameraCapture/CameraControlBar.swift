@@ -9,6 +9,12 @@ struct CameraControlBar: View {
     @Environment(\.cameraDeviceOrientation) private var orientation
     private let controlFaceSize: CGFloat = 38
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// True only while the exposure control is being held, whether or not the
+    /// press has reached the long-press threshold. `LongPressGesture` feeds it
+    /// through `.updating`, so the expanding acknowledgement starts during the
+    /// hold rather than at the moment the mode flips, and SwiftUI resets it
+    /// automatically on release or cancellation — no mode change, no haptic.
+    @GestureState private var isExposureHolding = false
     /// Drives `.sensoryFeedback`; bumped on every REC tap so the press is felt
     /// immediately instead of when capture reports it started.
     @State private var recordFeedbackTrigger = 0
@@ -126,6 +132,11 @@ struct CameraControlBar: View {
 
     /// One setting, two modes. Auto drives the scene's auto-exposure target bias
     /// (EV); manual drives the ISO chooser. Long-press toggles between them.
+    private var exposureHoldEnabled: Bool {
+        !cameraViewModel.isStartingRecording && !cameraViewModel.isRecording
+            && !cameraViewModel.isStoppingRecording && !cameraViewModel.isChangingFrameRate
+    }
+
     private var exposureSetting: some View {
         VStack(spacing: 6) {
             Text(exposureReadout)
@@ -166,21 +177,45 @@ struct CameraControlBar: View {
                 .opacity(cameraViewModel.isExposureBiasAvailable ? 1 : 0.4)
             }
 
-            Text(cameraViewModel.isManualExposure ? "ISO" : "EV")
+            // Keep the previous footer's exact font height without its words.
+            // This preserves the shooting bar and viewfinder geometry.
+            Text(" ")
                 .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.white.opacity(0.7))
-                .cameraUpright()
+                .accessibilityHidden(true)
         }
         .contentShape(Rectangle())
+        // Visible hold acknowledgement: a small spring expansion the instant the
+        // finger lands, springing back on release or cancellation. Reduce Motion
+        // gets a steady outline instead of a zoom, so the hold stays visible
+        // without scale movement. Only a small transform and a non-layout
+        // overlay are applied; columns and touch targets are unchanged.
+        .scaleEffect(reduceMotion ? 1 : (isExposureHolding ? 1.07 : 1))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(.white.opacity(0.9), lineWidth: 1.5)
+                .opacity(reduceMotion && isExposureHolding ? 1 : 0)
+        }
+        .animation(reduceMotion ? .easeInOut(duration: 0.15)
+                                : .spring(response: 0.28, dampingFraction: 0.62),
+                   value: isExposureHolding)
         // Simultaneous so the whole control stays hittable: an exclusive
         // long-press would never fire over the slider track, which is the
         // widest touch target in this stack.
         // Cancel a moving press before it reaches the first 6pt detent
         // midpoint; otherwise a slow adjustment can replace the active ruler.
+        // `.updating` publishes the held state while the press is still being
+        // detected — not only once it reaches the threshold — and SwiftUI clears
+        // it on release or cancellation, so the expansion tracks the finger and
+        // a dragged/cancelled press never changes the mode or fires the haptic.
         .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.5, maximumDistance: 3).onEnded { _ in
-                cameraViewModel.toggleManualExposure()
-            }
+            LongPressGesture(minimumDuration: 0.5, maximumDistance: 3)
+                .updating($isExposureHolding) { current, state, _ in
+                    state = current && exposureHoldEnabled
+                }
+                .onEnded { _ in
+                    guard exposureHoldEnabled else { return }
+                    cameraViewModel.toggleManualExposure()
+                }
         )
         .accessibilityElement(children: .contain)
         .accessibilityLabel(cameraViewModel.isManualExposure ? "Manual ISO" : "Auto exposure bias")
