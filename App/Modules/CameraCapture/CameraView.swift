@@ -94,6 +94,7 @@ private final class CameraPreviewUIView: UIView {
     private let camera: CameraSession
     private let metalView = MTKView(frame: .zero)
     private let monitorLabel = UILabel()
+    private let handoffLabel = UILabel()
     private let owner = UUID()
     private var renderer: CameraPreviewRenderer?
     private var wantsLUT = false
@@ -130,14 +131,28 @@ private final class CameraPreviewUIView: UIView {
         monitorLabel.numberOfLines = 2
         monitorLabel.isUserInteractionEnabled = false
         addSubview(monitorLabel)
+        handoffLabel.font = .systemFont(ofSize: 46, weight: .black, width: .compressed)
+        handoffLabel.textColor = .white
+        handoffLabel.textAlignment = .center
+        handoffLabel.backgroundColor = .clear
+        handoffLabel.numberOfLines = 1
+        handoffLabel.adjustsFontSizeToFitWidth = true
+        handoffLabel.minimumScaleFactor = 0.4
+        handoffLabel.isUserInteractionEnabled = false
+        handoffLabel.isHidden = true
+        handoffLabel.shadowColor = UIColor.black.withAlphaComponent(0.65)
+        handoffLabel.shadowOffset = CGSize(width: 0, height: 1)
+        addSubview(handoffLabel)
         if let metalLayer = metalView.layer as? CAMetalLayer {
             metalLayer.colorspace = CGColorSpace(name: CGColorSpace.itur_709)
             metalLayer.framebufferOnly = true
             renderer = CameraPreviewRenderer(layer: metalLayer) { [weak self] lutActive, warning in
                 guard let self, self.wantsLUT else { return }
                 self.metalView.isHidden = !lutActive
-                self.monitorLabel.text = warning
-                self.monitorLabel.isHidden = warning == nil
+                self.handoffLabel.text = lutActive ? warning : nil
+                self.handoffLabel.isHidden = !lutActive || warning == nil
+                self.monitorLabel.text = lutActive ? nil : warning
+                self.monitorLabel.isHidden = lutActive || warning == nil
                 self.setNeedsLayout()
             }
         }
@@ -151,6 +166,7 @@ private final class CameraPreviewUIView: UIView {
         let requestedChanged = wantsLUT != requested
         self.transitioning = transitioning
         if requestedChanged || selectionChanged {
+            handoffLabel.isHidden = true
             // An explicit display change — Log mode, the scene leaving, or a new
             // LUT choice — must never keep a stale graded frame.
             metalView.isHidden = true
@@ -182,6 +198,7 @@ private final class CameraPreviewUIView: UIView {
 
     func detach() {
         wantsLUT = false
+        handoffLabel.isHidden = true
         // The coordinator holds a weak layer reference; drop the observation and
         // the remembered lens so a re-attach rebuilds both.
         previewRotationObservation = nil
@@ -291,6 +308,9 @@ private final class CameraPreviewUIView: UIView {
         metalView.drawableSize = CameraPreviewPolicy.drawablePixelSize(viewSize: bounds.size,
             fallbackScale: contentScaleFactor, displayScale: traitCollection.displayScale)
         monitorLabel.frame = CGRect(x: 8, y: 8, width: max(0, bounds.width - 16), height: 34)
+        handoffLabel.bounds = CGRect(x: 0, y: 0, width: max(0, bounds.width - 48),
+                                    height: min(64, max(0, bounds.height)))
+        handoffLabel.center = CGPoint(x: bounds.midX, y: bounds.midY)
         CATransaction.commit()
 #if DEBUG
         let diagnostic = "bounds=\(bounds.size) parentScale=\(contentScaleFactor) displayScale=\(traitCollection.displayScale) drawable=\(metalView.drawableSize)"

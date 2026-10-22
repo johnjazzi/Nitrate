@@ -437,6 +437,19 @@ struct CameraPreviewPolicyTests {
         }
     }
 
+    @Test func handoffNoticeMatchesTheFaultHeadlineFontAndCentersOverTheFrame() throws {
+        let view = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraView.swift"), encoding: .utf8)
+        #expect(view.contains("handoffLabel.font = .systemFont(ofSize: 46, weight: .black, width: .compressed)"))
+        #expect(view.contains("handoffLabel.textAlignment = .center"))
+        #expect(view.contains("handoffLabel.center = CGPoint(x: bounds.midX, y: bounds.midY)"))
+        #expect(view.contains("handoffLabel.isUserInteractionEnabled = false"))
+        #expect(view.contains("self.handoffLabel.text = lutActive ? warning : nil"),
+                "Only an informational notice belongs in the centered treatment")
+        #expect(view.contains("self.monitorLabel.text = lutActive ? nil : warning"),
+                "Real errors must retain their separate warning treatment")
+    }
+
     @Test func aHeldLensHandoffHasAnExplicitNotice() throws {
         let renderer = try String(contentsOf: TestRepository.root.appendingPathComponent(
             "App/Modules/CameraCapture/CameraPreviewRenderer.swift"), encoding: .utf8)
