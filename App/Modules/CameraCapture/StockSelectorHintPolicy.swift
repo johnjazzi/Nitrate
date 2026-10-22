@@ -91,6 +91,41 @@ enum StockSelectorHintPolicy {
     }
 }
 
+/// The visual treatment for the stock-selector hint: a set of gentle pulses over
+/// the cue's existing lifetime.
+///
+/// Pure Foundation and side-effect free: the opacity is a function of time since
+/// the cue appeared, so the SwiftUI view and the tests share one contract and
+/// cannot drift. Three smooth low-to-high-to-low cycles, one per second, fill the
+/// 3-second cue; the trough is dim but never zero, so the lows read as a breath
+/// rather than a blink. Reduce Motion renders the steady outline instead, so this
+/// envelope is never consulted there.
+enum StockSelectorHintPulse {
+    /// How many gentle pulses fill the cue's lifetime.
+    static let cycleCount = 3
+    /// Seconds per pulse: one smooth low-to-high-to-low per second.
+    static let cycleDuration: TimeInterval = 1
+    /// Whole-cue pulse lifetime; matches `StockSelectorHintPolicy.cueDuration`.
+    static var totalDuration: TimeInterval { cycleDuration * Double(cycleCount) }
+    /// Dim-but-visible trough, so the low phase never blinks fully off.
+    static let minimumOpacity: Double = 0.35
+    /// Full-strength high; the outline's normal on-screen value.
+    static let maximumOpacity: Double = 1
+
+    /// Opacity for a cue that has been visible for `elapsed` seconds.
+    ///
+    /// A raised cosine gives one smooth low-to-high-to-low per cycle,
+    /// `cycleCount` times over `totalDuration`, with a peak at the middle of each
+    /// cycle. Outside the cue lifetime the opacity is 0, so nothing outlives the
+    /// cue; every low sits at `minimumOpacity`, never 0.
+    static func opacity(elapsed: TimeInterval) -> Double {
+        guard elapsed.isFinite, elapsed >= 0, elapsed < totalDuration else { return 0 }
+        let phase = elapsed / cycleDuration
+        let envelope = (1 - cos(2 * .pi * phase)) / 2
+        return minimumOpacity + (maximumOpacity - minimumOpacity) * envelope
+    }
+}
+
 /// Counts app launches locally so the discoverability hint is offered only on the
 /// first three opens. The count is incremented exactly once per process launch by
 /// the app-owned model; foreground/background transitions never touch it.

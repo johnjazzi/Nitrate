@@ -61,17 +61,11 @@ struct CameraControlBar: View {
             }
         }
         .cameraControlWell(cornerRadius: 12)
-        // A non-hit-testing overlay, so the well's layout and touch targets are
-        // unchanged. Reduce Motion gets a steady ring instead of a fade. The
-        // parent keeps it on screen for ~3 seconds exactly once per launch.
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(.white.opacity(0.9), lineWidth: 1.5)
-                .shadow(color: .white.opacity(0.45), radius: 4)
-                .opacity(showsStockHint ? 1 : 0)
+            StockSelectorHintOutline(isVisible: showsStockHint)
                 .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: showsStockHint)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 

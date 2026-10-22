@@ -168,11 +168,14 @@ struct DebugFrameSheet: View {
     /// a sensible height instead of collapsing.
     private static let fallbackAspect: CGFloat = 4.0 / 3.0
 
-    /// Each debug section is collapsible; all start expanded so the sheet reads
-    /// exactly as before until the user taps a header.
-    @State private var grainExpanded = true
-    @State private var halationExpanded = true
-    @State private var glowExpanded = true
+    /// Keep the image visible and reveal only the controls being adjusted.
+    @State private var stockExpanded = false
+    @State private var hintExpanded = false
+    @State private var grainExpanded = false
+    @State private var halationExpanded = false
+    @State private var glowExpanded = false
+    @State private var realizedExpanded = false
+    @State private var debugControlsExpanded = false
 
     init(viewModel: DebugFrameViewModel,
          onPreviewStockOutline: @escaping () -> Void = {},
@@ -194,16 +197,19 @@ struct DebugFrameSheet: View {
                         .padding(.top, 8)
                         .padding(.bottom, 12)
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 20) {
+                        VStack(alignment: .leading, spacing: 4) {
                             stockSection
-                            realizedValues
                             hintPreviewSection
                             grainSection
                             halationSection
                             glowSection
+                            realizedValues
                             debugControlsSection
                         }
-                        .padding()
+                        .font(.caption)
+                        .controlSize(.small)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 4)
                     }
                 }
             }
@@ -309,8 +315,7 @@ struct DebugFrameSheet: View {
     }
 
     private var stockSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Stock").font(.headline)
+        DebugCollapsibleSection(title: "Stock", isExpanded: $stockExpanded) {
             Picker("Stock", selection: Binding(
                 get: { viewModel.config.stockId },
                 set: { id in
@@ -327,8 +332,7 @@ struct DebugFrameSheet: View {
     }
 
     private var realizedValues: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Realized").font(.caption.bold())
+        DebugCollapsibleSection(title: "Realized", isExpanded: $realizedExpanded) {
             Text(String(format: "footprint %.3f · amount %.3f · gauge amp %.2f",
                         viewModel.parameters.realizedFootprint,
                         viewModel.parameters.realizedAmount,
@@ -355,8 +359,7 @@ struct DebugFrameSheet: View {
     /// DEBUG-only affordances that reach past this frozen frame: a one-shot
     /// preview of the stock-selector outline, and the hint's decision snapshot.
     private var hintPreviewSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Stock hint").font(.headline)
+        DebugCollapsibleSection(title: "Stock hint", isExpanded: $hintExpanded) {
             Button {
                 // Dismiss first; the screen fires the outline once the sheet is
                 // gone, so it is never painted behind this sheet.
@@ -364,9 +367,9 @@ struct DebugFrameSheet: View {
                 dismiss()
             } label: {
                 Label("Preview stock outline", systemImage: "rectangle.dashed")
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 44)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
             if let hintDiagnostics {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Hint status at open")
@@ -387,9 +390,7 @@ struct DebugFrameSheet: View {
     /// Switches for the on-screen debug affordances. Mirrored in Settings, so
     /// hiding the DEBUG button cannot strand this sheet.
     private var debugControlsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Debug controls")
-                .font(.headline)
+        DebugCollapsibleSection(title: "Debug controls", isExpanded: $debugControlsExpanded) {
             Toggle("Show DEBUG button", isOn: $showsDebugButton)
             Toggle("Show FAULT test button", isOn: $showsFaultButton)
             Text("FAULT previews the recording-failure overlay. "
@@ -495,16 +496,12 @@ struct DebugFrameSheet: View {
     private func labelled<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            content()
+            content().frame(minHeight: 44)
         }
     }
 }
 
-/// One collapsible debug section: a tappable header with a chevron that rotates
-/// to show its expanded state. All sections start expanded so the sheet reads
-/// exactly as before until the user taps a header to collapse it — which lets
-/// Grain be tucked away while the Halation controls and the preview stay on
-/// screen together.
+/// Compact disclosure headers retain a full-height touch target.
 private struct DebugCollapsibleSection<Content: View>: View {
     let title: String
     @Binding var isExpanded: Bool
@@ -522,16 +519,18 @@ private struct DebugCollapsibleSection<Content: View>: View {
                 withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
-                    Text(title).font(.headline).foregroundStyle(.primary)
+                    Text(title).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.right")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 }
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
 
             if isExpanded {
                 content
