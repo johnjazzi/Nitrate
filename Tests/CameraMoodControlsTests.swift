@@ -56,6 +56,28 @@ struct CameraMoodControlsTests {
         #expect(bar.contains("guard exposureHoldEnabled else { return }"))
     }
 
+    @Test func exposureHoldBelongsToTheWholeWellRatherThanTheRuler() throws {
+        let bar = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraControlBar.swift"), encoding: .utf8)
+        let wellStart = try #require(bar.range(of: "private var exposureControl: some View"))
+        let enabledStart = try #require(bar.range(of: "private var exposureHoldEnabled: Bool"))
+        let settingStart = try #require(bar.range(of: "private var exposureSetting: some View"))
+        let readoutStart = try #require(bar.range(of: "private var exposureReadout: String"))
+        let well = String(bar[wellStart.lowerBound..<enabledStart.lowerBound])
+        let setting = String(bar[settingStart.lowerBound..<readoutStart.lowerBound])
+        #expect(well.contains(".contentShape(Rectangle())"))
+        #expect(well.contains(".simultaneousGesture("))
+        #expect(well.contains(".scaleEffect("))
+        #expect(well.contains(".sensoryFeedback(trigger: cameraViewModel.isManualExposure)"))
+        #expect(!setting.contains(".simultaneousGesture("))
+        #expect(!setting.contains(".scaleEffect("))
+        let scale = try #require(well.range(of: ".scaleEffect("))
+        let measured = try #require(well.range(of: ".background {"))
+        #expect(scale.lowerBound < measured.lowerBound,
+                "Measure the unscaled well so the rescue anchor does not move during a hold")
+        #expect(bar.components(separatedBy: "LongPressGesture(minimumDuration:").count == 2)
+    }
+
     @Test func lcdSlotSitsAboveTheStockWellAndClearOfRecord() {
         for screenWidth in screenWidths {
             for height in barHeights {
