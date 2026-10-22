@@ -199,4 +199,89 @@ struct StockSelectorHintEngine {
         sustainedDirection = nil
         sustainedSeconds = 0
     }
+
+#if DEBUG
+    /// Read-only sustained-window length, for the DEBUG diagnostics only.
+    var debugSustainedSeconds: TimeInterval { sustainedSeconds }
+#endif
 }
+
+#if DEBUG
+/// Read-only snapshot of the discovery hint's decision state, captured when the
+/// DEBUG single-frame sheet opens and shown there. It is a **frozen** snapshot:
+/// the estimate and the launch/active counters do not update while the sheet
+/// stays open, so the sheet labels it as a snapshot rather than a live readout.
+///
+/// A presentation aid only. It never mutates the hint, the stored launch count,
+/// white balance, exposure or the selected stock.
+struct StockSelectorHintDiagnostics: Equatable {
+    /// 1-based launch ordinal recorded for this process.
+    var launchOrdinal: Int
+    /// Highest ordinal that may still show the automatic cue (3).
+    var launchLimit: Int
+    var isEligibleLaunch: Bool
+    var activeSeconds: TimeInterval
+    var requiredActiveSeconds: TimeInterval
+    var sustainedSeconds: TimeInterval
+    var requiredSustainedSeconds: TimeInterval
+    var didShowCue: Bool
+    var didOpenSelector: Bool
+    /// The selected stock's locked reference temperature, if a stock is chosen.
+    var referenceKelvin: Float?
+    /// The Gray-World scene estimate at snapshot time, if one was available.
+    var estimatedKelvin: Float?
+    /// When that estimate was read.
+    var estimateCapturedAt: Date?
+    /// When this snapshot was taken.
+    var snapshotAt: Date
+    /// The classified direction at snapshot time, if any. This is the same
+    /// 100-mired test the automatic cue uses, so it carries the same
+    /// Gray-World limitation — it does not reliably identify a subject's colour.
+    var mismatch: StockSelectorHintMismatch?
+
+    var launchText: String { "\(launchOrdinal)/\(launchLimit)" }
+
+    var activeText: String {
+        String(format: "%.1f/%.0f s", activeSeconds, requiredActiveSeconds)
+    }
+
+    var stockText: String {
+        referenceKelvin.map { String(format: "%.0f K", $0) } ?? "unavailable"
+    }
+
+    var estimateText: String {
+        estimatedKelvin.map { String(format: "%.0f K", $0) } ?? "unavailable"
+    }
+
+    /// Age of the scene estimate when the sheet opened. Older than the policy
+    /// window means the automatic cue would already ignore it.
+    var estimateAgeText: String {
+        guard let estimateCapturedAt else { return "no sample" }
+        let age = snapshotAt.timeIntervalSince(estimateCapturedAt)
+        guard age >= 0, age <= StockSelectorHintPolicy.maximumSampleAge else { return "stale" }
+        return String(format: "%.1f s old", age)
+    }
+
+    /// Why the automatic cue is not showing, checked in the same order the
+    /// engine decides. It is a reason, never a colour verdict.
+    var automaticCueReason: String {
+        if !isEligibleLaunch { return "launch limit reached (opens 4+)" }
+        if didOpenSelector { return "selector already opened this launch" }
+        if didShowCue { return "already shown this launch" }
+        if activeSeconds < requiredActiveSeconds { return "waiting for active camera time" }
+        if mismatch == nil { return "no fresh mismatch in view" }
+        if sustainedSeconds < requiredSustainedSeconds { return "waiting for a sustained cast" }
+        return "armed — may still fire"
+    }
+
+    /// Ready-to-display lines; the formatting stays here so the SwiftUI sheet
+    /// remains a thin renderer and the screen stays inside its file limit.
+    var lines: [String] {
+        [
+            "Launch \(launchText) · active \(activeText)",
+            "Stock \(stockText) · scene \(estimateText) (\(estimateAgeText))",
+            "Automatic cue: \(automaticCueReason)",
+        ]
+    }
+}
+#endif

@@ -46,6 +46,15 @@ final class StockSelectorHintModel {
         estimateKelvin: nil, estimateCapturedAt: nil, referenceKelvin: nil)
     private var lastTick: Date?
     private var cueGeneration: UInt64 = 0
+#if DEBUG
+    /// True while the DEBUG "Preview stock outline" cue is the one on screen. It
+    /// borrows the same ~3 s outline but is not the automatic cue: it never
+    /// advances the engine, never consumes the launch limit, and never changes
+    /// the stored launch count.
+    private(set) var isDebugPreviewing = false
+    /// Token for the in-flight preview, so a stale timer cannot hide a newer one.
+    private var previewGeneration: UInt64 = 0
+#endif
 
     init(userDefaults: UserDefaults = .standard) {
         let tracker = StockSelectorHintLaunchTracker(userDefaults: userDefaults)
@@ -67,9 +76,14 @@ final class StockSelectorHintModel {
         let elapsed = StockSelectorHintPolicy.creditedElapsed(gapSeconds: gap, wasActive: context.isActive)
         lastTick = now
         context = inputs
-        if !inputs.isActive || inputs.isSelectorOpened {
-            cueGeneration &+= 1
-            isCueVisible = false
+        if !inputs.isActive {
+            // A genuine blocking state ends any cue at once, preview included.
+            endCue()
+        } else if inputs.isSelectorOpened, !isDebugPreviewingActive {
+            // An open selector suppresses the automatic cue. A latched historical
+            // open must not clear an explicitly requested DEBUG preview, whose
+            // own sheet dismissal already guards a real open through `isActive`.
+            endCue()
         }
         let frame = StockSelectorHintEngine.Frame(
             elapsed: elapsed,
@@ -100,6 +114,12 @@ final class StockSelectorHintModel {
     /// Show the single, non-repeating outline for its fixed duration.
     private func presentCue() {
         cueGeneration &+= 1
+#if DEBUG
+        // An automatic cue supersedes a DEBUG preview; invalidate the preview's
+        // token so its timer cannot later cut this replacement short.
+        previewGeneration &+= 1
+        isDebugPreviewing = false
+#endif
         let generation = cueGeneration
         isCueVisible = true
         Task { @MainActor [weak self] in
@@ -108,4 +128,86 @@ final class StockSelectorHintModel {
             self.isCueVisible = false
         }
     }
+
+    /// Clear any visible cue and invalidate its timer. In DEBUG it also ends the
+    /// preview and retires its token, so a superseded preview timer is a no-op.
+    private func endCue() {
+        cueGeneration &+= 1
+#if DEBUG
+        previewGeneration &+= 1
+        isDebugPreviewing = false
+#endif
+        isCueVisible = false
+    }
+
+    /// True while a DEBUG preview cue is on screen. Always false in release, so
+    /// the selector-open suppression in `update` is unchanged for the automatic
+    /// hint.
+    private var isDebugPreviewingActive: Bool {
+#if DEBUG
+        isDebugPreviewing
+#else
+        false
+#endif
+    }
 }
+
+#if DEBUG
+extension StockSelectorHintModel {
+    /// Outline the whole stock/gauge well once for the fixed cue duration, like
+    /// the automatic hint but with none of its conditions. It bypasses the
+    /// active-time clock, the three-open launch limit and the selector history,
+    /// and it leaves the automatic engine, the stored launch count, white
+    /// balance, exposure and the selected stock untouched. Only a genuine
+    /// blocking state (`update`) or a newer cue ends it early.
+    @discardableResult
+    func beginDebugPreview() -> UInt64 {
+        cueGeneration &+= 1
+        previewGeneration &+= 1
+        let token = previewGeneration
+        isDebugPreviewing = true
+        isCueVisible = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(StockSelectorHintPolicy.cueDuration))
+            self?.endDebugPreview(token: token)
+        }
+        return token
+    }
+
+    /// Hide a preview only if `token` is still the current one, so a superseded
+    /// timer cannot cut a newer preview short.
+    func endDebugPreview(token: UInt64) {
+        guard isDebugPreviewing, token == previewGeneration else { return }
+        endCue()
+    }
+
+    /// Read-only decision snapshot for the DEBUG sheet. Captured live when the
+    /// sheet opens, then shown frozen. Takes the estimate and stock reference the
+    /// caller read at the same moment so nothing is re-read inside the model.
+    func debugDiagnostics(estimatedKelvin: Float?, estimateCapturedAt: Date?,
+                          referenceKelvin: Float?, now: Date = Date()) -> StockSelectorHintDiagnostics {
+        var mismatch: StockSelectorHintMismatch?
+        if let kelvin = estimatedKelvin, let reference = referenceKelvin, let capturedAt = estimateCapturedAt {
+            mismatch = StockSelectorHintPolicy.freshMismatch(
+                estimatedKelvin: Double(kelvin),
+                referenceKelvin: Double(reference),
+                ageSeconds: now.timeIntervalSince(capturedAt))
+        }
+        return StockSelectorHintDiagnostics(
+            launchOrdinal: launch,
+            launchLimit: StockSelectorHintLaunchTracker.maximumEligibleLaunch,
+            isEligibleLaunch: isEligibleLaunch,
+            activeSeconds: engine.activeSeconds,
+            requiredActiveSeconds: StockSelectorHintPolicy.requiredActiveSeconds,
+            sustainedSeconds: engine.debugSustainedSeconds,
+            requiredSustainedSeconds: StockSelectorHintPolicy.requiredSustainedSeconds,
+            didShowCue: engine.didShowCue,
+            didOpenSelector: engine.didOpenSelector,
+            referenceKelvin: referenceKelvin,
+            estimatedKelvin: estimatedKelvin,
+            estimateCapturedAt: estimateCapturedAt,
+            snapshotAt: now,
+            mismatch: mismatch)
+    }
+}
+#endif

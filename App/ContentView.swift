@@ -73,6 +73,12 @@ struct ContentView: View {
 #if DEBUG
     /// Frozen frame + live tuning sheet (DEBUG builds only).
     @State private var debugFrameViewModel: DebugFrameViewModel?
+    /// Set by the debug sheet's "Preview stock outline" button; the sheet's
+    /// onDismiss fires the one-shot outline once the sheet is fully gone, so the
+    /// outline is never painted behind the sheet.
+    @State private var pendingStockOutlinePreview = false
+    /// Hint decision snapshot frozen when the debug sheet opened, shown there.
+    @State private var debugHintDiagnostics: StockSelectorHintDiagnostics?
     /// Whether the debug affordances are on the screen. Mirrored in the debug
     /// sheet and in Settings, so hiding the DEBUG button cannot strand the menu
     /// that turns it back on.
@@ -291,9 +297,30 @@ struct ContentView: View {
     /// Shipping screen plus the debug single-frame sheet, presented only when the
     /// DEBUG button captures a frame.
     private var debugEnabledBody: some View {
-        shippingBody.sheet(item: $debugFrameViewModel) { viewModel in
-            DebugFrameSheet(viewModel: viewModel)
+        shippingBody.sheet(item: $debugFrameViewModel, onDismiss: firePendingStockOutlinePreview) { viewModel in
+            DebugFrameSheet(
+                viewModel: viewModel,
+                onPreviewStockOutline: { pendingStockOutlinePreview = true },
+                hintDiagnostics: debugHintDiagnostics)
         }
+    }
+
+    /// Fire the requested one-shot preview only after the sheet has fully
+    /// dismissed, so the whole-well outline is never painted behind the sheet.
+    private func firePendingStockOutlinePreview() {
+        guard pendingStockOutlinePreview else { return }
+        pendingStockOutlinePreview = false
+        stockSelectorHint.beginDebugPreview()
+    }
+
+    /// Frozen hint snapshot for the debug sheet, captured live at the same moment
+    /// the sheet opens. It never mutates the hint's rules, launch count, white
+    /// balance, exposure or selected stock.
+    private func stockHintDiagnosticsSnapshot() -> StockSelectorHintDiagnostics {
+        stockSelectorHint.debugDiagnostics(
+            estimatedKelvin: cameraViewModel.neutralSceneKelvin,
+            estimateCapturedAt: cameraViewModel.neutralSceneCapturedAt,
+            referenceKelvin: selectedStock?.colorTemperature)
     }
 
     /// Capture one frame from the live camera and open the debug sheet on it.
@@ -307,6 +334,7 @@ struct ContentView: View {
                 cameraViewModel.errorMessage = "Debug frame capture failed — is the camera running?"
                 return
             }
+            debugHintDiagnostics = stockHintDiagnosticsSnapshot()
             debugFrameViewModel = DebugFrameViewModel(frame: buffer, config: stock,
                                                       stocks: library.videoStocks())
         }

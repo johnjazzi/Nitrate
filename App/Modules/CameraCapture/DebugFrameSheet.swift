@@ -140,6 +140,12 @@ final class DebugFrameViewModel: Identifiable {
 struct DebugFrameSheet: View {
     @State private var viewModel: DebugFrameViewModel
     @Environment(\.dismiss) private var dismiss
+    /// Called when the DEBUG "Preview stock outline" button is tapped: the screen
+    /// records the request and this sheet dismisses, then the screen fires the
+    /// one-shot outline once dismissal completes — never behind this sheet.
+    let onPreviewStockOutline: () -> Void
+    /// Frozen hint decision snapshot, captured when the sheet opened.
+    let hintDiagnostics: StockSelectorHintDiagnostics?
     /// Switches for the on-screen debug affordances. Mirrored in Settings, because
     /// this sheet is reachable only from the DEBUG button it can hide.
     @AppStorage(DebugControlPreferences.showsDebugButtonKey) private var showsDebugButton = true
@@ -168,8 +174,12 @@ struct DebugFrameSheet: View {
     @State private var halationExpanded = true
     @State private var glowExpanded = true
 
-    init(viewModel: DebugFrameViewModel) {
+    init(viewModel: DebugFrameViewModel,
+         onPreviewStockOutline: @escaping () -> Void = {},
+         hintDiagnostics: StockSelectorHintDiagnostics? = nil) {
         _viewModel = State(initialValue: viewModel)
+        self.onPreviewStockOutline = onPreviewStockOutline
+        self.hintDiagnostics = hintDiagnostics
     }
 
     var body: some View {
@@ -187,6 +197,7 @@ struct DebugFrameSheet: View {
                         VStack(alignment: .leading, spacing: 20) {
                             stockSection
                             realizedValues
+                            hintPreviewSection
                             grainSection
                             halationSection
                             glowSection
@@ -337,6 +348,40 @@ struct DebugFrameSheet: View {
             } else {
                 Text(String(format: "render %.0f ms", viewModel.lastRenderMilliseconds))
                     .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// DEBUG-only affordances that reach past this frozen frame: a one-shot
+    /// preview of the stock-selector outline, and the hint's decision snapshot.
+    private var hintPreviewSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Stock hint").font(.headline)
+            Button {
+                // Dismiss first; the screen fires the outline once the sheet is
+                // gone, so it is never painted behind this sheet.
+                onPreviewStockOutline()
+                dismiss()
+            } label: {
+                Label("Preview stock outline", systemImage: "rectangle.dashed")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            if let hintDiagnostics {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Hint diagnostics (snapshot at open)")
+                        .font(.caption.bold())
+                    ForEach(hintDiagnostics.lines, id: \.self) { line in
+                        Text(line)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text("A frozen snapshot taken when this sheet opened, not a live "
+                     + "readout. The scene figure is the Gray-World estimate and "
+                     + "does not reliably identify a subject's colour.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
     }
