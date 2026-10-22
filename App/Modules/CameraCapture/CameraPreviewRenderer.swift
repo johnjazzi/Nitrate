@@ -95,7 +95,7 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         } else if transitionChanged {
             // Only the expected handoff itself is held; a layout/geometry change
             // is not, so it cannot restart or extend the bounded deadline.
-            decision = transitioning ? handoff.beginHold(at: now) : handoff.handoffCompleted(at: now)
+            decision = transitioning ? handoff.beginHold(at: now, lensSwitch: true) : handoff.handoffCompleted(at: now)
         }
         let current = revision
         lock.unlock()
@@ -182,10 +182,21 @@ final class CameraPreviewRenderer: @unchecked Sendable {
     private func apply(_ decision: CameraPreviewHandoffPolicy.Decision, revision current: UInt64) {
         switch decision {
         case .hold:
-            break
+            // Keep the graded layer active (never `lutActive: false`) and publish
+            // an informational notice so a retained frame is explained rather
+            // than silently frozen. The notice is never error-styled here.
+            publish(lutActive: true, warning: handoffNotice(), revision: current)
         case .show(let warning):
             publish(lutActive: warning == nil, warning: warning, revision: current)
         }
+    }
+
+    /// The live hold's informational notice, read under the lock that guards the
+    /// policy. Nil when nothing is held.
+    private func handoffNotice() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return handoff.notice
     }
 
     /// Arms the single bounded deadline for the current hold. Only the newest arm
@@ -228,10 +239,25 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         return active && revision == current
     }
 
+    private func isCurrentStatus(_ key: String, revision current: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return active && revision == current && publishedStatus == key
+    }
+
     private func publish(lutActive: Bool, warning: String?, revision current: UInt64) {
-        let key = lutActive ? "lutActive" : warning ?? "log"
+        // The key includes the notice so active -> holding -> active each
+        // delivers: the informational hold notice is distinct from both the
+        // graded state and the error/log states.
+        let key = (lutActive ? "active:" : "log:") + (warning ?? "")
         lock.lock()
         guard active, revision == current, publishedStatus != key else { lock.unlock(); return }
+        // A queued notice must not restore the graded layer after a newer
+        // failure, nor replace recovery with an already-cleared hold message.
+        guard !lutActive || (handoff.hasGradableFrame && handoff.notice == warning) else {
+            lock.unlock()
+            return
+        }
         publishedStatus = key
         let selectedName = selection.name ?? "none"
         lock.unlock()
@@ -239,7 +265,7 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         print("Camera preview: \(lutActive ? "Preview LUT active [\(selectedName)]" : warning ?? "Log")")
 #endif
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.isCurrent(current) else { return }
+            guard let self, self.isCurrentStatus(key, revision: current) else { return }
             MainActor.assumeIsolated { self.status(lutActive, warning) }
         }
     }

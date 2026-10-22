@@ -208,6 +208,12 @@ struct CameraPreviewHandoffPolicy {
 
     static let pendingText = "Preview LUT pending — showing Log"
     static let sourceUnavailableText = "Preview LUT source unavailable — showing Log"
+    /// Informational notice while an expected lens handoff holds the last
+    /// graded drawable, so the retained image is explained rather than silent.
+    static let lensSwitchText = "Switching lenses…"
+    /// The truthful notice for any other expected interruption (a source
+    /// reconfiguration or a brief lost frame); it never claims a lens switch.
+    static let updatingPreviewText = "Updating preview…"
 
     /// A frame that could not be graded. `.transitional` reasons may be held
     /// silently through an expected handoff; `.fatal` reasons never are.
@@ -232,11 +238,22 @@ struct CameraPreviewHandoffPolicy {
     private var hasGradedFrame = false
     private var deadline: TimeInterval?
     private var transitionalText: String?
+    /// Whether the live hold is an explicit lens change (as opposed to a source
+    /// reconfiguration or a lost frame). Guarded with the rest of the state.
+    private var lensHold = false
 
     /// The bounded hold deadline, or nil when nothing is being held.
     var holdDeadline: TimeInterval? { deadline }
     var isHolding: Bool { deadline != nil }
     var hasGradableFrame: Bool { hasGradedFrame }
+
+    /// The informational notice explaining the current hold, or nil when no hold
+    /// is live. A lens change names itself; any other expected interruption
+    /// stays generic instead of claiming a lens switch that never happened.
+    var notice: String? {
+        guard deadline != nil else { return nil }
+        return lensHold ? Self.lensSwitchText : Self.updatingPreviewText
+    }
 
     /// Leaving the gradeable state (inactive scene, Log mode, or an explicit LUT
     /// change): the previous drawable must not persist and must not be held.
@@ -244,19 +261,25 @@ struct CameraPreviewHandoffPolicy {
         hasGradedFrame = false
         deadline = nil
         transitionalText = nil
+        lensHold = false
     }
 
     /// An expected handoff begins (lens switch, source-signature change, or a
     /// suspension). Begins the bounded grace only when nothing good exists to
     /// hold yet; a repeated begin never extends an existing hold.
-    mutating func beginHold(at now: TimeInterval) -> Decision {
+    mutating func beginHold(at now: TimeInterval, lensSwitch: Bool = false) -> Decision {
         guard hasGradedFrame else { return .show(Self.pendingText) }
-        if deadline == nil { deadline = now + Self.grace }
+        if deadline == nil {
+            deadline = now + Self.grace
+        }
+        lensHold = lensHold || lensSwitch
         return .hold
     }
 
     /// The expected handoff completed: restart the bounded grace from here, so
     /// the visible Log-off is bounded from the handoff finishing, not starting.
+    /// The notice persists until the first graded frame, not merely hardware
+    /// completion.
     mutating func handoffCompleted(at now: TimeInterval) -> Decision {
         guard hasGradedFrame else { return .show(Self.pendingText) }
         if deadline != nil { deadline = now + Self.grace }
@@ -268,6 +291,7 @@ struct CameraPreviewHandoffPolicy {
         hasGradedFrame = true
         deadline = nil
         transitionalText = nil
+        lensHold = false
         return .show(nil)
     }
 
@@ -287,6 +311,7 @@ struct CameraPreviewHandoffPolicy {
             hasGradedFrame = false
             deadline = nil
             transitionalText = nil
+            lensHold = false
             return .show(text)
         case .transitional(let text):
             if let deadline, now < deadline {
@@ -296,6 +321,7 @@ struct CameraPreviewHandoffPolicy {
             hasGradedFrame = false
             self.deadline = nil
             transitionalText = nil
+            lensHold = false
             return .show(text)
         }
     }
@@ -309,6 +335,7 @@ struct CameraPreviewHandoffPolicy {
         hasGradedFrame = false
         self.deadline = nil
         transitionalText = nil
+        lensHold = false
         return .show(text)
     }
 }
