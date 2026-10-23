@@ -420,7 +420,7 @@ struct CameraControlBar: View {
                     estimatedSeconds: estimatedRemainingSeconds,
                     isStorageLow: isStorageLow,
                     queueStatus: queueStatus,
-                    isRecording: recordPresentation == .recording,
+                    isRecording: recordPresentation.showsLiveChrome,
                     isStopping: cameraViewModel.isStoppingRecording
                 )
             }
@@ -428,7 +428,7 @@ struct CameraControlBar: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Storage, render queue, and estimated recording time remaining")
-        .accessibilityValue("\(recordPresentation == .recording ? "Recording. " : "")"
+        .accessibilityValue("\(recordPresentation.showsLiveChrome ? "Recording. " : "")"
                             + "\(estimatedTimeText). \(freeSpaceText) free. "
                             + "\(isStorageLow ? "Low storage. " : "")\(queueStatus.accessibilityDescription)")
         .accessibilityHint("Tap for storage and render queue details, video playback, sharing, and retry controls.")

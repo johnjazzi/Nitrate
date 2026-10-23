@@ -435,6 +435,23 @@ struct CameraDesignRenderTests {
         }
     }
 
+    /// The classic plunger is optimistic too: it swaps the idle REC mark for the
+    /// recording mark on the tap, while capture is still spinning up, exactly as
+    /// on a confirmed take. Both faces therefore answer immediately, and only
+    /// finalizing dims the mark.
+    @MainActor @Test func plungerShowsTheRecordingMarkFromTheTap() throws {
+        func face(_ state: RecordButtonPresentation) throws -> [UInt8] {
+            try pixels(try render(RecordPlungerFace(presentation: state).padding(8),
+                                  name: "plunger-mark-\(state)"))
+        }
+        let idle = try face(.idle)
+        let starting = try face(.starting)
+        let recording = try face(.recording)
+        #expect(starting != idle, "A pending start must stop looking idle the moment it is tapped.")
+        #expect(starting == recording,
+                "A pending start must paint the recording mark, not the idle REC text.")
+    }
+
     @MainActor @Test func lensFacesRetainNaturalInkInBothLandscapeHolds() throws {
         for degrees in [0.0, 90.0, -90.0] {
             for focal in ["13", "24", "48", "77", "120", "Front"] {

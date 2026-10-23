@@ -16,6 +16,15 @@ enum RecordButtonPresentation: Equatable, Sendable {
     case stopping
     /// Capture is running: tap stops.
     case recording
+
+    /// Show feedback from the accepted tap, without waiting for the writer.
+    /// Cancellation or failure returns to idle; finalization hides live status.
+    var showsLiveChrome: Bool {
+        switch self {
+        case .starting, .recording: true
+        case .idle, .stopping: false
+        }
+    }
 }
 
 /// The action a tap should perform for a given presentation.

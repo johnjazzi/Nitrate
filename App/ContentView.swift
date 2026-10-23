@@ -234,7 +234,7 @@ struct ContentView: View {
                 }
 
                 if !showFramedPreview, let top = controlBounds["top"] {
-                    RecordingTallyLight(isRecording: recordPresentation == .recording)
+                    RecordingTallyLight(isRecording: recordPresentation.showsLiveChrome)
                         .position(x: geometry.size.width - 24, y: top.maxY + 20)
                 }
 
@@ -562,7 +562,7 @@ struct ContentView: View {
             }
             .overlay(alignment: .topTrailing) {
                 if showFramedPreview {
-                    RecordingTallyLight(isRecording: recordPresentation == .recording)
+                    RecordingTallyLight(isRecording: recordPresentation.showsLiveChrome)
                         .padding(12)
                 }
             }
@@ -586,9 +586,9 @@ struct ContentView: View {
             // landscape the slot stays hidden while the timer floats on the
             // physical edge. Either way the toolbar height never changes.
             lensMenu
-                .opacity(recordPresentation == .recording ? 0 : 1)
-                .allowsHitTesting(recordPresentation != .recording)
-                .accessibilityHidden(recordPresentation == .recording)
+                .opacity(recordPresentation.showsLiveChrome ? 0 : 1)
+                .allowsHitTesting(!recordPresentation.showsLiveChrome)
+                .accessibilityHidden(recordPresentation.showsLiveChrome)
         } status: {
             recordingStatus
         } diagnostics: {
@@ -689,10 +689,10 @@ struct ContentView: View {
         )
     }
 
-    /// The timer and its tally dot exist only for a confirmed take. Idle,
-    /// starting and finalizing render nothing at all — no placeholder, no dot.
+    /// The timer and tally acknowledge the accepted tap, before capture confirms.
+    /// Idle and finalizing render nothing; cancellation and failure return to idle.
     @ViewBuilder private var recordingStatus: some View {
-        if recordPresentation == .recording {
+        if recordPresentation.showsLiveChrome {
             if let origin = cameraViewModel.recordingTimerOrigin {
                 if let stoppedAt = cameraViewModel.recordingStoppedAt {
                     statusFace(text: RecordingDurationText.format(seconds: stoppedAt.timeIntervalSince(origin)))

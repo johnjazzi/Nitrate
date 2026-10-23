@@ -5,10 +5,13 @@ import SwiftUI
 import Testing
 import UniformTypeIdentifiers
 
-/// Correction contract for the live recording indicator. The lamp and timer are
-/// presentation for a confirmed `.recording` take only — never idle, starting or
-/// finalizing. Portrait floats the timer at the toolbar's horizontal centre;
-/// landscape keeps the physical-edge overlay. Timer and diagnostics never
+/// Contract for the live recording indicator. The lamp and timer are optimistic:
+/// they appear on the record tap — while capture is still `.starting` — as well
+/// as for a confirmed `.recording` take, so the UI answers the tap at once
+/// instead of waiting for the writer to confirm. Idle and finalizing stay hidden,
+/// so a cancelled start and a failed start (both of which roll back to idle)
+/// leave no chrome behind. Portrait floats the timer at the toolbar's horizontal
+/// centre; landscape keeps the physical-edge overlay. Timer and diagnostics never
 /// reserve space or resize the framed preview.
 struct LiveRecordingStatusTests {
     private func source(_ path: String) throws -> String {
@@ -92,14 +95,18 @@ struct LiveRecordingStatusTests {
 
     // MARK: - Source wiring
 
-    @Test func dotAndTimerExistOnlyForAConfirmedTake() throws {
+    @Test func dotAndTimerAppearFromTheTapAndHideWhenIdleOrFinalizing() throws {
         let screen = try source("App/ContentView.swift")
-        // Framed and immersive tallies share one committed-state gate.
-        let tallyGate = "RecordingTallyLight(isRecording: recordPresentation == .recording)"
+        // Framed and immersive tallies share one optimistic gate: the lamp lights
+        // on the tap, while capture is still spinning up, not only once confirmed.
+        let tallyGate = "RecordingTallyLight(isRecording: recordPresentation.showsLiveChrome)"
         #expect(screen.components(separatedBy: tallyGate).count == 3,
-                "Both the framed and immersive tallies must gate on the committed presentation.")
-        // The face is gated behind the same state; no idle placeholder survives.
-        #expect(screen.contains("if recordPresentation == .recording {"))
+                "Both tallies must light from the tap, on the shared optimistic gate.")
+        // The timer face and the lens-hiding follow the same one gate; no
+        // recording chrome may wait for a confirmed take before it shows.
+        #expect(screen.contains("if recordPresentation.showsLiveChrome {"))
+        #expect(!screen.contains("recordPresentation == .recording"),
+                "No chrome may gate on the confirmed take alone; the tap must show it.")
         #expect(!screen.contains("--:--.--"))
         #expect(!screen.contains("cameraViewModel.isRecording && !cameraViewModel.isStoppingRecording"))
     }
@@ -131,8 +138,9 @@ struct LiveRecordingStatusTests {
         // The rightmost slot is measured, never hardcoded to the old 84pt reserve.
         #expect(layout.contains("lensSize: subviews[2].sizeThatFits(.unspecified)"))
         #expect(!layout.contains("width: 84"))
-        // The lens switch is hidden while a take is live in both holds.
-        #expect(screen.contains(".opacity(recordPresentation == .recording ? 0 : 1)"))
+        // The lens switch is hidden from the tap, in both holds, so it never
+        // collides with the optimistic timer that now shares the empty slot.
+        #expect(screen.contains(".opacity(recordPresentation.showsLiveChrome ? 0 : 1)"))
     }
 
     @Test func tallyViewHasNoIdleLensOrBezelInk() throws {
