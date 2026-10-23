@@ -138,7 +138,9 @@ struct InlineManualControlsTests {
 
     @MainActor @Test func realStackKeepsThreeKeysWithin140ptInEveryState() {
         for mode in CameraStabilizationMode.allCases {
-            let host = NSHostingView(rootView: InlineManualControlsHarness(stabilization: manualSnapshot(preferred: mode)))
+            let host = NSHostingView(rootView: InlineManualControlsHarness(stabilization: manualSnapshot(preferred: mode))
+                .environment(\.colorScheme, .dark))
+            host.appearance = NSAppearance(named: .darkAqua)
             let size = host.fittingSize
             host.frame = CGRect(origin: .zero, size: size)
             host.layoutSubtreeIfNeeded()
@@ -178,6 +180,7 @@ private func manualSnapshot(preferred: CameraStabilizationMode,
     )
 }
 
+@MainActor
 private func makeView(manualFocus: Binding<Bool> = .constant(false),
                       canChangeAperture: Bool = true,
                       setAperture: @escaping (Float?) -> Void = { _ in },
@@ -207,7 +210,8 @@ private func renderedWarmth(stabilization: CameraStabilizationSnapshot) throws -
         Color.black
         InlineManualControlsHarness(stabilization: stabilization)
     }
-    .frame(width: 44, height: 140))
+    .frame(width: 44, height: 140).environment(\.colorScheme, .dark))
+    host.appearance = NSAppearance(named: .darkAqua)
     host.frame = CGRect(x: 0, y: 0, width: 44, height: 140)
     host.layoutSubtreeIfNeeded()
 

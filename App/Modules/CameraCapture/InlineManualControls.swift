@@ -10,7 +10,7 @@ enum InlineManualControlPresentation {
     static let inactiveGrey = Color.white.opacity(0.45)
 
     /// The active manual-control tint, matching the in-frame zoom toggle.
-    static let activeOrange = Color.orange
+    static let activeOrange = SettingsControlChrome.halationOrange
 
     /// Monotonic orange intensity per stabilization mode. Off draws no orange,
     /// so the face falls back to `inactiveGrey` and a stronger mode reads
@@ -91,6 +91,7 @@ struct InlineManualControls: View {
             stabilizationButton
         }
         .frame(width: 44)
+        .font(NitrateTypography.font(size: 12))
         .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 6))
     }
 

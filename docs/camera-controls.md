@@ -21,14 +21,18 @@
 
 ## In-frame focus and zoom controls
 
-The manual panel’s **ZOOM** button and Settings → Zoom Controls share one switch. Enabling it places a vertical focal-length ruler and controlled-zoom arrows along the preview’s physical left edge. The ruler covers the active lens’s available zoom range, including values above 150 mm and the exact endpoint; pinch zoom retains its separate 13–150 mm range. The **AF/MF** button and Settings → Manual Focus share the focus switch; MF places its ruler along the physical right edge. Both rulers remain inside the existing preview in portrait and either landscape hold, with separate touch regions. Their visibility does not resize the preview.
+The **Manual** toolbar button shows or hides the in-frame controls together. Zoom sits on the preview’s physical left edge; the focus ruler and three compact controls sit on the right. The visible rails are narrower and flush with the preview edges, while their touch regions remain 44 points wide. Showing or hiding them does not resize the preview or reset the selected focus, aperture or stabilization mode.
+
+The right-side controls switch **AF/MF**, show the actual **f-number**, and select **Off, Standard, Cinematic or Extreme** recording stabilization. Fixed-aperture lenses show their f-number without offering an unsupported adjustment. Unsupported stabilization choices are disabled. Stabilization is gray when off; its orange intensity increases with the selected supported mode. The controlled zoom ruler covers the active lens’s available range, including values above 150 mm and the exact endpoint; pinch zoom retains its separate 13–150 mm range.
+
+The old manual panel remains behind the default-off **Legacy Manual Controls** feature flag in Debug Settings. Release builds use the in-frame controls.
 
 Manual focus supports up to three stops during the current app session. Long-press an empty point on the focus track to place a stop. Long-press a stop and drag it to reposition it, or drag it to either end of the track to remove it. Tap a stop to set focus to its saved lens position. Stops remain available when the ruler is toggled off and on, and disappear after a full app restart. They store normalized lens positions rather than calibrated subject distances.
 
 ### Device checks for these controls
 
-1. Open the manual panel, turn on **ZOOM** and **MF**, then close the panel. Check that zoom is on the left and focus is on the right in portrait and both landscape holds, without overlap or a change to the preview frame.
-2. Hold each zoom arrow, release it, and drag off it while holding. Zoom must stop on release or cancellation; turning the Zoom switch off must also stop it. Confirm Settings and the panel show the same switch state.
+1. Tap **Manual** to show the in-frame controls. Switch AF/MF and inspect the f-number and stabilization selector. Check that zoom is on the left and focus is on the right in portrait and both landscape holds, with all three buttons reachable and no overlap or change to the preview frame. Tap Manual again to hide them, then show them and confirm the selected modes and focus stops remain.
+2. Hold each zoom arrow, release it, and drag off it while holding. Zoom must stop on release or cancellation; hiding Manual controls must also stop it. Check the gray Off stabilization state and progressively stronger orange for supported modes, and confirm unsupported selections cannot be applied.
 3. Add three focus stops and try adding a fourth. Move one without moving the others, tap each to recall its focus position, and drag stops to both ends to remove them. Toggle MF off and on, then restart the app to check the session-only lifetime.
 
 Settings → Preview → **Metering Indicator** controls the circular cue at the selected metering point. It is on by default and remembers the saved choice across launches. Turning it off hides only the cue; preview taps still adjust focus and exposure. The automatic indicator is dashed white, and the manual-exposure indicator is solid yellow.

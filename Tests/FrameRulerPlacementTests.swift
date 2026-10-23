@@ -344,14 +344,17 @@ struct FrameRulerPlacementTests {
                                              stops: .constant([ManualFocusStop(lensPosition: 0.3)]),
                                              visualWidth: visual)
                                 .frame(maxHeight: .infinity)
-                            // The inline button stack the right slot reserves
-                            // even in autofocus: three 44pt controls.
-                            VStack(spacing: 0) {
-                                ForEach(0..<3, id: \.self) { _ in
-                                    Color(.sRGB, red: 0, green: 1, blue: 0, opacity: 1)
-                                        .frame(width: 44, height: 44)
-                                }
-                            }
+                            InlineManualControls(
+                                manualFocus: .constant(true), apertureReadout: "f/1.8",
+                                apertureStops: [], selectedAperture: nil,
+                                canChangeAperture: false, setAperture: { _ in },
+                                stabilization: CameraStabilizationSnapshot(
+                                    preferred: .cinematic,
+                                    capability: .init(connectionSupported: true,
+                                                      formatModes: [.standard, .cinematic, .extreme]),
+                                    activeRawValue: 2, cameraRevision: 1, changesAllowed: true),
+                                canChangeStabilization: true, selectStabilization: { _ in })
+                                .frame(width: 44, height: 140)
                         }
                     }
                 }
@@ -377,7 +380,8 @@ struct FrameRulerPlacementTests {
 
     // MARK: - Render helpers
     @MainActor private func bitmap<V: View>(_ view: V, size: CGSize, name: String? = nil) throws -> CGImage {
-        let host = NSHostingView(rootView: view)
+        let host = NSHostingView(rootView: view.environment(\.colorScheme, .dark))
+        host.appearance = NSAppearance(named: .darkAqua)
         host.frame = CGRect(origin: .zero, size: size)
         host.layoutSubtreeIfNeeded()
         let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))

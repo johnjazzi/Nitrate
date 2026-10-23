@@ -127,6 +127,8 @@ targets:
       - path: Tests/ManualFocusRulerTests.swift
       - path: Tests/FrameRulerPlacementTests.swift
       - path: Tests/MeteringIndicatorTests.swift
+      - path: Tests/InlineManualControlsTests.swift
+      - path: Tests/ManualControlsFeatureFlagTests.swift
       - path: Tests/FramedPreviewLayoutTests.swift
       - path: Tests/TestRepository.swift
       - path: App/Modules/CameraCapture/CameraZoomPolicy.swift
@@ -158,6 +160,8 @@ targets:
       - path: App/Modules/CameraCapture/ManualFocusRuler.swift
       - path: App/Modules/CameraCapture/FrameRulerPlacement.swift
       - path: App/Modules/CameraCapture/FrameZoomRuler.swift
+      - path: App/Modules/CameraCapture/InlineManualControls.swift
+      - path: App/Modules/CameraCapture/CameraManualControlsFeatureFlags.swift
       - path: App/Modules/CameraCapture/MeteringBoxView.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
     settings:
@@ -346,6 +350,8 @@ targets:
       - path: App/Modules/CameraCapture/ManualFocusRuler.swift
       - path: App/Modules/CameraCapture/FrameRulerPlacement.swift
       - path: App/Modules/CameraCapture/FrameZoomRuler.swift
+      - path: App/Modules/CameraCapture/InlineManualControls.swift
+      - path: App/Modules/CameraCapture/CameraManualControlsFeatureFlags.swift
       - path: App/Modules/CameraCapture/MeteringBoxView.swift
       - path: App/Modules/CameraCapture/RecordingFeedbackPolicy.swift
       - path: Resources/Shaders/

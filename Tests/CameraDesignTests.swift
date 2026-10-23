@@ -96,6 +96,15 @@ struct CameraDesignTests {
         #expect(!face.contains("\"mm\""))
     }
 
+    @Test func manualButtonPresentsInlineControlsAndFlushRulers() throws {
+        let screen = try source("App/ContentView.swift")
+        let geometry = try source("App/Modules/CameraCapture/FrameRulerPlacement.swift")
+        #expect(screen.contains("InlineManualControls("),
+                "the normal Manual path must present the in-frame button stack")
+        #expect(geometry.contains("static let margin: CGFloat = 0"),
+                "the rulers must sit flush with the preview frame")
+    }
+
     @Test func leftColumnSharesFullExposureHeightAndRealGauge() throws {
         let bar = try source("App/Modules/CameraCapture/CameraControlBar.swift")
         let screen = try source("App/ContentView.swift")

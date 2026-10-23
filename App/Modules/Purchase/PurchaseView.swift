@@ -482,13 +482,12 @@ struct PurchaseView: View {
                 .font(NitrateTypography.font(.headline))
             Toggle("Show DEBUG button", isOn: $showsDebugButton)
             Toggle("Show FAULT test button", isOn: $showsFaultButton)
-            Toggle("Open legacy manual panel", isOn: legacyManualControlsEnabled)
+            Toggle("Legacy Manual Controls", isOn: legacyManualControlsEnabled)
             Text("The FAULT button previews the recording-failure overlay. "
                  + "Same switches as the debug sheet.")
                 .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
-            Text("Reopens the old manual-controls pop-up instead of the in-frame controls. "
-                 + "Debug-only: Release builds always use the in-frame controls.")
+            Text("Shows the previous manual panel for comparison.")
                 .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
         }

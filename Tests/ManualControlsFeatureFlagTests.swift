@@ -54,9 +54,9 @@ struct ManualControlsFeatureFlagTests {
     @Test func settingsExposesTheDebugOnlyLegacyToggle() throws {
         let settings = try source("App/Modules/Purchase/PurchaseView.swift")
         #expect(settings.contains("var legacyManualControlsEnabled: Binding<Bool> = .constant(false)"))
-        #expect(settings.contains(#"Toggle("Open legacy manual panel", isOn: legacyManualControlsEnabled)"#))
+        #expect(settings.contains(#"Toggle("Legacy Manual Controls", isOn: legacyManualControlsEnabled)"#))
         // The row lives in the DEBUG-only settings section.
         let debugSection = try #require(settings.components(separatedBy: "private var debugSection").last)
-        #expect(debugSection.contains(#""Open legacy manual panel""#))
+        #expect(debugSection.contains(#""Legacy Manual Controls""#))
     }
 }

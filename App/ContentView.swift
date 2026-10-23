@@ -628,7 +628,7 @@ struct ContentView: View {
                         stabilization: cameraViewModel.recordingStabilization,
                         canChangeStabilization: cameraViewModel.canSetRecordingStabilization,
                         selectStabilization: { cameraViewModel.setRecordingStabilization($0) })
-                        .frame(width: 44, height: 132)
+                        .frame(width: 44, height: 140)
                 }
             }
         }
@@ -656,7 +656,7 @@ struct ContentView: View {
         // Enabling manual focus is also a discovery path for the in-frame
         // block: reveal the master so the newly locked focus has a rail. It
         // never forces aperture or stabilization on.
-        if !legacyManualControlsEnabled { showInlineManualControls = true }
+        if !legacyManualControlsEnabled { setInlineManualControlsShown(true) }
         guard scenePhase == .active, !cameraViewModel.isSwitchingCameraLens else { return }
         let request = focusReadGeneration
         cameraViewModel.session.readManualFocusSnapshot(includeCurrentPosition: true) { snapshot in
@@ -804,7 +804,7 @@ struct ContentView: View {
                 .cameraUpright()
                 .frame(width: 44, height: 44)
         }
-        .buttonStyle(CameraRoundButtonStyle(faceColor: manualControlsActive ? .orange : nil))
+        .buttonStyle(CameraRoundButtonStyle(faceColor: manualControlsActive ? SettingsControlChrome.halationOrange : nil))
         .accessibilityLabel("Manual controls")
         .accessibilityValue(manualControlsActive ? "Expanded" : "Collapsed")
 

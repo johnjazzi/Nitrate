@@ -375,7 +375,7 @@ struct ManualFocusRulerTests {
         let screen = try source("App/ContentView.swift")
         #expect(screen.contains("private var manualControlsActive: Bool"))
         #expect(screen.contains("setInlineManualControlsShown(!showInlineManualControls)"))
-        #expect(screen.contains("faceColor: manualControlsActive ? .orange : nil"))
+        #expect(screen.contains("faceColor: manualControlsActive ? SettingsControlChrome.halationOrange : nil"))
         #expect(!screen.contains("faceColor: manualControlsActive ? .yellow : nil"))
         #expect(screen.contains(".accessibilityLabel(\"Manual controls\")"))
         #expect(screen.contains(".accessibilityValue(manualControlsActive ? \"Expanded\" : \"Collapsed\")"))
@@ -401,7 +401,7 @@ struct ManualFocusRulerTests {
     @Test func inFrameBlockReservesTheButtonStackAndGreysTheRailInAutofocus() throws {
         let screen = try source("App/ContentView.swift")
         // The button stack keeps its three 44pt controls reserved even in AF.
-        #expect(screen.contains(".frame(width: 44, height: 132)"))
+        #expect(screen.contains(".frame(width: 44, height: 140)"))
         #expect(screen.contains("InlineManualControls("))
         // The rail is greyed and disabled while autofocus is selected rather
         // than forcing the lens into manual focus.
@@ -431,7 +431,7 @@ struct ManualFocusRulerTests {
         #expect(screen.contains("setInlineManualControlsShown(newValue)"))
         // Enabling Settings Manual Focus reveals the master without forcing
         // aperture or stabilization on.
-        #expect(screen.contains("if !legacyManualControlsEnabled { showInlineManualControls = true }"))
+        #expect(screen.contains("if !legacyManualControlsEnabled { setInlineManualControlsShown(true) }"))
         // The in-frame rails are handed the narrower visual width.
         #expect(screen.contains("visualWidth: FrameRulerPlacementGeometry.rulerVisualThickness"))
     }
