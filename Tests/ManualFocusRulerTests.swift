@@ -47,6 +47,126 @@ struct ManualFocusRulerTests {
         #expect(ManualFocusRulerScale.clamped(3) == 1)
     }
 
+    // MARK: - Stop model
+
+    @Test func stopModelIsEquatableWithStableIdentity() {
+        let id = UUID()
+        let first = ManualFocusStop(id: id, lensPosition: 0.25)
+        #expect(first == ManualFocusStop(id: id, lensPosition: 0.25))
+        #expect(first != ManualFocusStop(id: id, lensPosition: 0.50))
+        #expect(first.id == id)
+        // The convenience initialiser mints a fresh identity each call.
+        #expect(ManualFocusStop(lensPosition: 0.4).id != ManualFocusStop(lensPosition: 0.4).id)
+    }
+
+    @Test func addsUpToThreeStopsAndRejectsAFourth() {
+        #expect(ManualFocusStopEdit.maximumStops == 3)
+        var stops: [ManualFocusStop] = []
+        #expect(!ManualFocusStopEdit.isAtCapacity(stops))
+
+        stops = ManualFocusStopEdit.adding(stops, lensPosition: 0.2)
+        stops = ManualFocusStopEdit.adding(stops, lensPosition: 0.5)
+        stops = ManualFocusStopEdit.adding(stops, lensPosition: 0.8)
+        #expect(stops.count == 3)
+        #expect(stops.map(\.lensPosition) == [0.2, 0.5, 0.8])
+        #expect(ManualFocusStopEdit.isAtCapacity(stops))
+
+        // A fourth press leaves the three established stops untouched.
+        let rejected = ManualFocusStopEdit.adding(stops, lensPosition: 0.95)
+        #expect(rejected == stops)
+        #expect(rejected.count == 3)
+    }
+
+    @Test func addingAndMovingClampTheRawLensRange() {
+        let stops = ManualFocusStopEdit.adding([], lensPosition: 4)
+        #expect(stops.first?.lensPosition == 1)
+        let nan = ManualFocusStopEdit.adding([], lensPosition: .nan)
+        #expect(nan.first?.lensPosition == 0.5)
+
+        let id = UUID()
+        let seeded = [ManualFocusStop(id: id, lensPosition: 0.5)]
+        #expect(ManualFocusStopEdit.moving(seeded, id: id, lensPosition: -2).first?.lensPosition == 0)
+        #expect(ManualFocusStopEdit.moving(seeded, id: id, lensPosition: 9).first?.lensPosition == 1)
+    }
+
+    @Test func movingOneStopKeepsEveryStableIdentity() {
+        let first = ManualFocusStop(lensPosition: 0.1)
+        let second = ManualFocusStop(lensPosition: 0.4)
+        let third = ManualFocusStop(lensPosition: 0.7)
+        let stops = [first, second, third]
+
+        let moved = ManualFocusStopEdit.moving(stops, id: second.id, lensPosition: 0.55)
+        #expect(moved.map(\.id) == [first.id, second.id, third.id])
+        #expect(moved[1].lensPosition == 0.55)
+        #expect(moved[0] == first)
+        #expect(moved[2] == third)
+
+        // Moving an unknown identity leaves the set unchanged.
+        #expect(ManualFocusStopEdit.moving(stops, id: UUID(), lensPosition: 0.9) == stops)
+    }
+
+    @Test func removingDeletesAtBothEndpointsAndIsIdentityRouted() {
+        let top = ManualFocusStop(lensPosition: 0.05)
+        let mid = ManualFocusStop(lensPosition: 0.5)
+        let bottom = ManualFocusStop(lensPosition: 0.95)
+        var stops = [top, mid, bottom]
+
+        stops = ManualFocusStopEdit.removing(stops, id: top.id)
+        #expect(stops.map(\.id) == [mid.id, bottom.id])
+        stops = ManualFocusStopEdit.removing(stops, id: bottom.id)
+        #expect(stops.map(\.id) == [mid.id])
+        #expect(stops.isEmpty == false)
+
+        // Removing an unknown identity is a no-op.
+        #expect(ManualFocusStopEdit.removing(stops, id: UUID()) == stops)
+        #expect(ManualFocusStopEdit.removing(stops, id: mid.id).isEmpty)
+    }
+
+    @Test func removalEdgeDetectsBothEndpointsAndIgnoresTheMiddle() {
+        #expect(ManualFocusStopEdit.removalEdge(offsetFromTop: 0, length: 200) == .top)
+        #expect(ManualFocusStopEdit.removalEdge(offsetFromTop: 200, length: 200) == .bottom)
+        #expect(ManualFocusStopEdit.removalEdge(offsetFromTop: 100, length: 200) == nil)
+        // Just outside the band is neither end.
+        let band = ManualFocusStopEdit.removalBand * 200
+        #expect(ManualFocusStopEdit.removalEdge(offsetFromTop: band + 1, length: 200) == nil)
+        #expect(ManualFocusStopEdit.removalEdge(offsetFromTop: 200 - band - 1, length: 200) == nil)
+        // A degenerate or non-finite track never reports an endpoint.
+        #expect(ManualFocusStopEdit.removalEdge(offsetFromTop: 0, length: 0) == nil)
+        #expect(ManualFocusStopEdit.removalEdge(offsetFromTop: .nan, length: 200) == nil)
+    }
+
+    @Test func snapTargetPicksTheNearestMarkerWithinTolerance() {
+        let stops = [ManualFocusStop(lensPosition: 0.2),
+                     ManualFocusStop(lensPosition: 0.55),
+                     ManualFocusStop(lensPosition: 0.9)]
+
+        #expect(ManualFocusStopEdit.snapTarget(stops, toLensPosition: 0.24, tolerance: 0.05)?
+            .lensPosition == 0.2)
+        #expect(ManualFocusStopEdit.snapTarget(stops, toLensPosition: 0.52, tolerance: 0.05)?
+            .lensPosition == 0.55)
+        // Outside the tolerance there is nothing to snap to.
+        #expect(ManualFocusStopEdit.snapTarget(stops, toLensPosition: 0.75, tolerance: 0.05) == nil)
+        // No markers and non-finite input resolve to nil.
+        #expect(ManualFocusStopEdit.snapTarget([], toLensPosition: 0.5, tolerance: 1) == nil)
+        #expect(ManualFocusStopEdit.snapTarget(stops, toLensPosition: .nan, tolerance: 1) == nil)
+    }
+
+    @Test func hitToleranceScalesWithTrackLengthAndStaysBounded() {
+        let long = ManualFocusStopEdit.hitTolerance(length: 400)
+        let short = ManualFocusStopEdit.hitTolerance(length: 100)
+        #expect(long < short)
+        #expect(long >= ManualFocusStopEdit.maximumHitTolerance)
+        // A degenerate track still yields the safe upper bound rather than infinity.
+        #expect(ManualFocusStopEdit.hitTolerance(length: 0) == ManualFocusStopEdit.maximumHitTolerance)
+        #expect(ManualFocusStopEdit.hitTolerance(length: .infinity) == ManualFocusStopEdit.maximumHitTolerance)
+    }
+
+    @Test func stopLabelsReadOneThroughThree() {
+        #expect(ManualFocusStopEdit.label(index: 0) == "1")
+        #expect(ManualFocusStopEdit.label(index: 1) == "2")
+        #expect(ManualFocusStopEdit.label(index: 2) == "3")
+    }
+
     // MARK: - Source wiring
 
     @Test func screenOwnsTheHardwareWriteAndNeverJumpsToAStoredDefault() throws {
@@ -95,6 +215,17 @@ struct ManualFocusRulerTests {
         #expect(screen.contains("if pinchIsActive, !zoomControlsEnabled, let bottom = controlBounds[\"bottom\"]"))
     }
 
+    // The layout worker owns ContentView; these assert the shared stop contract
+    // it must wire so the ruler's session-local state survives a ruler toggle.
+    @Test func screenHoldsSessionLocalStopsAndPassesThemToTheRuler() throws {
+        let screen = try source("App/ContentView.swift")
+        #expect(screen.contains("@State private var focusStops: [ManualFocusStop] = []"))
+        #expect(screen.contains("stops: $focusStops"))
+        // Session-only: stops are never written to a persisted store.
+        #expect(!screen.contains("@AppStorage(\"camera.focusStops\")"))
+        #expect(!screen.contains("@SceneStorage(\"camera.focusStops\")"))
+    }
+
     @Test func zoomArrowsReuseTheHoldControlAndChevrons() throws {
         let screen = try source("App/ContentView.swift")
         #expect(screen.contains("ZoomHoldControl(symbol: \"chevron.left\""))
@@ -124,6 +255,34 @@ struct ManualFocusRulerTests {
         #expect(settings.contains("isOn: zoomControlsEnabled"))
     }
 
+    // The ruler routes holds to stop editing and keeps the ordinary focus drag
+    // separate, so a hold or a marker tap never also drags the live focus.
+    @Test func rulerRoutesHoldsToStopEditingAndKeepsFocusDragSeparate() throws {
+        let ruler = try source("App/Modules/CameraCapture/ManualFocusRuler.swift")
+        // Lossless default keeps the existing call sites and render harness valid.
+        #expect(ruler.contains("@Binding var stops: [ManualFocusStop] = .constant([])"))
+        #expect(ruler.contains("func adding("))
+        #expect(ruler.contains("func moving("))
+        #expect(ruler.contains("func removing("))
+        #expect(ruler.contains("func snapTarget("))
+        // A hold-then-drag sequence edits a stop; a plain drag still moves focus.
+        #expect(ruler.contains("LongPressGesture("))
+        #expect(ruler.contains("sequenced(before:"))
+        #expect(ruler.contains("DragGesture("))
+        #expect(ruler.contains(".simultaneousGesture("))
+        // The 44pt accessible hit width and the yellow index are preserved.
+        #expect(ruler.contains(".frame(width: 44)"))
+        #expect(ruler.contains("ManualFocusRulerScale.indexFraction(lensPosition: lensPosition)"))
+    }
+
+    @Test func rulerExposesNonGestureStopEditingActions() throws {
+        let ruler = try source("App/Modules/CameraCapture/ManualFocusRuler.swift")
+        #expect(ruler.contains(".accessibilityAction(named: \"Add focus stop\")"))
+        #expect(ruler.contains(".accessibilityAction(named: \"Snap to focus stop\")"))
+        #expect(ruler.contains(".accessibilityAction(named: \"Remove focus stop\")"))
+        #expect(ruler.contains(".accessibilityAction(named: \"Move focus stop\")"))
+    }
+
     // MARK: - Native render
 
     @MainActor @Test func realRulerRendersATickRailAndYellowIndex() throws {
@@ -150,12 +309,34 @@ struct ManualFocusRulerTests {
         #expect(abs(Double(image.width) / Double(image.height) - 44.0 / 300.0) < 0.05,
                 "the ruler keeps its 44pt hit width against its track length")
     }
+
+    @MainActor @Test func realRulerRendersSessionStopsOnTheRail() throws {
+        let stops = [ManualFocusStop(lensPosition: 0.25), ManualFocusStop(lensPosition: 0.75)]
+        let host = NSHostingView(rootView: FocusRulerHarness(position: 0.5, stops: stops)
+            .frame(width: 44, height: 300))
+        host.frame = CGRect(x: 0, y: 0, width: 44, height: 300)
+        host.layoutSubtreeIfNeeded()
+        let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: rep)
+
+        var orange = 0
+        for x in 0..<44 {
+            for y in 0..<300 {
+                guard let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                let r = color.redComponent, g = color.greenComponent, b = color.blueComponent
+                if r > 0.6, (0.3..<0.65).contains(g), b < 0.35 { orange += 1 }
+            }
+        }
+        #expect(orange > 30, "each session stop must draw a visible orange marker and label")
+    }
 }
 
 /// A stateful host so the rendered ruler can hold a real binding.
 private struct FocusRulerHarness: View {
     @State var position: Double
+    @State var stops: [ManualFocusStop] = []
+
     var body: some View {
-        ManualFocusRuler(lensPosition: $position, enabled: true)
+        ManualFocusRuler(lensPosition: $position, enabled: true, stops: $stops)
     }
 }
