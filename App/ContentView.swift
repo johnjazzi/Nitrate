@@ -112,7 +112,7 @@ struct ContentView: View {
 
                     Spacer()
 
-                    controlBar
+                    controlBar(horizontalInset: controlBarHorizontalInset(in: geometry))
                         .padding(.bottom, 8)
                         .background(controlMeasurement("bottom"))
                 }
@@ -659,7 +659,11 @@ struct ContentView: View {
 
     /// Two-row bottom stack (selector row + action row). Lives in its own file
     /// (`CameraControlBar.swift`) so this screen stays inside the file limit.
-    private var controlBar: some View {
+    ///
+    /// `horizontalInset` lines the bar's outer LCD/stock and exposure edges up
+    /// with the framed viewfinder's side edges; the immersive preview keeps its
+    /// established 16pt margin.
+    private func controlBar(horizontalInset: CGFloat) -> some View {
         CameraControlBar(
             cameraViewModel: cameraViewModel,
             renderQueueViewModel: renderQueueViewModel,
@@ -672,8 +676,27 @@ struct ContentView: View {
                 awaitingStockJobId = nil
                 showStockSheet = true
             },
-            showsStockHint: stockSelectorHint.isCueVisible
+            showsStockHint: stockSelectorHint.isCueVisible,
+            horizontalInset: horizontalInset
         )
+    }
+
+    /// The shooting bar's horizontal margin. In Frame Mode it aligns the bar's
+    /// outer LCD/stock and exposure edges with the viewfinder's side edges, read
+    /// from the same preview rectangle the camera layer uses, clamped so the row
+    /// never overlaps. The immersive preview, and the first frame before the
+    /// control bounds exist, keep the established 16pt margin.
+    ///
+    /// Pure geometry only: the value never reads capture state or the
+    /// orientation glyph rotation, and the bar's measured height — the only
+    /// dimension the preview reads — never depends on it, so deriving the inset
+    /// cannot feed back into the preview.
+    private func controlBarHorizontalInset(in geometry: GeometryProxy) -> CGFloat {
+        guard showFramedPreview else { return CameraControlGeometry.defaultHorizontalInset }
+        let preview = previewRect(in: geometry)
+        guard preview.width > 0 else { return CameraControlGeometry.defaultHorizontalInset }
+        return CameraControlGeometry.controlBarHorizontalInset(
+            previewEdgeInset: preview.minX, canvasWidth: geometry.size.width)
     }
 
     // MARK: - Error Overlays
