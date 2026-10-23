@@ -31,7 +31,7 @@ import Testing
         return remainder
     }
 
-    private static let titles = ["Stock", "Stock hint", "Grain", "Halation", "Glow",
+    private static let titles = ["Stock", "Tests", "Grain", "Halation", "Glow",
                                  "Realized", "Debug controls"]
 
     @Test func everyControlSectionIsCollapsible() throws {
@@ -79,10 +79,10 @@ import Testing
 
     @Test func orderingKeepsStockFirstThenEffectsThenDiagnostics() throws {
         let source = try source()
-        let order = ["stockSection", "hintPreviewSection", "grainSection", "halationSection",
-                     "glowSection", "realizedValues", "debugControlsSection"]
+        let order = ["stockSection", "grainSection", "halationSection", "glowSection",
+                     "realizedValues", "debugControlsSection", "hintPreviewSection"]
         let body = try #require(source.components(separatedBy: "ScrollView {").last)
-            .components(separatedBy: ".padding()")[0]
+            .components(separatedBy: ".controlSize(.small)")[0]
         var cursor = body.startIndex
         for name in order {
             let index = try #require(body.range(of: name, range: cursor..<body.endIndex)?.lowerBound,
@@ -153,6 +153,22 @@ import Testing
                 "the render order statement must stay truthful")
         #expect(realized.contains("viewModel.message"), "the error text must stay visible")
         #expect(realized.contains("lastRenderMilliseconds"))
+    }
+
+    @Test func faultPreviewIsAnActionThatDismissesTheDebugSheet() throws {
+        let source = try source()
+        let hint = try section("hintPreviewSection", in: source)
+            .components(separatedBy: "private var debugControlsSection")[0]
+        #expect(hint.contains("Show fault"))
+        #expect(hint.contains("onPreviewFault()"))
+        let action = try #require(hint.range(of: "onPreviewFault()")?.lowerBound)
+        let close = try #require(hint.range(of: "dismiss()", range: action..<hint.endIndex)?.lowerBound)
+        #expect(action < close)
+        let screen = try String(contentsOf: TestRepository.root.appendingPathComponent("App/ContentView.swift"),
+                                encoding: .utf8)
+        #expect(screen.contains("onDismiss: firePendingDebugTest"))
+        #expect(screen.contains("case .fault:"))
+        #expect(screen.contains("showDebugFault()"))
     }
 
     @Test func disclosureHeadersKeepNativeTouchTargets() throws {

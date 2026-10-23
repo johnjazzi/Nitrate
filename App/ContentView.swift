@@ -76,7 +76,8 @@ struct ContentView: View {
     /// Set by the debug sheet's "Preview stock outline" button; the sheet's
     /// onDismiss fires the one-shot outline once the sheet is fully gone, so the
     /// outline is never painted behind the sheet.
-    @State private var pendingStockOutlinePreview = false
+    private enum DebugTest { case stockOutline, fault }
+    @State private var pendingDebugTest: DebugTest?
     /// Hint decision snapshot frozen when the debug sheet opened, shown there.
     @State private var debugHintDiagnostics: StockSelectorHintDiagnostics?
     /// Whether the debug affordances are on the screen. Mirrored in the debug
@@ -297,23 +298,34 @@ struct ContentView: View {
     /// Shipping screen plus the debug single-frame sheet, presented only when the
     /// DEBUG button captures a frame.
     private var debugEnabledBody: some View {
-        shippingBody.sheet(item: $debugFrameViewModel, onDismiss: firePendingStockOutlinePreview) { viewModel in
+        shippingBody.sheet(item: $debugFrameViewModel, onDismiss: firePendingDebugTest) { viewModel in
             DebugFrameSheet(
                 viewModel: viewModel,
-                onPreviewStockOutline: { pendingStockOutlinePreview = true },
+                onPreviewStockOutline: { pendingDebugTest = .stockOutline },
+                onPreviewFault: { pendingDebugTest = .fault },
                 hintDiagnostics: debugHintDiagnostics)
         }
     }
 
     /// Fire the requested one-shot preview only after the sheet has fully
     /// dismissed, so the whole-well outline is never painted behind the sheet.
-    private func firePendingStockOutlinePreview() {
-        guard pendingStockOutlinePreview else { return }
-        pendingStockOutlinePreview = false
-        // Refresh the safety state after dismissal instead of reusing the
-        // inactive context from when DEBUG was covering the camera.
-        stockSelectorHint.update(stockHintInputs)
-        stockSelectorHint.beginDebugPreview()
+    private func firePendingDebugTest() {
+        guard let test = pendingDebugTest else { return }
+        pendingDebugTest = nil
+        guard scenePhase == .active else { return }
+        switch test {
+        case .stockOutline:
+            stockSelectorHint.update(stockHintInputs)
+            stockSelectorHint.beginDebugPreview()
+        case .fault:
+            showDebugFault()
+        }
+    }
+
+    private func showDebugFault() {
+        guard recordPresentation == .idle else { return }
+        failureDetail = "Debug preview — no recording was attempted."
+        flashRecordingFailure()
     }
 
     /// Frozen hint snapshot for the debug sheet, captured live at the same moment
@@ -514,8 +526,7 @@ struct ContentView: View {
         // sheet would cover.
         if showsFaultButton {
             Button {
-                failureDetail = "Debug preview — no recording was attempted."
-                flashRecordingFailure()
+                showDebugFault()
             } label: {
                 Text("FAULT")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))

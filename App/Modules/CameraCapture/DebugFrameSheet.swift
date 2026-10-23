@@ -144,6 +144,7 @@ struct DebugFrameSheet: View {
     /// records the request and this sheet dismisses, then the screen fires the
     /// one-shot outline once dismissal completes — never behind this sheet.
     let onPreviewStockOutline: () -> Void
+    let onPreviewFault: () -> Void
     /// Frozen hint decision snapshot, captured when the sheet opened.
     let hintDiagnostics: StockSelectorHintDiagnostics?
     /// Switches for the on-screen debug affordances. Mirrored in Settings, because
@@ -179,9 +180,11 @@ struct DebugFrameSheet: View {
 
     init(viewModel: DebugFrameViewModel,
          onPreviewStockOutline: @escaping () -> Void = {},
+         onPreviewFault: @escaping () -> Void = {},
          hintDiagnostics: StockSelectorHintDiagnostics? = nil) {
         _viewModel = State(initialValue: viewModel)
         self.onPreviewStockOutline = onPreviewStockOutline
+        self.onPreviewFault = onPreviewFault
         self.hintDiagnostics = hintDiagnostics
     }
 
@@ -199,12 +202,12 @@ struct DebugFrameSheet: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 4) {
                             stockSection
-                            hintPreviewSection
                             grainSection
                             halationSection
                             glowSection
                             realizedValues
                             debugControlsSection
+                            hintPreviewSection
                         }
                         .font(.caption)
                         .controlSize(.small)
@@ -359,7 +362,7 @@ struct DebugFrameSheet: View {
     /// DEBUG-only affordances that reach past this frozen frame: a one-shot
     /// preview of the stock-selector outline, and the hint's decision snapshot.
     private var hintPreviewSection: some View {
-        DebugCollapsibleSection(title: "Stock hint", isExpanded: $hintExpanded) {
+        DebugCollapsibleSection(title: "Tests", isExpanded: $hintExpanded) {
             Button {
                 // Dismiss first; the screen fires the outline once the sheet is
                 // gone, so it is never painted behind this sheet.
@@ -367,6 +370,14 @@ struct DebugFrameSheet: View {
                 dismiss()
             } label: {
                 Label("Preview stock outline", systemImage: "rectangle.dashed")
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.bordered)
+            Button {
+                onPreviewFault()
+                dismiss()
+            } label: {
+                Label("Show fault", systemImage: "exclamationmark.triangle")
                     .frame(maxWidth: .infinity, minHeight: 44)
             }
             .buttonStyle(.bordered)
