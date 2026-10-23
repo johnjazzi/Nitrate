@@ -399,6 +399,21 @@ final class CameraViewModel {
         return millimeters
     }
 
+    /// The focal-length window the active lens can actually render, converted
+    /// from the session's published display-factor bounds with the same
+    /// tier/multiplier converter `currentFocalLengthMM` uses, so the ruler and
+    /// the live readout can never disagree. Nil with no snapshot; the in-frame
+    /// ruler then falls back to a bounded neighbourhood of the current value
+    /// rather than the old fixed 13…150 rail.
+    var focalLengthRulerRange: ClosedRange<Double>? {
+        guard let snapshot = zoomSnapshot else { return nil }
+        return CameraFocalZoomPolicy.availableFocalLengthRange(
+            minimumDisplayFactor: snapshot.minimumDisplayFactor,
+            maximumDisplayFactor: snapshot.maximumDisplayFactor,
+            multiplier: snapshot.displayMultiplier,
+            tier: Self.focalTier(for: activeLens))
+    }
+
     /// The focal length the UI should show for a raw pinch target — the honest,
     /// hardware-clamped readout and haptic value, not the value handed to the
     /// engine. Returns nil for non-finite input or when no rear lens exists.

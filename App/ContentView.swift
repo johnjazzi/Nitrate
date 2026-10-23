@@ -195,7 +195,8 @@ struct ContentView: View {
                                     revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
                                     begin: { cameraViewModel.beginSlowZoom($0) },
                                     end: cameraViewModel.endSlowZoom(revision:),
-                                    step: cameraViewModel.stepDisplayZoom)
+                                    step: cameraViewModel.stepDisplayZoom,
+                                    availableFocalRange: cameraViewModel.focalLengthRulerRange)
                             }
                         }
                     }

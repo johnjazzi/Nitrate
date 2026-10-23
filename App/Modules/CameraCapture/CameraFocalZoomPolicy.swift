@@ -145,6 +145,29 @@ enum CameraFocalZoomPolicy {
         guard base > 0 else { return nil }
         return base * (displayFactor / multiplier)
     }
+
+    /// The focal-length window a lens can actually render, converted from the
+    /// session's non-round display-factor bounds with the *same* tier/multiplier
+    /// converter the live readout uses (`focalLengthMM(displayFactor:multiplier:
+    /// tier:)`). The ruler and the readout therefore share one conversion and can
+    /// never disagree: a telephoto ceiling of 16x on a 96 mm base reports up to
+    /// 1536 mm, a wide ceiling of 16x on a 24 mm base up to 384 mm, and the
+    /// iOS 17 per-lens multiplier of 1 needs no special case.
+    ///
+    /// Nil when either bound is refused (non-finite, zero or negative factor or
+    /// multiplier) or when the converted bounds are inverted, so the caller
+    /// falls back to the fixed landmarks rather than drawing a bogus rail.
+    static func availableFocalLengthRange(minimumDisplayFactor: Double,
+                                          maximumDisplayFactor: Double,
+                                          multiplier: Double,
+                                          tier: CameraFocalZoomLensTier) -> ClosedRange<Double>? {
+        guard let minimum = focalLengthMM(displayFactor: minimumDisplayFactor,
+                                          multiplier: multiplier, tier: tier),
+              let maximum = focalLengthMM(displayFactor: maximumDisplayFactor,
+                                          multiplier: multiplier, tier: tier),
+              minimum <= maximum else { return nil }
+        return minimum...maximum
+    }
 }
 
 /// Coalesces pinch updates while a physical lens switch is in flight and keeps
