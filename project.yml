@@ -108,6 +108,9 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Tests/CameraDesignTests.swift
+      - path: Tests/RecordButtonAppearanceTests.swift
+      - path: Tests/RecordButtonAppearanceRenderTests.swift
+      - path: Tests/CameraFrameControlAlignmentTests.swift
       - path: Tests/DaylightExposureRescueTests.swift
       - path: App/Modules/CameraCapture/ExposureRescueControl.swift
       - path: Tests/CameraDesignRenderTests.swift
@@ -133,6 +136,8 @@ targets:
       - path: App/Modules/CameraCapture/ManualControlsSurface.swift
       - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
       - path: App/Modules/CameraCapture/RecordButtonPresentation.swift
+      - path: App/Modules/CameraCapture/RecordButtonAppearance.swift
+      - path: App/Modules/CameraCapture/ModernRecordButtonFace.swift
       - path: App/Modules/CameraCapture/RecordingStatusFace.swift
       - path: App/Modules/CameraCapture/CameraTopPanelLayout.swift
       - path: App/Modules/CameraCapture/CameraDesignFaces.swift
@@ -295,6 +300,8 @@ targets:
       - path: App/Modules/CameraCapture/CameraSampleBufferRecorder.swift
       - path: App/Modules/CameraCapture/CameraCapturePreservationProbe.swift
       - path: App/Modules/CameraCapture/RecordButtonPresentation.swift
+      - path: App/Modules/CameraCapture/RecordButtonAppearance.swift
+      - path: App/Modules/CameraCapture/ModernRecordButtonFace.swift
       - path: App/Modules/CameraCapture/RecordingDurationText.swift
       - path: App/Modules/CameraCapture/RecordingTimerBadge.swift
       - path: App/Modules/CameraCapture/RecordingStatusFace.swift

@@ -4,6 +4,8 @@ import SwiftUI
 struct PurchaseView: View {
     @State var viewModel: PurchaseViewModel
     @Binding var showFramedPreview: Bool
+    @State private var pricingExpanded = false
+    @State private var legalExpanded = false
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
     @AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.neutral.rawValue
     @AppStorage(DeliverySettings.saveOriginalLogKey) private var saveOriginalLog = false
@@ -21,19 +23,6 @@ struct PurchaseView: View {
                     // Trial status
                     trialStatusSection
 
-                    if let preview = viewModel.launchPricingPreview {
-                        launchPricingPreview(preview)
-                    } else if !viewModel.isPurchased {
-                        // Purchase options
-                        purchaseOptionsSection
-                    } else {
-                        purchasedBanner
-                    }
-
-                    // Legal and support, reachable on every channel — including
-                    // a paid checkout — before the display preferences below.
-                    legalLinksSection
-
                     // Preview mode
                     previewModeSection
                     exportSection
@@ -44,6 +33,8 @@ struct PurchaseView: View {
 
                     // App info
                     appInfoSection
+                    pricingDisclosure
+                    legalDisclosure
                 }
                 .padding()
             }
@@ -63,6 +54,32 @@ struct PurchaseView: View {
     }
 
     // MARK: - Subviews
+
+    private var pricingDisclosure: some View {
+        DisclosureGroup("Pricing", isExpanded: $pricingExpanded) {
+            if let preview = viewModel.launchPricingPreview {
+                launchPricingPreview(preview)
+            } else if !viewModel.isPurchased {
+                purchaseOptionsSection
+                // Keep terms and privacy reachable alongside checkout.
+                legalLinksSection
+            } else {
+                purchasedBanner
+            }
+        }
+        .padding()
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var legalDisclosure: some View {
+        DisclosureGroup("Legal & Support", isExpanded: $legalExpanded) {
+            legalLinksSection
+        }
+        .padding()
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
 
     private var trialStatusSection: some View {
         VStack(spacing: 8) {
@@ -267,7 +284,7 @@ struct PurchaseView: View {
                     Text(style.title).tag(style)
                 }
             }
-            Text("Top status lamp and elapsed timer only. WAIT means capture is not yet confirmed; REC confirms capture; STOP freezes the timer while finalizing. The physical REC button stays red.")
+            Text("Top status lamp and elapsed timer only. WAIT means capture is not yet confirmed; REC confirms capture; STOP freezes the timer while finalizing. Record-button appearance is configured separately.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -278,7 +295,7 @@ struct PurchaseView: View {
                     Text(appearance.title).tag(appearance)
                 }
             }
-            Text("Classic is the physical plunger; Modern is a flat black and red cap. Both share the same tap, haptics and capture safety.")
+            Text("Classic is raised. Modern is flat with a red outline; both use the same recording controls.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
