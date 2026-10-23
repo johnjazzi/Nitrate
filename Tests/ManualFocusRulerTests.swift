@@ -65,6 +65,7 @@ struct ManualFocusRulerTests {
         #expect(screen.contains("var manualFocusBinding: Binding<Bool>"))
         #expect(screen.contains("isManualFocus: manualFocusBinding"))
         #expect(screen.contains("func setManualFocusEnabled(_ enabled: Bool)"))
+        #expect(screen.contains("guard request == focusReadGeneration, scenePhase == .active,"))
     }
 
     @Test func sessionReadsTheLiveLensPositionOnItsOwnQueue() throws {

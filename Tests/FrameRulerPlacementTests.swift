@@ -72,6 +72,24 @@ struct FrameRulerPlacementTests {
         }
     }
 
+    @Test func focusAndZoomNeverOverlapInAnyHold() {
+        for degrees in [0.0, 90.0, -90.0, 180.0] {
+            let focus = FrameRulerPlacementGeometry.rect(
+                inFrame: frame, edge: .right, thickness: 44, orientationDegrees: degrees,
+                bottomClearance: 52)
+            let zoom = FrameRulerPlacementGeometry.rect(
+                inFrame: frame, edge: .bottom, thickness: 44, orientationDegrees: degrees)
+            #expect(!focus.isNull && !zoom.isNull)
+            #expect(!focus.intersects(zoom))
+        }
+    }
+
+    @Test func narrowFramesNeverPushFocusOutsideThePreview() {
+        let narrow = CGRect(x: 0, y: 0, width: 30, height: 400)
+        #expect(FrameRulerPlacementGeometry.rect(
+            inFrame: narrow, edge: .right, thickness: 44, orientationDegrees: 0).isNull)
+    }
+
     @Test func degenerateFrameOrThicknessProducesNoRuler() {
         #expect(FrameRulerPlacementGeometry.rect(inFrame: .zero, edge: .right,
                                                  thickness: 44, orientationDegrees: 0).isNull)
