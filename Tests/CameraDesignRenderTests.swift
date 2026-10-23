@@ -50,17 +50,20 @@ struct CameraDesignRenderTests {
                     .position(x: rect.midX, y: rect.midY)
             }
             .frame(width: size.width, height: size.height)
-            let image = try render(view, name: "rescue-button-\(degrees)")
+            // Capture the native layer tree, including rotated material-backed faces.
+            let image = try render(view, name: "rescue-button-\(degrees)", hostedSize: size)
             let data = try pixels(image)
             let scale = CGFloat(image.width) / size.width
             let bright = stride(from: 0, to: data.count, by: 4).filter {
                 data[$0] > 180 && data[$0 + 1] > 180 && data[$0 + 2] > 180
             }
             #expect(bright.count > 80, "The real rescue label must be visible in all holds.")
-            #expect(bright.allSatisfy { index in
-                rect.contains(CGPoint(x: CGFloat((index / 4) % image.width) / scale,
-                                      y: CGFloat((index / 4) / image.width) / scale))
-            }, "The complete rotated label must stay inside the reserved button slot.")
+            let outside = bright.filter { index in
+                !rect.contains(CGPoint(x: CGFloat((index / 4) % image.width) / scale,
+                                       y: CGFloat((index / 4) / image.width) / scale))
+            }
+            #expect(outside.isEmpty,
+                    "The complete rotated label must stay inside the reserved slot at \(degrees)°: \(outside.count) of \(bright.count) bright pixels fall outside \(rect).")
         }
     }
 
@@ -87,24 +90,47 @@ struct CameraDesignRenderTests {
         let size = CGSize(width: 390, height: 750)
         let preview = Color(red: 0.10, green: 0.85, blue: 0.20)
 
-        let plain = try pixels(try render(ZStack { preview }.frame(width: size.width, height: size.height),
-                                          name: "rescue-overlay-open"))
-        let dimmed = try pixels(try render(
-            ZStack {
-                preview
-                DaylightExposureRescueOverlay(armed: false, available: true, canChange: true,
-                                              onSelect: { _ in }, onCancel: {})
-            }
-            .frame(width: size.width, height: size.height), name: "rescue-overlay-dimmed"))
+        // Sample the bare canvas, not the translucent card. The centred card is
+        // at most 480pt tall (checked above), leaving this top band unobscured.
+        let bareCanvas = CGRect(x: 0, y: 0, width: size.width, height: 60)
 
-        func greenPeak(_ data: [UInt8]) -> Int {
-            stride(from: 0, to: data.count, by: 4)
-                .filter { Int(data[$0 + 1]) > Int(data[$0]) + 30 }
-                .map { Int(data[$0 + 1]) }.max() ?? 0
+        func greenPeak(_ image: CGImage) throws -> Int {
+            let data = try pixels(image)
+            let scale = CGFloat(image.width) / size.width
+            let minX = max(0, Int(bareCanvas.minX * scale))
+            let maxX = min(image.width, Int(bareCanvas.maxX * scale))
+            let minY = max(0, Int(bareCanvas.minY * scale))
+            let maxY = min(image.height, Int(bareCanvas.maxY * scale))
+            var peak = 0
+            for y in minY..<maxY {
+                for x in minX..<maxX {
+                    let index = (y * image.width + x) * 4
+                    let green = Int(data[index + 1])
+                    if green > Int(data[index]) + 30 { peak = max(peak, green) }
+                }
+            }
+            return peak
         }
 
-        #expect(greenPeak(dimmed) > 60, "The dimmed preview must stay visible behind the card.")
-        #expect(greenPeak(dimmed) < greenPeak(plain), "The canvas behind the card must actually be dimmed.")
+        // The scrim must dim the canvas in both appearances.
+        for (appearance, label) in [(ColorScheme.light, "light"), (ColorScheme.dark, "dark")] {
+            let plainImage = try render(ZStack { preview }.frame(width: size.width, height: size.height),
+                                        name: "rescue-overlay-open-\(label)", appearance: appearance)
+            let dimmedImage = try render(
+                ZStack {
+                    preview
+                    DaylightExposureRescueOverlay(armed: false, available: true, canChange: true,
+                                                  onSelect: { _ in }, onCancel: {})
+                }
+                .frame(width: size.width, height: size.height),
+                name: "rescue-overlay-dimmed-\(label)", appearance: appearance)
+            let plainPeak = try greenPeak(plainImage)
+            let dimmedPeak = try greenPeak(dimmedImage)
+            #expect(dimmedPeak > 60,
+                    "The dimmed preview must stay visible behind the card in \(label) (bare-canvas green peak \(dimmedPeak)).")
+            #expect(dimmedPeak < plainPeak,
+                    "The canvas behind the card must actually be dimmed in \(label) (plain \(plainPeak), dimmed \(dimmedPeak)).")
+        }
 
         // The card sits in the middle of the canvas, not pinned to an edge.
         let image = try render(
@@ -500,18 +526,22 @@ struct CameraDesignRenderTests {
     }
 
     @MainActor
-    private func render(_ view: some View, name: String, hostedSize: CGSize? = nil) throws -> CGImage {
+    private func render(_ view: some View, name: String, hostedSize: CGSize? = nil,
+                        appearance: ColorScheme = .dark) throws -> CGImage {
+        // Match NitrateApp's forced dark appearance instead of inheriting the
+        // test runner's settings. Callers can explicitly test either scheme.
+        let content = view.environment(\.colorScheme, appearance)
         let image: CGImage
         if let hostedSize {
             // ImageRenderer omits native ScrollView content; host that fixture.
-            let host = NSHostingView(rootView: view)
+            let host = NSHostingView(rootView: content)
             host.frame = CGRect(origin: .zero, size: hostedSize)
             host.layoutSubtreeIfNeeded()
             let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
             host.cacheDisplay(in: host.bounds, to: bitmap)
             image = try #require(bitmap.cgImage)
         } else {
-            let renderer = ImageRenderer(content: view)
+            let renderer = ImageRenderer(content: content)
             renderer.scale = 2
             image = try #require(renderer.cgImage)
         }

@@ -62,18 +62,12 @@ struct ExposureIndicatorView: View {
                 .foregroundStyle(accent)
                 .cameraUpright()
                 .frame(height: 14)
-            VStack(spacing: 2) {
-                directionLabel("OVER")
-                track
-                directionLabel("UNDER")
-            }
-            .frame(height: 120)
-            Text(statusText)
-                .font(.system(size: 7, weight: .heavy))
-                .foregroundStyle(accent)
-                .cameraUpright()
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+            // The meter keeps its 120pt scale, centre line, target band and live
+            // dot without the former visible OVER/UNDER captions, so the column
+            // footprint is unchanged and the meter stays aligned with the ruler.
+            // Direction and status survive only in the VoiceOver label below.
+            track
+                .frame(height: 120)
         }
         .frame(width: 28)
         .allowsHitTesting(false)
@@ -82,14 +76,6 @@ struct ExposureIndicatorView: View {
         .accessibilityValue(hasReading
             ? String(format: "metered %+.2f EV, target %+.2f EV", meteredEV, targetEV)
             : "Live exposure meter unavailable")
-    }
-
-    private func directionLabel(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 6, weight: .bold))
-            .foregroundStyle(.white.opacity(0.6))
-            .cameraUpright()
-            .frame(height: 8)
     }
 
     private var track: some View {

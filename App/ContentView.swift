@@ -8,6 +8,8 @@ struct ContentView: View {
     let library: FilmStockLibrary
     let renderQueueViewModel: RenderQueueViewModel
     let purchaseViewModel: PurchaseViewModel
+    /// App-owned, so the launch counter and cue state live once per process.
+    let stockSelectorHint: StockSelectorHintModel
 
     @State private var showStockSheet = false
     @State private var showQueueSheet = false
@@ -24,17 +26,22 @@ struct ContentView: View {
     @State private var showsRecordingFailure = false
     @State private var failureFlashGeneration = 0
     @State private var failureDetail: String?
+    /// Latched on the first time the stock selector is shown this launch, so the
+    /// discovery cue is skipped for the rest of the launch.
+    @State private var stockSelectorOpenedThisLaunch = false
 
     /// Persisted stock selection — survives across recordings.
     @State private var selectedStock: FilmStockConfig?
     @State private var currentISO: Float = 400
 
     init(cameraViewModel: CameraViewModel, library: FilmStockLibrary,
-         renderQueueViewModel: RenderQueueViewModel, purchaseViewModel: PurchaseViewModel) {
+         renderQueueViewModel: RenderQueueViewModel, purchaseViewModel: PurchaseViewModel,
+         stockSelectorHint: StockSelectorHintModel) {
         self.cameraViewModel = cameraViewModel
         self.library = library
         self.renderQueueViewModel = renderQueueViewModel
         self.purchaseViewModel = purchaseViewModel
+        self.stockSelectorHint = stockSelectorHint
         let stock = library.lastSelectedStockId.flatMap { id in
             library.videoStocks().first { $0.stockId == id }
         }
@@ -66,6 +73,13 @@ struct ContentView: View {
 #if DEBUG
     /// Frozen frame + live tuning sheet (DEBUG builds only).
     @State private var debugFrameViewModel: DebugFrameViewModel?
+    /// Set by the debug sheet's "Preview stock outline" button; the sheet's
+    /// onDismiss fires the one-shot outline once the sheet is fully gone, so the
+    /// outline is never painted behind the sheet.
+    private enum DebugTest { case stockOutline, fault }
+    @State private var pendingDebugTest: DebugTest?
+    /// Hint decision snapshot frozen when the debug sheet opened, shown there.
+    @State private var debugHintDiagnostics: StockSelectorHintDiagnostics?
     /// Whether the debug affordances are on the screen. Mirrored in the debug
     /// sheet and in Settings, so hiding the DEBUG button cannot strand the menu
     /// that turns it back on.
@@ -238,11 +252,21 @@ struct ContentView: View {
                 selectedLens = availableLenses.first ?? .wide
             }
             if let selectedStock { applyStockWhiteBalance(selectedStock) }
+            stockSelectorHint.update(stockHintInputs)
         }
         .onChange(of: selectedStock) { _, newStock in
+            // A new reference moves what the estimate is compared with.
+            stockSelectorHint.resetMismatch()
             if let stock = newStock {
                 applyStockWhiteBalance(stock)
             }
+        }
+        .onChange(of: stockHintInputs) { _, inputs in
+            stockSelectorHint.update(inputs)
+        }
+        .onChange(of: showStockSheet) { _, shown in
+            // Opening the selector once skips the discovery cue for the launch.
+            if shown { stockSelectorOpenedThisLaunch = true }
         }
         .onChange(of: showManualControls) { _, shown in
             if !shown { cameraViewModel.endSlowZoom() }
@@ -254,6 +278,8 @@ struct ContentView: View {
             if shown { cameraViewModel.endSlowZoom() }
         }
         .onChange(of: cameraViewModel.activeLens) { _, lens in
+            // A lens change invalidates any sustained estimate.
+            stockSelectorHint.resetMismatch()
             selectedLens = lens
             focusReadGeneration &+= 1
             let focusRequest = focusReadGeneration
@@ -272,9 +298,44 @@ struct ContentView: View {
     /// Shipping screen plus the debug single-frame sheet, presented only when the
     /// DEBUG button captures a frame.
     private var debugEnabledBody: some View {
-        shippingBody.sheet(item: $debugFrameViewModel) { viewModel in
-            DebugFrameSheet(viewModel: viewModel)
+        shippingBody.sheet(item: $debugFrameViewModel, onDismiss: firePendingDebugTest) { viewModel in
+            DebugFrameSheet(
+                viewModel: viewModel,
+                onPreviewStockOutline: { pendingDebugTest = .stockOutline },
+                onPreviewFault: { pendingDebugTest = .fault },
+                hintDiagnostics: debugHintDiagnostics)
         }
+    }
+
+    /// Fire the requested one-shot preview only after the sheet has fully
+    /// dismissed, so the whole-well outline is never painted behind the sheet.
+    private func firePendingDebugTest() {
+        guard let test = pendingDebugTest else { return }
+        pendingDebugTest = nil
+        guard scenePhase == .active else { return }
+        switch test {
+        case .stockOutline:
+            stockSelectorHint.update(stockHintInputs)
+            stockSelectorHint.beginDebugPreview()
+        case .fault:
+            showDebugFault()
+        }
+    }
+
+    private func showDebugFault() {
+        guard recordPresentation == .idle else { return }
+        failureDetail = "Debug preview — no recording was attempted."
+        flashRecordingFailure()
+    }
+
+    /// Frozen hint snapshot for the debug sheet, captured live at the same moment
+    /// the sheet opens. It never mutates the hint's rules, launch count, white
+    /// balance, exposure or selected stock.
+    private func stockHintDiagnosticsSnapshot() -> StockSelectorHintDiagnostics {
+        stockSelectorHint.debugDiagnostics(
+            estimatedKelvin: cameraViewModel.neutralSceneKelvin,
+            estimateCapturedAt: cameraViewModel.neutralSceneCapturedAt,
+            referenceKelvin: selectedStock?.colorTemperature)
     }
 
     /// Capture one frame from the live camera and open the debug sheet on it.
@@ -288,6 +349,7 @@ struct ContentView: View {
                 cameraViewModel.errorMessage = "Debug frame capture failed — is the camera running?"
                 return
             }
+            debugHintDiagnostics = stockHintDiagnosticsSnapshot()
             debugFrameViewModel = DebugFrameViewModel(frame: buffer, config: stock,
                                                       stocks: library.videoStocks())
         }
@@ -464,8 +526,7 @@ struct ContentView: View {
         // sheet would cover.
         if showsFaultButton {
             Button {
-                failureDetail = "Debug preview — no recording was attempted."
-                flashRecordingFailure()
+                showDebugFault()
             } label: {
                 Text("FAULT")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
@@ -562,6 +623,40 @@ struct ContentView: View {
 
     // MARK: - Control Bar
 
+    /// The screen's live inputs to the hint. The estimate fields are published
+    /// only while the hint can still fire, so once the cue is done (or the launch
+    /// is ineligible) the outline stops recomputing.
+    private var stockHintInputs: StockSelectorHintInputs {
+        let armed = stockSelectorHint.isArmed
+        return StockSelectorHintInputs(
+            isActive: isStockHintActive,
+            isSelectorOpened: stockSelectorOpenedThisLaunch,
+            tick: armed ? cameraViewModel.hintTick : 0,
+            estimateKelvin: armed ? cameraViewModel.neutralSceneKelvin : nil,
+            estimateCapturedAt: armed ? cameraViewModel.neutralSceneCapturedAt : nil,
+            referenceKelvin: armed ? selectedStock?.colorTemperature : nil)
+    }
+
+    /// True only while the camera is usable and idle and nothing is covering it.
+    /// Any modal, sheet, fault, warning or in-flight take/transition pauses the
+    /// hint's active clock and clears its sustained condition.
+    private var isStockHintActive: Bool {
+        guard scenePhase == .active else { return false }
+        guard !cameraViewModel.isStartingRecording,
+              !cameraViewModel.isRecording,
+              !cameraViewModel.isStoppingRecording,
+              !cameraViewModel.isChangingFrameRate,
+              !cameraViewModel.isSwitchingCameraLens else { return false }
+        guard cameraViewModel.hasExposureMeter else { return false }
+        guard !showStockSheet, !showQueueSheet, !showSettings,
+              !showDaylightRescue, !showManualControls, !showsRecordingFailure else { return false }
+        guard cameraViewModel.errorMessage == nil, cameraViewModel.recordingWarning == nil else { return false }
+        #if DEBUG
+        if debugFrameViewModel != nil { return false }
+        #endif
+        return true
+    }
+
     /// Two-row bottom stack (selector row + action row). Lives in its own file
     /// (`CameraControlBar.swift`) so this screen stays inside the file limit.
     private var controlBar: some View {
@@ -576,7 +671,8 @@ struct ContentView: View {
                 // Opened directly (not from a fresh take): nothing to resume.
                 awaitingStockJobId = nil
                 showStockSheet = true
-            }
+            },
+            showsStockHint: stockSelectorHint.isCueVisible
         )
     }
 
