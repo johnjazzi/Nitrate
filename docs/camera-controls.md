@@ -31,6 +31,8 @@ Manual focus supports up to three stops during the current app session. Long-pre
 2. Hold each zoom arrow, release it, and drag off it while holding. Zoom must stop on release or cancellation; turning the Zoom switch off must also stop it. Confirm Settings and the panel show the same switch state.
 3. Add three focus stops and try adding a fourth. Move one without moving the others, tap each to recall its focus position, and drag stops to both ends to remove them. Toggle MF off and on, then restart the app to check the session-only lifetime.
 
+Settings → Preview → **Metering Indicator** controls the circular cue at the selected metering point. It is on by default and remembers the saved choice across launches. Turning it off hides only the cue; preview taps still adjust focus and exposure. The automatic indicator is dashed white, and the manual-exposure indicator is solid yellow.
+
 ## Decisions
 
 ### ISO lock is not persisted across app restarts — accepted October 21, 2026

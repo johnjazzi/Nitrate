@@ -126,6 +126,7 @@ targets:
       - path: Tests/FocalLengthRulerTests.swift
       - path: Tests/ManualFocusRulerTests.swift
       - path: Tests/FrameRulerPlacementTests.swift
+      - path: Tests/MeteringIndicatorTests.swift
       - path: Tests/FramedPreviewLayoutTests.swift
       - path: Tests/TestRepository.swift
       - path: App/Modules/CameraCapture/CameraZoomPolicy.swift
@@ -157,6 +158,7 @@ targets:
       - path: App/Modules/CameraCapture/ManualFocusRuler.swift
       - path: App/Modules/CameraCapture/FrameRulerPlacement.swift
       - path: App/Modules/CameraCapture/FrameZoomRuler.swift
+      - path: App/Modules/CameraCapture/MeteringBoxView.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
     settings:
       SWIFT_VERSION: "6.0"
@@ -344,6 +346,7 @@ targets:
       - path: App/Modules/CameraCapture/ManualFocusRuler.swift
       - path: App/Modules/CameraCapture/FrameRulerPlacement.swift
       - path: App/Modules/CameraCapture/FrameZoomRuler.swift
+      - path: App/Modules/CameraCapture/MeteringBoxView.swift
       - path: App/Modules/CameraCapture/RecordingFeedbackPolicy.swift
       - path: Resources/Shaders/
         type: metal

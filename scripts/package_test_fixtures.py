@@ -79,6 +79,7 @@ FILE_FIXTURES: tuple[str, ...] = (
     "App/Modules/CameraCapture/ExposureRescueControl.swift",
     "App/Modules/CameraCapture/CameraControlBar.swift",
     "App/Modules/CameraCapture/ExposureOverlay.swift",
+    "App/Modules/CameraCapture/MeteringBoxView.swift",
     "App/Modules/CameraCapture/CameraLensSelector.swift",
     "App/Modules/CameraCapture/CameraLensFace.swift",
     "App/Modules/CameraCapture/ManualFocusRuler.swift",

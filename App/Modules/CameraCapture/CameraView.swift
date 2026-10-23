@@ -21,8 +21,8 @@ struct CameraView: View {
             .overlay {
                 // Where exposure is metered. The Settings preference can hide it,
                 // and a take hides it so it never draws over the recording; either
-                // way it draws at zero alpha rather than being removed, so the tap
-                // handler below is untouched.
+                // way only the ring is hidden; the overlay geometry and tap
+                // handler below are unchanged.
                 MeteringBoxView(point: viewModel.meteringPoint,
                                 isManual: viewModel.isManualExposure,
                                 isVisible: showsMeteringIndicator && !viewModel.isRecording)
