@@ -3,12 +3,9 @@ import SwiftUI
 /// Flat modern REC face. Shares the classic plunger's 84pt footprint, tap
 /// handling, haptics and press feedback; only the drawn appearance differs.
 ///
-/// Idle and a pending start are a black disc with a red rim and a red REC mark.
-/// A confirmed take fills the disc red and swaps the mark for a white stop
-/// square. `.starting` and `.stopping` are explicitly busy — dimmed, and for
-/// `.starting` still showing REC — so the control never claims a take has been
-/// confirmed before it has, and never paints a stop square until the take is
-/// live. Reduce Motion swaps states instantly instead of morphing.
+/// Idle shows a black disc with a red rim and REC mark. An accepted tap fills
+/// the disc red and shows the stop square immediately, allowing startup to be
+/// cancelled. Only finalization dims the face. Reduce Motion swaps instantly.
 struct ModernRecordButtonFace: View {
     let presentation: RecordButtonPresentation
     var isPressed = false
@@ -21,20 +18,16 @@ struct ModernRecordButtonFace: View {
     /// from the recording lamp, so no new palette colour is introduced.
     private static let red = Color(red: 0.95, green: 0.22, blue: 0.18)
 
-    /// A stop square belongs only to a live take or its finalisation. A pending
-    /// start keeps the idle mark, so it cannot imply capture has begun.
+    /// The same mark cancels startup, stops capture, and remains during draining.
     private var showsStopSymbol: Bool {
-        presentation == .recording || presentation == .stopping
+        presentation != .idle
     }
 
     private var fillsRed: Bool { showsStopSymbol }
 
-    /// `.starting` is pending and `.stopping` is finalizing: both are dimmed so
-    /// the state reads as not-yet/not-longer an ordinary tap, mirroring the
-    /// classic face's dimmed stop square. Nothing about the tap action changes —
-    /// `RecordButtonPresentationPolicy` still owns what a tap does.
+    /// Startup remains fully visible and cancellable; finalization ignores taps.
     private var isBusy: Bool {
-        presentation == .starting || presentation == .stopping
+        presentation == .stopping
     }
 
     var body: some View {

@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The REC cap is red even at rest. Capture confirmation belongs to the lamp,
-/// not to an optimistic color change on the button.
+/// The REC cap is red even at rest. Its stop mark acknowledges the accepted
+/// tap immediately and allows cancellation while capture is starting.
 struct RecordPlungerFace: View {
     let presentation: RecordButtonPresentation
     var isPressed = false
@@ -30,7 +30,7 @@ struct RecordPlungerFace: View {
                         radius: isPressed ? 1 : 3, x: 0, y: isPressed ? 1 : 4)
                 .overlay {
                     Group {
-                        if presentation == .recording || presentation == .stopping {
+                        if presentation != .idle {
                             RoundedRectangle(cornerRadius: 2)
                                 .fill(.white.opacity(presentation == .stopping ? 0.4 : 0.9))
                                 .frame(width: 15, height: 15)

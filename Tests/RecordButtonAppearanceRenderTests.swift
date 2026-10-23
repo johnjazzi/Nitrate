@@ -6,14 +6,15 @@ import SwiftUI
 import Testing
 import UniformTypeIdentifiers
 
-/// Native proof of the modern face's two states and its safety boundaries.
+/// Native proof of the modern face's states and its optimistic contract.
 ///
-/// Idle is a black disc with red ink and no stop symbol. A pending start never
-/// paints the stop square, so the control cannot claim a take has been
-/// confirmed before it has. A confirmed take fills the disc red and shows a
-/// bright white stop square. Finalizing keeps the square but dims it, matching
-/// the classic face's busy treatment. Every state keeps the classic 84pt
-/// footprint, so switching appearance cannot shift layout.
+/// Idle is a black disc with red ink and no stop symbol. A pending start paints
+/// the same live face as a confirmed take — the disc fills red with a bright
+/// white stop square — so the control answers the tap immediately rather than
+/// looking dead for the roughly two seconds capture takes to confirm. Finalizing
+/// keeps the square but dims it, matching the classic face's busy treatment.
+/// Every state keeps the classic 84pt footprint, so switching appearance cannot
+/// shift layout.
 @MainActor
 struct RecordButtonAppearanceRenderTests {
     private let states: [RecordButtonPresentation] = [.idle, .starting, .recording, .stopping]
@@ -34,11 +35,18 @@ struct RecordButtonAppearanceRenderTests {
         #expect(data[3] == 0, "The face must stay circular, with no rectangular bezel.")
     }
 
-    @Test func aPendingStartNeverClaimsAConfirmedTake() throws {
+    @Test func aPendingStartPaintsTheSameLiveFaceAsAConfirmedTake() throws {
+        // The tap must read as live at once: while capture is still spinning up
+        // the face is already the red recording face, so the control never looks
+        // dead during the roughly two seconds before the writer confirms.
         let starting = try pixels(try render(face(.starting), name: "modern-starting"))
         let recording = try pixels(try render(face(.recording), name: "modern-recording"))
-        #expect(brightWhite(starting) < 120, "A pending start must not paint the stop square.")
-        #expect(starting != recording, "Starting must not look like a confirmed take.")
+        let stopping = try pixels(try render(face(.stopping), name: "modern-stopping"))
+        #expect(redInk(starting) > 5_000, "A pending start must fill the disc red, like a live take.")
+        #expect(brightWhite(starting) > 200, "A pending start must show the bright stop square.")
+        #expect(starting == recording, "A pending start must paint the live recording face.")
+        #expect(brightWhite(starting) > brightWhite(stopping),
+                "A pending start must not be dimmed the way finalizing is.")
     }
 
     @Test func aConfirmedTakeIsRedWithABrightWhiteStopSquare() throws {
