@@ -1233,9 +1233,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// Manual focus: lock the lens at a specific raw lens position (0–1).
     /// Commits the position so a preview tap re-meters exposure without silently
     /// autofocusing and a lens switch can reapply it (L09).
-    func setManualFocusPosition(_ lensPosition: Float) {
+    func setManualFocusPosition(_ lensPosition: Float, expectedRevision: UInt64? = nil) {
         sessionQueue.async { [weak self] in
-            guard let self, let device = self.activeDevice,
+            guard let self,
+                  expectedRevision == nil || expectedRevision == self.apertureCameraRevision,
+                  let device = self.activeDevice,
                   device.isLockingFocusWithCustomLensPositionSupported else { return }
             let clamped = min(max(lensPosition, 0), 1)
             self.committedManualFocusLensPosition = clamped

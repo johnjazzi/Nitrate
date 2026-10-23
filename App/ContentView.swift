@@ -169,7 +169,8 @@ struct ContentView: View {
                         let rect = FrameRulerPlacementGeometry.rect(
                             inFrame: bounds, edge: .right,
                             thickness: FrameRulerPlacementGeometry.focusThickness,
-                            orientationDegrees: statusRotationDegrees)
+                            orientationDegrees: statusRotationDegrees,
+                            bottomClearance: zoomControlsEnabled ? FrameRulerPlacementGeometry.zoomThickness + 8 : 0)
                         if !rect.isNull {
                             FrameRulerSlot(rect: rect, rotationDegrees: statusRotationDegrees) {
                                 ManualFocusRuler(lensPosition: $manualFocusPosition,
@@ -330,6 +331,7 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
+                focusReadGeneration &+= 1
                 showDaylightRescue = false
                 cameraViewModel.endSlowZoom()
             }
@@ -481,23 +483,25 @@ struct ContentView: View {
     /// custom lens positions; the lens never jumps to a stored default. An
     /// unsupported lens stays on autofocus, honestly reported.
     private func setManualFocusEnabled(_ enabled: Bool) {
+        focusReadGeneration &+= 1
         guard enabled != isManualFocus else { return }
         guard enabled else {
             isManualFocus = false
             cameraViewModel.session.resetAutoFocus()
             return
         }
-        focusReadGeneration &+= 1
+        guard scenePhase == .active, !cameraViewModel.isSwitchingCameraLens else { return }
         let request = focusReadGeneration
         cameraViewModel.session.readManualFocusSnapshot(includeCurrentPosition: true) { snapshot in
-            guard request == focusReadGeneration else { return }
+            guard request == focusReadGeneration, scenePhase == .active,
+                  !cameraViewModel.isSwitchingCameraLens else { return }
             guard snapshot.isSupported, let position = snapshot.lensPosition else { return }
             // Set the position before the flag: the position observer only
             // writes while manual focus is on, so the explicit lock below is
             // the single hardware write for this enable.
             manualFocusPosition = Double(position)
             isManualFocus = true
-            cameraViewModel.session.setManualFocusPosition(position)
+            cameraViewModel.session.setManualFocusPosition(position, expectedRevision: snapshot.cameraRevision)
         }
     }
 

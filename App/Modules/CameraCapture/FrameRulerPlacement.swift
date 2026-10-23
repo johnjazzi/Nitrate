@@ -48,14 +48,30 @@ enum FrameRulerPlacementGeometry {
     /// The largest rectangle of the requested thickness that sits along the
     /// physical `edge` of `frame`, inset by `margin` on every side. Returns
     /// `.null` for a degenerate frame so the caller can skip the ruler.
-    static func rect(inFrame frame: CGRect, edge: PhysicalEdge, thickness: CGFloat,
-                     orientationDegrees: Double, margin: CGFloat = margin) -> CGRect {
-        guard frame.width > 0, frame.height > 0, thickness > 0,
-              frame.minX.isFinite, frame.minY.isFinite else { return .null }
+    static func rect(inFrame originalFrame: CGRect, edge: PhysicalEdge, thickness: CGFloat,
+                     orientationDegrees: Double, margin: CGFloat = margin,
+                     bottomClearance: CGFloat = 0) -> CGRect {
+        guard originalFrame.width.isFinite, originalFrame.height.isFinite,
+              originalFrame.minX.isFinite, originalFrame.minY.isFinite,
+              thickness.isFinite, thickness > 0, margin.isFinite, margin >= 0,
+              bottomClearance.isFinite, bottomClearance >= 0 else { return .null }
+        var frame = originalFrame
+        // Keep the focus track clear of the bottom zoom controls in every hold.
+        switch canvasEdge(for: .bottom, orientationDegrees: orientationDegrees) {
+        case .bottom: frame.size.height -= bottomClearance
+        case .top:
+            frame.origin.y += bottomClearance
+            frame.size.height -= bottomClearance
+        case .right: frame.size.width -= bottomClearance
+        case .left:
+            frame.origin.x += bottomClearance
+            frame.size.width -= bottomClearance
+        }
         let canvasEdge = canvasEdge(for: edge, orientationDegrees: orientationDegrees)
         let isVertical = canvasEdge == .left || canvasEdge == .right
         let run = max(0, (isVertical ? frame.height : frame.width) - 2 * margin)
-        guard run > 0 else { return .null }
+        let cross = (isVertical ? frame.width : frame.height) - 2 * margin
+        guard run >= 44, cross >= thickness else { return .null }
         switch canvasEdge {
         case .right:
             return CGRect(x: frame.maxX - margin - thickness, y: frame.minY + margin,
