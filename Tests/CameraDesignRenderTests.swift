@@ -50,17 +50,20 @@ struct CameraDesignRenderTests {
                     .position(x: rect.midX, y: rect.midY)
             }
             .frame(width: size.width, height: size.height)
-            let image = try render(view, name: "rescue-button-\(degrees)")
+            // Capture the native layer tree, including rotated material-backed faces.
+            let image = try render(view, name: "rescue-button-\(degrees)", hostedSize: size)
             let data = try pixels(image)
             let scale = CGFloat(image.width) / size.width
             let bright = stride(from: 0, to: data.count, by: 4).filter {
                 data[$0] > 180 && data[$0 + 1] > 180 && data[$0 + 2] > 180
             }
             #expect(bright.count > 80, "The real rescue label must be visible in all holds.")
-            #expect(bright.allSatisfy { index in
-                rect.contains(CGPoint(x: CGFloat((index / 4) % image.width) / scale,
-                                      y: CGFloat((index / 4) / image.width) / scale))
-            }, "The complete rotated label must stay inside the reserved button slot.")
+            let outside = bright.filter { index in
+                !rect.contains(CGPoint(x: CGFloat((index / 4) % image.width) / scale,
+                                       y: CGFloat((index / 4) / image.width) / scale))
+            }
+            #expect(outside.isEmpty,
+                    "The complete rotated label must stay inside the reserved slot at \(degrees)°: \(outside.count) of \(bright.count) bright pixels fall outside \(rect).")
         }
     }
 
@@ -90,7 +93,7 @@ struct CameraDesignRenderTests {
         let appearance = scheme == .dark ? "dark" : "light"
         let plainImage = try render(
             ZStack { preview }.frame(width: size.width, height: size.height)
-                .environment(\.colorScheme, scheme), name: "rescue-overlay-open-\(appearance)")
+                .environment(\.colorScheme, scheme), name: "rescue-overlay-open-\(appearance)", appearance: scheme)
         let plain = try pixels(plainImage)
         let image = try render(
             ZStack {
@@ -99,7 +102,7 @@ struct CameraDesignRenderTests {
                                               onSelect: { _ in }, onCancel: {})
             }
             .frame(width: size.width, height: size.height)
-            .environment(\.colorScheme, scheme), name: "rescue-overlay-dimmed-\(appearance)")
+            .environment(\.colorScheme, scheme), name: "rescue-overlay-dimmed-\(appearance)", appearance: scheme)
         let dimmed = try pixels(image)
         #expect(image.width == plainImage.width && image.height == plainImage.height)
 
@@ -454,16 +457,41 @@ struct CameraDesignRenderTests {
     /// on a confirmed take. Both faces therefore answer immediately, and only
     /// finalizing dims the mark.
     @MainActor @Test func plungerShowsTheRecordingMarkFromTheTap() throws {
-        func face(_ state: RecordButtonPresentation) throws -> [UInt8] {
-            try pixels(try render(RecordPlungerFace(presentation: state).padding(8),
-                                  name: "plunger-mark-\(state)"))
+        func mark(_ state: RecordButtonPresentation) throws -> (bounds: CGRect, area: Double) {
+            let image = try render(RecordPlungerFace(presentation: state).padding(8),
+                                   name: "plunger-mark-\(state)")
+            let data = try pixels(image)
+            let scale = CGFloat(image.width) / 100
+            // Inspect only the central glyph, excluding the bevel and shadow.
+            var points = [CGPoint]()
+            for y in (image.height * 35 / 100)..<(image.height * 65 / 100) {
+                for x in (image.width * 35 / 100)..<(image.width * 65 / 100) {
+                    let offset = (y * image.width + x) * 4
+                    if data[offset] > 210, data[offset + 1] > 210,
+                       data[offset + 2] > 210, data[offset + 3] > 210 {
+                        points.append(CGPoint(x: CGFloat(x) / scale, y: CGFloat(y) / scale))
+                    }
+                }
+            }
+            guard let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
+                  let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() else {
+                return (.zero, 0)
+            }
+            return (CGRect(x: minX, y: minY, width: maxX - minX + 1 / scale,
+                           height: maxY - minY + 1 / scale), Double(points.count) / Double(scale * scale))
         }
-        let idle = try face(.idle)
-        let starting = try face(.starting)
-        let recording = try face(.recording)
-        #expect(starting != idle, "A pending start must stop looking idle the moment it is tapped.")
-        #expect(starting == recording,
-                "A pending start must paint the recording mark, not the idle REC text.")
+        let idle = try mark(.idle)
+        let starting = try mark(.starting)
+        let recording = try mark(.recording)
+        for face in [starting, recording] {
+            #expect((14...16).contains(face.bounds.width) && (14...16).contains(face.bounds.height),
+                    "Both pending and confirmed takes must show the 15pt square stop mark.")
+            #expect(face.area > 190, "The stop mark must be filled and visible.")
+            #expect(face.area > idle.area * 2, "Pending capture must replace the idle REC lettering immediately.")
+        }
+        #expect(abs(starting.bounds.midX - recording.bounds.midX) <= 0.5
+                && abs(starting.bounds.midY - recording.bounds.midY) <= 0.5,
+                "Confirmation must not move the stop mark.")
     }
 
     @MainActor @Test func lensFacesRetainNaturalInkInBothLandscapeHolds() throws {
@@ -530,18 +558,22 @@ struct CameraDesignRenderTests {
     }
 
     @MainActor
-    private func render(_ view: some View, name: String, hostedSize: CGSize? = nil) throws -> CGImage {
+    private func render(_ view: some View, name: String, hostedSize: CGSize? = nil,
+                        appearance: ColorScheme = .dark) throws -> CGImage {
+        // Match NitrateApp's forced dark appearance instead of inheriting the
+        // test runner's settings. Callers can explicitly test either scheme.
+        let content = view.environment(\.colorScheme, appearance)
         let image: CGImage
         if let hostedSize {
             // ImageRenderer omits native ScrollView content; host that fixture.
-            let host = NSHostingView(rootView: view)
+            let host = NSHostingView(rootView: content)
             host.frame = CGRect(origin: .zero, size: hostedSize)
             host.layoutSubtreeIfNeeded()
             let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
             host.cacheDisplay(in: host.bounds, to: bitmap)
             image = try #require(bitmap.cgImage)
         } else {
-            let renderer = ImageRenderer(content: view)
+            let renderer = ImageRenderer(content: content)
             renderer.scale = 2
             image = try #require(renderer.cgImage)
         }
