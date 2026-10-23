@@ -155,7 +155,7 @@ struct ManualFocusRulerTests {
         let long = ManualFocusStopEdit.hitTolerance(length: 400)
         let short = ManualFocusStopEdit.hitTolerance(length: 100)
         #expect(long < short)
-        #expect(long >= ManualFocusStopEdit.maximumHitTolerance)
+        #expect(long <= ManualFocusStopEdit.maximumHitTolerance)
         // A degenerate track still yields the safe upper bound rather than infinity.
         #expect(ManualFocusStopEdit.hitTolerance(length: 0) == ManualFocusStopEdit.maximumHitTolerance)
         #expect(ManualFocusStopEdit.hitTolerance(length: .infinity) == ManualFocusStopEdit.maximumHitTolerance)
@@ -208,7 +208,7 @@ struct ManualFocusRulerTests {
         #expect(screen.contains("private func frameRulerBounds(in geometry: GeometryProxy) -> CGRect?"))
         #expect(screen.contains("let bounds = preview.intersection(safe)"))
         #expect(screen.contains("edge: .right"))
-        #expect(screen.contains("edge: .bottom"))
+        #expect(screen.contains("edge: .left"))
         #expect(screen.contains("FrameRulerPlacementGeometry.rect("))
         #expect(screen.contains("ManualFocusRuler(lensPosition: $manualFocusPosition"))
         // Existing pinch behaviour is preserved when the zoom toggle is off.
@@ -228,11 +228,13 @@ struct ManualFocusRulerTests {
 
     @Test func zoomArrowsReuseTheHoldControlAndChevrons() throws {
         let screen = try source("App/ContentView.swift")
-        #expect(screen.contains("ZoomHoldControl(symbol: \"chevron.left\""))
-        #expect(screen.contains("ZoomHoldControl(symbol: \"chevron.right\""))
+        let zoom = try source("App/Modules/CameraCapture/FrameZoomRuler.swift")
+        #expect(zoom.contains("ZoomHoldControl("))
+        #expect(zoom.contains("chevron.up"))
+        #expect(zoom.contains("chevron.down"))
         #expect(screen.contains("begin: { cameraViewModel.beginSlowZoom("))
         #expect(screen.contains("end: cameraViewModel.endSlowZoom(revision:)"))
-        #expect(screen.contains("step: { cameraViewModel.stepDisplayZoom("))
+        #expect(screen.contains("step: cameraViewModel.stepDisplayZoom"))
         #expect(screen.contains("millimeters: pinchIsActive ? pinchFocalLength"))
         // Cancellation on zoom-off, background, lens and capture transitions.
         #expect(screen.contains(".onChange(of: zoomControlsEnabled)"))
@@ -260,7 +262,7 @@ struct ManualFocusRulerTests {
     @Test func rulerRoutesHoldsToStopEditingAndKeepsFocusDragSeparate() throws {
         let ruler = try source("App/Modules/CameraCapture/ManualFocusRuler.swift")
         // Lossless default keeps the existing call sites and render harness valid.
-        #expect(ruler.contains("@Binding var stops: [ManualFocusStop] = .constant([])"))
+        #expect(ruler.contains("stops: Binding<[ManualFocusStop]> = .constant([])"))
         #expect(ruler.contains("func adding("))
         #expect(ruler.contains("func moving("))
         #expect(ruler.contains("func removing("))
@@ -281,6 +283,13 @@ struct ManualFocusRulerTests {
         #expect(ruler.contains(".accessibilityAction(named: \"Snap to focus stop\")"))
         #expect(ruler.contains(".accessibilityAction(named: \"Remove focus stop\")"))
         #expect(ruler.contains(".accessibilityAction(named: \"Move focus stop\")"))
+    }
+
+    @Test func stopEditingWaitsForConfirmedHoldAndResetsAfterCancellation() throws {
+        let ruler = try source("App/Modules/CameraCapture/ManualFocusRuler.swift")
+        #expect(ruler.contains("case .second(true, let drag):"))
+        #expect(!ruler.contains("case .first(true):\n                    beginStopEdit"))
+        #expect(ruler.contains(".onChange(of: touchIsActive)"))
     }
 
     // MARK: - Native render

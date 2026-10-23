@@ -164,10 +164,18 @@ struct ManualFocusRuler: View {
     let enabled: Bool
     /// Session-only stops. The default keeps every existing call site and the
     /// render harness valid; the owning screen passes its own `@State` array.
-    @Binding var stops: [ManualFocusStop] = .constant([])
+    @Binding var stops: [ManualFocusStop]
+
+    init(lensPosition: Binding<Double>, enabled: Bool,
+         stops: Binding<[ManualFocusStop]> = .constant([])) {
+        self._lensPosition = lensPosition
+        self.enabled = enabled
+        self._stops = stops
+    }
 
     /// The stop being edited by the current hold, or nil for an ordinary touch.
     @State private var editingStopID: UUID?
+    @GestureState private var touchIsActive = false
     /// True once a hold has been recognised, so the focus drag stands down.
     @State private var holdRecognized = false
     /// True when the finger has carried a dragged stop far enough to delete it.
@@ -237,6 +245,13 @@ struct ManualFocusRuler: View {
         }
         .frame(width: 44)
         .disabled(!enabled)
+        .onChange(of: touchIsActive) { _, active in
+            if !active { resetGestureState() }
+        }
+        .onChange(of: enabled) { _, active in
+            if !active { resetGestureState() }
+        }
+        .onDisappear { resetGestureState() }
     }
 
     // MARK: - Marker rendering
@@ -249,9 +264,9 @@ struct ManualFocusRuler: View {
             let active = editingStopID == stop.id
             Rectangle()
                 .fill(active ? SettingsControlChrome.lightPurple : SettingsControlChrome.halationOrange)
-                .frame(width: size.width, height: 2)
+                .frame(width: max(0, size.width - 16), height: 2)
                 .opacity(0.9)
-                .position(x: size.width / 2, y: y)
+                .position(x: max(0, size.width - 16) / 2, y: y)
             Text(ManualFocusStopEdit.label(index: index))
                 .font(NitrateTypography.font(size: 9))
                 .foregroundStyle(SettingsControlChrome.halationOrange)
@@ -284,9 +299,8 @@ struct ManualFocusRuler: View {
 
     // MARK: - Gestures
 
-    /// A hold, then a drag, on the same touch: `.first(true)` places or grabs a
-    /// stop, `.second(true, drag)` moves the one it grabbed. Sequenced so the
-    /// drag keeps delivering after the hold is recognised.
+    /// The second phase confirms the hold before creating or grabbing a stop.
+    /// Its optional drag then moves that same stop on the same touch.
     private func stopEditGesture(length: Double) -> some Gesture {
         LongPressGesture(minimumDuration: ManualFocusStopEdit.holdDuration,
                          maximumDistance: ManualFocusStopEdit.holdSlop)
@@ -294,11 +308,16 @@ struct ManualFocusRuler: View {
             .onChanged { value in
                 guard enabled else { return }
                 switch value {
-                case .first(true):
-                    beginStopEdit(length: length)
-                case .second(true, let drag?):
-                    guard let id = editingStopID else { return }
-                    moveStop(id: id, to: drag.location, length: length)
+                case .second(true, let drag):
+                    // The first phase only means a press has begun; the second
+                    // phase confirms that the full hold duration elapsed.
+                    if !holdRecognized, !focusDragMoved {
+                        if let drag { pressLocation = drag.startLocation }
+                        beginStopEdit(length: length)
+                    }
+                    if let id = editingStopID, let drag {
+                        moveStop(id: id, to: drag.location, length: length)
+                    }
                 default:
                     break
                 }
@@ -320,9 +339,10 @@ struct ManualFocusRuler: View {
     /// the touched point on empty rail exactly as the original ruler did.
     private func focusDragGesture(length: Double) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
+            .updating($touchIsActive) { _, active, _ in active = true }
             .onChanged { value in
                 guard enabled, editingStopID == nil, !holdRecognized else { return }
-                pressLocation = value.location
+                pressLocation = value.startLocation
                 guard distance(of: value.translation) >= ManualFocusStopEdit.focusDragThreshold else { return }
                 focusDragMoved = true
                 guard let position = ManualFocusRulerScale.lensPosition(
@@ -330,7 +350,6 @@ struct ManualFocusRuler: View {
                 lensPosition = position
             }
             .onEnded { value in
-                defer { focusDragMoved = false }
                 guard enabled, editingStopID == nil, !holdRecognized, !focusDragMoved else { return }
                 if let target = snapTarget(at: value.location, length: length) {
                     lensPosition = target.lensPosition
@@ -364,8 +383,9 @@ struct ManualFocusRuler: View {
         pendingRemoval = movedDuringEdit
             ? ManualFocusStopEdit.removalEdge(offsetFromTop: Double(location.y), length: length)
             : nil
-        guard let position = ManualFocusRulerScale.lensPosition(
-            offsetFromTop: Double(location.y), length: length) else { return }
+        guard movedDuringEdit,
+              let position = ManualFocusRulerScale.lensPosition(
+                offsetFromTop: Double(location.y), length: length) else { return }
         stops = ManualFocusStopEdit.moving(stops, id: id, lensPosition: position)
         // Dragging a stop drives the live focus too, so the change is visible.
         lensPosition = position
@@ -375,7 +395,9 @@ struct ManualFocusRuler: View {
         if let id = editingStopID, movedDuringEdit, pendingRemoval != nil {
             stops = ManualFocusStopEdit.removing(stops, id: id)
         }
-        resetGestureState()
+        // Keep the hold latched through both recognizers' end callbacks.
+        // GestureState resets it after release or cancellation, regardless of
+        // which simultaneous recognizer finishes first.
     }
 
     private func resetGestureState() {

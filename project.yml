@@ -156,6 +156,7 @@ targets:
       - path: App/Modules/CameraCapture/FocalLengthRuler.swift
       - path: App/Modules/CameraCapture/ManualFocusRuler.swift
       - path: App/Modules/CameraCapture/FrameRulerPlacement.swift
+      - path: App/Modules/CameraCapture/FrameZoomRuler.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
     settings:
       SWIFT_VERSION: "6.0"
@@ -342,6 +343,7 @@ targets:
       - path: App/Modules/CameraCapture/FocalLengthRuler.swift
       - path: App/Modules/CameraCapture/ManualFocusRuler.swift
       - path: App/Modules/CameraCapture/FrameRulerPlacement.swift
+      - path: App/Modules/CameraCapture/FrameZoomRuler.swift
       - path: App/Modules/CameraCapture/RecordingFeedbackPolicy.swift
       - path: Resources/Shaders/
         type: metal

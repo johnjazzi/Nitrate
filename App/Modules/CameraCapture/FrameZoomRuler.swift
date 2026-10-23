@@ -30,6 +30,7 @@ struct FrameZoomRuler: View {
             arrow(.out, symbol: "chevron.down", label: "Zoom out")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .foregroundStyle(.white)
         .clipped()
     }
 

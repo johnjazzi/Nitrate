@@ -1,5 +1,7 @@
 import AppKit
 import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 import SwiftUI
 import Testing
 
@@ -110,8 +112,10 @@ struct FrameRulerPlacementTests {
                 let start = CGPoint(x: rect.minX, y: rect.minY)
                 let longEnd = horizontal ? CGPoint(x: rect.maxX, y: rect.minY)
                                          : CGPoint(x: rect.minX, y: rect.maxY)
-                let delta = physical(longEnd, degrees: degrees)
-                    - physical(start, degrees: degrees)
+                let physicalEnd = physical(longEnd, degrees: degrees)
+                let physicalStart = physical(start, degrees: degrees)
+                let delta = CGPoint(x: physicalEnd.x - physicalStart.x,
+                                    y: physicalEnd.y - physicalStart.y)
                 #expect(abs(delta.y) > abs(delta.x),
                         "the rail's long axis must be vertical on the physical frame at \(degrees)")
             }
@@ -229,7 +233,10 @@ struct FrameRulerPlacementTests {
             let image = try bitmap(view, size: canvas)
             let scale = CGFloat(image.width) / canvas.width
             let bright = try ink(image) { $0.red > 0.75 && $0.green > 0.75 && $0.blue > 0.75 }
-            #expect(bright.count > 80, "the zoom ruler must draw real ink at \(millimeters)mm")
+            #expect(bright.filter { CGFloat($0.y) / scale < rect.minY + 44 }.count > 5,
+                    "the upper zoom arrow must remain visible")
+            #expect(bright.filter { CGFloat($0.y) / scale > rect.maxY - 44 }.count > 5,
+                    "the lower zoom arrow must remain visible")
             let bounds = rect.insetBy(dx: -1, dy: -1)
             #expect(bright.allSatisfy { bounds.contains(CGPoint(x: CGFloat($0.x) / scale,
                                                                y: CGFloat($0.y) / scale)) },
@@ -237,15 +244,61 @@ struct FrameRulerPlacementTests {
         }
     }
 
+    @MainActor @Test func realRulersWithStopsStayInsideOppositeSlotsInEveryHold() throws {
+        let viewport = CGSize(width: 390, height: 763)
+        let bounds = CGRect(x: 30, y: 110, width: 330, height: 473)
+        for degrees in [0.0, 90.0, -90.0] {
+            let zoom = FrameRulerPlacementGeometry.rect(inFrame: bounds, edge: .left,
+                                                        thickness: 44, orientationDegrees: degrees)
+            let focus = FrameRulerPlacementGeometry.rect(inFrame: bounds, edge: .right,
+                                                         thickness: 44, orientationDegrees: degrees)
+            let view = ZStack {
+                Color.black
+                FrameRulerSlot(rect: zoom, rotationDegrees: degrees) {
+                    FrameZoomRuler(millimeters: 35, enabled: true, revision: 1,
+                                   begin: { _ in }, end: { _ in }, step: { _ in })
+                }
+                FrameRulerSlot(rect: focus, rotationDegrees: degrees) {
+                    ManualFocusRuler(lensPosition: .constant(0.5), enabled: true,
+                                     stops: .constant([ManualFocusStop(lensPosition: 0.25),
+                                                       ManualFocusStop(lensPosition: 0.75)]))
+                }
+            }
+            .frame(width: viewport.width, height: viewport.height)
+            let image = try bitmap(view, size: viewport, name: "real-rulers-\(degrees)")
+            let scale = CGFloat(image.width) / viewport.width
+            let visible = try ink(image) { $0.red + $0.green + $0.blue > 0.9 }
+            func inside(_ rect: CGRect, _ pixel: (x: Int, y: Int)) -> Bool {
+                rect.insetBy(dx: -1, dy: -1).contains(
+                    CGPoint(x: CGFloat(pixel.x) / scale, y: CGFloat(pixel.y) / scale))
+            }
+            #expect(!zoom.intersects(focus))
+            #expect(visible.filter { inside(zoom, $0) }.count > 50)
+            #expect(visible.filter { inside(focus, $0) }.count > 50)
+            #expect(visible.allSatisfy { inside(zoom, $0) || inside(focus, $0) },
+                    "the actual rails, stops and arrows must stay inside their separate slots")
+        }
+    }
+
     // MARK: - Render helpers
 
-    @MainActor private func bitmap<V: View>(_ view: V, size: CGSize) throws -> CGImage {
+    @MainActor private func bitmap<V: View>(_ view: V, size: CGSize, name: String? = nil) throws -> CGImage {
         let host = NSHostingView(rootView: view)
         host.frame = CGRect(origin: .zero, size: size)
         host.layoutSubtreeIfNeeded()
         let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
         host.cacheDisplay(in: host.bounds, to: rep)
-        return try #require(rep.cgImage)
+        let image = try #require(rep.cgImage)
+        if let name {
+            let directory = TestRepository.artifactDirectory("frame-ruler-renders")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent("\(name).png")
+            let destination = try #require(CGImageDestinationCreateWithURL(
+                url as CFURL, UTType.png.identifier as CFString, 1, nil))
+            CGImageDestinationAddImage(destination, image, nil)
+            #expect(CGImageDestinationFinalize(destination))
+        }
+        return image
     }
 
     private struct RGB { let red: CGFloat; let green: CGFloat; let blue: CGFloat }

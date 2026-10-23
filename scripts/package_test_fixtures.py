@@ -83,6 +83,7 @@ FILE_FIXTURES: tuple[str, ...] = (
     "App/Modules/CameraCapture/CameraLensFace.swift",
     "App/Modules/CameraCapture/ManualFocusRuler.swift",
     "App/Modules/CameraCapture/FrameRulerPlacement.swift",
+    "App/Modules/CameraCapture/FrameZoomRuler.swift",
     "App/Modules/CameraCapture/CameraPreviewPolicy.swift",
     "App/Modules/FilmStockLibrary/StockSamplePreview.swift",
     "App/Modules/CameraCapture/CameraPreviewRenderer.swift",
