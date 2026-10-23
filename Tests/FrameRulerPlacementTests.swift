@@ -221,7 +221,7 @@ struct FrameRulerPlacementTests {
     @MainActor @Test func realZoomRulerRendersBoundedContentInsideItsColumn() throws {
         let rect = CGRect(x: 20, y: 100, width: 44, height: 300)
         let canvas = CGSize(width: 200, height: 500)
-        for millimeters in [13.0, 35.0, 150.0] {
+        for millimeters in [13.0, 35.0, 150.0, 350.0, 384.0, 400.0] {
             let view = ZStack {
                 Color.black
                 FrameRulerSlot(rect: rect, rotationDegrees: 0) {
@@ -237,6 +237,10 @@ struct FrameRulerPlacementTests {
                     "the upper zoom arrow must remain visible")
             #expect(bright.filter { CGFloat($0.y) / scale > rect.maxY - 44 }.count > 5,
                     "the lower zoom arrow must remain visible")
+            #expect(bright.filter {
+                let y = CGFloat($0.y) / scale
+                return y > rect.minY + 60 && y < rect.maxY - 60
+            }.count > 3, "the zoom rail must retain labeled ticks at \(millimeters) mm")
             let bounds = rect.insetBy(dx: -1, dy: -1)
             #expect(bright.allSatisfy { bounds.contains(CGPoint(x: CGFloat($0.x) / scale,
                                                                y: CGFloat($0.y) / scale)) },
@@ -255,8 +259,9 @@ struct FrameRulerPlacementTests {
             let view = ZStack {
                 Color.black
                 FrameRulerSlot(rect: zoom, rotationDegrees: degrees) {
-                    FrameZoomRuler(millimeters: 35, enabled: true, revision: 1,
-                                   begin: { _ in }, end: { _ in }, step: { _ in })
+                    FrameZoomRuler(millimeters: 384, enabled: true, revision: 1,
+                                   begin: { _ in }, end: { _ in }, step: { _ in },
+                                   availableFocalRange: 96...384)
                 }
                 FrameRulerSlot(rect: focus, rotationDegrees: degrees) {
                     ManualFocusRuler(lensPosition: .constant(0.5), enabled: true,

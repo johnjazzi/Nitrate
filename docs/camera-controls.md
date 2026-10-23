@@ -21,7 +21,7 @@
 
 ## In-frame focus and zoom controls
 
-The manual panel’s **ZOOM** button and Settings → Zoom Controls share one switch. Enabling it places a vertical focal-length ruler and controlled-zoom arrows along the preview’s physical left edge. The **AF/MF** button and Settings → Manual Focus share the focus switch; MF places its ruler along the physical right edge. Both rulers remain inside the existing preview in portrait and either landscape hold, with separate touch regions. Their visibility does not resize the preview.
+The manual panel’s **ZOOM** button and Settings → Zoom Controls share one switch. Enabling it places a vertical focal-length ruler and controlled-zoom arrows along the preview’s physical left edge. The ruler covers the active lens’s available zoom range, including values above 150 mm and the exact endpoint; pinch zoom retains its separate 13–150 mm range. The **AF/MF** button and Settings → Manual Focus share the focus switch; MF places its ruler along the physical right edge. Both rulers remain inside the existing preview in portrait and either landscape hold, with separate touch regions. Their visibility does not resize the preview.
 
 Manual focus supports up to three stops during the current app session. Long-press an empty point on the focus track to place a stop. Long-press a stop and drag it to reposition it, or drag it to either end of the track to remove it. Tap a stop to set focus to its saved lens position. Stops remain available when the ruler is toggled off and on, and disappear after a full app restart. They store normalized lens positions rather than calibrated subject distances.
 

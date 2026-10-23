@@ -108,6 +108,17 @@ struct FocalLengthRulerTests {
 
     /// Every generated array is finite, inside the range, ascending, unique and
     /// capped, including for an implausibly wide but finite range.
+    @Test func extremeInputsCannotOverflowOrLeaveTickGenerationUnbounded() {
+        #expect(CameraFocalZoomPolicy.availableFocalLengthRange(
+            minimumDisplayFactor: 1, maximumDisplayFactor: .greatestFiniteMagnitude,
+            multiplier: .leastNormalMagnitude, tier: .telephoto) == nil)
+        #expect(FrameZoomRulerScale.resolvedRange(currentMM: .greatestFiniteMagnitude,
+                                                 available: nil) == 13...150)
+        let extreme = Double.greatestFiniteMagnitude
+        #expect(FrameZoomRulerScale.minorTicks(in: extreme...extreme).count <= 128)
+        #expect(FrameZoomRulerScale.minorTicks(in: 1...10_000).count <= 128)
+    }
+
     @Test func generatedTickArraysAreBoundedAndInRange() {
         let ranges: [ClosedRange<Double>] = [13...150, 96...1536, 24...384, 150...800, 400...400, 1...100_000]
         for range in ranges {

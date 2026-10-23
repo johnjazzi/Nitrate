@@ -165,6 +165,7 @@ enum CameraFocalZoomPolicy {
                                           multiplier: multiplier, tier: tier),
               let maximum = focalLengthMM(displayFactor: maximumDisplayFactor,
                                           multiplier: multiplier, tier: tier),
+              minimum.isFinite, maximum.isFinite,
               minimum <= maximum else { return nil }
         return minimum...maximum
     }

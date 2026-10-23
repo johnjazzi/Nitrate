@@ -232,6 +232,8 @@ struct ManualFocusRulerTests {
         #expect(zoom.contains("ZoomHoldControl("))
         #expect(zoom.contains("chevron.up"))
         #expect(zoom.contains("chevron.down"))
+        #expect(zoom.contains("arrow(.out, symbol: \"chevron.up\", label: \"Zoom out\")"))
+        #expect(zoom.contains("arrow(.in, symbol: \"chevron.down\", label: \"Zoom in\")"))
         #expect(screen.contains("begin: { cameraViewModel.beginSlowZoom("))
         #expect(screen.contains("end: cameraViewModel.endSlowZoom(revision:)"))
         #expect(screen.contains("step: cameraViewModel.stepDisplayZoom"))

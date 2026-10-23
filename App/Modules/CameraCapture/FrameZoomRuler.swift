@@ -34,11 +34,11 @@ struct FrameZoomRuler: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            arrow(.in, symbol: "chevron.up", label: "Zoom in")
+            arrow(.out, symbol: "chevron.up", label: "Zoom out")
             rail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(false)
-            arrow(.out, symbol: "chevron.down", label: "Zoom out")
+            arrow(.in, symbol: "chevron.down", label: "Zoom in")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(.white)
@@ -104,7 +104,7 @@ struct FrameZoomRuler: View {
     /// A finite focal readout; non-finite — or implausibly large — input shows a
     /// dash rather than trapping on `Int(_:)`.
     private var readout: String {
-        guard millimeters.isFinite, millimeters < 1_000_000 else { return "—" }
+        guard millimeters.isFinite, millimeters > 0, millimeters < 1_000_000 else { return "—" }
         return "\(Int(millimeters.rounded()))mm"
     }
 }
@@ -147,7 +147,7 @@ enum FrameZoomRulerScale {
     /// renders an empty rail.
     static func resolvedRange(currentMM: Double, available: ClosedRange<Double>?) -> ClosedRange<Double> {
         if let available, isUsable(available) { return available }
-        guard currentMM.isFinite, currentMM > 0 else { return fixedLower...fixedUpper }
+        guard currentMM.isFinite, currentMM > 0, currentMM < 1_000_000 else { return fixedLower...fixedUpper }
         if currentMM <= fixedUpper { return fixedLower...fixedUpper }
         return max(fixedUpper, currentMM / 2)...(currentMM * 2)
     }
@@ -192,10 +192,13 @@ enum FrameZoomRulerScale {
         }
         let majorKeys = Set(majorTicks(in: range).map(quantized))
         var ticks: [Double] = []
-        var value = (lower / step).rounded(.up) * step
-        while value <= upper + 0.0001, ticks.count < maximumTickCount * 4 {
+        let start = (lower / step).rounded(.up) * step
+        for index in 0..<candidateCount {
+            let value = start + Double(index) * step
+            guard value.isFinite, value <= upper + 0.0001 else { break }
+            if let last = ticks.last, value <= last { continue }
             if !majorKeys.contains(quantized(value)) { ticks.append(value) }
-            value += step
+            if ticks.count >= maximumTickCount { break }
         }
         return ticks
     }
