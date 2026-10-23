@@ -144,6 +144,10 @@ targets:
       - path: App/Modules/CameraCapture/CameraShootingLayout.swift
       - path: App/Modules/CameraCapture/CameraLensFace.swift
       - path: App/Modules/CameraCapture/CameraRaisedButtonStyle.swift
+      - path: App/Design/NitrateTypography.swift
+      - path: App/Resources/Fonts
+        type: folder
+        buildPhase: resources
       - path: App/Modules/Purchase/SettingsSelectionRow.swift
       - path: App/Modules/CameraCapture/RecordingTimeLCD.swift
       - path: App/Modules/CameraCapture/RecordingTallyLight.swift
@@ -165,14 +169,23 @@ targets:
         basedOnDependencyAnalysis: false
 
   Nitrate:
+    info:
+      path: build/generated/Nitrate-Info.plist
+      properties:
+        UIAppFonts:
+          - Fonts/BarlowSemiCondensed-Medium.ttf
     type: application
     platform: iOS
     sources:
       - path: App
         excludes:
+          - Resources/Fonts
           - Resources/Preview
           - Resources/StockSamples
       - path: App/Resources/StockSamples
+        type: folder
+        buildPhase: resources
+      - path: App/Resources/Fonts
         type: folder
         buildPhase: resources
       - path: App/Resources/Preview
@@ -237,6 +250,10 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: CLI/
+      - path: App/Design/NitrateTypography.swift
+      - path: App/Resources/Fonts
+        type: folder
+        buildPhase: resources
       - path: App/Modules/ProcessingPipeline/
       - path: App/Modules/FilmStockLibrary/
       # Foundation-only hint policy, shared so its pure logic compiles and is
@@ -311,6 +328,10 @@ targets:
       - path: App/Modules/CameraCapture/CameraShootingLayout.swift
       - path: App/Modules/CameraCapture/CameraLensFace.swift
       - path: App/Modules/CameraCapture/CameraRaisedButtonStyle.swift
+      - path: App/Design/NitrateTypography.swift
+      - path: App/Resources/Fonts
+        type: folder
+        buildPhase: resources
       - path: App/Modules/Purchase/SettingsSelectionRow.swift
       - path: App/Modules/CameraCapture/RecordingTimeLCD.swift
       - path: App/Modules/CameraCapture/RecordingTallyLight.swift

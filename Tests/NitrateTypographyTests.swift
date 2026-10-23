@@ -10,11 +10,14 @@ import UniformTypeIdentifiers
 /// Proves the app's global typography is real: the bundled Barlow Semi
 /// Condensed Medium face ships with its license, registers under its exact
 /// PostScript name, and paints readable text at the app's real point sizes.
+@MainActor
 struct NitrateTypographyTests {
     private let fontRelativePath = "App/Resources/Fonts/BarlowSemiCondensed-Medium.ttf"
     private let licenseRelativePath = "App/Resources/Fonts/barlowsemicondensed-OFL.txt"
 
     private var fontURL: URL { TestRepository.url(for: fontRelativePath) }
+
+    private final class FontBundleToken {}
 
     // MARK: - Resource contract
 
@@ -48,7 +51,7 @@ struct NitrateTypographyTests {
         let first = NitrateTypography.registerBundledFont()
         let second = NitrateTypography.registerBundledFont()
         #expect(first == second, "Registration must be a no-op after the first success.")
-        if NitrateTypography.bundledFontURL(in: [Bundle(for: Self.self)]) != nil {
+        if NitrateTypography.bundledFontURL(in: [Bundle(for: FontBundleToken.self)]) != nil {
             #expect(first, "A bundle that carries the face must register successfully.")
         }
     }
@@ -94,7 +97,7 @@ struct NitrateTypographyTests {
     /// for text. The two settings files are owned elsewhere and excluded.
     @Test func noSystemFontFamiliesRemainInAppText() throws {
         let appRoot = TestRepository.url(for: "App")
-        let owned = ["PurchaseView.swift", "SettingsSelectionRow.swift"]
+        let owned: [String] = []
         let enumerator = try #require(FileManager.default.enumerator(
             at: appRoot, includingPropertiesForKeys: nil))
         for case let url as URL in enumerator where url.pathExtension == "swift" && !owned.contains(url.lastPathComponent) {

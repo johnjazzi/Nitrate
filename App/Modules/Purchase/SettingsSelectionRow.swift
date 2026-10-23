@@ -36,7 +36,7 @@ struct SettingsRowLabel: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
-                .font(.body)
+                .font(NitrateTypography.font(.body))
                 .foregroundStyle(.secondary)
                 .frame(width: 26, alignment: .center)
                 .accessibilityHidden(true)
@@ -55,10 +55,10 @@ struct SettingsValueLabel: View {
     var body: some View {
         HStack(spacing: 4) {
             Text(valueText)
-                .font(.subheadline)
+                .font(NitrateTypography.font(.subheadline))
                 .lineLimit(1)
             Image(systemName: "chevron.down")
-                .font(.caption2.weight(.semibold))
+                .font(NitrateTypography.font(.caption2).weight(.semibold))
         }
         .foregroundStyle(SettingsControlChrome.lightPurple)
         .padding(.horizontal, 12)

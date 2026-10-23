@@ -65,6 +65,9 @@ FILE_FIXTURES: tuple[str, ...] = (
     "App/PrivacyInfo.xcprivacy",
     "Tests/Fixtures/colorchecker-babelcolor-2006.json",
     # App sources read by source-contract tests.
+    "App/Resources/Fonts/BarlowSemiCondensed-Medium.ttf",
+    "App/Resources/Fonts/barlowsemicondensed-OFL.txt",
+    "App/Design/NitrateTypography.swift",
     "App/App.swift",
     "App/ContentView.swift",
     "App/Modules/CameraCapture/CameraHaptics.swift",
@@ -86,6 +89,7 @@ FILE_FIXTURES: tuple[str, ...] = (
     "App/Modules/CameraCapture/CameraView.swift",
     "App/Modules/CameraCapture/DebugFrameSheet.swift",
     "App/Modules/CameraCapture/RecordingTimeLCD.swift",
+    "App/Modules/CameraCapture/RecordingFailureOverlay.swift",
     "App/Modules/CameraCapture/CameraRaisedButtonStyle.swift",
     "App/Modules/CameraCapture/ManualControlsOverlay.swift",
     "App/Modules/CameraCapture/ManualControlsPanel.swift",

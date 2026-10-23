@@ -85,43 +85,43 @@ struct PurchaseView: View {
         VStack(spacing: 8) {
             if viewModel.isDevelopmentBuild {
                 Image(systemName: "hammer.fill")
-                    .font(.largeTitle)
+                    .font(NitrateTypography.font(.largeTitle))
                     .foregroundStyle(.tint)
                 Text("Development Build")
-                    .font(.title2.bold())
+                    .font(NitrateTypography.font(.title2).bold())
                 Text("This build did not come from the App Store, so film rendering is unlocked for free. "
                      + "Customers installing from the App Store are unaffected.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             } else if viewModel.isBetaAccess {
                 Image(systemName: "testtube.2")
-                    .font(.largeTitle)
+                    .font(NitrateTypography.font(.largeTitle))
                     .foregroundStyle(.tint)
                 Text("Unrestricted Beta")
-                    .font(.title2.bold())
+                    .font(NitrateTypography.font(.title2).bold())
                 Text("Film rendering is unlocked during the beta. No purchase or checkout is required.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             } else if viewModel.isPurchased {
                 Image(systemName: "checkmark.seal.fill")
-                    .font(.largeTitle)
+                    .font(NitrateTypography.font(.largeTitle))
                     .foregroundStyle(.green)
                 Text("Unlocked")
-                    .font(.title2.bold())
+                    .font(NitrateTypography.font(.title2).bold())
             } else if viewModel.isTrialActive {
                 Image(systemName: "clock.badge.checkmark")
-                    .font(.largeTitle)
+                    .font(NitrateTypography.font(.largeTitle))
                     .foregroundStyle(.tint)
                 Text("Free Trial")
-                    .font(.title2.bold())
+                    .font(NitrateTypography.font(.title2).bold())
                 Text("\(viewModel.daysRemaining) days remaining")
                     .foregroundStyle(.secondary)
             } else {
                 Image(systemName: "lock.fill")
-                    .font(.largeTitle)
+                    .font(NitrateTypography.font(.largeTitle))
                     .foregroundStyle(.secondary)
                 Text("Trial Expired")
-                    .font(.title2.bold())
+                    .font(NitrateTypography.font(.title2).bold())
                 Text("Unlock film rendering to continue. Recording stays free.")
                     .foregroundStyle(.secondary)
             }
@@ -140,7 +140,7 @@ struct PurchaseView: View {
     private func launchPricingPreview(_ preview: LaunchPricingPreview) -> some View {
         VStack(spacing: 10) {
             Text(preview.headline)
-                .font(.headline)
+                .font(NitrateTypography.font(.headline))
             priceRow(title: "Yearly",
                      detail: "Film rendering, renews yearly",
                      price: preview.yearlyPrice, billing: "per year")
@@ -148,7 +148,7 @@ struct PurchaseView: View {
                      detail: "One-time purchase, film rendering forever",
                      price: preview.lifetimePrice, billing: "one time")
             Text(preview.footnote)
-                .font(.caption)
+                .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
@@ -163,9 +163,9 @@ struct PurchaseView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.body.bold())
+                    .font(NitrateTypography.font(.body).bold())
                 Text(detail)
-                    .font(.caption)
+                    .font(NitrateTypography.font(.caption))
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -178,8 +178,8 @@ struct PurchaseView: View {
 
     private func priceAmount(_ amount: String, billing: String) -> some View {
         VStack(alignment: .trailing, spacing: 2) {
-            Text(amount).font(.body.bold())
-            Text(billing).font(.caption).foregroundStyle(.secondary)
+            Text(amount).font(NitrateTypography.font(.body).bold())
+            Text(billing).font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
         }
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -187,7 +187,7 @@ struct PurchaseView: View {
     private var purchaseOptionsSection: some View {
         VStack(spacing: 12) {
             Text("Unlock Film Rendering")
-                .font(.headline)
+                .font(NitrateTypography.font(.headline))
 
             if let loadError = viewModel.productLoadError {
                 productUnavailableNotice(detail: loadError)
@@ -200,9 +200,9 @@ struct PurchaseView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Yearly")
-                            .font(.body.bold())
+                            .font(NitrateTypography.font(.body).bold())
                         Text("Film rendering, cancel anytime")
-                            .font(.caption)
+                            .font(NitrateTypography.font(.caption))
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -221,9 +221,9 @@ struct PurchaseView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Lifetime")
-                            .font(.body.bold())
+                            .font(NitrateTypography.font(.body).bold())
                         Text("One-time purchase, film rendering forever")
-                            .font(.caption)
+                            .font(NitrateTypography.font(.caption))
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -241,7 +241,7 @@ struct PurchaseView: View {
             Button("Restore Purchases") {
                 viewModel.restorePurchases()
             }
-            .font(.caption)
+            .font(NitrateTypography.font(.caption))
         }
     }
 
@@ -250,15 +250,15 @@ struct PurchaseView: View {
     private func productUnavailableNotice(detail: String) -> some View {
         VStack(spacing: 6) {
             Text("In-app purchases are unavailable")
-                .font(.footnote.bold())
+                .font(NitrateTypography.font(.footnote).bold())
             Text(detail)
-                .font(.caption2)
+                .font(NitrateTypography.font(.caption2))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Button("Retry") {
                 viewModel.retryLoadProducts()
             }
-            .font(.caption)
+            .font(NitrateTypography.font(.caption))
         }
         .padding(10)
         .frame(maxWidth: .infinity)
@@ -271,7 +271,7 @@ struct PurchaseView: View {
     private var previewModeSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Preview")
-                .font(.headline)
+                .font(NitrateTypography.font(.headline))
 
             SettingsControlRow(icon: "camera.filters",
                                title: "Preview Color",
@@ -348,7 +348,7 @@ struct PurchaseView: View {
 
     private var exportSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Export").font(.headline)
+            Text("Export").font(NitrateTypography.font(.headline))
             SettingsToggleRow(icon: "square.and.arrow.down",
                               title: "Save Original Log to Photos",
                               accessibilityTitle: "Save Original Log",
@@ -399,7 +399,7 @@ struct PurchaseView: View {
     private var legalLinksSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Legal & Support")
-                .font(.headline)
+                .font(NitrateTypography.font(.headline))
 
             ForEach(LegalLinks.visibleLinks(for: viewModel.settingsChannel)) { link in
                 Link(destination: link.url) {
@@ -407,7 +407,7 @@ struct PurchaseView: View {
                         Label(link.title, systemImage: link.systemImage)
                         Spacer()
                         Image(systemName: "arrow.up.right")
-                            .font(.footnote)
+                            .font(NitrateTypography.font(.footnote))
                             .foregroundStyle(.secondary)
                     }
                     .frame(minHeight: 44)
@@ -425,7 +425,7 @@ struct PurchaseView: View {
     private var appInfoSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("About")
-                .font(.headline)
+                .font(NitrateTypography.font(.headline))
 
             VStack(alignment: .leading, spacing: 4) {
                 Label("Film emulation for iPhone video", systemImage: "movieclapper")
@@ -434,7 +434,7 @@ struct PurchaseView: View {
                 Label(AboutPresentation.versionLine(), systemImage: "number")
                     .accessibilityIdentifier(AboutPresentation.versionRowID)
             }
-            .font(.caption)
+            .font(NitrateTypography.font(.caption))
             .foregroundStyle(.secondary)
         }
         .padding()
@@ -450,12 +450,12 @@ struct PurchaseView: View {
     private var debugSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Debug")
-                .font(.headline)
+                .font(NitrateTypography.font(.headline))
             Toggle("Show DEBUG button", isOn: $showsDebugButton)
             Toggle("Show FAULT test button", isOn: $showsFaultButton)
             Text("The FAULT button previews the recording-failure overlay. "
                  + "Same switches as the debug sheet.")
-                .font(.caption)
+                .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
         }
         .padding()
@@ -496,7 +496,7 @@ private struct SettingsInfoButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "info.circle")
-                .font(.body)
+                .font(NitrateTypography.font(.body))
                 .foregroundStyle(SettingsControlChrome.lightPurple)
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
@@ -536,7 +536,7 @@ private struct SettingsControlRow<Control: View>: View {
 
             if disclosure.isExpanded {
                 Text(help)
-                    .font(.caption)
+                    .font(NitrateTypography.font(.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -577,7 +577,7 @@ private struct SettingsToggleRow: View {
 
             if disclosure.isExpanded {
                 Text(help)
-                    .font(.caption)
+                    .font(NitrateTypography.font(.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

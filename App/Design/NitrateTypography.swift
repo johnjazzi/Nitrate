@@ -63,7 +63,7 @@ enum NitrateTypography {
     // MARK: - Registration
 
     /// Guards the one CoreText registration per process.
-    private static var didRegister = false
+    @MainActor private static var didRegister = false
 
     /// Locates the bundled face in the app, the test host, or any bundle that
     /// carries it. Returns `nil` when no bundle contains the resource.
@@ -87,14 +87,15 @@ enum NitrateTypography {
     /// Idempotent: safe to call from `App.init` and from tests. Returns `true`
     /// when the face is registered (or was already), `false` when the resource
     /// could not be found or CoreText rejected it.
-    @discardableResult
+    @MainActor @discardableResult
     static func registerBundledFont() -> Bool {
         if didRegister { return true }
         guard let url = bundledFontURL() else { return false }
         var error: Unmanaged<CFError>?
         let registered = CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error)
-        if registered { didRegister = true }
-        return registered
+        let resolved = CTFontCopyPostScriptName(CTFontCreateWithName(postScriptName as CFString, 12, nil)) as String
+        didRegister = registered || resolved == postScriptName
+        return didRegister
     }
 
     /// Bundles that may carry the shipped face, in search order.
@@ -113,7 +114,7 @@ extension NitrateTypography {
     /// The bundled face as a `UIFont` at an explicit point size, scaled with the
     /// user's preferred content size. Used by UIKit-drawn camera readouts, which
     /// cannot read a SwiftUI `Font`.
-    static func uiFont(size: CGFloat, relativeTo style: UIFont.TextStyle = .body) -> UIFont {
+    @MainActor static func uiFont(size: CGFloat, relativeTo style: UIFont.TextStyle = .body) -> UIFont {
         let base = UIFont(name: postScriptName, size: size) ?? UIFont.systemFont(ofSize: size)
         return UIFontMetrics(forTextStyle: style).scaledFont(for: base)
     }
