@@ -48,12 +48,12 @@ struct CameraLensSelector: View {
     private var triggerLabel: some View {
         Group {
             if selectedLens == .front {
-                Image(systemName: "camera.rotate").font(.system(size: 17, weight: .medium))
+                Image(systemName: "camera.rotate").font(NitrateTypography.font(size: 17))
             } else {
                 VStack(spacing: 0) {
                     Text("\(selectedLens.focalLengthMM)")
-                        .font(.system(size: 14, weight: .semibold, design: .rounded).monospacedDigit())
-                    Text("mm").font(.system(size: 9, weight: .medium))
+                        .font(NitrateTypography.font(size: 14).monospacedDigit())
+                    Text("mm").font(NitrateTypography.font(size: 9))
                 }
             }
         }

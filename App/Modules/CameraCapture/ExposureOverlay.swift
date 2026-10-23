@@ -58,7 +58,7 @@ struct ExposureIndicatorView: View {
     var body: some View {
         VStack(spacing: 6) {
             Text(hasReading ? String(format: "%+.1f", meteredEV) : "—")
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .font(NitrateTypography.font(size: 10))
                 .foregroundStyle(accent)
                 .cameraUpright()
                 .frame(height: 14)

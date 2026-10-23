@@ -125,13 +125,16 @@ private final class CameraPreviewUIView: UIView {
         metalView.colorPixelFormat = .bgra8Unorm
         metalView.isHidden = true
         addSubview(metalView)
-        monitorLabel.font = .preferredFont(forTextStyle: .caption2)
+        monitorLabel.font = NitrateTypography.uiFont(size: NitrateTypography.baseSize(for: .caption2),
+                                                     relativeTo: .caption2)
+        monitorLabel.adjustsFontForContentSizeCategory = true
         monitorLabel.textColor = .white
         monitorLabel.backgroundColor = UIColor.black.withAlphaComponent(0.6)
         monitorLabel.numberOfLines = 2
         monitorLabel.isUserInteractionEnabled = false
         addSubview(monitorLabel)
-        handoffLabel.font = .systemFont(ofSize: 46, weight: .black, width: .compressed)
+        handoffLabel.font = NitrateTypography.uiFont(size: 46)
+        handoffLabel.adjustsFontForContentSizeCategory = true
         handoffLabel.textColor = .white
         handoffLabel.textAlignment = .center
         handoffLabel.backgroundColor = .clear

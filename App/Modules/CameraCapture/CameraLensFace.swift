@@ -30,7 +30,7 @@ struct CameraLensFace: View {
         .overlay(alignment: .trailing) {
             if isSelected {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(NitrateTypography.font(size: 11))
                     .rotationEffect(.degrees(rotationDegrees))
                     .padding(.trailing, 6)
                     .accessibilityHidden(true)
@@ -40,7 +40,7 @@ struct CameraLensFace: View {
 
     private var apertureIcon: some View {
         Image(systemName: "camera.aperture")
-            .font(.system(size: 16, weight: .medium))
+            .font(NitrateTypography.font(size: 16))
             .accessibilityHidden(true)
     }
 
@@ -51,13 +51,13 @@ struct CameraLensFace: View {
             // reducing either the icon or the number to an unreadable scale.
             VStack(spacing: 0) {
                 Text(focalLength)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
+                    .font(NitrateTypography.font(size: 13).monospacedDigit())
                 Text("mm")
-                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                    .font(NitrateTypography.font(size: 9))
             }
         } else {
             Text(title)
-                .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
+                .font(NitrateTypography.font(size: 13).monospacedDigit())
                 .lineLimit(1)
         }
     }

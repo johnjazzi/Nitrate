@@ -44,10 +44,10 @@ struct QueueSheetView: View {
                 if viewModel.isRenderPausedForAccess {
                     Section {
                         Label("Rendering is paused", systemImage: "lock.fill")
-                            .font(.subheadline.weight(.semibold))
+                            .font(NitrateTypography.font(.subheadline).weight(.semibold))
                         Text("Rendering the film look needs an active subscription. "
                              + "Your recordings are kept here and render once you subscribe.")
-                            .font(.caption)
+                            .font(NitrateTypography.font(.caption))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -60,7 +60,7 @@ struct QueueSheetView: View {
                                 .frame(minHeight: 44)
                         }
                         Text("The queue is paused because a change could not be saved. Existing media is kept in the app; free space if needed, then resume to retry.")
-                            .font(.caption)
+                            .font(NitrateTypography.font(.caption))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -78,7 +78,7 @@ struct QueueSheetView: View {
                     }
                     .accessibilityIdentifier(QueueReceiptPresentation.photosActionID + ".general")
                     Text("Opens Photos, not a specific video. Look in Recently Saved for confirmed saves.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
                 }
                 if let latestRender {
                     Section("Latest render") {
@@ -135,7 +135,7 @@ struct QueueSheetView: View {
                                     VStack(alignment: .leading, spacing: 4) {
                                         JobRow(job: job)
                                         if let error = job.errorMessage {
-                                            Text(error).font(.caption).foregroundStyle(.red)
+                                            Text(error).font(NitrateTypography.font(.caption)).foregroundStyle(.red)
                                         }
                                         receiptCard(for: job)
                                         Button { viewModel.retry(jobId: job.id) } label: {
@@ -302,26 +302,26 @@ private struct JobRow: View {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
                 Text(job.originalOnly == true ? "Original recording" : (job.stockId.isEmpty ? "Unassigned recording" : job.stockId))
-                    .font(.caption.weight(.semibold))
+                    .font(NitrateTypography.font(.caption).weight(.semibold))
                 if !job.stockId.isEmpty {
                     Text("Selected render ISO \(QueueReceiptPresentation.number(Double(job.iso)))")
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
                 }
                 if let reason = job.retainedReason {
-                    Text("Kept original: \(reason)").font(.caption2).foregroundStyle(.secondary)
+                    Text("Kept original: \(reason)").font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
                 }
                 if job.outputSavedToPhotos == true {
                     Text(job.sourceSavedToPhotos == true ? "Rendered + original saved to Photos" : "Rendered saved to Photos")
-                        .font(.caption2)
+                        .font(NitrateTypography.font(.caption2))
                         .foregroundStyle(.secondary)
                 } else if job.sourceSavedToPhotos == true {
-                    Text("Original saved to Photos").font(.caption2).foregroundStyle(.secondary)
+                    Text("Original saved to Photos").font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 3) {
                     Text("Queued")
                     Text(job.createdAt.formatted(queuedDateFormat))
                 }
-                .font(.caption)
+                .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
                 .accessibilityElement(children: .combine)
             }
@@ -346,16 +346,16 @@ private struct JobRow: View {
     private var statusLabel: some View {
         Group {
             switch job.status {
-            case .pending:   Text("Pending").font(.caption2).foregroundStyle(.secondary)
+            case .pending:   Text("Pending").font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
             case .processing:
                 HStack {
                     ProgressView().scaleEffect(0.8)
                     Text(job.originalOnly == true || job.outputSavedToPhotos == true ? "Saving original" : "Rendering / saving")
-                        .font(.caption2).foregroundStyle(.orange)
+                        .font(NitrateTypography.font(.caption2)).foregroundStyle(.orange)
                 }
-            case .completed: Label("Done", systemImage: "checkmark.circle.fill").font(.caption2).foregroundStyle(.green)
-            case .failed: Label("Failed", systemImage: "xmark.circle.fill").font(.caption2).foregroundStyle(.red)
-            case .awaitingStock: Label("Awaiting stock", systemImage: "film").font(.caption2).foregroundStyle(.secondary)
+            case .completed: Label("Done", systemImage: "checkmark.circle.fill").font(NitrateTypography.font(.caption2)).foregroundStyle(.green)
+            case .failed: Label("Failed", systemImage: "xmark.circle.fill").font(NitrateTypography.font(.caption2)).foregroundStyle(.red)
+            case .awaitingStock: Label("Awaiting stock", systemImage: "film").font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
             }
         }
         .id(job.status)

@@ -69,10 +69,10 @@ struct RecordingTimeLCD: View {
             Image(systemName: "list.bullet")
             if let count = queueStatus.countText {
                 Text(count)
-                    .font(.system(size: 8, weight: .semibold).monospacedDigit())
+                    .font(NitrateTypography.font(size: 8).monospacedDigit())
             }
         }
-        .font(.system(size: 8, weight: .semibold))
+        .font(NitrateTypography.font(size: 8))
         .foregroundStyle(.white.opacity(focus == .recording ? 0.95 : 0.75))
     }
 
@@ -100,13 +100,13 @@ struct RecordingTimeLCD: View {
                     .foregroundStyle(.orange)
             }
         }
-        .font(.system(size: 8, weight: .semibold))
+        .font(NitrateTypography.font(size: 8))
         .foregroundStyle(.white.opacity(0.8))
     }
 
     private func remainingTime(fontSize: CGFloat) -> some View {
         Text(CameraStatusPresentation.compactTimeText(for: estimatedSeconds))
-            .font(.system(size: fontSize, weight: .medium))
+            .font(NitrateTypography.font(size: fontSize))
             .monospacedDigit()
             .foregroundStyle(.white)
             .lineLimit(1)
@@ -131,7 +131,7 @@ struct RecordingTimeLCD: View {
                     .accessibilityHidden(true)
             }
             Text("RENDERING")
-                .font(.system(size: 12, weight: .semibold))
+                .font(NitrateTypography.font(size: 12))
                 .lineLimit(1)
                 .fixedSize()
         }

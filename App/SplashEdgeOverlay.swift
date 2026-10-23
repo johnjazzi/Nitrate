@@ -20,7 +20,7 @@ struct SplashEdgeOverlay: View {
                 VStack(spacing: 8) {
                     cornerPair(details.stock, details.marking)
                     Text(version)
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .font(NitrateTypography.font(size: 10))
                         .tracking(2)
                         .foregroundStyle(.white.opacity(0.42))
                         .multilineTextAlignment(.center)
@@ -63,7 +63,7 @@ struct SplashEdgeOverlay: View {
 
     private func corner(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+            .font(NitrateTypography.font(size: 9))
             .tracking(1.6)
             .foregroundStyle(.white.opacity(0.34))
     }
@@ -72,7 +72,7 @@ struct SplashEdgeOverlay: View {
     /// for the text's unrotated width and the rendered column stays narrow.
     private func vertical(_ text: String, flipped: Bool) -> some View {
         Text(text)
-            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+            .font(NitrateTypography.font(size: 9))
             .tracking(1.6)
             .foregroundStyle(.white.opacity(0.26))
             .lineLimit(1)

@@ -69,11 +69,11 @@ struct ManualControlsSurface<Aperture: View>: View {
             HStack(spacing: 4) {
                 if expandedLayout {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("MANUAL").font(.caption.weight(.bold))
-                        Text(exposure).font(.caption2.monospacedDigit()).lineLimit(1)
+                        Text("MANUAL").font(NitrateTypography.font(.caption).weight(.bold))
+                        Text(exposure).font(NitrateTypography.font(.caption2).monospacedDigit()).lineLimit(1)
                     }
                 } else {
-                    Text("MANUAL").font(.system(size: 10, weight: .bold)).lineLimit(1)
+                    Text("MANUAL").font(NitrateTypography.font(size: 10)).lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 if !expandedLayout {
@@ -116,7 +116,7 @@ struct ManualControlsSurface<Aperture: View>: View {
             if expandedLayout {
                 HStack(spacing: 8) {
                     Text(zoomIsPerLens ? "LENS ZOOM" : "ZOOM")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(NitrateTypography.font(size: 10))
                     Spacer(minLength: 0)
                     zoomHold(.out, symbol: "minus", label: "Zoom Out")
                     zoomHold(.in, symbol: "plus", label: "Zoom In")
@@ -124,7 +124,7 @@ struct ManualControlsSurface<Aperture: View>: View {
                 .frame(height: 44)
             }
         }
-        .font(.caption2.weight(.semibold))
+        .font(NitrateTypography.font(.caption2).weight(.semibold))
         .foregroundStyle(.white)
         .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 6))
         .padding(contentPadding)
@@ -133,7 +133,7 @@ struct ManualControlsSurface<Aperture: View>: View {
         .popover(isPresented: $showingHelp) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("Recording stabilization").font(.headline)
+                    Text("Recording stabilization").font(NitrateTypography.font(.headline))
                     Spacer()
                     Button("Done") { showingHelp = false }.frame(minHeight: 44)
                 }
@@ -164,7 +164,7 @@ struct ManualControlsSurface<Aperture: View>: View {
     private var contentPadding: CGFloat { expandedLayout ? 8 : 4 }
 
     private func title(_ text: String) -> some View {
-        Text(text).font(.system(size: 10, weight: .bold)).lineLimit(1)
+        Text(text).font(NitrateTypography.font(size: 10)).lineLimit(1)
             .frame(height: rowHeight).frame(maxWidth: .infinity)
     }
 
@@ -189,7 +189,7 @@ struct ManualControlsSurface<Aperture: View>: View {
         VStack(spacing: 0) {
             if expandedLayout {
                 HStack(spacing: 0) {
-                    Text("STAB").font(.system(size: 10, weight: .bold))
+                    Text("STAB").font(NitrateTypography.font(size: 10))
                     stabilizationHelp
                 }
             }
@@ -206,7 +206,7 @@ struct ManualControlsSurface<Aperture: View>: View {
             } label: {
                 VStack(spacing: 2) {
                     Text(stabilization.preferred == .off ? lastEnabledMode.title : stabilization.preferred.title)
-                    Text("Active \(stabilization.active?.title ?? "—")").font(.system(size: 9))
+                    Text("Active \(stabilization.active?.title ?? "—")").font(NitrateTypography.font(size: 9))
                 }.lineLimit(1).frame(maxWidth: .infinity, minHeight: 44)
             }
             .accessibilityLabel("Recording stabilization mode")

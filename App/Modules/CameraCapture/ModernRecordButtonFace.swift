@@ -63,7 +63,7 @@ struct ModernRecordButtonFace: View {
     private var glyph: some View {
         ZStack {
             Text("REC")
-                .font(.system(size: 16, weight: .bold, design: .rounded))
+                .font(NitrateTypography.font(size: 16))
                 .tracking(1)
                 .foregroundStyle(Self.red)
                 .opacity(showsStopSymbol ? 0 : 1)

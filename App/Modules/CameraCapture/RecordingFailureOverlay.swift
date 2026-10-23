@@ -40,7 +40,7 @@ struct RecordingFailureOverlay: View {
                     .opacity(isBright ? 1 : 0.55)
                 if let detail {
                     Text(detail)
-                        .font(.footnote.weight(.semibold))
+                        .font(NitrateTypography.font(.footnote).weight(.semibold))
                         .foregroundStyle(.white.opacity(0.85))
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
@@ -66,7 +66,7 @@ struct RecordingFailureOverlay: View {
             Text("COMPUTER")
             Text("MALFUNCTION")
         }
-        .font(.system(size: 46, weight: .black).width(.compressed))
+        .font(NitrateTypography.font(size: 46).width(.compressed))
         .foregroundStyle(.white)
         .lineLimit(1)
         .minimumScaleFactor(0.4)

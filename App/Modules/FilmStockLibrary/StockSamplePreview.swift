@@ -46,7 +46,7 @@ struct StockSamplePreview: View {
                 .frame(height: 375)
                 sceneDots(catalog)
                 Text(catalog.disclaimer)
-                    .font(.caption2)
+                    .font(NitrateTypography.font(.caption2))
                     .foregroundStyle(.secondary)
             }
             .onAppear {
@@ -330,7 +330,7 @@ private struct PlatePage: View {
         Button(action: onToggleDetail) {
             Label(isDetail ? "Full photo" : "Detail",
                   systemImage: isDetail ? "arrow.down.right.and.arrow.up.left" : "plus.magnifyingglass")
-                .font(.callout.weight(.semibold))
+                .font(NitrateTypography.font(.callout).weight(.semibold))
                 .padding(.horizontal, 14)
                 .frame(minHeight: 44)
                 .background(.ultraThinMaterial, in: Capsule())
@@ -346,8 +346,8 @@ private struct PlatePage: View {
 
     private var caption: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.8))
-            Text(stockName).font(.headline).foregroundStyle(.white)
+            Text(title).font(NitrateTypography.font(.caption).weight(.medium)).foregroundStyle(.white.opacity(0.8))
+            Text(stockName).font(NitrateTypography.font(.headline)).foregroundStyle(.white)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)

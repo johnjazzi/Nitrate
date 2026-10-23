@@ -36,7 +36,7 @@ struct RecordPlungerFace: View {
                                 .frame(width: 15, height: 15)
                         } else {
                             Text("REC")
-                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                .font(NitrateTypography.font(size: 11))
                                 .tracking(1)
                                 .foregroundStyle(.white.opacity(0.85))
                         }
@@ -69,7 +69,7 @@ struct CameraGaugeLabel: View {
 
     var body: some View {
         Text(gauge.displayName)
-            .font(.system(size: 10, weight: .medium, design: .rounded))
+            .font(NitrateTypography.font(size: 10))
             .foregroundStyle(.white.opacity(0.95))
             .fixedSize()
             .frame(width: 28, height: 28)
@@ -108,7 +108,7 @@ struct CameraFilmStockFace: View {
                 }
             }
             Text(isoLight)
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(NitrateTypography.font(size: 10))
                 .foregroundStyle(.black)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2)

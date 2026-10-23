@@ -480,7 +480,7 @@ struct ContentView: View {
             showSettings = true
         } label: {
             Image(systemName: "gearshape.fill")
-                .font(.title3)
+                .font(NitrateTypography.font(.title3))
                 .foregroundStyle(.white)
                 .cameraUpright()
                 .frame(width: 44, height: 44)
@@ -493,7 +493,7 @@ struct ContentView: View {
             withAnimation(.easeInOut(duration: 0.2)) { showManualControls.toggle() }
         } label: {
             Image(systemName: "slider.vertical.3")
-                .font(.title3)
+                .font(NitrateTypography.font(.title3))
                 .foregroundStyle(showManualControls ? .black : .white)
                 .cameraUpright()
                 .frame(width: 44, height: 44)
@@ -511,7 +511,7 @@ struct ContentView: View {
                 openDebugFrame()
             } label: {
                 Text("DEBUG")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .font(NitrateTypography.font(size: 10))
                     .foregroundStyle(.black)
                     .fixedSize()
                     .cameraUpright()
@@ -529,7 +529,7 @@ struct ContentView: View {
                 showDebugFault()
             } label: {
                 Text("FAULT")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .font(NitrateTypography.font(size: 10))
                     .foregroundStyle(.white)
                     .fixedSize()
                     .cameraUpright()
@@ -727,7 +727,7 @@ struct ContentView: View {
         HStack {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
                 .cameraUpright()
-            Text(message).foregroundStyle(.white).font(.caption)
+            Text(message).foregroundStyle(.white).font(NitrateTypography.font(.caption))
                 .cameraUpright()
             Spacer()
             Button(action: cameraViewModel.dismissError) {
@@ -746,7 +746,7 @@ struct ContentView: View {
         HStack {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 .cameraUpright()
-            Text(message).foregroundStyle(.white).font(.caption)
+            Text(message).foregroundStyle(.white).font(NitrateTypography.font(.caption))
                 .cameraUpright()
             Spacer()
             Button {
@@ -841,7 +841,7 @@ private struct StockSheetView: View {
                             renderButton(sourceURL: url)
                         } else {
                             Text("Record a video to render.")
-                                .font(.caption)
+                                .font(NitrateTypography.font(.caption))
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -918,7 +918,7 @@ private struct StockSheetView: View {
 
     private var gaugePicker: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Print Gauge").font(.headline)
+            Text("Print Gauge").font(NitrateTypography.font(.headline))
             Picker("Print Gauge", selection: $gauge) {
                 ForEach(PrintGauge.allCases, id: \.self) { gauge in
                     Text(gauge.displayName).tag(gauge)
@@ -926,7 +926,7 @@ private struct StockSheetView: View {
             }
             .pickerStyle(.segmented)
             Text("Gauge sets grain size and presence (8mm coarse → 75mm near grain-free).")
-                .font(.caption)
+                .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
         }
     }

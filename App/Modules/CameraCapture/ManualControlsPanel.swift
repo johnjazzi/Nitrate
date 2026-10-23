@@ -79,7 +79,7 @@ struct ManualControlsPanel: View {
                 Image(systemName: cameraViewModel.liveAperture == nil ? "minus.circle" : "lock.fill")
                 Text(cameraViewModel.liveAperture == nil ? "—" :
                         (cameraViewModel.apertureIsVariable ? "Read only" : "Fixed"))
-                    .font(.system(size: 9))
+                    .font(NitrateTypography.font(size: 9))
             }
             .foregroundStyle(.white.opacity(0.6))
             .accessibilityLabel("Aperture unavailable for adjustment")

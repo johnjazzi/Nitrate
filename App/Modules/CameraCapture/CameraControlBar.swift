@@ -90,7 +90,7 @@ struct CameraControlBar: View {
                 Button {
                     onShowStockSheet()
                 } label: {
-                    Image(systemName: "film").font(.title3)
+                    Image(systemName: "film").font(NitrateTypography.font(.title3))
                     .foregroundStyle(.white)
                     .frame(width: faceSize, height: faceSize)
                     .frame(minWidth: 44, minHeight: 44)
@@ -208,7 +208,7 @@ struct CameraControlBar: View {
     private var exposureSetting: some View {
         VStack(spacing: 6) {
             Text(exposureReadout)
-                .font(.caption2.monospacedDigit())
+                .font(NitrateTypography.font(.caption2).monospacedDigit())
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
                 .frame(height: 14)
@@ -248,7 +248,7 @@ struct CameraControlBar: View {
             // Keep the previous footer's exact font height without its words.
             // This preserves the shooting bar and viewfinder geometry.
             Text(" ")
-                .font(.system(size: 9, weight: .bold))
+                .font(NitrateTypography.font(size: 9))
                 .accessibilityHidden(true)
         }
     }

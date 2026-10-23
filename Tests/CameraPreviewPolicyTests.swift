@@ -440,7 +440,14 @@ struct CameraPreviewPolicyTests {
     @Test func handoffNoticeMatchesTheFaultHeadlineFontAndCentersOverTheFrame() throws {
         let view = try String(contentsOf: TestRepository.root.appendingPathComponent(
             "App/Modules/CameraCapture/CameraView.swift"), encoding: .utf8)
-        #expect(view.contains("handoffLabel.font = .systemFont(ofSize: 46, weight: .black, width: .compressed)"))
+        // Both the handoff notice and the fault headline render in the shared
+        // bundled face at 46pt; the handoff is drawn by UIKit, so it goes through
+        // the same typography helper's font constructor.
+        #expect(view.contains("handoffLabel.font = NitrateTypography.uiFont(size: 46)"))
+        let fault = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/RecordingFailureOverlay.swift"), encoding: .utf8)
+        #expect(fault.contains("NitrateTypography.font(size: 46)"),
+                "The fault headline must share the 46pt bundled face.")
         #expect(view.contains("handoffLabel.textAlignment = .center"))
         #expect(view.contains("handoffLabel.center = CGPoint(x: bounds.midX, y: bounds.midY)"))
         #expect(view.contains("handoffLabel.isUserInteractionEnabled = false"))

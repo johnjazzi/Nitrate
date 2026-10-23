@@ -24,7 +24,7 @@ struct FocalLengthRuler: View {
     var body: some View {
         VStack(spacing: 3) {
             Text("\(Int(millimeters.rounded())) mm")
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .font(NitrateTypography.font(size: 12))
                 .foregroundStyle(.yellow)
             Canvas { context, size in
                 for value in stride(from: 15.0, through: 150, by: 5) where !FocalLengthRulerScale.majorTicks.contains(value) {
@@ -43,7 +43,7 @@ struct FocalLengthRuler: View {
                     path.addLine(to: CGPoint(x: x, y: 10))
                     context.stroke(path, with: .color(.white), lineWidth: 1)
                     context.draw(Text("\(Int(value))")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .font(NitrateTypography.font(size: 9))
                         .foregroundStyle(.white), at: CGPoint(x: x, y: 20))
                 }
                 var index = Path()
