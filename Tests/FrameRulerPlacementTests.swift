@@ -49,7 +49,7 @@ struct FrameRulerPlacementTests {
 
     // MARK: - Placement
 
-    @Test func portraitRulersHugOppositeVerticalEdgesInsideTheFrame() {
+    @Test func portraitRulersHugOppositeVerticalEdgesFlushToTheFrame() {
         let focus = FrameRulerPlacementGeometry.rect(
             inFrame: frame, edge: .right, thickness: FrameRulerPlacementGeometry.focusThickness,
             orientationDegrees: 0)
@@ -57,8 +57,10 @@ struct FrameRulerPlacementTests {
         #expect(focus.height > focus.width, "the focus ruler is a tall vertical rail in portrait")
         #expect(focus.maxX <= frame.maxX && focus.minX >= frame.minX)
         #expect(focus.minY >= frame.minY && focus.maxY <= frame.maxY)
-        #expect(abs(focus.maxX - (frame.maxX - FrameRulerPlacementGeometry.margin)) < 0.001,
-                "the focus ruler sits inset from the physical right edge")
+        // The margin is zero: the slot runs flush to the physical right edge.
+        #expect(FrameRulerPlacementGeometry.margin == 0)
+        #expect(focus.maxX == frame.maxX, "the focus ruler runs flush to the physical right edge")
+        #expect(focus.minY == frame.minY && focus.maxY == frame.maxY)
 
         let zoom = FrameRulerPlacementGeometry.rect(
             inFrame: frame, edge: .left, thickness: FrameRulerPlacementGeometry.zoomThickness,
@@ -66,12 +68,28 @@ struct FrameRulerPlacementTests {
         #expect(zoom.width == FrameRulerPlacementGeometry.zoomThickness)
         #expect(zoom.height > zoom.width, "the zoom ruler is a tall vertical rail in portrait")
         #expect(zoom.minX >= frame.minX && zoom.maxX <= frame.maxX)
-        #expect(abs(zoom.minX - (frame.minX + FrameRulerPlacementGeometry.margin)) < 0.001,
-                "the zoom ruler sits inset from the physical left edge")
+        #expect(zoom.minX == frame.minX, "the zoom ruler runs flush to the physical left edge")
+        #expect(zoom.minY == frame.minY && zoom.maxY == frame.maxY)
 
         // The two rails are on opposite sides and cannot overlap.
         #expect(!zoom.intersects(focus))
         #expect(zoom.maxX < focus.minX)
+    }
+
+    /// The visible rail is narrower than the 44pt touch footprint, and the slot
+    /// itself keeps the full 44pt so the tap target is unchanged and the rail
+    /// runs flush to the preview edge rather than leaving a centered gap.
+    @Test func visibleRailIsNarrowerThanItsTouchFootprint() {
+        let visual = FrameRulerPlacementGeometry.rulerVisualThickness
+        #expect(FrameRulerPlacementGeometry.visualFraction == 0.8)
+        #expect(abs(visual - 35.2) < 0.0001, "the visible rail is 80% of the 44pt slot")
+        #expect(visual < FrameRulerPlacementGeometry.focusThickness)
+        #expect(FrameRulerPlacementGeometry.focusThickness == 44)
+        // The granted slot keeps the full 44pt footprint.
+        let rect = FrameRulerPlacementGeometry.rect(inFrame: frame, edge: .right,
+                                                    thickness: FrameRulerPlacementGeometry.focusThickness,
+                                                    orientationDegrees: 0)
+        #expect(rect.width == 44)
     }
 
     @Test func everyHoldStaysWithinTheFrameAndKeepsTheThickness() {
@@ -285,8 +303,79 @@ struct FrameRulerPlacementTests {
         }
     }
 
-    // MARK: - Render helpers
+    /// The new default composition: the right slot stacks the narrow
+    /// manual-focus rail above three 44pt inline buttons, and the left slot
+    /// carries the narrow zoom rail. Rendering the real `FrameRulerSlot` at
+    /// portrait, both landscape holds and a narrow phone proves the stack stays
+    /// inside its own slot — nothing clips into the live frame — and that the
+    /// two slots never overlap.
+    @MainActor @Test func realRightStackAndNarrowRailsStayInsideTheirSlots() throws {
+        let compositions: [(canvas: CGSize, bounds: CGRect)] = [
+            (CGSize(width: 390, height: 763), CGRect(x: 30, y: 110, width: 330, height: 473)),
+            (CGSize(width: 320, height: 568), CGRect(x: 0, y: 100, width: 320, height: 340)),
+        ]
+        let visual = FrameRulerPlacementGeometry.rulerVisualThickness
+        for composition in compositions {
+            let canvas = composition.canvas
+            let bounds = composition.bounds
+            for degrees in [0.0, 90.0, -90.0] {
+                let zoom = FrameRulerPlacementGeometry.rect(
+                    inFrame: bounds, edge: .left,
+                    thickness: FrameRulerPlacementGeometry.zoomThickness,
+                    orientationDegrees: degrees)
+                let focus = FrameRulerPlacementGeometry.rect(
+                    inFrame: bounds, edge: .right,
+                    thickness: FrameRulerPlacementGeometry.focusThickness,
+                    orientationDegrees: degrees)
+                #expect(!zoom.isNull && !focus.isNull)
+                #expect(!zoom.intersects(focus),
+                        "the narrow rails must stay disjoint at \(degrees) in \(bounds)")
 
+                let view = ZStack {
+                    Color.black
+                    FrameRulerSlot(rect: zoom, rotationDegrees: degrees) {
+                        FrameZoomRuler(millimeters: 384, enabled: true, revision: 1,
+                                       begin: { _ in }, end: { _ in }, step: { _ in },
+                                       availableFocalRange: 96...384, visualWidth: visual)
+                    }
+                    FrameRulerSlot(rect: focus, rotationDegrees: degrees) {
+                        VStack(spacing: 4) {
+                            ManualFocusRuler(lensPosition: .constant(0.5), enabled: true,
+                                             stops: .constant([ManualFocusStop(lensPosition: 0.3)]),
+                                             visualWidth: visual)
+                                .frame(maxHeight: .infinity)
+                            // The inline button stack the right slot reserves
+                            // even in autofocus: three 44pt controls.
+                            VStack(spacing: 0) {
+                                ForEach(0..<3, id: \.self) { _ in
+                                    Color(.sRGB, red: 0, green: 1, blue: 0, opacity: 1)
+                                        .frame(width: 44, height: 44)
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(width: canvas.width, height: canvas.height)
+
+                let image = try bitmap(view, size: canvas,
+                                       name: "right-stack-\(Int(canvas.width))-\(Int(degrees))")
+                let scale = CGFloat(image.width) / canvas.width
+                func inside(_ rect: CGRect, _ pixel: (x: Int, y: Int)) -> Bool {
+                    rect.insetBy(dx: -1, dy: -1).contains(
+                        CGPoint(x: CGFloat(pixel.x) / scale, y: CGFloat(pixel.y) / scale))
+                }
+                let visible = try ink(image) { $0.red + $0.green + $0.blue > 0.9 }
+                #expect(visible.allSatisfy { inside(zoom, $0) || inside(focus, $0) },
+                        "the real rails, stops and buttons must stay inside their separate slots at \(degrees)")
+                #expect(visible.filter { inside(zoom, $0) }.count > 50,
+                        "the zoom rail must render real ink at \(degrees)")
+                #expect(visible.filter { inside(focus, $0) }.count > 50,
+                        "the focus rail and button stack must render real ink at \(degrees)")
+            }
+        }
+    }
+
+    // MARK: - Render helpers
     @MainActor private func bitmap<V: View>(_ view: V, size: CGSize, name: String? = nil) throws -> CGImage {
         let host = NSHostingView(rootView: view)
         host.frame = CGRect(origin: .zero, size: size)

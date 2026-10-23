@@ -32,11 +32,20 @@ struct FrameZoomRuler: View {
     /// of `millimeters` instead of a blank rail.
     var availableFocalRange: ClosedRange<Double>? = nil
 
+    /// The width of the drawn rail. The ruler keeps its 44pt column for the
+    /// hold arrows; the visible rail is inset inside that column, flush to the
+    /// frame's physical left edge, so the drawn rail can be narrowed without
+    /// moving the arrows or shrinking their tap targets. The 44pt default
+    /// preserves the existing fixtures.
+    var visualWidth: CGFloat = 44
+
     var body: some View {
         VStack(spacing: 6) {
             arrow(.out, symbol: "chevron.up", label: "Zoom out")
             rail
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: visualWidth)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxHeight: .infinity)
                 .allowsHitTesting(false)
             arrow(.in, symbol: "chevron.down", label: "Zoom in")
         }

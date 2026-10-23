@@ -340,14 +340,128 @@ struct ManualFocusRulerTests {
         }
         #expect(orange > 30, "each session stop must draw a visible orange marker and label")
     }
+
+    /// The narrower drawn rail sits inside the 44pt touch column, flush to the
+    /// frame edge — its ink must stay clear of the leading strip that faces the
+    /// frame interior rather than being centred with a gap on both sides.
+    @MainActor @Test func narrowerVisualRailIsInsetFlushToTheFrameEdge() throws {
+        let visual = FrameRulerPlacementGeometry.rulerVisualThickness
+        let host = NSHostingView(rootView: FocusRulerHarness(position: 0.5, visualWidth: visual)
+            .frame(width: 44, height: 300))
+        host.frame = CGRect(x: 0, y: 0, width: 44, height: 300)
+        host.layoutSubtreeIfNeeded()
+        let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: rep)
+
+        let inset = 44 - visual
+        #expect(inset > 0, "the visible rail must be narrower than its 44pt column")
+        var leadingInk = 0
+        var trailingInk = 0
+        for x in 0..<44 {
+            for y in 0..<300 {
+                guard let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                let bright = (color.redComponent + color.greenComponent + color.blueComponent) > 0.4
+                guard color.alphaComponent > 0.05, bright else { continue }
+                if CGFloat(x) < inset - 1 { leadingInk += 1 } else { trailingInk += 1 }
+            }
+        }
+        #expect(leadingInk == 0, "the rail must be inset flush to the frame edge, not centred")
+        #expect(trailingInk > 30, "the inset rail must still render its ticks, index and label")
+    }
+
+    // MARK: - ContentView wiring: in-frame master controls
+
+    @Test func toolbarMasterKeyTogglesTheInFrameControlsAndReadsActiveInOrange() throws {
+        let screen = try source("App/ContentView.swift")
+        #expect(screen.contains("private var manualControlsActive: Bool"))
+        #expect(screen.contains("setInlineManualControlsShown(!showInlineManualControls)"))
+        #expect(screen.contains("faceColor: manualControlsActive ? .orange : nil"))
+        #expect(!screen.contains("faceColor: manualControlsActive ? .yellow : nil"))
+        #expect(screen.contains(".accessibilityLabel(\"Manual controls\")"))
+        #expect(screen.contains(".accessibilityValue(manualControlsActive ? \"Expanded\" : \"Collapsed\")"))
+        // The in-frame block is the default; the old pop-up is the flagged path.
+        #expect(screen.contains("else if showInlineManualControls {"))
+        #expect(screen.contains("if showManualControls, legacyManualControlsEnabled,"))
+    }
+
+    @Test func hidingTheInFrameControlsNeverResetsHardwareModes() throws {
+        let screen = try source("App/ContentView.swift")
+        let start = try #require(screen.range(of: "private func setInlineManualControlsShown"))
+        let body = String(screen[start.lowerBound...].prefix(270))
+        #expect(body.contains("cameraViewModel.endSlowZoom()"))
+        // Hiding stops the rumble but keeps every chosen hardware mode and the
+        // session focus stops exactly as they were.
+        #expect(!body.contains("isManualFocus"))
+        #expect(!body.contains("resetAutoFocus"))
+        #expect(!body.contains("Aperture"))
+        #expect(!body.contains("Stabilization"))
+        #expect(!body.contains("focusStops"))
+    }
+
+    @Test func inFrameBlockReservesTheButtonStackAndGreysTheRailInAutofocus() throws {
+        let screen = try source("App/ContentView.swift")
+        // The button stack keeps its three 44pt controls reserved even in AF.
+        #expect(screen.contains(".frame(width: 44, height: 132)"))
+        #expect(screen.contains("InlineManualControls("))
+        // The rail is greyed and disabled while autofocus is selected rather
+        // than forcing the lens into manual focus.
+        #expect(screen.contains("enabled: canUseManualFocusRuler && isManualFocus"))
+        let ruler = try source("App/Modules/CameraCapture/ManualFocusRuler.swift")
+        #expect(ruler.contains("fill(enabled ? Color.yellow : Color.gray)"))
+        #expect(ruler.contains("foregroundStyle(enabled ? Color.yellow : Color.gray)"))
+    }
+
+    @Test func inFrameControlsUseLiveHardwareReadbackAndHonestGates() throws {
+        let screen = try source("App/ContentView.swift")
+        #expect(screen.contains("cameraViewModel.liveAperture.map { String(format: \"f/%.1f\", $0) } ?? \"N/A\""))
+        #expect(screen.contains("cameraViewModel.canSelectAperture && !cameraViewModel.isChangingFrameRate"))
+        #expect(screen.contains("setAperture: { cameraViewModel.setLensAperture($0) }"))
+        #expect(screen.contains("selectedAperture: cameraViewModel.selectedLensAperture"))
+        #expect(screen.contains("apertureStops: cameraViewModel.apertureStops"))
+        #expect(screen.contains("stabilization: cameraViewModel.recordingStabilization"))
+        #expect(screen.contains("canChangeStabilization: cameraViewModel.canSetRecordingStabilization"))
+        #expect(screen.contains("selectStabilization: { cameraViewModel.setRecordingStabilization($0) })"))
+    }
+
+    @Test func settingsSwitchesRevealTheMasterAndTheRailIsInset() throws {
+        let screen = try source("App/ContentView.swift")
+        // The Settings rows share one visible state with the toolbar key.
+        #expect(screen.contains("zoomControlsEnabled: zoomControlsSetting,"))
+        #expect(screen.contains("private var zoomControlsSetting: Binding<Bool>"))
+        #expect(screen.contains("setInlineManualControlsShown(newValue)"))
+        // Enabling Settings Manual Focus reveals the master without forcing
+        // aperture or stabilization on.
+        #expect(screen.contains("if !legacyManualControlsEnabled { showInlineManualControls = true }"))
+        // The in-frame rails are handed the narrower visual width.
+        #expect(screen.contains("visualWidth: FrameRulerPlacementGeometry.rulerVisualThickness"))
+    }
+
+    @Test func inFrameBlockCannotResizeThePreview() throws {
+        let screen = try source("App/ContentView.swift")
+        // The in-frame block is bounded by the same preview ∩ safe rectangle as
+        // before, and that helper never reads a ruler's own size or any of the
+        // new master state, so showing the block cannot move the preview.
+        #expect(screen.contains("private func frameRulerBounds(in geometry: GeometryProxy) -> CGRect?"))
+        #expect(screen.contains("let bounds = preview.intersection(safe)"))
+        let start = try #require(screen.range(of: "private func frameRulerBounds"))
+        let end = try #require(screen.range(of: "private func cameraLayer",
+                                            range: start.upperBound..<screen.endIndex))
+        let helper = String(screen[start.lowerBound..<end.lowerBound])
+        #expect(!helper.contains("showInlineManualControls"))
+        #expect(!helper.contains("visualWidth"))
+        #expect(!helper.contains("manualControlsActive"))
+    }
 }
 
 /// A stateful host so the rendered ruler can hold a real binding.
 private struct FocusRulerHarness: View {
     @State var position: Double
     @State var stops: [ManualFocusStop] = []
+    /// The drawn rail width; the default preserves the historical 44pt column.
+    var visualWidth: CGFloat = 44
 
     var body: some View {
-        ManualFocusRuler(lensPosition: $position, enabled: true, stops: $stops)
+        ManualFocusRuler(lensPosition: $position, enabled: true, stops: $stops,
+                         visualWidth: visualWidth)
     }
 }

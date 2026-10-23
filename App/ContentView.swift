@@ -77,6 +77,21 @@ struct ContentView: View {
     /// hold arrows on screen; Manual Focus shares `isManualFocus` with the
     /// panel's AF/MF key.
     @State private var zoomControlsEnabled = false
+    /// The master switch for the new in-frame manual controls: the toolbar's
+    /// manual key toggles every in-frame control (both rails and the inline
+    /// button stack) together. Off by default and session-local. Hiding them
+    /// stops a live zoom ramp but never resets the hardware manual focus,
+    /// aperture or stabilization, nor the session focus stops.
+    @State private var showInlineManualControls = false
+
+#if DEBUG
+    /// User-owned debug switch that reopens the legacy manual-controls pop-up
+    /// panel instead of the in-frame master controls. Mirrored in Settings so
+    /// the discovery path is never stranded, and always resolved off in a
+    /// Release build.
+    @AppStorage(CameraManualControlsFeatureFlags.legacyManualControlsKey)
+    private var legacyManualControlsStored = CameraManualControlsFeatureFlags.legacyManualControlsDefault
+#endif
 
 #if DEBUG
     /// Frozen frame + live tuning sheet (DEBUG builds only).
@@ -168,41 +183,52 @@ struct ContentView: View {
                 // preview while they appear and disappear. Drawn before the
                 // manual panel, so an open panel sits above the focus ruler.
                 if let bounds = frameRulerBounds(in: geometry) {
-                    if isManualFocus {
-                        let rect = FrameRulerPlacementGeometry.rect(
-                            inFrame: bounds, edge: .right,
-                            thickness: FrameRulerPlacementGeometry.focusThickness,
-                            orientationDegrees: statusRotationDegrees)
-                        if !rect.isNull {
-                            FrameRulerSlot(rect: rect, rotationDegrees: statusRotationDegrees) {
-                                ManualFocusRuler(lensPosition: $manualFocusPosition,
-                                                 enabled: canUseManualFocusRuler,
-                                                 stops: $focusStops)
+                    if legacyManualControlsEnabled {
+                        // Legacy fallback (debug flag on): the committed
+                        // in-frame rulers, each shown by its own Settings
+                        // switch, are preserved unchanged.
+                        if isManualFocus {
+                            let rect = FrameRulerPlacementGeometry.rect(
+                                inFrame: bounds, edge: .right,
+                                thickness: FrameRulerPlacementGeometry.focusThickness,
+                                orientationDegrees: statusRotationDegrees)
+                            if !rect.isNull {
+                                FrameRulerSlot(rect: rect, rotationDegrees: statusRotationDegrees) {
+                                    ManualFocusRuler(lensPosition: $manualFocusPosition,
+                                                     enabled: canUseManualFocusRuler,
+                                                     stops: $focusStops)
+                                }
                             }
                         }
-                    }
-                    if zoomControlsEnabled {
-                        let rect = FrameRulerPlacementGeometry.rect(
-                            inFrame: bounds, edge: .left,
-                            thickness: FrameRulerPlacementGeometry.zoomThickness,
-                            orientationDegrees: statusRotationDegrees)
-                        if !rect.isNull {
-                            FrameRulerSlot(rect: rect, rotationDegrees: statusRotationDegrees) {
-                                FrameZoomRuler(
-                                    millimeters: pinchIsActive ? pinchFocalLength
-                                                               : cameraViewModel.currentFocalLengthMM,
-                                    enabled: canUseZoomControls,
-                                    revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
-                                    begin: { cameraViewModel.beginSlowZoom($0) },
-                                    end: cameraViewModel.endSlowZoom(revision:),
-                                    step: cameraViewModel.stepDisplayZoom,
-                                    availableFocalRange: cameraViewModel.focalLengthRulerRange)
+                        if zoomControlsEnabled {
+                            let rect = FrameRulerPlacementGeometry.rect(
+                                inFrame: bounds, edge: .left,
+                                thickness: FrameRulerPlacementGeometry.zoomThickness,
+                                orientationDegrees: statusRotationDegrees)
+                            if !rect.isNull {
+                                FrameRulerSlot(rect: rect, rotationDegrees: statusRotationDegrees) {
+                                    FrameZoomRuler(
+                                        millimeters: pinchIsActive ? pinchFocalLength
+                                                                   : cameraViewModel.currentFocalLengthMM,
+                                        enabled: canUseZoomControls,
+                                        revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
+                                        begin: { cameraViewModel.beginSlowZoom($0) },
+                                        end: cameraViewModel.endSlowZoom(revision:),
+                                        step: cameraViewModel.stepDisplayZoom,
+                                        availableFocalRange: cameraViewModel.focalLengthRulerRange)
+                                }
                             }
                         }
+                    } else if showInlineManualControls {
+                        // Default layout: zoom rail on the physical left, the
+                        // manual-focus rail with its button stack on the
+                        // physical right, revealed together by the master key.
+                        inlineFrameRulers(in: bounds)
                     }
                 }
 
-                if showManualControls, let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
+                if showManualControls, legacyManualControlsEnabled,
+                   let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
                     ManualControlsOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
                                           excluding: RecordingStatusOverlayGeometry.rect(
                                             viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
@@ -268,7 +294,8 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) {
             PurchaseView(viewModel: purchaseViewModel, showFramedPreview: $showFramedPreview,
                          manualFocusEnabled: manualFocusBinding,
-                         zoomControlsEnabled: $zoomControlsEnabled)
+                         zoomControlsEnabled: zoomControlsSetting,
+                         legacyManualControlsEnabled: legacyManualControlsSetting)
         }
         .onChange(of: cameraViewModel.lastRecordedURL) { _, newURL in
             guard let url = newURL else { return }
@@ -483,6 +510,130 @@ struct ContentView: View {
 
     // MARK: - Manual Focus & Zoom Rulers
 
+    /// Whether the legacy manual-controls pop-up panel may be mounted. The flag
+    /// is debug-only: a Release build resolves it false even if a device still
+    /// carries the preference from a debug install.
+    private var legacyManualControlsEnabled: Bool {
+        #if DEBUG
+        CameraManualControlsFeatureFlags.resolvedLegacyManualControls(
+            stored: legacyManualControlsStored, isDebugBuild: true)
+        #else
+        false
+        #endif
+    }
+
+    /// The toolbar's manual key reads as active while either presentation is
+    /// showing: the legacy pop-up under the debug flag, otherwise the in-frame
+    /// master block.
+    private var manualControlsActive: Bool {
+        legacyManualControlsEnabled ? showManualControls : showInlineManualControls
+    }
+
+    /// The Settings Zoom Controls row. In the default presentation it drives the
+    /// same visible state as the toolbar key — enabling it reveals the whole
+    /// in-frame block and disabling it hides the block — while under the debug
+    /// flag it keeps its committed, independent switch.
+    private var zoomControlsSetting: Binding<Bool> {
+        Binding(
+            get: { legacyManualControlsEnabled ? zoomControlsEnabled : showInlineManualControls },
+            set: { newValue in
+                if legacyManualControlsEnabled {
+                    zoomControlsEnabled = newValue
+                } else {
+                    setInlineManualControlsShown(newValue)
+                }
+            }
+        )
+    }
+
+    /// The debug-only Settings switch that reopens the legacy panel. It writes
+    /// the user-owned flag the resolver reads; Release builds see a constant.
+    private var legacyManualControlsSetting: Binding<Bool> {
+        #if DEBUG
+        $legacyManualControlsStored
+        #else
+        .constant(false)
+        #endif
+    }
+
+    /// Show or hide the in-frame master controls. Turning them on also lights
+    /// the Settings Zoom Controls switch so the discovery row never disagrees
+    /// with the screen; turning them off stops a live zoom ramp but leaves the
+    /// hardware manual focus, aperture, stabilization and the session focus
+    /// stops exactly as they were chosen.
+    private func setInlineManualControlsShown(_ shown: Bool) {
+        guard shown != showInlineManualControls else { return }
+        showInlineManualControls = shown
+        zoomControlsEnabled = shown
+        if !shown { cameraViewModel.endSlowZoom() }
+    }
+
+    /// The live aperture readout for the in-frame controls: the actual hardware
+    /// aperture, never a stored or optimistic value.
+    private var apertureReadout: String {
+        cameraViewModel.liveAperture.map { String(format: "f/%.1f", $0) } ?? "N/A"
+    }
+
+    /// Aperture can change only on a variable-aperture lens and only while the
+    /// active format is settled, matching the view model's own guard.
+    private var canChangeAperture: Bool {
+        cameraViewModel.canSelectAperture && !cameraViewModel.isChangingFrameRate
+    }
+
+    /// The default in-frame block: the zoom rail on the physical left, and the
+    /// manual-focus rail with the inline button stack on the physical right.
+    /// Both rails draw at 80% of their 44pt slot, inset flush to the preview
+    /// edge, while the slot keeps the full 44pt tap footprint. The button stack
+    /// keeps its three 44pt controls reserved even in autofocus, where the rail
+    /// renders grey and disabled instead of forcing the lens into manual focus.
+    @ViewBuilder
+    private func inlineFrameRulers(in bounds: CGRect) -> some View {
+        let zoomRect = FrameRulerPlacementGeometry.rect(
+            inFrame: bounds, edge: .left,
+            thickness: FrameRulerPlacementGeometry.zoomThickness,
+            orientationDegrees: statusRotationDegrees)
+        if !zoomRect.isNull {
+            FrameRulerSlot(rect: zoomRect, rotationDegrees: statusRotationDegrees) {
+                FrameZoomRuler(
+                    millimeters: pinchIsActive ? pinchFocalLength
+                                               : cameraViewModel.currentFocalLengthMM,
+                    enabled: canUseZoomControls,
+                    revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
+                    begin: { cameraViewModel.beginSlowZoom($0) },
+                    end: cameraViewModel.endSlowZoom(revision:),
+                    step: cameraViewModel.stepDisplayZoom,
+                    availableFocalRange: cameraViewModel.focalLengthRulerRange,
+                    visualWidth: FrameRulerPlacementGeometry.rulerVisualThickness)
+            }
+        }
+        let focusRect = FrameRulerPlacementGeometry.rect(
+            inFrame: bounds, edge: .right,
+            thickness: FrameRulerPlacementGeometry.focusThickness,
+            orientationDegrees: statusRotationDegrees)
+        if !focusRect.isNull {
+            FrameRulerSlot(rect: focusRect, rotationDegrees: statusRotationDegrees) {
+                VStack(spacing: 4) {
+                    ManualFocusRuler(lensPosition: $manualFocusPosition,
+                                     enabled: canUseManualFocusRuler && isManualFocus,
+                                     stops: $focusStops,
+                                     visualWidth: FrameRulerPlacementGeometry.rulerVisualThickness)
+                        .frame(maxHeight: .infinity)
+                    InlineManualControls(
+                        manualFocus: manualFocusBinding,
+                        apertureReadout: apertureReadout,
+                        apertureStops: cameraViewModel.apertureStops,
+                        selectedAperture: cameraViewModel.selectedLensAperture,
+                        canChangeAperture: canChangeAperture,
+                        setAperture: { cameraViewModel.setLensAperture($0) },
+                        stabilization: cameraViewModel.recordingStabilization,
+                        canChangeStabilization: cameraViewModel.canSetRecordingStabilization,
+                        selectStabilization: { cameraViewModel.setRecordingStabilization($0) })
+                        .frame(width: 44, height: 132)
+                }
+            }
+        }
+    }
+
     /// The panel's AF/MF key and the Settings switch share one state, and every
     /// change runs through the same flow so the hardware lock and the readback
     /// can never disagree.
@@ -502,6 +653,10 @@ struct ContentView: View {
             cameraViewModel.session.resetAutoFocus()
             return
         }
+        // Enabling manual focus is also a discovery path for the in-frame
+        // block: reveal the master so the newly locked focus has a rail. It
+        // never forces aperture or stabilization on.
+        if !legacyManualControlsEnabled { showInlineManualControls = true }
         guard scenePhase == .active, !cameraViewModel.isSwitchingCameraLens else { return }
         let request = focusReadGeneration
         cameraViewModel.session.readManualFocusSnapshot(includeCurrentPosition: true) { snapshot in
@@ -632,15 +787,26 @@ struct ContentView: View {
 
     private var manualButton: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.2)) { showManualControls.toggle() }
+            if legacyManualControlsEnabled {
+                // Legacy debug path: the manual key reopens the old pop-up.
+                withAnimation(.easeInOut(duration: 0.2)) { showManualControls.toggle() }
+            } else {
+                // Default path: the manual key toggles every in-frame control
+                // — both rulers and the inline button stack — together.
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    setInlineManualControlsShown(!showInlineManualControls)
+                }
+            }
         } label: {
             Image(systemName: "slider.vertical.3")
                 .font(NitrateTypography.font(.title3))
-                .foregroundStyle(showManualControls ? .black : .white)
+                .foregroundStyle(manualControlsActive ? .black : .white)
                 .cameraUpright()
                 .frame(width: 44, height: 44)
         }
-        .buttonStyle(CameraRoundButtonStyle(faceColor: showManualControls ? .yellow : nil))
+        .buttonStyle(CameraRoundButtonStyle(faceColor: manualControlsActive ? .orange : nil))
+        .accessibilityLabel("Manual controls")
+        .accessibilityValue(manualControlsActive ? "Expanded" : "Collapsed")
 
     }
 

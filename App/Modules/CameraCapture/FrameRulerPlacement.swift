@@ -14,7 +14,18 @@ import SwiftUI
 enum FrameRulerPlacementGeometry {
     static let focusThickness: CGFloat = 44
     static let zoomThickness: CGFloat = 44
-    static let margin: CGFloat = 8
+
+    /// No gap between the ruler's slot and the live preview frame: the rail
+    /// sits flush against the frame's physical side edge, so the 44pt touch
+    /// footprint still starts exactly at the preview boundary.
+    static let margin: CGFloat = 0
+
+    /// The visible rail the in-frame rulers draw: 80% of the 44pt touch
+    /// footprint (35.2pt). The narrower rail is inset inside the 44pt slot —
+    /// flush to the frame edge, with the remainder on the frame-interior side —
+    /// so the drawn rail is slimmer while the tap target keeps its 44pt width.
+    static let visualFraction: CGFloat = 0.8
+    static let rulerVisualThickness: CGFloat = focusThickness * visualFraction
 
     /// The side edge of the physical frame the ruler hugs.
     enum PhysicalEdge: Equatable {
@@ -48,8 +59,9 @@ enum FrameRulerPlacementGeometry {
     }
 
     /// The largest rectangle of the requested thickness that sits along the
-    /// physical `edge` of `frame`, inset by `margin` on every side. Returns
-    /// `.null` for a degenerate frame so the caller can skip the ruler.
+    /// physical `edge` of `frame`, inset by `margin` on every side. `margin`
+    /// defaults to zero so the slot runs flush to the live preview frame edge.
+    /// Returns `.null` for a degenerate frame so the caller can skip the ruler.
     static func rect(inFrame originalFrame: CGRect, edge: PhysicalEdge, thickness: CGFloat,
                      orientationDegrees: Double, margin: CGFloat = margin) -> CGRect {
         guard originalFrame.width.isFinite, originalFrame.height.isFinite,

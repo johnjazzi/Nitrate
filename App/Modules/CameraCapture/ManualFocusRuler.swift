@@ -165,12 +165,19 @@ struct ManualFocusRuler: View {
     /// Session-only stops. The default keeps every existing call site and the
     /// render harness valid; the owning screen passes its own `@State` array.
     @Binding var stops: [ManualFocusStop]
+    /// The width of the drawn rail. The ruler always reserves the full 44pt
+    /// touch column; the visible rail is inset inside it, flush to the frame's
+    /// physical right edge, so the drawn rail can be narrowed without shrinking
+    /// the tap target. The 44pt default preserves the existing fixtures.
+    var visualWidth: CGFloat = 44
 
     init(lensPosition: Binding<Double>, enabled: Bool,
-         stops: Binding<[ManualFocusStop]> = .constant([])) {
+         stops: Binding<[ManualFocusStop]> = .constant([]),
+         visualWidth: CGFloat = 44) {
         self._lensPosition = lensPosition
         self.enabled = enabled
         self._stops = stops
+        self.visualWidth = visualWidth
     }
 
     /// The stop being edited by the current hold, or nil for an ordinary touch.
@@ -191,36 +198,21 @@ struct ManualFocusRuler: View {
         VStack(spacing: 4) {
             Text("MF")
                 .font(NitrateTypography.font(size: 11))
-                .foregroundStyle(.yellow)
+                .foregroundStyle(enabled ? Color.yellow : Color.gray)
+                .frame(width: visualWidth)
+                .frame(maxWidth: .infinity, alignment: .trailing)
             GeometryReader { geometry in
                 let length = Double(geometry.size.height)
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(.black.opacity(0.45))
-                    Canvas { context, size in
-                        for tick in stride(from: 0.0, through: 1.0, by: 0.1) {
-                            let y = size.height * tick
-                            var path = Path()
-                            path.move(to: CGPoint(x: 0, y: y))
-                            path.addLine(to: CGPoint(x: 6, y: y))
-                            context.stroke(path, with: .color(.white.opacity(0.4)), lineWidth: 1)
-                        }
-                        for tick in stride(from: 0.0, through: 1.0, by: 0.5) {
-                            let y = size.height * tick
-                            var path = Path()
-                            path.move(to: CGPoint(x: size.width - 6, y: y))
-                            path.addLine(to: CGPoint(x: size.width, y: y))
-                            context.stroke(path, with: .color(.white.opacity(0.4)), lineWidth: 1)
-                        }
-                    }
-                    deletionBands(in: geometry.size)
-                    stopMarkers(in: geometry.size)
-                    Rectangle()
-                        .fill(.yellow)
-                        .frame(width: geometry.size.width, height: 2)
-                        .position(x: geometry.size.width / 2,
-                                  y: ManualFocusRulerScale.indexFraction(lensPosition: lensPosition)
-                                      * geometry.size.height)
+                // The drawn rail is narrower than the touch column and sits
+                // inside it flush to the frame's physical right edge, so the
+                // 44pt tap target is preserved while the visible rail is
+                // slimmer. `Color.clear` fills the remainder of the column so a
+                // touch anywhere in the hit container is accepted.
+                let railSize = CGSize(width: visualWidth, height: geometry.size.height)
+                ZStack(alignment: .trailing) {
+                    rail(size: railSize)
+                        .frame(width: railSize.width, height: railSize.height)
+                    Color.clear
                 }
                 .contentShape(Rectangle())
                 .gesture(stopEditGesture(length: length))
@@ -255,6 +247,41 @@ struct ManualFocusRuler: View {
     }
 
     // MARK: - Marker rendering
+
+    /// The visibly drawn rail: the rounded background, its ticks, the release
+    /// bands, the session-stop markers and the live index. Authored at
+    /// `visualWidth` so it can be inset inside the wider 44pt hit column. A
+    /// disabled rail (autofocus selected) draws its index and label grey.
+    private func rail(size: CGSize) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.black.opacity(0.45))
+            Canvas { context, canvasSize in
+                for tick in stride(from: 0.0, through: 1.0, by: 0.1) {
+                    let y = canvasSize.height * tick
+                    var path = Path()
+                    path.move(to: CGPoint(x: 0, y: y))
+                    path.addLine(to: CGPoint(x: 6, y: y))
+                    context.stroke(path, with: .color(.white.opacity(0.4)), lineWidth: 1)
+                }
+                for tick in stride(from: 0.0, through: 1.0, by: 0.5) {
+                    let y = canvasSize.height * tick
+                    var path = Path()
+                    path.move(to: CGPoint(x: canvasSize.width - 6, y: y))
+                    path.addLine(to: CGPoint(x: canvasSize.width, y: y))
+                    context.stroke(path, with: .color(.white.opacity(0.4)), lineWidth: 1)
+                }
+            }
+            deletionBands(in: size)
+            stopMarkers(in: size)
+            Rectangle()
+                .fill(enabled ? Color.yellow : Color.gray)
+                .frame(width: size.width, height: 2)
+                .position(x: size.width / 2,
+                          y: ManualFocusRulerScale.indexFraction(lensPosition: lensPosition)
+                              * size.height)
+        }
+    }
 
     /// A thin orange line and its one-based label per stop, offset from the
     /// yellow index so a marker never hides the live focus line.

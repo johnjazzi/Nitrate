@@ -9,6 +9,11 @@ struct PurchaseView: View {
     /// falls back to a constant `false`, so nothing here writes a preference.
     var manualFocusEnabled: Binding<Bool> = .constant(false)
     var zoomControlsEnabled: Binding<Bool> = .constant(false)
+    /// Debug-only switch that reopens the legacy manual-controls pop-up panel.
+    /// Writes the user-owned feature flag the camera screen resolves; a Release
+    /// build resolves that flag false whatever this holds, so the constant
+    /// default keeps previews and shipping builds inert.
+    var legacyManualControlsEnabled: Binding<Bool> = .constant(false)
     @State private var pricingExpanded = false
     @State private var legalExpanded = false
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
@@ -477,8 +482,13 @@ struct PurchaseView: View {
                 .font(NitrateTypography.font(.headline))
             Toggle("Show DEBUG button", isOn: $showsDebugButton)
             Toggle("Show FAULT test button", isOn: $showsFaultButton)
+            Toggle("Open legacy manual panel", isOn: legacyManualControlsEnabled)
             Text("The FAULT button previews the recording-failure overlay. "
                  + "Same switches as the debug sheet.")
+                .font(NitrateTypography.font(.caption))
+                .foregroundStyle(.secondary)
+            Text("Reopens the old manual-controls pop-up instead of the in-frame controls. "
+                 + "Debug-only: Release builds always use the in-frame controls.")
                 .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
         }
