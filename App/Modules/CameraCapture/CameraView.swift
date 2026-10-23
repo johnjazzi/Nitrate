@@ -8,6 +8,7 @@ struct CameraView: View {
     @State var viewModel: CameraViewModel
     @State private var previewLayer: AVCaptureVideoPreviewLayer?
     @AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.neutral.rawValue
+    @AppStorage(MeteringIndicatorPreferences.showsIndicatorKey) private var showsMeteringIndicator = MeteringIndicatorPreferences.defaultShowsIndicator
     var videoGravity: AVLayerVideoGravity = .resizeAspectFill
     var selectedStockLUTName: String? = nil
 
@@ -18,12 +19,13 @@ struct CameraView: View {
                                    transitioning: viewModel.isSwitchingCameraLens,
                                    lens: viewModel.activeLens, selectedStockLUTName: selectedStockLUTName)
             .overlay {
-                // Where exposure is metered. Hidden during a take so it never
-                // draws over the recording.
-                if !viewModel.isRecording {
-                    MeteringBoxView(point: viewModel.meteringPoint,
-                                    isManual: viewModel.isManualExposure)
-                }
+                // Where exposure is metered. The Settings preference can hide it,
+                // and a take hides it so it never draws over the recording; either
+                // way it draws at zero alpha rather than being removed, so the tap
+                // handler below is untouched.
+                MeteringBoxView(point: viewModel.meteringPoint,
+                                isManual: viewModel.isManualExposure,
+                                isVisible: showsMeteringIndicator && !viewModel.isRecording)
             }
             .onTapGesture { location in
                 guard let layer = previewLayer else { return }

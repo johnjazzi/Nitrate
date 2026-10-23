@@ -16,6 +16,7 @@ struct PurchaseView: View {
     @AppStorage(DeliverySettings.saveOriginalLogKey) private var saveOriginalLog = false
     @AppStorage(DeliverySettings.renderQualityKey) private var renderQuality = RenderExportQuality.high.rawValue
     @AppStorage(RecordButtonAppearance.preferenceKey) private var recordButtonAppearance = RecordButtonAppearance.classic.rawValue
+    @AppStorage(MeteringIndicatorPreferences.showsIndicatorKey) private var showsMeteringIndicator = MeteringIndicatorPreferences.defaultShowsIndicator
 #if DEBUG
     @AppStorage(DebugControlPreferences.showsDebugButtonKey) private var showsDebugButton = true
     @AppStorage(DebugControlPreferences.showsFaultButtonKey) private var showsFaultButton = true
@@ -345,6 +346,12 @@ struct PurchaseView: View {
                               accessibilityTitle: "Zoom controls",
                               help: "Keeps the focal length ruler on screen and adds hold arrows for a controlled zoom.",
                               isOn: zoomControlsEnabled)
+
+            SettingsToggleRow(icon: "circle.dashed",
+                              title: "Metering Indicator",
+                              accessibilityTitle: "Metering indicator",
+                              help: "Shows a circle at the selected metering point.",
+                              isOn: $showsMeteringIndicator)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
