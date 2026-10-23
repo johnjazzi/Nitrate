@@ -15,7 +15,7 @@ enum RecordingTimeLCDFocus: Equatable, Sendable {
     }
 }
 
-/// White information on dark green; the entire face is one queue control.
+/// White information on the neutral control surface; the entire face opens the queue.
 ///
 /// The headline is the highest-priority state on the bar: an active take owns
 /// it as `RECORDING`, but the queue count, the storage warning and the tap
@@ -52,21 +52,7 @@ struct RecordingTimeLCD: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 6)
-        .background {
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(Color(red: 0.055, green: 0.14, blue: 0.105))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [.black.opacity(0.8), .white.opacity(0.25)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 1
-                        )
-                }
-        }
+        .modifier(CameraRaisedSurface(cornerRadius: 5))
     }
 
     /// Recording owns this line. The queue count stays beside it so the queue is

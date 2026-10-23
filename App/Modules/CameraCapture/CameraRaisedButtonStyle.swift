@@ -90,11 +90,12 @@ struct CameraRaisedSurface: ViewModifier {
 /// so it frames the group without hiding the preview behind it.
 struct CameraControlWell: ViewModifier {
     var cornerRadius: CGFloat = 16
+    var horizontalPadding: CGFloat = 6
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
-            .padding(.horizontal, 6)
+            .padding(.horizontal, horizontalPadding)
             .padding(.vertical, 5)
             .background {
                 shape
@@ -129,7 +130,7 @@ struct CameraControlWell: ViewModifier {
 
 extension View {
     /// Wrap a cluster of controls in the translucent raised plate.
-    func cameraControlWell(cornerRadius: CGFloat = 16) -> some View {
-        modifier(CameraControlWell(cornerRadius: cornerRadius))
+    func cameraControlWell(cornerRadius: CGFloat = 16, horizontalPadding: CGFloat = 6) -> some View {
+        modifier(CameraControlWell(cornerRadius: cornerRadius, horizontalPadding: horizontalPadding))
     }
 }

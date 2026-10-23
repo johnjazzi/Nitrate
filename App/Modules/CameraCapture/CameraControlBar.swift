@@ -69,7 +69,7 @@ struct CameraControlBar: View {
                                  rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
             }
         }
-        .cameraControlWell(cornerRadius: 12)
+        .cameraControlWell(cornerRadius: 12, horizontalPadding: 4)
         .overlay {
             StockSelectorHintOutline(isVisible: showsStockHint)
                 .allowsHitTesting(false)
@@ -117,8 +117,8 @@ struct CameraControlBar: View {
 
     // MARK: - Exposure control (dual mode)
 
-    /// The live meter and setting share the existing 92pt column: 28pt meter,
-    /// 56pt ruler, and two 4pt rims. The footprint stays clear of centred REC
+    /// The live meter and setting share the compact 84pt column: 28pt meter,
+    /// 48pt ruler, and two 4pt rims. The footprint stays clear of centred REC
     /// and the left queue/remaining-time column even on a 320pt-wide phone.
     private var exposureControl: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -129,7 +129,7 @@ struct CameraControlBar: View {
                 isAvailable: cameraViewModel.hasExposureMeter
             )
             exposureSetting
-                .frame(width: 56)
+                .frame(width: 48)
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 6)

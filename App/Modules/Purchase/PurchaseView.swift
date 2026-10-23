@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// AD-1: Purchase/settings screen — 7-day trial, $5/year, $10 lifetime.
+/// AD-1: Purchase/settings screen — 7-day trial, $4.99/year, $9.99 lifetime.
 struct PurchaseView: View {
     @State var viewModel: PurchaseViewModel
     @Binding var showFramedPreview: Bool
@@ -143,10 +143,10 @@ struct PurchaseView: View {
                 .font(.headline)
             priceRow(title: "Yearly",
                      detail: "Film rendering, renews yearly",
-                     price: preview.yearlyPrice)
+                     price: preview.yearlyPrice, billing: "per year")
             priceRow(title: "Lifetime",
                      detail: "One-time purchase, film rendering forever",
-                     price: preview.lifetimePrice)
+                     price: preview.lifetimePrice, billing: "one time")
             Text(preview.footnote)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -159,7 +159,7 @@ struct PurchaseView: View {
         .accessibilityIdentifier("launch-pricing-preview")
     }
 
-    private func priceRow(title: String, detail: String, price: String) -> some View {
+    private func priceRow(title: String, detail: String, price: String, billing: String) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -169,12 +169,19 @@ struct PurchaseView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Text(price)
-                .font(.body.bold())
+            priceAmount(price, billing: billing)
         }
         .padding()
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func priceAmount(_ amount: String, billing: String) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Text(amount).font(.body.bold())
+            Text(billing).font(.caption).foregroundStyle(.secondary)
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var purchaseOptionsSection: some View {
@@ -199,8 +206,8 @@ struct PurchaseView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Text(viewModel.subscriptionPrice ?? PurchasePriceText.unavailable)
-                        .font(.body.bold())
+                    priceAmount(viewModel.subscriptionPrice ?? PurchasePriceText.unavailable,
+                                billing: "per year")
                 }
                 .padding()
                 .background(.regularMaterial)
@@ -220,8 +227,8 @@ struct PurchaseView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Text(viewModel.lifetimePrice ?? PurchasePriceText.unavailable)
-                        .font(.body.bold())
+                    priceAmount(viewModel.lifetimePrice ?? PurchasePriceText.unavailable,
+                                billing: "one time")
                 }
                 .padding()
                 .background(.regularMaterial)

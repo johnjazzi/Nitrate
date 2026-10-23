@@ -44,7 +44,7 @@ struct CameraFrameControlAlignmentTests {
 
             // Enough room: the inset is the viewfinder's own edge inset, and it
             // sits inside the immersive 16pt margin — the move is inward.
-            #expect(inset == preview.minX)
+            #expect(inset == preview.minX + 4)
             #expect(inset > CameraControlGeometry.defaultHorizontalInset)
 
             let content = canvas.width - 2 * inset
@@ -52,10 +52,10 @@ struct CameraFrameControlAlignmentTests {
             let geometry = CameraControlGeometry(width: content, height: barHeight)
 
             // Outer LCD/stock edge lands on the preview's leading side edge.
-            #expect(abs(inset + geometry.lcd.minX - preview.minX) < 0.001)
-            #expect(abs(inset + geometry.stock.minX - preview.minX) < 0.001)
+            #expect(abs(inset + geometry.lcd.minX - preview.minX - 4) < 0.001)
+            #expect(abs(inset + geometry.stock.minX - preview.minX - 4) < 0.001)
             // Outer exposure edge lands on the preview's trailing side edge.
-            #expect(abs((canvas.width - inset) - preview.maxX) < 0.001)
+            #expect(abs((canvas.width - inset) - preview.maxX + 4) < 0.001)
         }
     }
 

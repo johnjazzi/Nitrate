@@ -26,8 +26,8 @@ enum LaunchPricingPresentation {
     /// The explicit label required for the free preview.
     static let headline = "US launch pricing"
     /// The exact, owner-approved US amounts. Rendering is the paid feature.
-    static let yearlyPrice = "US $5.00/year"
-    static let lifetimePrice = "US $10.00 one time"
+    static let yearlyPrice = "US $4.99"
+    static let lifetimePrice = "US $9.99"
 
     /// True only for a channel that is unrestricted without a purchase: normal
     /// Debug, a local development install, and the TestFlight beta. Production

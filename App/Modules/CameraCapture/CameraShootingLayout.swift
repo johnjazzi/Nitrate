@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Coordinates are inside the bar's current horizontal margins, which match the
-/// framed viewfinder's side edges in Frame Mode and the immersive 16pt margin
+/// framed viewfinder's side edges plus 4pt of padding in Frame Mode and the immersive 16pt margin
 /// otherwise. Exposure owns the height; neither its ruler nor its type is
 /// compressed to fit the LCD.
 ///
@@ -9,13 +9,14 @@ import SwiftUI
 /// read at a glance. The stock selector and the print gauge share the recessed
 /// well that fills the lower third.
 struct CameraControlGeometry {
-    static let leftWidth: CGFloat = 88
-    static let exposureWidth: CGFloat = 92
+    static let leftWidth: CGFloat = 84
+    static let exposureWidth: CGFloat = 84
     static let recordSize: CGFloat = 84
     static let columnGap: CGFloat = 6
 
     /// The immersive shooting bar's established horizontal margin.
     static let defaultHorizontalInset: CGFloat = 16
+    static let selectorEdgePadding: CGFloat = 4
 
     /// The narrowest bar content that keeps the left column, the centred REC and
     /// the exposure column clear of each other: the wider side column twice, REC,
@@ -36,7 +37,7 @@ struct CameraControlGeometry {
     static func controlBarHorizontalInset(previewEdgeInset: CGFloat, canvasWidth: CGFloat) -> CGFloat {
         guard canvasWidth > 0, previewEdgeInset > 0 else { return defaultHorizontalInset }
         let widest = max(0, (canvasWidth - minimumRowWidth) / 2)
-        return min(previewEdgeInset, widest)
+        return min(previewEdgeInset + selectorEdgePadding, widest)
     }
 
     let lcd: CGRect
