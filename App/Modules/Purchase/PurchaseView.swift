@@ -273,50 +273,60 @@ struct PurchaseView: View {
             Text("Preview")
                 .font(.headline)
 
-            SettingsControlRow(title: "Preview Color",
+            SettingsControlRow(icon: "camera.filters",
+                               title: "Preview Color",
                                accessibilityTitle: "Preview color",
                                help: "Monitor only, never recorded — film effects are applied after capture. "
                                    + "Recording stays Apple Log 2. If a preview LUT is unavailable, the "
                                    + "monitor shows Log with a warning.") {
-                Picker("Preview Color", selection: Binding(
-                    get: { CameraPreviewMode.resolved(previewMode) },
-                    set: { previewMode = $0.rawValue })) {
-                    Text("Neutral").tag(CameraPreviewMode.neutral)
-                    Text("Stock LUT").tag(CameraPreviewMode.stock)
-                    Text("Log").tag(CameraPreviewMode.log)
+                SettingsSelectionRow(title: "Preview Color",
+                                     valueText: previewModeTitle(CameraPreviewMode.resolved(previewMode))) {
+                    Picker("Preview Color", selection: Binding(
+                        get: { CameraPreviewMode.resolved(previewMode) },
+                        set: { previewMode = $0.rawValue })) {
+                        Text("Neutral").tag(CameraPreviewMode.neutral)
+                        Text("Stock LUT").tag(CameraPreviewMode.stock)
+                        Text("Log").tag(CameraPreviewMode.log)
+                    }
                 }
-                .pickerStyle(.segmented)
             }
 
-            SettingsControlRow(title: "Recording Indicator",
+            SettingsControlRow(icon: "record.circle",
+                               title: "Recording Indicator",
                                accessibilityTitle: "Recording indicator",
                                help: "Top status lamp and elapsed timer only. WAIT: capture not yet confirmed. "
                                    + "REC: capture confirmed. STOP: timer frozen while finalizing.") {
-                Picker("Recording Indicator", selection: Binding(
-                    get: { RecordingIndicatorStyle.resolved(recordingIndicatorStyle) },
-                    set: { recordingIndicatorStyle = $0.rawValue })) {
-                    ForEach(RecordingIndicatorStyle.allCases) { style in
-                        Text(style.title).tag(style)
+                SettingsSelectionRow(title: "Recording Indicator",
+                                     valueText: RecordingIndicatorStyle.resolved(recordingIndicatorStyle).title) {
+                    Picker("Recording Indicator", selection: Binding(
+                        get: { RecordingIndicatorStyle.resolved(recordingIndicatorStyle) },
+                        set: { recordingIndicatorStyle = $0.rawValue })) {
+                        ForEach(RecordingIndicatorStyle.allCases) { style in
+                            Text(style.title).tag(style)
+                        }
                     }
                 }
-                .pickerStyle(.segmented)
             }
 
-            SettingsControlRow(title: "Record button",
+            SettingsControlRow(icon: "button.programmable",
+                               title: "Record button",
                                accessibilityTitle: "Record button appearance",
                                help: "Classic is raised. Modern is flat with a red outline. Both use the same "
                                    + "recording controls.") {
-                Picker("Record button", selection: Binding(
-                    get: { RecordButtonAppearance.resolved(recordButtonAppearance) },
-                    set: { recordButtonAppearance = $0.rawValue })) {
-                    ForEach(RecordButtonAppearance.allCases) { appearance in
-                        Text(appearance.title).tag(appearance)
+                SettingsSelectionRow(title: "Record button",
+                                     valueText: RecordButtonAppearance.resolved(recordButtonAppearance).title) {
+                    Picker("Record button", selection: Binding(
+                        get: { RecordButtonAppearance.resolved(recordButtonAppearance) },
+                        set: { recordButtonAppearance = $0.rawValue })) {
+                        ForEach(RecordButtonAppearance.allCases) { appearance in
+                            Text(appearance.title).tag(appearance)
+                        }
                     }
                 }
-                .pickerStyle(.segmented)
             }
 
-            SettingsToggleRow(title: "Frame Mode",
+            SettingsToggleRow(icon: "viewfinder",
+                              title: "Frame Mode",
                               accessibilityTitle: "Frame Mode",
                               help: "Viewfinder-style preview with visible controls.",
                               isOn: $showFramedPreview)
@@ -327,26 +337,41 @@ struct PurchaseView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
+    /// Display name for the preview monitor mode. `CameraPreviewMode` carries no
+    /// title (the display text lives in the picker), so the chip resolves it here
+    /// rather than editing the camera-capture enum.
+    private func previewModeTitle(_ mode: CameraPreviewMode) -> String {
+        switch mode {
+        case .neutral: "Neutral"
+        case .stock: "Stock LUT"
+        case .log: "Log"
+        }
+    }
+
     private var exportSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Export").font(.headline)
-            SettingsToggleRow(title: "Save Original Log to Photos",
+            SettingsToggleRow(icon: "square.and.arrow.down",
+                              title: "Save Original Log to Photos",
                               accessibilityTitle: "Save Original Log",
                               help: "Saves the ungraded original recording alongside the rendered video; uses "
                                   + "additional storage. Not sensor RAW.",
                               isOn: $saveOriginalLog)
-            SettingsControlRow(title: "Rendered File Size",
+            SettingsControlRow(icon: "arrow.up.arrow.down.circle",
+                               title: "Rendered File Size",
                                accessibilityTitle: "Rendered file size",
                                help: "High: 60 Mbps. Smaller: 30 Mbps — about half the video bitrate, not an "
                                    + "exact file-size cut; may soften grain. Resolution and frame rate are "
                                    + "unchanged. Changes apply only to newly queued clips, not existing jobs "
                                    + "or retries.") {
-                Picker("Rendered File Size", selection: exportQualityBinding) {
-                    ForEach(RenderExportQuality.allCases) { quality in
-                        Text(quality.title).tag(quality)
+                SettingsSelectionRow(title: "Rendered File Size",
+                                     valueText: exportQualityBinding.wrappedValue.title) {
+                    Picker("Rendered File Size", selection: exportQualityBinding) {
+                        ForEach(RenderExportQuality.allCases) { quality in
+                            Text(quality.title).tag(quality)
+                        }
                     }
                 }
-                .pickerStyle(.segmented)
             }
         }
         .padding()
@@ -486,11 +511,12 @@ private struct SettingsInfoButton: View {
     }
 }
 
-/// A short label with a trailing info button and a control beneath it. The
-/// explanation is revealed inline only below the control, and only while this
-/// row's own help state is expanded — each row owns its state, so expanding one
-/// row leaves every other row collapsed.
+/// A settings row: a leading icon and label, a trailing control, then a trailing
+/// info button. The explanation is revealed inline only below the control, and
+/// only while this row's own help state is expanded — each row owns its state,
+/// so expanding one row leaves every other row collapsed.
 private struct SettingsControlRow<Control: View>: View {
+    let icon: String
     let title: String
     let accessibilityTitle: String
     let help: String
@@ -501,17 +527,16 @@ private struct SettingsControlRow<Control: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(title)
+            HStack(spacing: 12) {
+                SettingsRowLabel(icon: icon, title: title)
                 Spacer(minLength: 8)
+                control()
+                    .labelsHidden()
                 SettingsInfoButton(subject: accessibilityTitle,
                                    isExpanded: disclosure.isExpanded,
                                    action: toggleHelp)
             }
             .frame(minHeight: 44)
-
-            control()
-                .labelsHidden()
 
             if disclosure.isExpanded {
                 Text(help)
@@ -527,9 +552,11 @@ private struct SettingsControlRow<Control: View>: View {
     }
 }
 
-/// A short label with an inline switch and a sibling info button — the button is
-/// never nested inside the toggle's label. Its help is revealed below the row.
+/// A settings row for a binary setting: a leading icon and label, the compact
+/// custom switch, then a sibling info button — the button is never nested inside
+/// the toggle's label. Its help is revealed below the row.
 private struct SettingsToggleRow: View {
+    let icon: String
     let title: String
     let accessibilityTitle: String
     let help: String
@@ -540,11 +567,12 @@ private struct SettingsToggleRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(title)
+            HStack(spacing: 12) {
+                SettingsRowLabel(icon: icon, title: title)
                 Spacer(minLength: 8)
                 Toggle(title, isOn: $isOn)
                     .labelsHidden()
+                    .toggleStyle(SettingsToggleStyle())
                 SettingsInfoButton(subject: accessibilityTitle,
                                    isExpanded: disclosure.isExpanded,
                                    action: toggleHelp)

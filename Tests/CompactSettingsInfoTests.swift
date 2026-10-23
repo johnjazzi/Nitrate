@@ -1,23 +1,25 @@
 import Foundation
 import Testing
 
-/// Source-contract cover for the compact settings rows in `PurchaseView`.
+/// Source-contract cover for the compact settings rows in `PurchaseView` and the
+/// standalone controls they use (`SettingsSelectionRow.swift`).
 ///
 /// `PurchaseView` is SwiftUI and is deliberately not part of this macOS test
-/// target's compiled sources, so these tests read the source through
+/// target's compiled sources, so these tests read the sources through
 /// `TestRepository` and assert the **written structure and copy** only: the
-/// trailing info button, the per-row collapsed-by-default disclosure, the
-/// segmented selectors and the preserved qualifiers.
+/// leading icon and label, the trailing compact selected-value buttons, the
+/// compact switch style, the per-row collapsed disclosure and the preserved
+/// qualifiers.
 ///
 /// They are **structural only**. They do not exercise the live gestures,
 /// VoiceOver output, the Reduce Motion branch, the animations or the rendered
 /// layout — those still need a simulator/device pass.
 @Suite struct CompactSettingsInfoTests {
     private static let settingsPath = "App/Modules/Purchase/PurchaseView.swift"
+    private static let controlsPath = "App/Modules/Purchase/SettingsSelectionRow.swift"
 
-    private func source() throws -> String {
-        try String(contentsOf: TestRepository.root.appendingPathComponent(Self.settingsPath),
-                   encoding: .utf8)
+    private func source(_ path: String = Self.settingsPath) throws -> String {
+        try String(contentsOf: TestRepository.root.appendingPathComponent(path), encoding: .utf8)
     }
 
     @Test func everyCompactRowCarriesATrailingInfoButton() throws {
@@ -41,6 +43,22 @@ import Testing
         // Each row container owns its own instance, so expanding one row cannot
         // change another row's default.
         #expect(source.components(separatedBy: "@State private var disclosure = SettingsRowHelpState()").count - 1 == 2)
+    }
+
+    @Test func rowsLeadWithAnIconAndLabel() throws {
+        let source = try source()
+        let controls = try source(Self.controlsPath)
+        #expect(controls.contains("struct SettingsRowLabel"))
+        #expect(controls.contains(#"Image(systemName: icon)"#))
+        #expect(controls.contains(".accessibilityHidden(true)"),
+                "the leading icon is decorative; the label carries the name")
+        // Both row containers lead with the icon-and-label view.
+        #expect(source.components(separatedBy: "SettingsRowLabel(icon: icon, title: title)").count - 1 == 2)
+        // The six primary rows each pass a distinct leading symbol.
+        for icon in ["camera.filters", "record.circle", "button.programmable",
+                     "viewfinder", "square.and.arrow.down", "arrow.up.arrow.down.circle"] {
+            #expect(source.contains("icon: \"\(icon)\""), "the \(icon) row must lead with its icon")
+        }
     }
 
     @Test func helpIsRevealedBelowTheControlOnlyWhileExpanded() throws {
@@ -76,24 +94,60 @@ import Testing
         }
     }
 
-    @Test func allFourExclusiveSelectorsUseSegmentedPickers() throws {
+    @Test func exclusiveChoicesUseTheCompactSelectedValueButtonNotASegmentedStrip() throws {
         let source = try source()
-        #expect(source.components(separatedBy: ".pickerStyle(.segmented)").count - 1 == 4,
-                "the four short exclusive choices must be segmented")
-        for label in [#"Picker("Preview Color""#, #"Picker("Recording Indicator""#,
-                      #"Picker("Record button""#, #"Picker("Rendered File Size""#] {
-            #expect(source.contains(label), "\(label) must keep its semantic label")
+        let controls = try source(Self.controlsPath)
+        #expect(!source.contains(".pickerStyle(.segmented)"),
+                "the enumerated choices must not use a segmented strip")
+        #expect(controls.contains("struct SettingsSelectionRow"),
+                "the reusable selected-value control must exist")
+        #expect(controls.contains("struct SettingsValueLabel"))
+        #expect(controls.contains("Menu {"),
+                "the value button opens a menu of the choices")
+        #expect(controls.contains(#"Image(systemName: "chevron.down")"#),
+                "the value button is marked with a chevron")
+        // The four short exclusive choices each use the compact value button, and
+        // each keeps its semantic native picker at the call site (so the choices
+        // stay reachable and the selected one is checked).
+        #expect(source.components(separatedBy: "SettingsSelectionRow(title:").count - 1 == 4)
+        for title in ["Preview Color", "Recording Indicator", "Record button", "Rendered File Size"] {
+            #expect(source.contains("SettingsSelectionRow(title: \"\(title)\""),
+                    "\(title) must use the compact value button")
+            #expect(source.contains("Picker(\"\(title)\""),
+                    "\(title) must keep its native picker for the menu semantics")
         }
-        // The two binary settings keep native switches, not a segmented control.
+        // The two binary settings keep native switches, not a value button.
         #expect(source.components(separatedBy: "Toggle(title, isOn: $isOn)").count - 1 == 1)
         #expect(!source.contains(#"Toggle("Save Original Log to Photos""#))
         #expect(!source.contains("Toggle(isOn: $showFramedPreview)"))
     }
 
+    @Test func compactSwitchStylePreservesNativeToggleSemantics() throws {
+        let source = try source()
+        let controls = try source(Self.controlsPath)
+        #expect(controls.contains("struct SettingsToggleStyle"))
+        #expect(controls.contains(": ToggleStyle"))
+        #expect(controls.contains(".accessibilityRepresentation"),
+                "the custom face must restore the native switch role")
+        #expect(controls.contains("Toggle(isOn: configuration.$isOn)"),
+                "the switch keeps its native on/off binding and label")
+        #expect(controls.contains(".frame(minWidth: 44, minHeight: 44)"),
+                "the compact switch keeps a >=44pt hit target")
+        #expect(controls.contains("accessibilityReduceMotion"))
+        #expect(controls.contains(".animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isOn)"),
+                "Reduce Motion must stop the thumb movement")
+        // Grayscale inset language, no accent color.
+        #expect(controls.contains("SettingsControlChrome.rim"))
+        #expect(!controls.contains("orange") && !controls.contains("Orange"),
+                "the compact switch must stay grayscale, not take an accent")
+        // The toggle row applies the compact style exactly once.
+        #expect(source.components(separatedBy: ".toggleStyle(SettingsToggleStyle())").count - 1 == 1)
+    }
+
     @Test func switchRowsKeepTheInfoButtonOutsideTheToggleLabel() throws {
         let source = try source()
-        #expect(source.contains(#"SettingsToggleRow(title: "Frame Mode""#))
-        #expect(source.contains(#"SettingsToggleRow(title: "Save Original Log to Photos""#))
+        #expect(source.contains(#"SettingsToggleRow(icon: "viewfinder""#))
+        #expect(source.contains(#"SettingsToggleRow(icon: "square.and.arrow.down""#))
         let toggleRow = try #require(source.components(separatedBy: "private struct SettingsToggleRow").last)
         let toggle = try #require(toggleRow.range(of: "Toggle(title, isOn: $isOn)")?.lowerBound)
         let info = try #require(toggleRow.range(of: "SettingsInfoButton(subject: accessibilityTitle,")?.lowerBound)
@@ -150,7 +204,7 @@ import Testing
         #expect(source.contains("@AppStorage(RecordButtonAppearance.preferenceKey)"))
         #expect(source.contains("@AppStorage(DeliverySettings.saveOriginalLogKey) private var saveOriginalLog = false"))
         #expect(source.contains("@AppStorage(DeliverySettings.renderQualityKey) private var renderQuality = RenderExportQuality.high.rawValue"))
-        // The segmented Preview Color options keep their order and tags.
+        // The Preview Color choices keep their order and tags.
         let neutral = try #require(source.range(of: #"Text("Neutral").tag(CameraPreviewMode.neutral)"#)?.lowerBound)
         let stock = try #require(source.range(of: #"Text("Stock LUT").tag(CameraPreviewMode.stock)"#)?.lowerBound)
         let log = try #require(source.range(of: #"Text("Log").tag(CameraPreviewMode.log)"#)?.lowerBound)
