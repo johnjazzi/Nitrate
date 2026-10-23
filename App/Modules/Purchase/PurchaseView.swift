@@ -276,9 +276,8 @@ struct PurchaseView: View {
             SettingsControlRow(icon: "camera.filters",
                                title: "Preview Color",
                                accessibilityTitle: "Preview color",
-                               help: "Monitor only, never recorded — film effects are applied after capture. "
-                                   + "Recording stays Apple Log 2. If a preview LUT is unavailable, the "
-                                   + "monitor shows Log with a warning.") {
+                               help: "Recording uses Apple Log 2. Film effects are applied after recording. "
+                                   + "An unavailable preview look shows a warning and falls back to Log.") {
                 SettingsSelectionRow(title: "Preview Color",
                                      valueText: previewModeTitle(CameraPreviewMode.resolved(previewMode))) {
                     Picker("Preview Color", selection: Binding(
@@ -294,8 +293,8 @@ struct PurchaseView: View {
             SettingsControlRow(icon: "record.circle",
                                title: "Recording Indicator",
                                accessibilityTitle: "Recording indicator",
-                               help: "Top status lamp and elapsed timer only. WAIT: capture not yet confirmed. "
-                                   + "REC: capture confirmed. STOP: timer frozen while finalizing.") {
+                               help: "Sets the appearance of the status light and timer. "
+                                   + "The timer starts when recording is confirmed.") {
                 SettingsSelectionRow(title: "Recording Indicator",
                                      valueText: RecordingIndicatorStyle.resolved(recordingIndicatorStyle).title) {
                     Picker("Recording Indicator", selection: Binding(
@@ -311,8 +310,7 @@ struct PurchaseView: View {
             SettingsControlRow(icon: "button.programmable",
                                title: "Record button",
                                accessibilityTitle: "Record button appearance",
-                               help: "Classic is raised. Modern is flat with a red outline. Both use the same "
-                                   + "recording controls.") {
+                               help: "Choose a raised or flat record button.") {
                 SettingsSelectionRow(title: "Record button",
                                      valueText: RecordButtonAppearance.resolved(recordButtonAppearance).title) {
                     Picker("Record button", selection: Binding(
@@ -328,7 +326,7 @@ struct PurchaseView: View {
             SettingsToggleRow(icon: "viewfinder",
                               title: "Frame Mode",
                               accessibilityTitle: "Frame Mode",
-                              help: "Viewfinder-style preview with visible controls.",
+                              help: "Frames the preview with space for camera controls.",
                               isOn: $showFramedPreview)
         }
         .padding()
@@ -354,16 +352,14 @@ struct PurchaseView: View {
             SettingsToggleRow(icon: "square.and.arrow.down",
                               title: "Save Original Log to Photos",
                               accessibilityTitle: "Save Original Log",
-                              help: "Saves the ungraded original recording alongside the rendered video; uses "
-                                  + "additional storage. Not sensor RAW.",
+                              help: "Saves an additional, ungraded Apple Log 2 recording to Photos and uses more storage.",
                               isOn: $saveOriginalLog)
             SettingsControlRow(icon: "arrow.up.arrow.down.circle",
                                title: "Rendered File Size",
                                accessibilityTitle: "Rendered file size",
-                               help: "High: 60 Mbps. Smaller: 30 Mbps — about half the video bitrate, not an "
-                                   + "exact file-size cut; may soften grain. Resolution and frame rate are "
-                                   + "unchanged. Changes apply only to newly queued clips, not existing jobs "
-                                   + "or retries.") {
+                               help: "High uses 60 Mbps; Smaller uses 30 Mbps and can soften grain. "
+                                   + "Resolution and frame rate stay the same. "
+                                   + "Your choice applies to videos added to the queue afterward.") {
                 SettingsSelectionRow(title: "Rendered File Size",
                                      valueText: exportQualityBinding.wrappedValue.title) {
                     Picker("Rendered File Size", selection: exportQualityBinding) {
@@ -501,7 +497,7 @@ private struct SettingsInfoButton: View {
         Button(action: action) {
             Image(systemName: "info.circle")
                 .font(.body)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SettingsControlChrome.lightPurple)
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
         }

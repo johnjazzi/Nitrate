@@ -138,10 +138,10 @@ import Testing
         #expect(controls.contains("accessibilityReduceMotion"))
         #expect(controls.contains(".animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isOn)"),
                 "Reduce Motion must stop the thumb movement")
-        // Grayscale inset language, no accent color.
         #expect(controls.contains("SettingsControlChrome.rim"))
-        #expect(!controls.contains("orange") && !controls.contains("Orange"),
-                "the compact switch must stay grayscale, not take an accent")
+        #expect(controls.contains("isOn ? SettingsControlChrome.halationOrange"))
+        #expect(controls.contains(".foregroundStyle(SettingsControlChrome.lightPurple)"))
+        #expect(source.contains(".foregroundStyle(SettingsControlChrome.lightPurple)"))
         // The toggle row applies the compact style exactly once.
         #expect(source.components(separatedBy: ".toggleStyle(SettingsToggleStyle())").count - 1 == 1)
     }
@@ -158,30 +158,17 @@ import Testing
 
     @Test func helpKeepsTheQualifiersWhileTheLongParagraphsAreGone() throws {
         let source = try source()
-        for qualifier in ["Monitor only, never recorded",
-                          "Recording stays Apple Log 2",
-                          "If a preview LUT is unavailable, the",
-                          "monitor shows Log with a warning",
-                          "Top status lamp and elapsed timer only",
-                          "WAIT: capture not yet confirmed",
-                          "REC: capture confirmed",
-                          "STOP: timer frozen while finalizing",
-                          "Classic is raised",
-                          "Modern is flat with a red outline",
-                          "Viewfinder-style preview with visible controls",
-                          "Saves the ungraded original recording alongside the rendered video; uses",
-                          "additional storage. Not sensor RAW",
-                          "High: 60 Mbps",
-                          "30 Mbps",
-                          "may soften grain",
-                          "newly queued clips"] {
-            #expect(source.contains(qualifier), "\(qualifier) must stay reachable behind the info buttons")
+        for qualifier in ["Recording uses Apple Log 2", "Film effects are applied after recording",
+                          "falls back to Log", "timer starts when recording is confirmed",
+                          "Choose a raised or flat record button", "space for camera controls",
+                          "additional, ungraded Apple Log 2", "uses more storage",
+                          "60 Mbps", "30 Mbps", "can soften grain", "Resolution and frame rate stay the same",
+                          "videos added to the queue afterward"] {
+            #expect(source.contains(qualifier))
         }
-        for removed in ["Neutral is the default monitor",
-                        "roughly half the video bitrate",
-                        "Record-button appearance is configured separately"] {
-            #expect(!source.contains(removed),
-                    "the long inline paragraph \"\(removed)\" must move behind an info button")
+        for removed in ["Monitor only, never recorded", "Not sensor RAW", "WAIT: capture not yet confirmed",
+                        "exact file-size cut", "Both use the same", "Viewfinder-style"] {
+            #expect(!source.contains(removed))
         }
     }
 

@@ -12,6 +12,8 @@ enum SettingsControlChrome {
     static let wellRadius: CGFloat = 9
     static let thumbSide: CGFloat = 24
     static let thumbRadius: CGFloat = 5
+    static let halationOrange = Color(red: 0.95, green: 0.45, blue: 0.12)
+    static let lightPurple = Color(red: 0.78, green: 0.70, blue: 0.95)
 
     static let rim = LinearGradient(
         colors: [.black.opacity(0.70), .black.opacity(0.20), .white.opacity(0.55)],
@@ -58,7 +60,7 @@ struct SettingsValueLabel: View {
             Image(systemName: "chevron.down")
                 .font(.caption2.weight(.semibold))
         }
-        .foregroundStyle(.secondary)
+        .foregroundStyle(SettingsControlChrome.lightPurple)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background {
@@ -91,6 +93,7 @@ struct SettingsSelectionRow<Choices: View>: View {
         } label: {
             SettingsValueLabel(valueText: valueText)
         }
+        .tint(SettingsControlChrome.lightPurple)
         .accessibilityLabel(title)
         .accessibilityValue(valueText)
     }
@@ -132,7 +135,7 @@ struct SettingsToggleStyle: ToggleStyle {
             }
             .overlay(alignment: isOn ? .trailing : .leading) {
                 RoundedRectangle(cornerRadius: SettingsControlChrome.thumbRadius, style: .continuous)
-                    .fill(Color.white.opacity(isOn ? 0.90 : 0.60))
+                    .fill(isOn ? SettingsControlChrome.halationOrange : Color.white.opacity(0.60))
                     .frame(width: SettingsControlChrome.thumbSide, height: SettingsControlChrome.thumbSide)
                     .padding(4)
             }
