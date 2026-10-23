@@ -14,7 +14,7 @@ import Testing
     @Test func lcdUsesTheNeutralExposureSurfaceAndSelectorsAreCompact() throws {
         let source = try String(contentsOf: TestRepository.root.appendingPathComponent(
             "App/Modules/CameraCapture/RecordingTimeLCD.swift"), encoding: .utf8)
-        #expect(source.contains("CameraRaisedSurface"))
+        #expect(source.contains("CameraInsetSurface"))
         #expect(!source.contains("Color(red: 0.055, green: 0.14, blue: 0.105)"))
         #expect(CameraControlGeometry.leftWidth == 84)
         #expect(CameraControlGeometry.exposureWidth == 84)

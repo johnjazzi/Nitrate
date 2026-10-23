@@ -38,7 +38,7 @@ struct StockSelectorHintOutline: View {
 /// stays visually identical to the previous one-shot outline.
 private struct StockSelectorHintRing: View {
     var body: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
+        RoundedRectangle(cornerRadius: CameraControlBorder.cornerRadius, style: .continuous)
             .strokeBorder(.white.opacity(0.9), lineWidth: 1.5)
             .shadow(color: .white.opacity(0.45), radius: 4)
     }

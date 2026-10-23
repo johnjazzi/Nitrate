@@ -52,7 +52,7 @@ struct RecordingTimeLCD: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 6)
-        .modifier(CameraRaisedSurface(cornerRadius: 5))
+        .modifier(CameraInsetSurface())
     }
 
     /// Recording owns this line. The queue count stays beside it so the queue is

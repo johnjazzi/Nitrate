@@ -69,7 +69,7 @@ struct CameraControlBar: View {
                                  rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
             }
         }
-        .cameraControlWell(cornerRadius: 12, horizontalPadding: 4)
+        .cameraControlWell(horizontalPadding: 4)
         .overlay {
             StockSelectorHintOutline(isVisible: showsStockHint)
                 .allowsHitTesting(false)
@@ -133,7 +133,7 @@ struct CameraControlBar: View {
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 6)
-        .modifier(CameraRaisedSurface(cornerRadius: 14))
+        .modifier(CameraInsetSurface())
         .contentShape(Rectangle())
         // Visible hold acknowledgement: a small spring expansion the instant the
         // finger lands, springing back on release or cancellation. Reduce Motion
@@ -142,7 +142,7 @@ struct CameraControlBar: View {
         // overlay are applied; columns and touch targets are unchanged.
         .scaleEffect(reduceMotion ? 1 : (isExposureHolding ? 1.07 : 1))
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: CameraControlBorder.cornerRadius, style: .continuous)
                 .stroke(.white.opacity(0.9), lineWidth: 1.5)
                 .opacity(reduceMotion && isExposureHolding ? 1 : 0)
         }

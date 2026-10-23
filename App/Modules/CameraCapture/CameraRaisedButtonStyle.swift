@@ -1,5 +1,11 @@
 import SwiftUI
 
+/// Shared borders for rectangular camera controls and recessed wells.
+enum CameraControlBorder {
+    static let lineWidth: CGFloat = 1
+    static let cornerRadius: CGFloat = 12
+}
+
 /// Fixed 44pt toolbar keys use an actual circle, including the hit region.
 struct CameraRoundButtonStyle: ButtonStyle {
     var faceColor: Color?
@@ -30,7 +36,7 @@ struct CameraRoundButtonStyle: ButtonStyle {
 struct CameraRaisedButtonStyle: ButtonStyle {
     /// Tint mixed into the translucent face. Nil keeps it neutral.
     var faceColor: Color?
-    var cornerRadius: CGFloat = 8
+    var cornerRadius: CGFloat = CameraControlBorder.cornerRadius
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -42,7 +48,7 @@ struct CameraRaisedButtonStyle: ButtonStyle {
 /// The translucent raised face itself.
 struct CameraRaisedSurface: ViewModifier {
     var faceColor: Color?
-    var cornerRadius: CGFloat = 8
+    var cornerRadius: CGFloat = CameraControlBorder.cornerRadius
     var isPressed = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -56,7 +62,7 @@ struct CameraRaisedSurface: ViewModifier {
                     .overlay { shape.fill(fill) }
             }
             .overlay {
-                shape.strokeBorder(bevel, lineWidth: 1).allowsHitTesting(false)
+                shape.strokeBorder(bevel, lineWidth: CameraControlBorder.lineWidth).allowsHitTesting(false)
             }
             .shadow(color: .black.opacity(isPressed ? 0.16 : 0.38),
                     radius: isPressed ? 1 : 4,
@@ -85,11 +91,31 @@ struct CameraRaisedSurface: ViewModifier {
     }
 }
 
+/// Recessed face with a dark top rim and a light bottom rim; no layout padding.
+struct CameraInsetSurface: ViewModifier {
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: CameraControlBorder.cornerRadius, style: .continuous)
+        content
+            .background {
+                shape.fill(.ultraThinMaterial)
+                    .overlay { shape.fill(Color.black.opacity(0.18)) }
+            }
+            .overlay {
+                shape.strokeBorder(
+                    LinearGradient(colors: [.black.opacity(0.76), .black.opacity(0.20), .white.opacity(0.68)],
+                                   startPoint: .top, endPoint: .bottom),
+                    lineWidth: CameraControlBorder.lineWidth)
+                    .allowsHitTesting(false)
+            }
+            .contentShape(shape)
+    }
+}
+
 /// A translucent raised plate that groups related controls — the soft raised
 /// area a machined camera panel forms around a cluster of buttons. See-through,
 /// so it frames the group without hiding the preview behind it.
 struct CameraControlWell: ViewModifier {
-    var cornerRadius: CGFloat = 16
+    var cornerRadius: CGFloat = CameraControlBorder.cornerRadius
     var horizontalPadding: CGFloat = 6
 
     func body(content: Content) -> some View {
@@ -112,16 +138,9 @@ struct CameraControlWell: ViewModifier {
                         startPoint: .top,
                         endPoint: .bottom
                     ),
-                    lineWidth: 2
+                    lineWidth: CameraControlBorder.lineWidth
                 )
-                shape.inset(by: 2).strokeBorder(
-                    LinearGradient(
-                        colors: [.black.opacity(0.42), .clear, .white.opacity(0.12)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 1
-                )
+
                 .allowsHitTesting(false)
             }
             .contentShape(shape)
@@ -130,7 +149,7 @@ struct CameraControlWell: ViewModifier {
 
 extension View {
     /// Wrap a cluster of controls in the translucent raised plate.
-    func cameraControlWell(cornerRadius: CGFloat = 16, horizontalPadding: CGFloat = 6) -> some View {
+    func cameraControlWell(cornerRadius: CGFloat = CameraControlBorder.cornerRadius, horizontalPadding: CGFloat = 6) -> some View {
         modifier(CameraControlWell(cornerRadius: cornerRadius, horizontalPadding: horizontalPadding))
     }
 }
