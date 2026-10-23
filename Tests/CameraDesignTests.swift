@@ -78,6 +78,19 @@ struct CameraDesignTests {
         #expect(!selector.contains("isLandscape && selectedLens == .front"))
         #expect(!selector.contains("isLandscape && lens == .front"))
         #expect(selector.contains(".accessibilityAddTraits(isSelected ? [.isSelected] : [])"))
+        // The toolbar key is one aperture glyph for every lens, with no number
+        // or millimetre readout on the trigger itself.
+        #expect(selector.contains("Image(systemName: \"camera.aperture\")"))
+        #expect(!selector.contains("camera.rotate"))
+        #expect(!selector.contains("Text(\"mm\")"))
+        // VoiceOver still announces the full lens name, unit included.
+        #expect(selector.contains("\"\\(lens.focalLengthMM) mm\""))
+
+        // The popout key shows the bare number (or the textual Front choice),
+        // never the aperture icon or the millimetre unit.
+        let face = try source("App/Modules/CameraCapture/CameraLensFace.swift")
+        #expect(!face.contains("camera.aperture"))
+        #expect(!face.contains("\"mm\""))
     }
 
     @Test func leftColumnSharesFullExposureHeightAndRealGauge() throws {

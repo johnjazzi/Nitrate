@@ -341,7 +341,7 @@ struct CameraDesignRenderTests {
                 } manual: {
                     Image(systemName: "slider.vertical.3").frame(width: 44, height: 44)
                 } lens: {
-                    CameraLensFace(title: "120 mm", focalLength: "120", rotationDegrees: degrees)
+                    CameraLensFace(label: "120", rotationDegrees: degrees)
                         .frame(width: 44, height: 44)
                         .opacity(0) // The production lens switch is hidden during a live take.
                 } status: {
@@ -440,8 +440,7 @@ struct CameraDesignRenderTests {
             for focal in ["13", "24", "48", "77", "120", "Front"] {
                 for selected in [false, true] {
                     let width: CGFloat = selected ? 104 : 84
-                    let face = CameraLensFace(title: focal == "Front" ? focal : "\(focal) mm",
-                                              focalLength: focal == "Front" ? nil : focal,
+                    let face = CameraLensFace(label: focal,
                                               rotationDegrees: degrees, isSelected: selected)
                         .foregroundStyle(.white)
                         .frame(width: width, height: 44)
@@ -450,7 +449,7 @@ struct CameraDesignRenderTests {
                     let ink = stride(from: 0, to: data.count, by: 4).filter {
                         data[$0] > 220 && data[$0 + 1] > 220 && data[$0 + 2] > 220 && data[$0 + 3] > 220
                     }
-                    #expect(ink.count > 140, "Actual label and aperture must not shrink into a blank or tiny glyph.")
+                    #expect(ink.count > 40, "The number (or Front) must not shrink into a blank or tiny glyph.")
                     let columns = ink.map { ($0 / 4) % image.width }
                     let rows = ink.map { ($0 / 4) / image.width }
                     #expect(try #require(columns.min()) >= 8)

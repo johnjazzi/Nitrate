@@ -46,20 +46,14 @@ struct CameraLensSelector: View {
     }
 
     private var triggerLabel: some View {
-        Group {
-            if selectedLens == .front {
-                Image(systemName: "camera.rotate").font(NitrateTypography.font(size: 17))
-            } else {
-                VStack(spacing: 0) {
-                    Text("\(selectedLens.focalLengthMM)")
-                        .font(NitrateTypography.font(size: 14).monospacedDigit())
-                    Text("mm").font(NitrateTypography.font(size: 9))
-                }
-            }
-        }
-        .rotationEffect(.degrees(CameraGlyphRotation.degrees(for: deviceOrientation)))
-        .foregroundStyle(.white)
-        .frame(width: 44, height: 44)
+        // One opening affordance for every lens: the aperture glyph only, with
+        // no per-lens number or unit. The active lens still reads out via the
+        // button's accessibility value.
+        Image(systemName: "camera.aperture")
+            .font(NitrateTypography.font(size: 17))
+            .rotationEffect(.degrees(CameraGlyphRotation.degrees(for: deviceOrientation)))
+            .foregroundStyle(.white)
+            .frame(width: 44, height: 44)
     }
 
     private var lensWell: some View {
@@ -87,8 +81,7 @@ struct CameraLensSelector: View {
             isPresented = false
             onSelectLens(lens)
         } label: {
-            CameraLensFace(title: title(lens),
-                           focalLength: lens == .front ? nil : "\(lens.focalLengthMM)",
+            CameraLensFace(label: lens == .front ? "Front" : "\(lens.focalLengthMM)",
                            rotationDegrees: CameraGlyphRotation.degrees(for: deviceOrientation),
                            isSelected: isSelected)
                 .foregroundStyle(isSelected ? .black : .white)
