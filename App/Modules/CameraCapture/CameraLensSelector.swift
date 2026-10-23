@@ -57,7 +57,7 @@ struct CameraLensSelector: View {
     }
 
     private var lensWell: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 60), spacing: 8)], spacing: 8) {
             ForEach(availableLenses) { lens in
                 lensKey(lens)
             }
@@ -67,9 +67,9 @@ struct CameraLensSelector: View {
         .padding(4)
         .cameraControlWell(cornerRadius: 16)
         // Separate transparent clearance keeps key shadows and the rim away
-        // from the presentation boundary. 264pt also fits a 320pt screen.
+        // from the presentation boundary.
         .padding(10)
-        .frame(width: 264)
+        .frame(width: 180)
         .fixedSize(horizontal: false, vertical: true)
         .environment(\.cameraDeviceOrientation, deviceOrientation)
         .accessibilityLabel("Available camera lenses")

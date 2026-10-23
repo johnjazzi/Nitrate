@@ -73,6 +73,9 @@ struct CameraDesignTests {
     @Test func lensUsesRoundTriggerAndReadableSharedPopoutKeys() throws {
         let selector = try source("App/Modules/CameraCapture/CameraLensSelector.swift")
         #expect(selector.components(separatedBy: "CameraLensFace(").count == 2)
+        #expect(selector.contains("GridItem(.adaptive(minimum: 60), spacing: 8)"))
+        #expect(selector.contains(".frame(width: 180)"))
+        #expect(selector.contains(".frame(height: 44)"))
         #expect(selector.contains("CameraRoundButtonStyle()"))
         #expect(selector.contains(".frame(width: 44, height: 44)"))
         #expect(!selector.contains("isLandscape && selectedLens == .front"))
