@@ -47,7 +47,7 @@ import Testing
 
     @Test func rowsLeadWithAnIconAndLabel() throws {
         let source = try source()
-        let controls = try source(Self.controlsPath)
+        let controls = try self.source(Self.controlsPath)
         #expect(controls.contains("struct SettingsRowLabel"))
         #expect(controls.contains(#"Image(systemName: icon)"#))
         #expect(controls.contains(".accessibilityHidden(true)"),
@@ -96,7 +96,7 @@ import Testing
 
     @Test func exclusiveChoicesUseTheCompactSelectedValueButtonNotASegmentedStrip() throws {
         let source = try source()
-        let controls = try source(Self.controlsPath)
+        let controls = try self.source(Self.controlsPath)
         #expect(!source.contains(".pickerStyle(.segmented)"),
                 "the enumerated choices must not use a segmented strip")
         #expect(controls.contains("struct SettingsSelectionRow"),
@@ -124,9 +124,11 @@ import Testing
 
     @Test func compactSwitchStylePreservesNativeToggleSemantics() throws {
         let source = try source()
-        let controls = try source(Self.controlsPath)
+        let controls = try self.source(Self.controlsPath)
         #expect(controls.contains("struct SettingsToggleStyle"))
         #expect(controls.contains(": ToggleStyle"))
+        #expect(controls.contains(".toggleStyle(.switch)"),
+                "The accessibility representation must not inherit the custom style recursively")
         #expect(controls.contains(".accessibilityRepresentation"),
                 "the custom face must restore the native switch role")
         #expect(controls.contains("Toggle(isOn: configuration.$isOn)"),

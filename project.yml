@@ -144,6 +144,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraShootingLayout.swift
       - path: App/Modules/CameraCapture/CameraLensFace.swift
       - path: App/Modules/CameraCapture/CameraRaisedButtonStyle.swift
+      - path: App/Modules/Purchase/SettingsSelectionRow.swift
       - path: App/Modules/CameraCapture/RecordingTimeLCD.swift
       - path: App/Modules/CameraCapture/RecordingTallyLight.swift
       - path: App/Modules/CameraCapture/FocalLengthRuler.swift
@@ -310,6 +311,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraShootingLayout.swift
       - path: App/Modules/CameraCapture/CameraLensFace.swift
       - path: App/Modules/CameraCapture/CameraRaisedButtonStyle.swift
+      - path: App/Modules/Purchase/SettingsSelectionRow.swift
       - path: App/Modules/CameraCapture/RecordingTimeLCD.swift
       - path: App/Modules/CameraCapture/RecordingTallyLight.swift
       - path: App/Modules/CameraCapture/FocalLengthRuler.swift

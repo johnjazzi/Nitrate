@@ -117,6 +117,7 @@ struct SettingsToggleStyle: ToggleStyle {
         // role, on/off value and label come from a native Toggle.
         .accessibilityRepresentation {
             Toggle(isOn: configuration.$isOn) { configuration.label }
+                .toggleStyle(.switch)
         }
     }
 
