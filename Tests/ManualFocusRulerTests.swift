@@ -296,29 +296,48 @@ struct ManualFocusRulerTests {
 
     // MARK: - Native render
 
-    @MainActor @Test func realRulerRendersATickRailAndYellowIndex() throws {
-        let host = NSHostingView(rootView: FocusRulerHarness(position: 0.5)
-            .frame(width: 44, height: 300))
-        host.frame = CGRect(x: 0, y: 0, width: 44, height: 300)
-        host.layoutSubtreeIfNeeded()
-        let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-        host.cacheDisplay(in: host.bounds, to: rep)
+    @MainActor @Test(arguments: [ColorScheme.light, .dark])
+    func realRulerRendersATickRailAndYellowIndex(_ scheme: ColorScheme) throws {
+        @MainActor func bitmap<V: View>(_ view: V, size: CGSize) throws -> NSBitmapImageRep {
+            let host = NSHostingView(rootView: view.environment(\.colorScheme, scheme))
+            host.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+            host.frame = CGRect(origin: .zero, size: size)
+            host.layoutSubtreeIfNeeded()
+            let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: rep)
+            return rep
+        }
+
+        // Compare with the actual semantic yellow in the same appearance and
+        // explicit color space, rather than assuming device RGB component values.
+        let reference = try bitmap(Color.yellow, size: CGSize(width: 8, height: 8))
+        let expected = try #require(reference.colorAt(x: 4, y: 4)?.usingColorSpace(.sRGB))
+        #expect(expected.alphaComponent > 0.95)
+        #expect(expected.redComponent > expected.blueComponent + 0.2)
+        #expect(expected.greenComponent > expected.blueComponent + 0.2)
+        let rep = try bitmap(FocusRulerHarness(position: 0.5), size: CGSize(width: 44, height: 300))
         let image = try #require(rep.cgImage)
 
         var yellow = 0
         var ink = 0
         for x in 0..<image.width {
             for y in 0..<image.height {
-                guard let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                guard let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
                 let r = color.redComponent, g = color.greenComponent, b = color.blueComponent
-                if r > 0.6, g > 0.6, b < 0.5 { yellow += 1 }
+                // Restrict the yellow check to the middle of the track so the
+                // MF title cannot pass it when the live index is missing.
+                if y > image.height * 3 / 10, y < image.height * 7 / 10,
+                   color.alphaComponent > 0.9,
+                   abs(r - expected.redComponent) < 0.03,
+                   abs(g - expected.greenComponent) < 0.03,
+                   abs(b - expected.blueComponent) < 0.03 { yellow += 1 }
                 if r + g + b > 0.75 { ink += 1 }
             }
         }
-        #expect(yellow > 20, "the yellow index must be drawn on the rail")
-        #expect(ink > 60, "the tick rail and MF label must render visible ink")
+        #expect(yellow > 20, "The middle of the rail must contain the rendered yellow index (\(scheme)); reference=\(expected).")
+        #expect(ink > 60, "The tick rail and MF label must render visible ink.")
         #expect(abs(Double(image.width) / Double(image.height) - 44.0 / 300.0) < 0.05,
-                "the ruler keeps its 44pt hit width against its track length")
+                "The ruler keeps its 44pt hit width against its track length.")
     }
 
     @MainActor @Test func realRulerRendersSessionStopsOnTheRail() throws {

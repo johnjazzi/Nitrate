@@ -83,38 +83,52 @@ struct CameraDesignRenderTests {
     /// The confirmation must dim the live canvas rather than replace the page:
     /// the preview stays recognisable behind the card, and the scrim still pulls
     /// its brightness down.
-    @MainActor @Test func rescueOverlayDimsTheCanvasWithoutHidingIt() throws {
+    @MainActor @Test(arguments: [ColorScheme.light, .dark])
+    func rescueOverlayDimsTheCanvasWithoutHidingIt(_ scheme: ColorScheme) throws {
         let size = CGSize(width: 390, height: 750)
-        let preview = Color(red: 0.10, green: 0.85, blue: 0.20)
-
-        let plain = try pixels(try render(ZStack { preview }.frame(width: size.width, height: size.height),
-                                          name: "rescue-overlay-open"))
-        let dimmed = try pixels(try render(
-            ZStack {
-                preview
-                DaylightExposureRescueOverlay(armed: false, available: true, canChange: true,
-                                              onSelect: { _ in }, onCancel: {})
-            }
-            .frame(width: size.width, height: size.height), name: "rescue-overlay-dimmed"))
-
-        func greenPeak(_ data: [UInt8]) -> Int {
-            stride(from: 0, to: data.count, by: 4)
-                .filter { Int(data[$0 + 1]) > Int(data[$0]) + 30 }
-                .map { Int(data[$0 + 1]) }.max() ?? 0
-        }
-
-        #expect(greenPeak(dimmed) > 60, "The dimmed preview must stay visible behind the card.")
-        #expect(greenPeak(dimmed) < greenPeak(plain), "The canvas behind the card must actually be dimmed.")
-
-        // The card sits in the middle of the canvas, not pinned to an edge.
+        let preview = Color(.sRGB, red: 0.10, green: 0.85, blue: 0.20, opacity: 1)
+        let appearance = scheme == .dark ? "dark" : "light"
+        let plainImage = try render(
+            ZStack { preview }.frame(width: size.width, height: size.height)
+                .environment(\.colorScheme, scheme), name: "rescue-overlay-open-\(appearance)")
+        let plain = try pixels(plainImage)
         let image = try render(
             ZStack {
                 preview
                 DaylightExposureRescueOverlay(armed: false, available: true, canChange: true,
                                               onSelect: { _ in }, onCancel: {})
             }
-            .frame(width: size.width, height: size.height), name: "rescue-overlay-geometry")
-        let data = try pixels(image)
+            .frame(width: size.width, height: size.height)
+            .environment(\.colorScheme, scheme), name: "rescue-overlay-dimmed-\(appearance)")
+        let dimmed = try pixels(image)
+        #expect(image.width == plainImage.width && image.height == plainImage.height)
+
+        // Measure only the preview above and below the centred card. A peak
+        // over the whole image also samples the material, labels and buttons;
+        // those pixels do not measure the scrim's attenuation of the preview.
+        for band in [8..<(image.height / 10), (image.height * 9 / 10)..<(image.height - 8)] {
+            var baseline = [Int]()
+            var actual = [Int]()
+            for y in band {
+                for x in 8..<(image.width - 8) {
+                    let index = (y * image.width + x) * 4
+                    #expect(plain[index + 3] == 255 && dimmed[index + 3] == 255,
+                            "Both preview samples must be opaque RGBA pixels.")
+                    baseline.append(Int(plain[index + 1]))
+                    actual.append(Int(dimmed[index + 1]))
+                }
+            }
+            let plainMean = Double(baseline.reduce(0, +)) / Double(baseline.count)
+            let dimmedMean = Double(actual.reduce(0, +)) / Double(actual.count)
+            #expect(try #require(actual.min()) > 60, "The dimmed preview must stay visible.")
+            #expect(Double(try #require(actual.max())) < plainMean * 0.6,
+                    "The scrim must dim every sampled preview pixel in both appearances.")
+            #expect(abs(dimmedMean - plainMean * 0.45) < 3,
+                    "The preview must retain the declared 45% brightness behind the 55% scrim.")
+        }
+
+        // The card sits in the middle of the canvas, not pinned to an edge.
+        let data = dimmed
         let rows = stride(from: 0, to: data.count, by: 4).filter {
             data[$0] > 200 && data[$0 + 1] > 200 && data[$0 + 2] > 200
         }.map { CGFloat(($0 / 4) / image.width) / (CGFloat(image.width) / size.width) }
@@ -544,11 +558,13 @@ struct CameraDesignRenderTests {
 
     private func pixels(_ image: CGImage) throws -> [UInt8] {
         var data = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
         try data.withUnsafeMutableBytes { buffer in
             let context = try #require(CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
                                                bitsPerComponent: 8, bytesPerRow: image.width * 4,
-                                               space: CGColorSpaceCreateDeviceRGB(),
-                                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                                               space: colorSpace,
+                                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                                                   | CGBitmapInfo.byteOrder32Big.rawValue))
             context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         }
         return data
