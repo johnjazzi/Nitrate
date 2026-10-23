@@ -3,8 +3,8 @@ import SwiftUI
 
 /// App-wide typography for Nitrate.
 ///
-/// Every string of text renders in the bundled Barlow Semi Condensed Medium
-/// face (`Fonts/BarlowSemiCondensed-Medium.ttf`, licensed under the SIL Open
+/// Every string of text renders in the bundled Barlow Medium
+/// face (`Fonts/Barlow-Medium.ttf`, licensed under the SIL Open
 /// Font License and shipped alongside its license text). The family has a
 /// single available weight, so the app's hierarchy is expressed through point
 /// size only; a call site may still apply `.bold()`/`.weight(_:)` for semantic
@@ -17,11 +17,11 @@ import SwiftUI
 enum NitrateTypography {
     /// PostScript name of the bundled face, as recorded in the font's `name`
     /// table. This is the identifier passed to `Font.custom` and CoreText, not
-    /// the human-readable family name ("Barlow Semi Condensed Medium").
-    static let postScriptName = "BarlowSemiCondensed-Medium"
+    /// the human-readable family name ("Barlow Medium").
+    static let postScriptName = "Barlow-Medium"
 
     /// File name of the bundled face inside the `Fonts` resource directory.
-    static let resourceFileName = "BarlowSemiCondensed-Medium"
+    static let resourceFileName = "Barlow-Medium"
     static let resourceFileExtension = "ttf"
     static let resourceSubdirectory = "Fonts"
 

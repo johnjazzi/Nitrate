@@ -173,7 +173,7 @@ targets:
       path: build/generated/Nitrate-Info.plist
       properties:
         UIAppFonts:
-          - Fonts/BarlowSemiCondensed-Medium.ttf
+          - Fonts/Barlow-Medium.ttf
     type: application
     platform: iOS
     sources:

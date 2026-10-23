@@ -12,8 +12,8 @@ import UniformTypeIdentifiers
 /// PostScript name, and paints readable text at the app's real point sizes.
 @MainActor
 struct NitrateTypographyTests {
-    private let fontRelativePath = "App/Resources/Fonts/BarlowSemiCondensed-Medium.ttf"
-    private let licenseRelativePath = "App/Resources/Fonts/barlowsemicondensed-OFL.txt"
+    private let fontRelativePath = "App/Resources/Fonts/Barlow-Medium.ttf"
+    private let licenseRelativePath = "App/Resources/Fonts/barlow-OFL.txt"
 
     private var fontURL: URL { TestRepository.url(for: fontRelativePath) }
 
@@ -42,7 +42,7 @@ struct NitrateTypographyTests {
         let font = CTFontCreateWithName(NitrateTypography.postScriptName as CFString, 12, nil)
         let resolved = CTFontCopyPostScriptName(font) as String
         #expect(resolved == NitrateTypography.postScriptName,
-                "CoreText must resolve BarlowSemiCondensed-Medium, not a fallback face.")
+                "CoreText must resolve Barlow-Medium, not a fallback face.")
         #expect((CTFontCopyFamilyName(font) as String).contains("Barlow"),
                 "The resolved family must be the semi-condensed Barlow family.")
     }

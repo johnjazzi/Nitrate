@@ -65,8 +65,8 @@ FILE_FIXTURES: tuple[str, ...] = (
     "App/PrivacyInfo.xcprivacy",
     "Tests/Fixtures/colorchecker-babelcolor-2006.json",
     # App sources read by source-contract tests.
-    "App/Resources/Fonts/BarlowSemiCondensed-Medium.ttf",
-    "App/Resources/Fonts/barlowsemicondensed-OFL.txt",
+    "App/Resources/Fonts/Barlow-Medium.ttf",
+    "App/Resources/Fonts/barlow-OFL.txt",
     "App/Design/NitrateTypography.swift",
     "App/App.swift",
     "App/ContentView.swift",
