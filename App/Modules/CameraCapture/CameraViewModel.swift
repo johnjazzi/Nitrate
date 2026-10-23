@@ -372,6 +372,16 @@ final class CameraViewModel {
         session.endSlowZoom(revision: revision)
     }
 
+    /// One bounded display-zoom step, clamped to the published window. Shared by
+    /// the manual panel's hold controls and the in-frame zoom arrows so both
+    /// move the zoom by exactly one increment per tap or VoiceOver activation.
+    func stepDisplayZoom(_ direction: CameraZoomDirection) {
+        guard let snapshot = zoomSnapshot else { return }
+        let delta = direction == .in ? 0.1 : -0.1
+        setDisplayZoom(min(max(snapshot.displayFactor + delta,
+                               snapshot.minimumDisplayFactor), snapshot.maximumDisplayFactor))
+    }
+
     // MARK: - Focal-Length Pinch Zoom
 
     /// Absolute, 35 mm-equivalent focal length the preview is rendering right

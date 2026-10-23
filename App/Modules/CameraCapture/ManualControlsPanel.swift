@@ -28,27 +28,11 @@ struct ManualControlsPanel: View {
             dismiss: onDismiss,
             beginZoom: cameraViewModel.beginSlowZoom,
             endZoom: cameraViewModel.endSlowZoom(revision:),
-            stepZoom: { direction in
-                guard let snapshot = cameraViewModel.zoomSnapshot else { return }
-                let delta = direction == .in ? 0.1 : -0.1
-                cameraViewModel.setDisplayZoom(min(max(snapshot.displayFactor + delta,
-                                                        snapshot.minimumDisplayFactor), snapshot.maximumDisplayFactor))
-            }
+            stepZoom: cameraViewModel.stepDisplayZoom
         ) {
             apertureControl
         }
         .onDisappear { cameraViewModel.endSlowZoom() }
-        .onChange(of: manualFocusPosition) { _, value in
-            guard isManualFocus else { return }
-            cameraViewModel.session.setManualFocusPosition(Float(value))
-        }
-        .onChange(of: isManualFocus) { _, manual in
-            if manual {
-                cameraViewModel.session.setManualFocusPosition(Float(manualFocusPosition))
-            } else {
-                cameraViewModel.session.resetAutoFocus()
-            }
-        }
     }
 
     private var zoomRange: ClosedRange<Double> {

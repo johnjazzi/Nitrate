@@ -1,0 +1,105 @@
+import CoreGraphics
+import SwiftUI
+
+/// Bounded placement for the rulers that live inside the frame.
+///
+/// The capture canvas is portrait-locked, so a physical edge maps to a
+/// different canvas edge once the phone is held sideways. This mirrors the
+/// established `ManualControlsOverlayGeometry` convention (a +90° hold maps the
+/// portrait right edge to the physical top). Everything here is pure geometry
+/// derived from the preview rectangle and the measured control bounds; it never
+/// reads a ruler's own size, so a ruler can never feed back into the preview.
+enum FrameRulerPlacementGeometry {
+    static let focusThickness: CGFloat = 44
+    static let zoomThickness: CGFloat = 44
+    static let margin: CGFloat = 8
+
+    /// The edge of the physical frame the ruler hugs.
+    enum PhysicalEdge: Equatable {
+        /// The frame's physical right edge (the focus ruler).
+        case right
+        /// The frame's physical bottom edge (the focal-length zoom ruler).
+        case bottom
+    }
+
+    /// The canvas edge that carries a physical edge for a given quarter turn.
+    enum CanvasEdge: Equatable {
+        case left, right, top, bottom
+    }
+
+    /// Canvas edge for `edge` at `orientationDegrees`. Portrait (0°) keeps the
+    /// physical right on the canvas right and the physical bottom on the canvas
+    /// bottom; a +90° hold puts the physical right on the canvas bottom and the
+    /// physical bottom on the canvas left; a -90° hold is the mirror image.
+    static func canvasEdge(for edge: PhysicalEdge, orientationDegrees: Double) -> CanvasEdge {
+        switch (edge, normalized(orientationDegrees)) {
+        case (.right, 0): return .right
+        case (.right, 90): return .bottom
+        case (.right, -90): return .top
+        case (.right, 180): return .left
+        case (.bottom, 0): return .bottom
+        case (.bottom, 90): return .left
+        case (.bottom, -90): return .right
+        case (.bottom, 180): return .top
+        default: return edge == .right ? .right : .bottom
+        }
+    }
+
+    /// The largest rectangle of the requested thickness that sits along the
+    /// physical `edge` of `frame`, inset by `margin` on every side. Returns
+    /// `.null` for a degenerate frame so the caller can skip the ruler.
+    static func rect(inFrame frame: CGRect, edge: PhysicalEdge, thickness: CGFloat,
+                     orientationDegrees: Double, margin: CGFloat = margin) -> CGRect {
+        guard frame.width > 0, frame.height > 0, thickness > 0,
+              frame.minX.isFinite, frame.minY.isFinite else { return .null }
+        let canvasEdge = canvasEdge(for: edge, orientationDegrees: orientationDegrees)
+        let isVertical = canvasEdge == .left || canvasEdge == .right
+        let run = max(0, (isVertical ? frame.height : frame.width) - 2 * margin)
+        guard run > 0 else { return .null }
+        switch canvasEdge {
+        case .right:
+            return CGRect(x: frame.maxX - margin - thickness, y: frame.minY + margin,
+                          width: thickness, height: run)
+        case .left:
+            return CGRect(x: frame.minX + margin, y: frame.minY + margin,
+                          width: thickness, height: run)
+        case .bottom:
+            return CGRect(x: frame.minX + margin, y: frame.maxY - margin - thickness,
+                          width: run, height: thickness)
+        case .top:
+            return CGRect(x: frame.minX + margin, y: frame.minY + margin,
+                          width: run, height: thickness)
+        }
+    }
+
+    /// Reduce any angle to its equivalent in (-180, 180], leaving non-finite
+    /// input at 0 so a bad sensor read cannot place a ruler off-frame.
+    static func normalized(_ degrees: Double) -> Double {
+        guard degrees.isFinite else { return 0 }
+        var remainder = degrees.truncatingRemainder(dividingBy: 360)
+        if remainder > 180 { remainder -= 360 }
+        if remainder <= -180 { remainder += 360 }
+        return remainder == 0 ? 0 : remainder
+    }
+}
+
+/// Places one ruler along a physical frame edge. The content is authored in the
+/// upright portrait axis; a ±90° hold turns the whole slot so the ruler keeps
+/// the physical edge it was asked for while its glyphs stay readable — the same
+/// single-outer-rotation pattern as `ManualControlsOverlay`.
+struct FrameRulerSlot<Content: View>: View {
+    let rect: CGRect
+    let rotationDegrees: Double
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        let landscape = abs(rotationDegrees) == 90
+        let authored = CGSize(width: landscape ? rect.height : rect.width,
+                              height: landscape ? rect.width : rect.height)
+        content()
+            .frame(width: authored.width, height: authored.height)
+            .rotationEffect(.degrees(rotationDegrees))
+            .frame(width: rect.width, height: rect.height)
+            .position(x: rect.midX, y: rect.midY)
+    }
+}

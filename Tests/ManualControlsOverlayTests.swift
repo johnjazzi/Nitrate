@@ -173,9 +173,14 @@ struct ManualControlsOverlayTests {
         #expect(panel.contains("beginZoom: cameraViewModel.beginSlowZoom"))
         #expect(panel.contains("endZoom: cameraViewModel.endSlowZoom(revision:)"))
         #expect(surface.contains("zoomHold(.out") && surface.contains("zoomHold(.in"))
-        #expect(panel.contains("guard isManualFocus else { return }"))
-        #expect(panel.contains("cameraViewModel.session.setManualFocusPosition(Float(manualFocusPosition))"))
-        #expect(panel.contains("cameraViewModel.session.resetAutoFocus()"))
+        // Focus hardware ownership lives on the screen, not the panel: the
+        // in-frame ruler and the Settings switch must work with the panel closed
+        // and there must be exactly one write site.
+        #expect(!panel.contains("setManualFocusPosition"))
+        #expect(!panel.contains("resetAutoFocus"))
+        #expect(screen.contains("guard isManualFocus else { return }"))
+        #expect(screen.contains("cameraViewModel.session.setManualFocusPosition(Float(value))"))
+        #expect(screen.contains("cameraViewModel.session.resetAutoFocus()"))
         #expect(panel.contains("canChangeStabilization: cameraViewModel.canSetRecordingStabilization"))
         #expect(panel.contains("selectStabilization: cameraViewModel.setRecordingStabilization"))
         #expect(panel.contains("cameraViewModel.setLensAperture(nil)"))

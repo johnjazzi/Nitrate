@@ -253,7 +253,11 @@ struct ManualControlsSurface<Aperture: View>: View {
 
 /// A touch begins one hardware ramp; finger-up or drag-off cancels it.
 /// VoiceOver activation requests one bounded step, never an endless hold.
-private struct ZoomHoldControl: View {
+///
+/// Shared by the manual panel's compact/expanded hold keys and the in-frame
+/// zoom arrows: one implementation of the safe begin/end/revision protocol so
+/// the zoom toggle's arrows cannot invent an uncontrolled repeat loop.
+struct ZoomHoldControl: View {
     let symbol: String
     let label: String
     let enabled: Bool

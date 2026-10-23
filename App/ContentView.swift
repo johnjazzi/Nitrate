@@ -69,6 +69,11 @@ struct ContentView: View {
     @State private var manualFocusPosition: Double = 0.5
     @State private var isManualFocus = false
     @State private var focusReadGeneration: UInt64 = 0
+    /// Session-local Settings switches; both default off and never persist
+    /// across a launch. Zoom Controls keeps the focal-length ruler and its
+    /// hold arrows on screen; Manual Focus shares `isManualFocus` with the
+    /// panel's AF/MF key.
+    @State private var zoomControlsEnabled = false
 
 #if DEBUG
     /// Frozen frame + live tuning sheet (DEBUG builds only).
@@ -154,6 +159,37 @@ struct ContentView: View {
                         .position(x: badge.midX, y: badge.midY)
                 }
 
+                // In-frame rulers, bounded by the live preview intersected with
+                // the space between the toolbar and the shooting bar. They read
+                // no measured size of their own, so they cannot resize the
+                // preview while they appear and disappear. Drawn before the
+                // manual panel, so an open panel sits above the focus ruler.
+                if let bounds = frameRulerBounds(in: geometry) {
+                    if isManualFocus {
+                        let rect = FrameRulerPlacementGeometry.rect(
+                            inFrame: bounds, edge: .right,
+                            thickness: FrameRulerPlacementGeometry.focusThickness,
+                            orientationDegrees: statusRotationDegrees)
+                        if !rect.isNull {
+                            FrameRulerSlot(rect: rect, rotationDegrees: statusRotationDegrees) {
+                                ManualFocusRuler(lensPosition: $manualFocusPosition,
+                                                 enabled: canUseManualFocusRuler)
+                            }
+                        }
+                    }
+                    if zoomControlsEnabled {
+                        let rect = FrameRulerPlacementGeometry.rect(
+                            inFrame: bounds, edge: .bottom,
+                            thickness: FrameRulerPlacementGeometry.zoomThickness,
+                            orientationDegrees: statusRotationDegrees)
+                        if !rect.isNull {
+                            FrameRulerSlot(rect: rect, rotationDegrees: statusRotationDegrees) {
+                                zoomRulerWithArrows
+                            }
+                        }
+                    }
+                }
+
                 if showManualControls, let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
                     ManualControlsOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
                                           excluding: RecordingStatusOverlayGeometry.rect(
@@ -164,7 +200,7 @@ struct ContentView: View {
                         ManualControlsPanel(
                             cameraViewModel: cameraViewModel,
                             manualFocusPosition: $manualFocusPosition,
-                            isManualFocus: $isManualFocus,
+                            isManualFocus: manualFocusBinding,
                             expanded: $manualControlsExpanded,
                             landscape: abs(statusRotationDegrees) == 90,
                             onDismiss: {
@@ -176,7 +212,10 @@ struct ContentView: View {
                     .transition(.opacity)
                 }
 
-                if pinchIsActive, let bottom = controlBounds["bottom"] {
+                // Preserved pinch behaviour: with Zoom Controls off the ruler
+                // still appears only while a pinch is live, in its original
+                // stationary slot above the shooting bar.
+                if pinchIsActive, !zoomControlsEnabled, let bottom = controlBounds["bottom"] {
                     FocalLengthRuler(millimeters: pinchFocalLength)
                         .frame(width: max(0, geometry.size.width - 32))
                         .position(x: geometry.size.width / 2, y: max(34, bottom.minY - 42))
@@ -214,7 +253,9 @@ struct ContentView: View {
         .sheet(isPresented: $showStockSheet) { stockSheet }
         .sheet(isPresented: $showQueueSheet) { queueSheet }
         .sheet(isPresented: $showSettings) {
-            PurchaseView(viewModel: purchaseViewModel, showFramedPreview: $showFramedPreview)
+            PurchaseView(viewModel: purchaseViewModel, showFramedPreview: $showFramedPreview,
+                         manualFocusEnabled: manualFocusBinding,
+                         zoomControlsEnabled: $zoomControlsEnabled)
         }
         .onChange(of: cameraViewModel.lastRecordedURL) { _, newURL in
             guard let url = newURL else { return }
@@ -271,14 +312,34 @@ struct ContentView: View {
         .onChange(of: showManualControls) { _, shown in
             if !shown { cameraViewModel.endSlowZoom() }
         }
+        .onChange(of: manualFocusPosition) { _, value in
+            // The single hardware write for a focus change: the panel track and
+            // the in-frame ruler both mutate `manualFocusPosition`, and only a
+            // live manual focus reaches the lens.
+            guard isManualFocus else { return }
+            cameraViewModel.session.setManualFocusPosition(Float(value))
+        }
+        .onChange(of: zoomControlsEnabled) { _, enabled in
+            // Turning the overlay off cancels any live ramp it started.
+            if !enabled { cameraViewModel.endSlowZoom() }
+        }
+        .onChange(of: captureBusy) { _, busy in
+            // A take or a frame-rate/lens transition owns the device: stop the
+            // arrows' ramp rather than let it race the reconfigure.
+            if busy { cameraViewModel.endSlowZoom() }
+        }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { showDaylightRescue = false }
+            if phase != .active {
+                showDaylightRescue = false
+                cameraViewModel.endSlowZoom()
+            }
         }
         .onChange(of: showSettings || showQueueSheet || showStockSheet || showDaylightRescue) { _, shown in
             if shown { cameraViewModel.endSlowZoom() }
         }
         .onChange(of: cameraViewModel.activeLens) { _, lens in
-            // A lens change invalidates any sustained estimate.
+            // A lens change invalidates any sustained estimate and any ramp.
+            cameraViewModel.endSlowZoom()
             stockSelectorHint.resetMismatch()
             selectedLens = lens
             focusReadGeneration &+= 1
@@ -404,6 +465,94 @@ struct ContentView: View {
         return CGRect(x: -insets.leading, y: -insets.top,
                       width: geometry.size.width + insets.leading + insets.trailing,
                       height: geometry.size.height + insets.top + insets.bottom)
+    }
+
+    // MARK: - Manual Focus & Zoom Rulers
+
+    /// The panel's AF/MF key and the Settings switch share one state, and every
+    /// change runs through the same flow so the hardware lock and the readback
+    /// can never disagree.
+    private var manualFocusBinding: Binding<Bool> {
+        Binding(get: { isManualFocus }, set: { setManualFocusEnabled($0) })
+    }
+
+    /// Enable or disable manual focus. Enabling first reads the lens's current
+    /// position on the session queue and only locks it when the device supports
+    /// custom lens positions; the lens never jumps to a stored default. An
+    /// unsupported lens stays on autofocus, honestly reported.
+    private func setManualFocusEnabled(_ enabled: Bool) {
+        guard enabled != isManualFocus else { return }
+        guard enabled else {
+            isManualFocus = false
+            cameraViewModel.session.resetAutoFocus()
+            return
+        }
+        focusReadGeneration &+= 1
+        let request = focusReadGeneration
+        cameraViewModel.session.readManualFocusSnapshot(includeCurrentPosition: true) { snapshot in
+            guard request == focusReadGeneration else { return }
+            guard snapshot.isSupported, let position = snapshot.lensPosition else { return }
+            // Set the position before the flag: the position observer only
+            // writes while manual focus is on, so the explicit lock below is
+            // the single hardware write for this enable.
+            manualFocusPosition = Double(position)
+            isManualFocus = true
+            cameraViewModel.session.setManualFocusPosition(position)
+        }
+    }
+
+    private var captureBusy: Bool {
+        cameraViewModel.isStartingRecording || cameraViewModel.isRecording
+            || cameraViewModel.isStoppingRecording || cameraViewModel.isChangingFrameRate
+            || cameraViewModel.isSwitchingCameraLens
+    }
+
+    private var canUseManualFocusRuler: Bool {
+        scenePhase == .active
+    }
+
+    /// A zoom arrow only runs while the capture is idle and nothing covers the
+    /// camera screen, matching the pinch's own gate.
+    private var canUseZoomControls: Bool {
+        scenePhase == .active && !captureBusy && cameraViewModel.zoomSnapshot != nil
+            && !showSettings && !showQueueSheet && !showStockSheet && !showDaylightRescue
+    }
+
+    /// The focal-length ruler with its left/right hold arrows, at the physical
+    /// bottom of the frame. Both arrows reuse `ZoomHoldControl`, so release,
+    /// drag-off and revision cancellation behave exactly as the panel's keys.
+    private var zoomRulerWithArrows: some View {
+        HStack(spacing: 8) {
+            ZoomHoldControl(symbol: "chevron.left", label: "Zoom out",
+                            enabled: canUseZoomControls,
+                            revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
+                            begin: { cameraViewModel.beginSlowZoom(.out) },
+                            end: cameraViewModel.endSlowZoom(revision:),
+                            step: { cameraViewModel.stepDisplayZoom(.out) })
+            FocalLengthRuler(millimeters: pinchIsActive ? pinchFocalLength
+                                                        : cameraViewModel.currentFocalLengthMM)
+            ZoomHoldControl(symbol: "chevron.right", label: "Zoom in",
+                            enabled: canUseZoomControls,
+                            revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
+                            begin: { cameraViewModel.beginSlowZoom(.in) },
+                            end: cameraViewModel.endSlowZoom(revision:),
+                            step: { cameraViewModel.stepDisplayZoom(.in) })
+        }
+        .frame(height: 44)
+    }
+
+    /// The bounded region a ruler may occupy: the live preview rectangle clipped
+    /// to the space between the toolbar and the shooting bar. Pure geometry
+    /// from the measured control bounds, never the ruler's own size, so a ruler
+    /// cannot feed back into the preview frame.
+    private func frameRulerBounds(in geometry: GeometryProxy) -> CGRect? {
+        guard let top = controlBounds["top"], let bottom = controlBounds["bottom"] else { return nil }
+        let preview = previewRect(in: geometry)
+        guard preview.width > 0, preview.height > 0 else { return nil }
+        let safe = CGRect(x: 0, y: top.maxY, width: geometry.size.width,
+                          height: max(0, bottom.minY - top.maxY))
+        let bounds = preview.intersection(safe)
+        return bounds.isNull || bounds.isEmpty ? nil : bounds
     }
 
     private func cameraLayer(in rect: CGRect) -> some View {
