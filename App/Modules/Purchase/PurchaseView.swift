@@ -4,6 +4,11 @@ import SwiftUI
 struct PurchaseView: View {
     @State var viewModel: PurchaseViewModel
     @Binding var showFramedPreview: Bool
+    /// Live session switches owned by the camera screen. They default off and
+    /// never persist across a launch; a preview or a constructor that omits them
+    /// falls back to a constant `false`, so nothing here writes a preference.
+    var manualFocusEnabled: Binding<Bool> = .constant(false)
+    var zoomControlsEnabled: Binding<Bool> = .constant(false)
     @State private var pricingExpanded = false
     @State private var legalExpanded = false
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
@@ -328,6 +333,18 @@ struct PurchaseView: View {
                               accessibilityTitle: "Frame Mode",
                               help: "Frames the preview with space for camera controls.",
                               isOn: $showFramedPreview)
+
+            SettingsToggleRow(icon: "scope",
+                              title: "Manual Focus",
+                              accessibilityTitle: "Manual focus",
+                              help: "Locks the lens at its current position and shows a manual focus ruler along the right edge of the frame.",
+                              isOn: manualFocusEnabled)
+
+            SettingsToggleRow(icon: "arrow.up.left.and.arrow.down.right",
+                              title: "Zoom Controls",
+                              accessibilityTitle: "Zoom controls",
+                              help: "Keeps the focal length ruler on screen and adds hold arrows for a controlled zoom.",
+                              isOn: zoomControlsEnabled)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)

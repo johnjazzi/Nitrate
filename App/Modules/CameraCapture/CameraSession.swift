@@ -1277,14 +1277,29 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// view discard a snapshot queued before a lens/config change, so the MF
     /// selection can be reset to AF through the readback when a new lens cannot
     /// lock focus (L09). The view model owns the binding integration.
+    ///
+    /// By default `lensPosition` is the committed locked position (nil = auto).
+    /// Pass `includeCurrentPosition: true` to instead read the live
+    /// `activeDevice.lensPosition` on the session queue, so enabling manual
+    /// focus can lock the lens where it currently is rather than jumping to a
+    /// stored default. Both reads stay serialized on `sessionQueue`; the UI
+    /// never touches `activeDevice` directly.
     func readManualFocusSnapshot(
+        includeCurrentPosition: Bool = false,
         completion: @escaping @MainActor @Sendable (CameraManualFocusSnapshot) -> Void
     ) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            let isSupported = self.activeDevice?.isLockingFocusWithCustomLensPositionSupported ?? false
+            let lensPosition: Float?
+            if includeCurrentPosition, isSupported, let device = self.activeDevice {
+                lensPosition = min(max(device.lensPosition, 0), 1)
+            } else {
+                lensPosition = self.committedManualFocusLensPosition
+            }
             let snapshot = CameraManualFocusSnapshot(
-                lensPosition: self.committedManualFocusLensPosition,
-                isSupported: self.activeDevice?.isLockingFocusWithCustomLensPositionSupported ?? false,
+                lensPosition: lensPosition,
+                isSupported: isSupported,
                 cameraRevision: self.apertureCameraRevision)
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(snapshot) } }
         }
