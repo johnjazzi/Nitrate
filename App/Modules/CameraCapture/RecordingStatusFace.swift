@@ -74,13 +74,13 @@ struct RecordingStatusFace: View {
                 HStack(spacing: 6) {
                     statusMark.frame(width: 10, height: 10)
                     Text(text)
-                        .font(.system(size: 12, weight: .semibold, design: .monospaced).monospacedDigit())
+                        .font(NitrateTypography.font(size: 12).monospacedDigit())
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
                 }
             }
             Text(modeStatusLabel)
-                .font(.system(size: 8, weight: .bold, design: .rounded)).tracking(1)
+                .font(NitrateTypography.font(size: 8)).tracking(1)
                 .lineLimit(1).minimumScaleFactor(0.7)
         }
         .foregroundStyle(displayTint)

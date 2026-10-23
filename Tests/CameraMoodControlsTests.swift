@@ -166,8 +166,8 @@ struct CameraMoodControlsTests {
         #expect(bar.contains(".cameraControlWell("))
         #expect(bar.contains("CameraGaugeLabel(gauge: selectedGauge,"))
         #expect(bar.components(separatedBy: "length: 120").count == 3, "The exposure rulers are untouched.")
-        // The LCD learns about a take from the committed presentation only.
-        #expect(bar.contains("isRecording: recordPresentation == .recording"))
+        // The LCD acknowledges the accepted take before the writer confirms it.
+        #expect(bar.contains("isRecording: recordPresentation.showsLiveChrome"))
         #expect(bar.contains("isStopping: cameraViewModel.isStoppingRecording"))
         // Queue/storage access survives an active take.
         #expect(bar.contains("onShowQueueSheet"))

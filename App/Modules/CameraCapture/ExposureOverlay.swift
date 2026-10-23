@@ -1,32 +1,5 @@
 import SwiftUI
 
-/// Thin outline marking where exposure is metered on the preview: the frame
-/// centre by default, the tapped point after a tap-to-focus. Dashed while auto
-/// exposure drives the scene, solid while manual ISO does. Hidden during a take
-/// so it never draws over the recording.
-struct MeteringBoxView: View {
-    /// Normalised (0–1) centre of the box in the preview's coordinate space.
-    let point: CGPoint
-    let isManual: Bool
-
-    private let boxSize = CGSize(width: 78, height: 62)
-
-    var body: some View {
-        GeometryReader { geometry in
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(
-                    isManual ? Color.yellow.opacity(0.95) : Color.white.opacity(0.8),
-                    style: StrokeStyle(lineWidth: 1.5, dash: isManual ? [] : [6, 4])
-                )
-                .frame(width: boxSize.width, height: boxSize.height)
-                .position(x: point.x * geometry.size.width,
-                          y: point.y * geometry.size.height)
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-}
-
 /// Compact live meter beside the exposure ruler. Higher EV is above centre,
 /// matching the ruler's direction; the target band and live dot retain the
 /// same absolute EV scale and match tolerance as the original horizontal meter.
@@ -58,7 +31,7 @@ struct ExposureIndicatorView: View {
     var body: some View {
         VStack(spacing: 6) {
             Text(hasReading ? String(format: "%+.1f", meteredEV) : "—")
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .font(NitrateTypography.font(size: 10))
                 .foregroundStyle(accent)
                 .cameraUpright()
                 .frame(height: 14)

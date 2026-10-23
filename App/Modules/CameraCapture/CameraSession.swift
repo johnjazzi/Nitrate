@@ -1233,9 +1233,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// Manual focus: lock the lens at a specific raw lens position (0–1).
     /// Commits the position so a preview tap re-meters exposure without silently
     /// autofocusing and a lens switch can reapply it (L09).
-    func setManualFocusPosition(_ lensPosition: Float) {
+    func setManualFocusPosition(_ lensPosition: Float, expectedRevision: UInt64? = nil) {
         sessionQueue.async { [weak self] in
-            guard let self, let device = self.activeDevice,
+            guard let self,
+                  expectedRevision == nil || expectedRevision == self.apertureCameraRevision,
+                  let device = self.activeDevice,
                   device.isLockingFocusWithCustomLensPositionSupported else { return }
             let clamped = min(max(lensPosition, 0), 1)
             self.committedManualFocusLensPosition = clamped
@@ -1277,14 +1279,29 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// view discard a snapshot queued before a lens/config change, so the MF
     /// selection can be reset to AF through the readback when a new lens cannot
     /// lock focus (L09). The view model owns the binding integration.
+    ///
+    /// By default `lensPosition` is the committed locked position (nil = auto).
+    /// Pass `includeCurrentPosition: true` to instead read the live
+    /// `activeDevice.lensPosition` on the session queue, so enabling manual
+    /// focus can lock the lens where it currently is rather than jumping to a
+    /// stored default. Both reads stay serialized on `sessionQueue`; the UI
+    /// never touches `activeDevice` directly.
     func readManualFocusSnapshot(
+        includeCurrentPosition: Bool = false,
         completion: @escaping @MainActor @Sendable (CameraManualFocusSnapshot) -> Void
     ) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            let isSupported = self.activeDevice?.isLockingFocusWithCustomLensPositionSupported ?? false
+            let lensPosition: Float?
+            if includeCurrentPosition, isSupported, let device = self.activeDevice {
+                lensPosition = min(max(device.lensPosition, 0), 1)
+            } else {
+                lensPosition = self.committedManualFocusLensPosition
+            }
             let snapshot = CameraManualFocusSnapshot(
-                lensPosition: self.committedManualFocusLensPosition,
-                isSupported: self.activeDevice?.isLockingFocusWithCustomLensPositionSupported ?? false,
+                lensPosition: lensPosition,
+                isSupported: isSupported,
                 cameraRevision: self.apertureCameraRevision)
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(snapshot) } }
         }

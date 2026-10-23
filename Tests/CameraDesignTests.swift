@@ -73,11 +73,36 @@ struct CameraDesignTests {
     @Test func lensUsesRoundTriggerAndReadableSharedPopoutKeys() throws {
         let selector = try source("App/Modules/CameraCapture/CameraLensSelector.swift")
         #expect(selector.components(separatedBy: "CameraLensFace(").count == 2)
+        #expect(selector.contains("GridItem(.adaptive(minimum: 60), spacing: 8)"))
+        #expect(selector.contains(".frame(width: 180)"))
+        #expect(selector.contains(".frame(height: 44)"))
         #expect(selector.contains("CameraRoundButtonStyle()"))
         #expect(selector.contains(".frame(width: 44, height: 44)"))
         #expect(!selector.contains("isLandscape && selectedLens == .front"))
         #expect(!selector.contains("isLandscape && lens == .front"))
         #expect(selector.contains(".accessibilityAddTraits(isSelected ? [.isSelected] : [])"))
+        // The toolbar key is one aperture glyph for every lens, with no number
+        // or millimetre readout on the trigger itself.
+        #expect(selector.contains("Image(systemName: \"camera.aperture\")"))
+        #expect(!selector.contains("camera.rotate"))
+        #expect(!selector.contains("Text(\"mm\")"))
+        // VoiceOver still announces the full lens name, unit included.
+        #expect(selector.contains("\"\\(lens.focalLengthMM) mm\""))
+
+        // The popout key shows the bare number (or the textual Front choice),
+        // never the aperture icon or the millimetre unit.
+        let face = try source("App/Modules/CameraCapture/CameraLensFace.swift")
+        #expect(!face.contains("camera.aperture"))
+        #expect(!face.contains("\"mm\""))
+    }
+
+    @Test func manualButtonPresentsInlineControlsAndFlushRulers() throws {
+        let screen = try source("App/ContentView.swift")
+        let geometry = try source("App/Modules/CameraCapture/FrameRulerPlacement.swift")
+        #expect(screen.contains("InlineManualControls("),
+                "the normal Manual path must present the in-frame button stack")
+        #expect(geometry.contains("static let margin: CGFloat = 0"),
+                "the rulers must sit flush with the preview frame")
     }
 
     @Test func leftColumnSharesFullExposureHeightAndRealGauge() throws {

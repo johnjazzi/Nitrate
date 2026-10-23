@@ -8,6 +8,7 @@ struct CameraView: View {
     @State var viewModel: CameraViewModel
     @State private var previewLayer: AVCaptureVideoPreviewLayer?
     @AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.neutral.rawValue
+    @AppStorage(MeteringIndicatorPreferences.showsIndicatorKey) private var showsMeteringIndicator = MeteringIndicatorPreferences.defaultShowsIndicator
     var videoGravity: AVLayerVideoGravity = .resizeAspectFill
     var selectedStockLUTName: String? = nil
 
@@ -18,12 +19,13 @@ struct CameraView: View {
                                    transitioning: viewModel.isSwitchingCameraLens,
                                    lens: viewModel.activeLens, selectedStockLUTName: selectedStockLUTName)
             .overlay {
-                // Where exposure is metered. Hidden during a take so it never
-                // draws over the recording.
-                if !viewModel.isRecording {
-                    MeteringBoxView(point: viewModel.meteringPoint,
-                                    isManual: viewModel.isManualExposure)
-                }
+                // Where exposure is metered. The Settings preference can hide it,
+                // and a take hides it so it never draws over the recording; either
+                // way only the ring is hidden; the overlay geometry and tap
+                // handler below are unchanged.
+                MeteringBoxView(point: viewModel.meteringPoint,
+                                isManual: viewModel.isManualExposure,
+                                isVisible: showsMeteringIndicator && !viewModel.isRecording)
             }
             .onTapGesture { location in
                 guard let layer = previewLayer else { return }
@@ -125,13 +127,16 @@ private final class CameraPreviewUIView: UIView {
         metalView.colorPixelFormat = .bgra8Unorm
         metalView.isHidden = true
         addSubview(metalView)
-        monitorLabel.font = .preferredFont(forTextStyle: .caption2)
+        monitorLabel.font = NitrateTypography.uiFont(size: NitrateTypography.baseSize(for: .caption2),
+                                                     relativeTo: .caption2)
+        monitorLabel.adjustsFontForContentSizeCategory = true
         monitorLabel.textColor = .white
         monitorLabel.backgroundColor = UIColor.black.withAlphaComponent(0.6)
         monitorLabel.numberOfLines = 2
         monitorLabel.isUserInteractionEnabled = false
         addSubview(monitorLabel)
-        handoffLabel.font = .systemFont(ofSize: 46, weight: .black, width: .compressed)
+        handoffLabel.font = NitrateTypography.uiFont(size: 46)
+        handoffLabel.adjustsFontForContentSizeCategory = true
         handoffLabel.textColor = .white
         handoffLabel.textAlignment = .center
         handoffLabel.backgroundColor = .clear

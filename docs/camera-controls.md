@@ -19,6 +19,24 @@
 - The DEBUG image stays pinned above its scrolling controls and retains live effect re-rendering, pinch zoom, pan and double-tap reset. Stock, Grain, Halation, Glow, Realized, Debug controls and Tests use compact disclosure sections that start collapsed; smaller visual controls retain accessible touch targets.
 - An independent photo carousel previews the selected stock: one bundled Apple Log 2 plate per scene with the stock's own LUT applied live on the GPU (`platePreviewFragment`), so a user-supplied cube, a grade tweak or a gauge change needs no new asset. Changing stock preserves the selected example scene. Plates are illustrative — your own photographs pushed through the licensed neutral transform, not camera originals and not a calibration — and they preview colour plus the grain of the selected stock and print gauge, sampled from the shipped grain volume with the same footprint the renderer uses. Halation and glow are still to come. The vertically scrolling sheet keeps gauge and Render reachable on smaller screens.
 
+## In-frame focus and zoom controls
+
+The **Manual** toolbar button shows or hides the in-frame controls together. Zoom sits on the preview’s physical left edge; the focus ruler and three compact controls sit on the right. The visible rails are narrower and flush with the preview edges, while their touch regions remain 44 points wide. Showing or hiding them does not resize the preview or reset the selected focus, aperture or stabilization mode.
+
+The right-side controls switch **AF/MF**, show the actual **f-number**, and select **Off, Standard, Cinematic or Extreme** recording stabilization. Fixed-aperture lenses show their f-number without offering an unsupported adjustment. Unsupported stabilization choices are disabled. Stabilization is gray when off; its orange intensity increases with the selected supported mode. The controlled zoom ruler covers the active lens’s available range, including values above 150 mm and the exact endpoint; pinch zoom retains its separate 13–150 mm range.
+
+The old manual panel remains behind the default-off **Legacy Manual Controls** feature flag in Debug Settings. Release builds use the in-frame controls.
+
+Manual focus supports up to three stops during the current app session. Long-press an empty point on the focus track to place a stop. Long-press a stop and drag it to reposition it, or drag it to either end of the track to remove it. Tap a stop to set focus to its saved lens position. Stops remain available when the ruler is toggled off and on, and disappear after a full app restart. They store normalized lens positions rather than calibrated subject distances.
+
+### Device checks for these controls
+
+1. Tap **Manual** to show the in-frame controls. Switch AF/MF and inspect the f-number and stabilization selector. Check that zoom is on the left and focus is on the right in portrait and both landscape holds, with all three buttons reachable and no overlap or change to the preview frame. Tap Manual again to hide them, then show them and confirm the selected modes and focus stops remain.
+2. Hold each zoom arrow, release it, and drag off it while holding. Zoom must stop on release or cancellation; hiding Manual controls must also stop it. Check the gray Off stabilization state and progressively stronger orange for supported modes, and confirm unsupported selections cannot be applied.
+3. Add three focus stops and try adding a fourth. Move one without moving the others, tap each to recall its focus position, and drag stops to both ends to remove them. Toggle MF off and on, then restart the app to check the session-only lifetime.
+
+Settings → Preview → **Metering Indicator** controls the circular cue at the selected metering point. It is on by default and remembers the saved choice across launches. Turning it off hides only the cue; preview taps still adjust focus and exposure. The automatic indicator is dashed white, and the manual-exposure indicator is solid yellow.
+
 ## Decisions
 
 ### ISO lock is not persisted across app restarts — accepted October 21, 2026

@@ -429,8 +429,8 @@ struct PurchasePriceTextTests {
 /// the live StoreKit `displayPrice` belongs.
 struct LaunchPricingPresentationTests {
     @Test func launchPricingIsTheExactApprovedUSAmounts() {
-        #expect(LaunchPricingPresentation.yearlyPrice == "US $5.00/year")
-        #expect(LaunchPricingPresentation.lifetimePrice == "US $10.00 one time")
+        #expect(LaunchPricingPresentation.yearlyPrice == "US $4.99")
+        #expect(LaunchPricingPresentation.lifetimePrice == "US $9.99")
         #expect(LaunchPricingPresentation.headline == "US launch pricing")
     }
 
@@ -461,16 +461,16 @@ struct LaunchPricingPresentationTests {
 
     @Test func previewCarriesTheExactPricesAndTheFreeRecordingNote() {
         let beta = LaunchPricingPresentation.preview(for: .testFlight)
-        #expect(beta?.yearlyPrice == "US $5.00/year")
-        #expect(beta?.lifetimePrice == "US $10.00 one time")
+        #expect(beta?.yearlyPrice == "US $4.99")
+        #expect(beta?.lifetimePrice == "US $9.99")
         #expect(beta?.footnote.contains("not charged") == true)
         #expect(beta?.footnote.contains("stays free") == true)
 
         // The development/DEBUG preview carries the same prices and the
         // no-charge, recording-stays-free note.
         let development = LaunchPricingPresentation.preview(for: .debug)
-        #expect(development?.yearlyPrice == "US $5.00/year")
-        #expect(development?.lifetimePrice == "US $10.00 one time")
+        #expect(development?.yearlyPrice == "US $4.99")
+        #expect(development?.lifetimePrice == "US $9.99")
         #expect(development?.footnote.contains("not charged") == true)
         #expect(development?.footnote.contains("stays free") == true)
     }

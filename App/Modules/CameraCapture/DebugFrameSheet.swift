@@ -209,7 +209,7 @@ struct DebugFrameSheet: View {
                             debugControlsSection
                             hintPreviewSection
                         }
-                        .font(.caption)
+                        .font(NitrateTypography.font(.caption))
                         .controlSize(.small)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 4)
@@ -288,7 +288,7 @@ struct DebugFrameSheet: View {
     private var zoomBadge: some View {
         if zoom > 1.001 {
             Text(String(format: "%.1fx", zoom))
-                .font(.caption2.monospacedDigit().bold())
+                .font(NitrateTypography.font(.caption2).monospacedDigit().bold())
                 .foregroundStyle(.white)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
@@ -302,7 +302,7 @@ struct DebugFrameSheet: View {
     private var zoomHint: some View {
         if zoom <= 1.001 {
             Text("Pinch to zoom")
-                .font(.caption2)
+                .font(NitrateTypography.font(.caption2))
                 .foregroundStyle(.secondary)
                 .padding(8)
         }
@@ -340,21 +340,21 @@ struct DebugFrameSheet: View {
                         viewModel.parameters.realizedFootprint,
                         viewModel.parameters.realizedAmount,
                         viewModel.parameters.gaugeAmplitude))
-                .font(.caption.monospacedDigit())
+                .font(NitrateTypography.font(.caption).monospacedDigit())
             Text(String(format: "halation radius %.4f of width · glow %.3f",
                         viewModel.parameters.halationRadiusFraction,
                         viewModel.parameters.glowStrength))
-                .font(.caption.monospacedDigit())
+                .font(NitrateTypography.font(.caption).monospacedDigit())
             // Truthful statement of the render order this sheet drives: halation
             // is added to the scene-linear source and re-encoded to Apple Log 2
             // BEFORE the stock LUT; glow is a post-LUT graded-luminance bloom.
             Text("Order: halation (scene-linear, pre-LUT) → LUT + contrast → glow → grain")
-                .font(.caption2).foregroundStyle(.secondary)
+                .font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
             if let message = viewModel.message {
-                Text(message).font(.caption).foregroundStyle(.red)
+                Text(message).font(NitrateTypography.font(.caption)).foregroundStyle(.red)
             } else {
                 Text(String(format: "render %.0f ms", viewModel.lastRenderMilliseconds))
-                    .font(.caption2).foregroundStyle(.secondary)
+                    .font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
             }
         }
     }
@@ -384,15 +384,15 @@ struct DebugFrameSheet: View {
             if let hintDiagnostics {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Hint status at open")
-                        .font(.caption.bold())
+                        .font(NitrateTypography.font(.caption).bold())
                     ForEach(hintDiagnostics.lines, id: \.self) { line in
                         Text(line)
-                            .font(.caption.monospacedDigit())
+                            .font(NitrateTypography.font(.caption).monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
                 }
                 Text("Scene estimates can be inaccurate for colored subjects.")
-                    .font(.caption2)
+                    .font(NitrateTypography.font(.caption2))
                     .foregroundStyle(.secondary)
             }
         }
@@ -406,7 +406,7 @@ struct DebugFrameSheet: View {
             Toggle("Show FAULT test button", isOn: $showsFaultButton)
             Text("FAULT previews the recording-failure overlay. "
                  + "The same switches are in Settings.")
-                .font(.caption)
+                .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
         }
     }
@@ -506,7 +506,7 @@ struct DebugFrameSheet: View {
 
     private func labelled<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(title).font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
             content().frame(minHeight: 44)
         }
     }
@@ -530,10 +530,10 @@ private struct DebugCollapsibleSection<Content: View>: View {
                 withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
-                    Text(title).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                    Text(title).font(NitrateTypography.font(.subheadline).weight(.medium)).foregroundStyle(.primary)
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
+                        .font(NitrateTypography.font(.footnote).weight(.semibold))
                         .foregroundStyle(.secondary)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 }

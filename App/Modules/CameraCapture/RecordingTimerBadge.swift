@@ -10,7 +10,7 @@ struct RecordingTimerBadge: View {
     var body: some View {
         Text(text)
             .lineLimit(1)
-            .font(.caption.monospacedDigit())
+            .font(NitrateTypography.font(.caption).monospacedDigit())
             .foregroundStyle(.white)
             .fixedSize()
             .padding(.horizontal, 8)

@@ -42,8 +42,8 @@ Store binary.
 
 | Product ID | Type | Fixture price (USD) |
 | --- | --- | --- |
-| `com.nitrate.subscription.yearly` | Recurring subscription, `P1Y` | 5.00 |
-| `com.nitrate.lifetime` | Non-consumable | 10.00 |
+| `com.nitrate.subscription.yearly` | Recurring subscription, `P1Y` | 4.99 |
+| `com.nitrate.lifetime` | Non-consumable | 9.99 |
 
 These are the owner-approved US base prices. The live checkout never hardcodes
 them: a purchase button shows `Product.displayPrice` from StoreKit and stays

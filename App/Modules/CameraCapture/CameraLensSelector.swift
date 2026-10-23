@@ -46,24 +46,18 @@ struct CameraLensSelector: View {
     }
 
     private var triggerLabel: some View {
-        Group {
-            if selectedLens == .front {
-                Image(systemName: "camera.rotate").font(.system(size: 17, weight: .medium))
-            } else {
-                VStack(spacing: 0) {
-                    Text("\(selectedLens.focalLengthMM)")
-                        .font(.system(size: 14, weight: .semibold, design: .rounded).monospacedDigit())
-                    Text("mm").font(.system(size: 9, weight: .medium))
-                }
-            }
-        }
-        .rotationEffect(.degrees(CameraGlyphRotation.degrees(for: deviceOrientation)))
-        .foregroundStyle(.white)
-        .frame(width: 44, height: 44)
+        // One opening affordance for every lens: the aperture glyph only, with
+        // no per-lens number or unit. The active lens still reads out via the
+        // button's accessibility value.
+        Image(systemName: "camera.aperture")
+            .font(NitrateTypography.font(size: 17))
+            .rotationEffect(.degrees(CameraGlyphRotation.degrees(for: deviceOrientation)))
+            .foregroundStyle(.white)
+            .frame(width: 44, height: 44)
     }
 
     private var lensWell: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 60), spacing: 8)], spacing: 8) {
             ForEach(availableLenses) { lens in
                 lensKey(lens)
             }
@@ -73,9 +67,9 @@ struct CameraLensSelector: View {
         .padding(4)
         .cameraControlWell(cornerRadius: 16)
         // Separate transparent clearance keeps key shadows and the rim away
-        // from the presentation boundary. 264pt also fits a 320pt screen.
+        // from the presentation boundary.
         .padding(10)
-        .frame(width: 264)
+        .frame(width: 180)
         .fixedSize(horizontal: false, vertical: true)
         .environment(\.cameraDeviceOrientation, deviceOrientation)
         .accessibilityLabel("Available camera lenses")
@@ -87,8 +81,7 @@ struct CameraLensSelector: View {
             isPresented = false
             onSelectLens(lens)
         } label: {
-            CameraLensFace(title: title(lens),
-                           focalLength: lens == .front ? nil : "\(lens.focalLengthMM)",
+            CameraLensFace(label: lens == .front ? "Front" : "\(lens.focalLengthMM)",
                            rotationDegrees: CameraGlyphRotation.degrees(for: deviceOrientation),
                            isSelected: isSelected)
                 .foregroundStyle(isSelected ? .black : .white)

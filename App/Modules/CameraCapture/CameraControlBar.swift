@@ -9,6 +9,11 @@ struct CameraControlBar: View {
     @Environment(\.cameraDeviceOrientation) private var orientation
     private let controlFaceSize: CGFloat = 38
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The persisted face choice. Resolved through `RecordButtonAppearance` so
+    /// an unknown or missing value keeps the classic plunger; the same key and
+    /// default are used by the Settings picker.
+    @AppStorage(RecordButtonAppearance.preferenceKey)
+    private var recordButtonAppearance = RecordButtonAppearance.classic.rawValue
     /// True only while the exposure control is being held, whether or not the
     /// press has reached the long-press threshold. `LongPressGesture` feeds it
     /// through `.updating`, so the expanding acknowledgement starts during the
@@ -35,6 +40,10 @@ struct CameraControlBar: View {
     /// hint only. It adds no layout or hit target: the ring is a non-hit-testing
     /// overlay and never repeats.
     let showsStockHint: Bool
+    /// Horizontal inset around the shooting bar. The alignment pass passes a
+    /// smaller value so the outer controls line up with the viewfinder edges;
+    /// 16 keeps the original spacing when the caller omits it.
+    var horizontalInset: CGFloat = 16
 
     var body: some View {
         CameraShootingLayout() {
@@ -43,7 +52,7 @@ struct CameraControlBar: View {
             recordButton
             exposureControl.frame(width: CameraControlGeometry.exposureWidth)
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, horizontalInset)
     }
 
     // MARK: - Left selector row
@@ -60,7 +69,7 @@ struct CameraControlBar: View {
                                  rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
             }
         }
-        .cameraControlWell(cornerRadius: 12)
+        .cameraControlWell(horizontalPadding: 4)
         .overlay {
             StockSelectorHintOutline(isVisible: showsStockHint)
                 .allowsHitTesting(false)
@@ -81,7 +90,7 @@ struct CameraControlBar: View {
                 Button {
                     onShowStockSheet()
                 } label: {
-                    Image(systemName: "film").font(.title3)
+                    Image(systemName: "film").font(NitrateTypography.font(.title3))
                     .foregroundStyle(.white)
                     .frame(width: faceSize, height: faceSize)
                     .frame(minWidth: 44, minHeight: 44)
@@ -108,8 +117,8 @@ struct CameraControlBar: View {
 
     // MARK: - Exposure control (dual mode)
 
-    /// The live meter and setting share the existing 92pt column: 28pt meter,
-    /// 56pt ruler, and two 4pt rims. The footprint stays clear of centred REC
+    /// The live meter and setting share the compact 84pt column: 28pt meter,
+    /// 48pt ruler, and two 4pt rims. The footprint stays clear of centred REC
     /// and the left queue/remaining-time column even on a 320pt-wide phone.
     private var exposureControl: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -120,11 +129,11 @@ struct CameraControlBar: View {
                 isAvailable: cameraViewModel.hasExposureMeter
             )
             exposureSetting
-                .frame(width: 56)
+                .frame(width: 48)
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 6)
-        .modifier(CameraRaisedSurface(cornerRadius: 14))
+        .modifier(CameraInsetSurface())
         .contentShape(Rectangle())
         // Visible hold acknowledgement: a small spring expansion the instant the
         // finger lands, springing back on release or cancellation. Reduce Motion
@@ -133,7 +142,7 @@ struct CameraControlBar: View {
         // overlay are applied; columns and touch targets are unchanged.
         .scaleEffect(reduceMotion ? 1 : (isExposureHolding ? 1.07 : 1))
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: CameraControlBorder.cornerRadius, style: .continuous)
                 .stroke(.white.opacity(0.9), lineWidth: 1.5)
                 .opacity(reduceMotion && isExposureHolding ? 1 : 0)
         }
@@ -199,7 +208,7 @@ struct CameraControlBar: View {
     private var exposureSetting: some View {
         VStack(spacing: 6) {
             Text(exposureReadout)
-                .font(.caption2.monospacedDigit())
+                .font(NitrateTypography.font(.caption2).monospacedDigit())
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
                 .frame(height: 14)
@@ -239,7 +248,7 @@ struct CameraControlBar: View {
             // Keep the previous footer's exact font height without its words.
             // This preserves the shooting bar and viewfinder geometry.
             Text(" ")
-                .font(.system(size: 9, weight: .bold))
+                .font(NitrateTypography.font(size: 9))
                 .accessibilityHidden(true)
         }
     }
@@ -356,10 +365,22 @@ struct CameraControlBar: View {
         .accessibilityLabel(RecordButtonPresentationPolicy.accessibilityLabel(for: presentation))
     }
 
-    /// Shared circular plunger: quiet washed red in every state, no bezel slab.
+    /// The chosen face. Both share the 84pt footprint, the press feedback and
+    /// the state machine owned by `RecordButtonPresentationPolicy`; only the
+    /// drawn appearance differs.
+    @ViewBuilder
     private func recordFace(_ presentation: RecordButtonPresentation) -> some View {
-        RecordPlungerFace(presentation: presentation, isPressed: isUnclicked,
-                          rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
+        switch RecordButtonAppearance.resolved(recordButtonAppearance) {
+        case .classic:
+            // Shipping circular plunger: quiet washed red in every state, no
+            // bezel slab. Its press animation is unchanged.
+            RecordPlungerFace(presentation: presentation, isPressed: isUnclicked,
+                              rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
+        case .modern:
+            ModernRecordButtonFace(presentation: presentation, isPressed: isUnclicked,
+                                   rotationDegrees: CameraGlyphRotation.degrees(for: orientation),
+                                   reduceMotion: reduceMotion)
+        }
     }
 
     /// Immediate 2.5pt depression, released at the established 100ms unclick.
@@ -399,7 +420,7 @@ struct CameraControlBar: View {
                     estimatedSeconds: estimatedRemainingSeconds,
                     isStorageLow: isStorageLow,
                     queueStatus: queueStatus,
-                    isRecording: recordPresentation == .recording,
+                    isRecording: recordPresentation.showsLiveChrome,
                     isStopping: cameraViewModel.isStoppingRecording
                 )
             }
@@ -407,7 +428,7 @@ struct CameraControlBar: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Storage, render queue, and estimated recording time remaining")
-        .accessibilityValue("\(recordPresentation == .recording ? "Recording. " : "")"
+        .accessibilityValue("\(recordPresentation.showsLiveChrome ? "Recording. " : "")"
                             + "\(estimatedTimeText). \(freeSpaceText) free. "
                             + "\(isStorageLow ? "Low storage. " : "")\(queueStatus.accessibilityDescription)")
         .accessibilityHint("Tap for storage and render queue details, video playback, sharing, and retry controls.")

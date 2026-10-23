@@ -44,15 +44,15 @@ struct QueueReceiptCard: View {
                     poster.accessibilityLabel("Local thumbnail; Photos save not confirmed")
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(job.receiptTitle).font(.headline)
+                    Text(job.receiptTitle).font(NitrateTypography.font(.headline))
                     Text(subtitle)
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
                     Text((job.receipt?.recordedAt ?? job.createdAt).formatted(date: .abbreviated, time: .shortened))
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
                     if job.outputSavedToPhotos == true {
-                        Text("Rendered saved to Photos").font(.caption).foregroundStyle(.secondary)
+                        Text("Rendered saved to Photos").font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
                     } else if job.sourceSavedToPhotos == true {
-                        Text("Original saved to Photos").font(.caption).foregroundStyle(.secondary)
+                        Text("Original saved to Photos").font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -67,11 +67,11 @@ struct QueueReceiptCard: View {
                 }
             }
             if let reason = job.retainedReason {
-                Text("Kept original: \(reason)").font(.caption).foregroundStyle(.secondary)
+                Text("Kept original: \(reason)").font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
             }
             if let warning = job.cleanupWarning {
                 Label(warning, systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(NitrateTypography.font(.caption)).foregroundStyle(.orange)
             }
         }
         .padding(.vertical, prominent ? 8 : 4)
@@ -90,7 +90,7 @@ struct QueueReceiptCard: View {
             } else {
                 VStack(spacing: 4) {
                     Image(systemName: "photo")
-                    Text("No thumbnail").font(.caption2)
+                    Text("No thumbnail").font(NitrateTypography.font(.caption2))
                 }
                 .foregroundStyle(.secondary)
             }
@@ -174,14 +174,14 @@ struct QueueReceiptMetadataView: View {
                     detail("Local media cleanup", cleanupStatus)
                     if let warning = job.cleanupWarning { detail("Cleanup warning", warning) }
                     Text("Photos owns saved full-resolution videos. Open Photos and look in Recently Saved; this app does not read your photo library.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
                 }
                 Section("Queued settings") {
                     detail("Stock identifier", QueueReceiptPresentation.text(job.stockId))
                     detail("Print gauge", QueueReceiptPresentation.text(job.printGauge?.rawValue))
                     detail("Selected render ISO", QueueReceiptPresentation.number(Double(job.iso)))
                     Text("Queued settings are not measured capture ISO or proof of the delivered file's contents. Unavailable details were not recorded; they are not filled from today's stock catalog.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Metadata")
@@ -194,8 +194,8 @@ struct QueueReceiptMetadataView: View {
 
     private func detail(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.body).textSelection(.enabled)
+            Text(title).font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
+            Text(value).font(NitrateTypography.font(.body)).textSelection(.enabled)
         }.accessibilityElement(children: .combine)
     }
 

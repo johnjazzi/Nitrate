@@ -22,6 +22,9 @@ struct NitrateApp: App {
     }
 
     init() {
+        // Load the bundled Barlow Semi Condensed Medium face before any view
+        // renders, so every text run — including the first frame — uses it.
+        NitrateTypography.registerBundledFont()
         CameraHaptics.prepareForCaptureFeedback()
         let library = FilmStockLibrary()
         var loadError: String?
@@ -54,6 +57,7 @@ struct NitrateApp: App {
                 purchaseViewModel: purchaseViewModel,
                 stockSelectorHint: stockSelectorHint
             )
+            .font(NitrateTypography.font(.body))
             .preferredColorScheme(.dark)
             .allowsHitTesting(!showsStartupSplash)
             .accessibilityHidden(showsStartupSplash)

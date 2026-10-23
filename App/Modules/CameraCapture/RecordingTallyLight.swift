@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// A steady tally avoids suggesting a take is live before capture confirms it.
+/// A steady tally acknowledges an accepted take, including cancellable startup.
 struct RecordingTallyLight: View {
     let isRecording: Bool
 

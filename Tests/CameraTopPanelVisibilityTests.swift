@@ -25,9 +25,9 @@ struct CameraTopPanelVisibilityTests {
                         } lens: {
                             Text("24 mm").foregroundStyle(.white)
                                 .frame(width: 44, height: 44)
-                                .opacity(state == .recording ? 0 : 1)
+                                .opacity(state == .recording || state == .starting ? 0 : 1)
                         } status: {
-                            if state == .recording {
+                            if state == .recording || state == .starting {
                                 RecordingStatusFace(presentation: .recording, text: "00:01.00",
                                                     rotationDegrees: degrees)
                             }

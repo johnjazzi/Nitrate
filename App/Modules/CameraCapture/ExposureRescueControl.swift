@@ -107,9 +107,9 @@ struct ExposureRescueButton: View {
         Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: armed ? "bolt.fill" : "sun.max.fill")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(NitrateTypography.font(size: 13))
                 Text(armed ? "60 fps" : "Too bright?")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(NitrateTypography.font(size: 11))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }
@@ -166,14 +166,14 @@ struct DaylightExposureRescueModal: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(armed ? "Daylight 60 fps is on" : "24 fps or 60 fps?")
-                .font(.system(size: 19, weight: .semibold))
+                .font(NitrateTypography.font(size: 19))
                 .foregroundStyle(.white)
 
             if !armed {
                 Text("Films are shot at 24 fps (except The Hobbit, but we don't count that). "
                      + "Over 100 years ago we found a perfect balance: 24 fps with a 180° shutter, "
                      + "just enough blur to feel real and present.")
-                    .font(.footnote)
+                    .font(NitrateTypography.font(.footnote))
                     .foregroundStyle(.white.opacity(0.88))
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -182,18 +182,18 @@ struct DaylightExposureRescueModal: View {
                  + "This mode sets 60 fps and drops the shutter to 1/120 — about 1.3 stops less light — "
                  + "giving you the ability to shoot in daylight. An ND filter is the better answer "
                  + "if you can use one.")
-                .font(.footnote)
+                .font(NitrateTypography.font(.footnote))
                 .foregroundStyle(.white.opacity(0.88))
                 .fixedSize(horizontal: false, vertical: true)
 
             Text("Session-only: it reverts to 24 fps when the camera session ends and is never saved.")
-                .font(.caption)
+                .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.white.opacity(0.6))
                 .fixedSize(horizontal: false, vertical: true)
 
             if let blockedReason {
                 Text(blockedReason)
-                    .font(.caption)
+                    .font(NitrateTypography.font(.caption))
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -236,7 +236,7 @@ struct DaylightExposureRescueModal: View {
                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 15, weight: .semibold))
+                .font(NitrateTypography.font(size: 15))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
                 .padding(.horizontal, 18)

@@ -32,15 +32,15 @@ struct RenderStatusButton: View {
                         loadingRing
                     } else if hasError {
                         Image(systemName: "exclamationmark.circle.fill")
-                            .font(.system(size: 30))
+                            .font(NitrateTypography.font(size: 30))
                             .foregroundStyle(.red)
                     } else if isComplete {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 30))
+                            .font(NitrateTypography.font(size: 30))
                             .foregroundStyle(.green)
                     } else {
                         Image(systemName: "list.bullet")
-                            .font(.title2)
+                            .font(NitrateTypography.font(.title2))
                             .foregroundStyle(.white)
                     }
                 }
@@ -48,7 +48,7 @@ struct RenderStatusButton: View {
 
                 if outstandingCount > 1 {
                     Text("\(outstandingCount)")
-                        .font(.caption2.weight(.bold).monospacedDigit())
+                        .font(NitrateTypography.font(.caption2).weight(.bold).monospacedDigit())
                         .foregroundStyle(.white)
                         .padding(4)
                         .background(.purple, in: Capsule())

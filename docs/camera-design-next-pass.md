@@ -1,6 +1,6 @@
 # Camera design: next simplification pass
 
-Status: requested after the stock-outline pulse and compact DEBUG work. This is the design brief, not a claim that the changes are implemented.
+Status: implemented on the isolated design integration branch, not included in release PR #25. Native tests/builds are recorded per commit; appearance and interaction remain subject to hands-on review.
 
 ## Preserve
 
@@ -13,7 +13,7 @@ Compare two treatments before committing to a palette:
 1. Use a very dark green for the app background, darker than the current LCD green.
 2. Keep the dark app background and reuse the LCD surface color for the exposure well and the surfaces behind buttons.
 
-The owner has not selected between these treatments. Keep the live camera image and film transform unchanged; these are chrome colors, not a new image grade.
+The owner subsequently requested removing the green LCD. The LCD now uses the exposure well’s neutral raised material; the overall app background and camera image remain unchanged.
 
 ## Configurable record-button appearance
 
@@ -25,11 +25,11 @@ The modern button has:
 - A red recording face with a white square stop symbol instead of REC.
 - A smooth transition between idle and recording appearances, with a non-moving Reduce Motion treatment.
 
-Use the existing capture state machine and retain starting, recording and finalization safety gates; appearance must not falsely claim a take started or change when the button can stop a take. The default appearance is not yet selected.
+Use the existing capture state machine and retain starting, recording and finalization safety gates; appearance must not falsely claim a take started or change when the button can stop a take. Classic remains the default for existing behavior; Settings → Preview → Record button selects Modern.
 
 ## Align the lower controls to the frame
 
-Move the selectors inward so the outside edges of the exposure selector and LCD/stock selector line up with the corresponding sides of the existing viewfinder. Do not widen the frame to meet the controls. Preserve the image rectangle, minimum touch targets, whole-well exposure hold and stock-outline behavior, and access to recording and queue controls.
+Move the selectors inward relative to the existing viewfinder. The follow-up request adds 4pt of breathing room inside its sides. Both columns are 84pt wide; the stock face retains its 44pt target and the exposure ruler has 48pt of width. Vertical height and the viewfinder rectangle are unchanged. Where exact inset cannot fit, preserve the non-overlapping minimum row width. Do not widen the frame to meet the controls. Preserve the image rectangle, minimum touch targets, whole-well exposure hold and stock-outline behavior, and access to recording and queue controls.
 
 ## Validation
 

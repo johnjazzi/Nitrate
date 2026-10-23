@@ -181,14 +181,14 @@ struct StockCarouselCard: View {
 
             HStack(spacing: 4) {
                 Text(stock.lightType)
-                    .font(.system(size: 9, weight: .bold))
+                    .font(NitrateTypography.font(size: 9))
                     .foregroundStyle(.black)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 1)
                     .background(stock.primaryColor)
                     .clipShape(RoundedRectangle(cornerRadius: 3))
                 Text(stock.displayName)
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(NitrateTypography.font(size: 10))
                     .foregroundStyle(isSelected ? .white : .secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)

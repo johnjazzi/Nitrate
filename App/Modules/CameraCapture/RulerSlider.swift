@@ -159,7 +159,7 @@ struct RulerSlider: View {
 
             if tick.isMajor {
                 let label = Text(tickLabel(tick.value))
-                    .font(.system(size: 8, weight: .medium, design: .monospaced))
+                    .font(NitrateTypography.font(size: 8))
                     .foregroundStyle(.white.opacity(0.7))
                 drawLabel(label, in: context, tickY: tickY)
             }
