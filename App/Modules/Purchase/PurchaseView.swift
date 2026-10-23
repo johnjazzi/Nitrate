@@ -8,6 +8,7 @@ struct PurchaseView: View {
     @AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.neutral.rawValue
     @AppStorage(DeliverySettings.saveOriginalLogKey) private var saveOriginalLog = false
     @AppStorage(DeliverySettings.renderQualityKey) private var renderQuality = RenderExportQuality.high.rawValue
+    @AppStorage(RecordButtonAppearance.preferenceKey) private var recordButtonAppearance = RecordButtonAppearance.classic.rawValue
 #if DEBUG
     @AppStorage(DebugControlPreferences.showsDebugButtonKey) private var showsDebugButton = true
     @AppStorage(DebugControlPreferences.showsFaultButtonKey) private var showsFaultButton = true
@@ -267,6 +268,17 @@ struct PurchaseView: View {
                 }
             }
             Text("Top status lamp and elapsed timer only. WAIT means capture is not yet confirmed; REC confirms capture; STOP freezes the timer while finalizing. The physical REC button stays red.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Picker("Record button", selection: Binding(
+                get: { RecordButtonAppearance.resolved(recordButtonAppearance) },
+                set: { recordButtonAppearance = $0.rawValue })) {
+                ForEach(RecordButtonAppearance.allCases) { appearance in
+                    Text(appearance.title).tag(appearance)
+                }
+            }
+            Text("Classic is the physical plunger; Modern is a flat black and red cap. Both share the same tap, haptics and capture safety.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

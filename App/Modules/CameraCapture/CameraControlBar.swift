@@ -9,6 +9,11 @@ struct CameraControlBar: View {
     @Environment(\.cameraDeviceOrientation) private var orientation
     private let controlFaceSize: CGFloat = 38
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The persisted face choice. Resolved through `RecordButtonAppearance` so
+    /// an unknown or missing value keeps the classic plunger; the same key and
+    /// default are used by the Settings picker.
+    @AppStorage(RecordButtonAppearance.preferenceKey)
+    private var recordButtonAppearance = RecordButtonAppearance.classic.rawValue
     /// True only while the exposure control is being held, whether or not the
     /// press has reached the long-press threshold. `LongPressGesture` feeds it
     /// through `.updating`, so the expanding acknowledgement starts during the
@@ -35,6 +40,10 @@ struct CameraControlBar: View {
     /// hint only. It adds no layout or hit target: the ring is a non-hit-testing
     /// overlay and never repeats.
     let showsStockHint: Bool
+    /// Horizontal inset around the shooting bar. The alignment pass passes a
+    /// smaller value so the outer controls line up with the viewfinder edges;
+    /// 16 keeps the original spacing when the caller omits it.
+    var horizontalInset: CGFloat = 16
 
     var body: some View {
         CameraShootingLayout() {
@@ -43,7 +52,7 @@ struct CameraControlBar: View {
             recordButton
             exposureControl.frame(width: CameraControlGeometry.exposureWidth)
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, horizontalInset)
     }
 
     // MARK: - Left selector row
@@ -356,10 +365,22 @@ struct CameraControlBar: View {
         .accessibilityLabel(RecordButtonPresentationPolicy.accessibilityLabel(for: presentation))
     }
 
-    /// Shared circular plunger: quiet washed red in every state, no bezel slab.
+    /// The chosen face. Both share the 84pt footprint, the press feedback and
+    /// the state machine owned by `RecordButtonPresentationPolicy`; only the
+    /// drawn appearance differs.
+    @ViewBuilder
     private func recordFace(_ presentation: RecordButtonPresentation) -> some View {
-        RecordPlungerFace(presentation: presentation, isPressed: isUnclicked,
-                          rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
+        switch RecordButtonAppearance.resolved(recordButtonAppearance) {
+        case .classic:
+            // Shipping circular plunger: quiet washed red in every state, no
+            // bezel slab. Its press animation is unchanged.
+            RecordPlungerFace(presentation: presentation, isPressed: isUnclicked,
+                              rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
+        case .modern:
+            ModernRecordButtonFace(presentation: presentation, isPressed: isUnclicked,
+                                   rotationDegrees: CameraGlyphRotation.degrees(for: orientation),
+                                   reduceMotion: reduceMotion)
+        }
     }
 
     /// Immediate 2.5pt depression, released at the established 100ms unclick.
