@@ -8,6 +8,8 @@ struct ManualControlsPanel: View {
     @Binding var isManualFocus: Bool
     @Binding var expanded: Bool
     let landscape: Bool
+    /// Live Zoom toggle shared with Settings: on shows the in-frame zoom ruler.
+    var zoomControlsEnabled: Binding<Bool> = .constant(false)
     let onDismiss: () -> Void
 
     var body: some View {
@@ -16,6 +18,7 @@ struct ManualControlsPanel: View {
                           set: { cameraViewModel.setDisplayZoom($0) }),
             focus: $manualFocusPosition, manualFocus: $isManualFocus,
             expanded: $expanded, landscape: landscape,
+            zoomControlsEnabled: zoomControlsEnabled,
             zoomRange: zoomRange,
             zoomIsPerLens: cameraViewModel.zoomSnapshot?.isPerLens ?? true,
             zoomAvailable: cameraViewModel.zoomSnapshot != nil,

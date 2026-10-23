@@ -6,20 +6,22 @@ import SwiftUI
 /// The capture canvas is portrait-locked, so a physical edge maps to a
 /// different canvas edge once the phone is held sideways. This mirrors the
 /// established `ManualControlsOverlayGeometry` convention (a +90° hold maps the
-/// portrait right edge to the physical top). Everything here is pure geometry
-/// derived from the preview rectangle and the measured control bounds; it never
-/// reads a ruler's own size, so a ruler can never feed back into the preview.
+/// portrait right edge to the physical top). Both rulers now hug a physical
+/// side edge: the zoom ruler the physical left, the manual-focus ruler the
+/// physical right. Everything here is pure geometry derived from the preview
+/// rectangle and the measured control bounds; it never reads a ruler's own
+/// size, so a ruler can never feed back into the preview.
 enum FrameRulerPlacementGeometry {
     static let focusThickness: CGFloat = 44
     static let zoomThickness: CGFloat = 44
     static let margin: CGFloat = 8
 
-    /// The edge of the physical frame the ruler hugs.
+    /// The side edge of the physical frame the ruler hugs.
     enum PhysicalEdge: Equatable {
+        /// The frame's physical left edge (the zoom ruler).
+        case left
         /// The frame's physical right edge (the focus ruler).
         case right
-        /// The frame's physical bottom edge (the focal-length zoom ruler).
-        case bottom
     }
 
     /// The canvas edge that carries a physical edge for a given quarter turn.
@@ -28,20 +30,20 @@ enum FrameRulerPlacementGeometry {
     }
 
     /// Canvas edge for `edge` at `orientationDegrees`. Portrait (0°) keeps the
-    /// physical right on the canvas right and the physical bottom on the canvas
-    /// bottom; a +90° hold puts the physical right on the canvas bottom and the
-    /// physical bottom on the canvas left; a -90° hold is the mirror image.
+    /// physical left on the canvas left and the physical right on the canvas
+    /// right; a +90° hold puts the physical right on the canvas bottom and the
+    /// physical left on the canvas top; a -90° hold is the mirror image.
     static func canvasEdge(for edge: PhysicalEdge, orientationDegrees: Double) -> CanvasEdge {
         switch (edge, normalized(orientationDegrees)) {
         case (.right, 0): return .right
         case (.right, 90): return .bottom
         case (.right, -90): return .top
         case (.right, 180): return .left
-        case (.bottom, 0): return .bottom
-        case (.bottom, 90): return .left
-        case (.bottom, -90): return .right
-        case (.bottom, 180): return .top
-        default: return edge == .right ? .right : .bottom
+        case (.left, 0): return .left
+        case (.left, 90): return .top
+        case (.left, -90): return .bottom
+        case (.left, 180): return .right
+        default: return edge == .right ? .right : .left
         }
     }
 
@@ -49,24 +51,11 @@ enum FrameRulerPlacementGeometry {
     /// physical `edge` of `frame`, inset by `margin` on every side. Returns
     /// `.null` for a degenerate frame so the caller can skip the ruler.
     static func rect(inFrame originalFrame: CGRect, edge: PhysicalEdge, thickness: CGFloat,
-                     orientationDegrees: Double, margin: CGFloat = margin,
-                     bottomClearance: CGFloat = 0) -> CGRect {
+                     orientationDegrees: Double, margin: CGFloat = margin) -> CGRect {
         guard originalFrame.width.isFinite, originalFrame.height.isFinite,
               originalFrame.minX.isFinite, originalFrame.minY.isFinite,
-              thickness.isFinite, thickness > 0, margin.isFinite, margin >= 0,
-              bottomClearance.isFinite, bottomClearance >= 0 else { return .null }
-        var frame = originalFrame
-        // Keep the focus track clear of the bottom zoom controls in every hold.
-        switch canvasEdge(for: .bottom, orientationDegrees: orientationDegrees) {
-        case .bottom: frame.size.height -= bottomClearance
-        case .top:
-            frame.origin.y += bottomClearance
-            frame.size.height -= bottomClearance
-        case .right: frame.size.width -= bottomClearance
-        case .left:
-            frame.origin.x += bottomClearance
-            frame.size.width -= bottomClearance
-        }
+              thickness.isFinite, thickness > 0, margin.isFinite, margin >= 0 else { return .null }
+        let frame = originalFrame
         let canvasEdge = canvasEdge(for: edge, orientationDegrees: orientationDegrees)
         let isVertical = canvasEdge == .left || canvasEdge == .right
         let run = max(0, (isVertical ? frame.height : frame.width) - 2 * margin)
@@ -102,7 +91,9 @@ enum FrameRulerPlacementGeometry {
 /// Places one ruler along a physical frame edge. The content is authored in the
 /// upright portrait axis; a ±90° hold turns the whole slot so the ruler keeps
 /// the physical edge it was asked for while its glyphs stay readable — the same
-/// single-outer-rotation pattern as `ManualControlsOverlay`.
+/// single-outer-rotation pattern as `ManualControlsOverlay`. The slot is clipped
+/// to its rectangle, so content that would overflow cannot paint or take taps
+/// outside the granted slot.
 struct FrameRulerSlot<Content: View>: View {
     let rect: CGRect
     let rotationDegrees: Double
@@ -116,6 +107,7 @@ struct FrameRulerSlot<Content: View>: View {
             .frame(width: authored.width, height: authored.height)
             .rotationEffect(.degrees(rotationDegrees))
             .frame(width: rect.width, height: rect.height)
+            .clipped()
             .position(x: rect.midX, y: rect.midY)
     }
 }

@@ -231,6 +231,45 @@ struct ManualControlsOverlayTests {
         #expect(requested == [.off, .cinematic, .cinematic])
     }
 
+    /// The in-panel Zoom toggle shares the one session switch Settings owns, is
+    /// reachable in the zoom column at the same 44pt row as the AF/MF key, and
+    /// never keeps a second, unsynced piece of state.
+    @MainActor @Test func zoomToggleSharesOneBindingWithSettingsAtAReachableRow() throws {
+        var zoomControls = false
+        let snapshot = CameraStabilizationSnapshot(preferred: .standard,
+                                                   capability: .init(connectionSupported: true, formatModes: [.standard]),
+                                                   activeRawValue: 1, cameraRevision: 1, changesAllowed: true)
+        let surface = ManualControlsSurface(
+            zoom: .constant(2), focus: .constant(0.6), manualFocus: .constant(false),
+            expanded: .constant(false), landscape: false,
+            zoomControlsEnabled: Binding(get: { zoomControls }, set: { zoomControls = $0 }),
+            zoomRange: 1...8, exposure: "ISO 800 · 1/48", apertureReadout: "f/1.8",
+            stabilization: snapshot, canChangeStabilization: true,
+            selectStabilization: { _ in }, dismiss: {}, aperture: { EmptyView() })
+        surface.toggleZoomControls()
+        #expect(zoomControls, "The in-panel Zoom toggle must flip the shared binding on.")
+        surface.toggleZoomControls()
+        #expect(!zoomControls, "The in-panel Zoom toggle must flip the shared binding off.")
+
+        func source(_ path: String) throws -> String {
+            try String(contentsOf: TestRepository.root.appendingPathComponent(path), encoding: .utf8)
+        }
+        let surfaceSource = try source("App/Modules/CameraCapture/ManualControlsSurface.swift")
+        #expect(surfaceSource.contains("Text(\"ZOOM\")"))
+        #expect(surfaceSource.contains(".foregroundStyle(zoomControlsEnabled.wrappedValue ? .orange : .white)"))
+        #expect(surfaceSource.contains("func toggleZoomControls() { zoomControlsEnabled.wrappedValue.toggle() }"))
+        #expect(surfaceSource.contains("var zoomControlsEnabled: Binding<Bool> = .constant(false)"))
+
+        let panelSource = try source("App/Modules/CameraCapture/ManualControlsPanel.swift")
+        #expect(panelSource.contains("zoomControlsEnabled: zoomControlsEnabled"))
+        #expect(panelSource.contains("var zoomControlsEnabled: Binding<Bool> = .constant(false)"))
+
+        let screen = try source("App/ContentView.swift")
+        #expect(screen.contains("zoomControlsEnabled: $zoomControlsEnabled,"))
+        #expect(screen.contains("@State private var focusStops: [ManualFocusStop] = []"))
+        #expect(screen.contains("stops: $focusStops)"))
+    }
+
     @Test func stabilizationToggleRetainsModeButRejectsUnsupportedAndTransitionRequests() {
         let supported = CameraStabilizationPolicy.Capability(connectionSupported: true,
                                                             formatModes: [.standard, .cinematic, .extreme])

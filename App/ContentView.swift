@@ -69,6 +69,9 @@ struct ContentView: View {
     @State private var manualFocusPosition: Double = 0.5
     @State private var isManualFocus = false
     @State private var focusReadGeneration: UInt64 = 0
+    /// Live manual-focus stops surfaced on the in-frame ruler. Session-local:
+    /// never persisted across a launch, and owned by the focus gesture code.
+    @State private var focusStops: [ManualFocusStop] = []
     /// Session-local Settings switches; both default off and never persist
     /// across a launch. Zoom Controls keeps the focal-length ruler and its
     /// hold arrows on screen; Manual Focus shares `isManualFocus` with the
@@ -169,23 +172,30 @@ struct ContentView: View {
                         let rect = FrameRulerPlacementGeometry.rect(
                             inFrame: bounds, edge: .right,
                             thickness: FrameRulerPlacementGeometry.focusThickness,
-                            orientationDegrees: statusRotationDegrees,
-                            bottomClearance: zoomControlsEnabled ? FrameRulerPlacementGeometry.zoomThickness + 8 : 0)
+                            orientationDegrees: statusRotationDegrees)
                         if !rect.isNull {
                             FrameRulerSlot(rect: rect, rotationDegrees: statusRotationDegrees) {
                                 ManualFocusRuler(lensPosition: $manualFocusPosition,
-                                                 enabled: canUseManualFocusRuler)
+                                                 enabled: canUseManualFocusRuler,
+                                                 stops: $focusStops)
                             }
                         }
                     }
                     if zoomControlsEnabled {
                         let rect = FrameRulerPlacementGeometry.rect(
-                            inFrame: bounds, edge: .bottom,
+                            inFrame: bounds, edge: .left,
                             thickness: FrameRulerPlacementGeometry.zoomThickness,
                             orientationDegrees: statusRotationDegrees)
                         if !rect.isNull {
                             FrameRulerSlot(rect: rect, rotationDegrees: statusRotationDegrees) {
-                                zoomRulerWithArrows
+                                FrameZoomRuler(
+                                    millimeters: pinchIsActive ? pinchFocalLength
+                                                               : cameraViewModel.currentFocalLengthMM,
+                                    enabled: canUseZoomControls,
+                                    revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
+                                    begin: { cameraViewModel.beginSlowZoom($0) },
+                                    end: cameraViewModel.endSlowZoom(revision:),
+                                    step: cameraViewModel.stepDisplayZoom)
                             }
                         }
                     }
@@ -204,6 +214,7 @@ struct ContentView: View {
                             isManualFocus: manualFocusBinding,
                             expanded: $manualControlsExpanded,
                             landscape: abs(statusRotationDegrees) == 90,
+                            zoomControlsEnabled: $zoomControlsEnabled,
                             onDismiss: {
                                 cameraViewModel.endSlowZoom()
                                 withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false }
@@ -520,29 +531,6 @@ struct ContentView: View {
     private var canUseZoomControls: Bool {
         scenePhase == .active && !captureBusy && cameraViewModel.zoomSnapshot != nil
             && !showSettings && !showQueueSheet && !showStockSheet && !showDaylightRescue
-    }
-
-    /// The focal-length ruler with its left/right hold arrows, at the physical
-    /// bottom of the frame. Both arrows reuse `ZoomHoldControl`, so release,
-    /// drag-off and revision cancellation behave exactly as the panel's keys.
-    private var zoomRulerWithArrows: some View {
-        HStack(spacing: 8) {
-            ZoomHoldControl(symbol: "chevron.left", label: "Zoom out",
-                            enabled: canUseZoomControls,
-                            revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
-                            begin: { cameraViewModel.beginSlowZoom(.out) },
-                            end: cameraViewModel.endSlowZoom(revision:),
-                            step: { cameraViewModel.stepDisplayZoom(.out) })
-            FocalLengthRuler(millimeters: pinchIsActive ? pinchFocalLength
-                                                        : cameraViewModel.currentFocalLengthMM)
-            ZoomHoldControl(symbol: "chevron.right", label: "Zoom in",
-                            enabled: canUseZoomControls,
-                            revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
-                            begin: { cameraViewModel.beginSlowZoom(.in) },
-                            end: cameraViewModel.endSlowZoom(revision:),
-                            step: { cameraViewModel.stepDisplayZoom(.in) })
-        }
-        .frame(height: 44)
     }
 
     /// The bounded region a ruler may occupy: the live preview rectangle clipped

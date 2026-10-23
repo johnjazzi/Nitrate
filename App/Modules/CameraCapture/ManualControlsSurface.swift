@@ -41,6 +41,9 @@ struct ManualControlsSurface<Aperture: View>: View {
     @Binding var manualFocus: Bool
     @Binding var expanded: Bool
     let landscape: Bool
+    /// Live Zoom toggle shared with Settings: on shows the in-frame zoom ruler.
+    /// Defaults off so a surface hosted on its own never writes a preference.
+    var zoomControlsEnabled: Binding<Bool> = .constant(false)
     let zoomRange: ClosedRange<Double>
     var zoomIsPerLens = false
     var zoomAvailable = true
@@ -93,10 +96,29 @@ struct ManualControlsSurface<Aperture: View>: View {
                 .accessibilityLabel("Close manual controls")
             }
             HStack(alignment: .top, spacing: expandedLayout ? 10 : 4) {
-                column(zoomIsPerLens ? "LENS" : "ZOOM", readout: zoomAvailable ? String(format: "%.1fx", zoom) : "—") {
+                VStack(spacing: 0) {
+                    title(zoomIsPerLens ? "LENS" : "ZOOM")
                     track(value: $zoom, range: zoomRange, step: 0.1, label: "Zoom")
                         .disabled(!zoomAvailable || zoomRange.lowerBound == zoomRange.upperBound)
+                    // The Zoom toggle shares the zoom column's readout row — the
+                    // same 44pt reachable row as the focus column's AF/MF key — so
+                    // the two columns stay the same height and the panel keeps its
+                    // bounded compact/expanded face without scrolling.
+                    Button(action: toggleZoomControls) {
+                        VStack(spacing: 0) {
+                            Text("ZOOM")
+                            Text(zoomAvailable ? String(format: "%.1fx", zoom) : "—")
+                                .font(NitrateTypography.font(size: 9))
+                                .monospacedDigit()
+                        }
+                        .foregroundStyle(zoomControlsEnabled.wrappedValue ? .orange : .white)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .accessibilityLabel("Zoom controls")
+                    .accessibilityValue(zoomControlsEnabled.wrappedValue ? "On" : "Off")
+                    .accessibilityHint("Show or hide the in-frame zoom ruler")
                 }
+                .frame(maxWidth: .infinity)
                 VStack(spacing: 0) {
                     title("FOCUS")
                     track(value: $focus, range: 0...1, step: 0.01, label: "Focus")
@@ -232,6 +254,7 @@ struct ManualControlsSurface<Aperture: View>: View {
     // Named actions are shared by the live controls and focused binding tests.
     func toggleExpanded() { expanded.toggle() }
     func toggleFocus() { manualFocus.toggle() }
+    func toggleZoomControls() { zoomControlsEnabled.wrappedValue.toggle() }
 
     func setStabilizationEnabled(_ enabled: Bool) {
         guard canChangeStabilization,
