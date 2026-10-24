@@ -21,12 +21,9 @@ you no preview of it at all.
 
 Three commitments follow from that:
 
-- **Camera first, not an editing app.** Everything that decides the image —
-  stock, gauge, exposure, white balance — is set before or during capture. There
-  is no timeline, no clip browser, no grade page. Simple editing (trim,
-  re-render, rearrange) is planned and deliberately not built yet. The render
-  queue and the saved original Log exist so it can be added without
-  re-architecting capture.
+- **A focused workflow.** Choose a film stock, capture a take, and render to
+  Photos. The planned import flow will apply the same stock rendering to a
+  selected Apple Log 2 video, within the permanent scope promise below.
 - **The original is never destroyed.** The camera writes a real Apple Log 2
   recording. The film look is a render of that file, and the Log original can be
   kept alongside the render. Nothing is baked in at capture time.
@@ -34,6 +31,21 @@ Three commitments follow from that:
   modelled as physical effects with per-stock geometry. Grain comes from a
   coherent multi-scale field; halation is highlight light scattering at a
   per-stock radius. Neither is a texture laid over a look-up table.
+
+## Our scope promise
+
+**Nitrate will never add trimming, timelines, projects, or editing adjustments.**
+
+The planned video import flow is **pick a file → pick a stock → press Render →
+save to Photos**. It will support **Apple Log 2 only**, with no preview or
+playback of the selected clip or rendered result inside Nitrate. Watch the
+finished video in Photos.
+
+Import will access only the video selected through the system Photos picker,
+without requesting photo-library read permission. Saving will use add-only
+Photos access. The original video will remain unchanged.
+
+This scope applies to future releases as well.
 
 ## Privacy
 
@@ -120,7 +132,7 @@ clip, and re-checks settings against the hardware instead of assuming them.
   keys inset in a well.
 - **Storage & Queue** is a single sheet opened by one tap on the status LCD:
   space and remaining-time estimate first, queue activity and history below,
-  with playback, sharing, retry and error detail.
+  with render progress, saved history, metadata, retry and error detail.
 - **Frame mode** fits the preview into a bounded viewfinder between the top and
   bottom control bars, with black around it, instead of leaving a thin border
   over full-screen video. Focus taps, metering coordinates and pinch zoom stay
@@ -409,9 +421,11 @@ launch splash renders them through `AppVersion` (`App/AppIdentity.swift`).
 
 ## Status and known limits
 
-- **Not yet built:** any editing surface. Trim, re-render and rearrange is the
-  next planned area. The hardware capture button on supported iPhones, flash
-  control, and realistic gate jitter and weave are also open.
+- **Next planned feature:** Apple Log 2 video import: pick a file, pick a stock,
+  press Render, and save to Photos. It will have no in-app preview or playback.
+  The permanent exclusions are listed in [Our scope promise](#our-scope-promise).
+- **Other open work:** the hardware capture button on supported iPhones, flash
+  control, and realistic gate jitter and weave.
 - **Recording timing:** delayed-stabilization startup and stop-boundary defects
   are fixed. All eight preview/stabilization combinations passed the unchanged
   0.12-second device checks. See [the investigation](docs/recording-av-timing.md)
