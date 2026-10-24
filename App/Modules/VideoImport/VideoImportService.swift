@@ -17,7 +17,7 @@ enum VideoImportError: LocalizedError {
         switch self {
         case .unsupported: return "Choose an Apple Log 2 video."
         case .unreadable: return "This video could not be read. Try selecting it again."
-        case .insufficientStorage: return "Free some storage before importing this video."
+        case .insufficientStorage: return "Free some storage before opening this video."
         }
     }
 }

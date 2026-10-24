@@ -43,8 +43,8 @@ struct VideoImportSheet: View {
                 }
                 if presentation.isLoading {
                     Section {
-                        ProgressView(presentation.phase == .validating ? "Checking video…" : "Importing video…")
-                        Button("Cancel import") { cancelImport() }
+                        ProgressView(presentation.phase == .validating ? "Checking video…" : "Preparing video…")
+                        Button("Cancel") { cancelImport() }
                             .frame(minHeight: 44)
                     }
                 }
@@ -97,7 +97,7 @@ struct VideoImportSheet: View {
                 }
             }
             .font(NitrateTypography.font(.body))
-            .navigationTitle("Import Video")
+            .navigationTitle("Process Video")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -144,11 +144,11 @@ struct VideoImportSheet: View {
                     }
                 case .success(nil):
                     transferProgress = nil
-                    presentation.fail("This selection could not be imported. Choose an Apple Log 2 video.", token: token)
+                    presentation.fail("Choose an Apple Log 2 video that can be opened on this device.", token: token)
                 case .failure:
                     guard token == presentation.generation else { return }
                     transferProgress = nil
-                    presentation.fail("Could not import the video. Try selecting it again.", token: token)
+                    presentation.fail("Could not open the video. Try selecting it again.", token: token)
                 }
             }
         }

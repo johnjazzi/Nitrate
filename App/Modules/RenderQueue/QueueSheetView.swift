@@ -67,7 +67,7 @@ struct QueueSheetView: View {
                 }
                 Section {
                     Button { showVideoImport = true } label: {
-                        Label("Import Video", systemImage: "square.and.arrow.down")
+                        Label("Process Video", systemImage: "square.and.arrow.down")
                             .frame(minHeight: 44)
                     }
                     .disabled(cameraViewModel.isRecording || cameraViewModel.isStartingRecording
@@ -102,7 +102,7 @@ struct QueueSheetView: View {
                         ContentUnavailableView(
                             "No Render Jobs",
                             systemImage: "tray",
-                            description: Text("Record or import an Apple Log 2 video and choose a film stock.")
+                            description: Text("Record a video or process one from Photos.")
                         )
                     }
                 } else {

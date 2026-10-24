@@ -157,7 +157,7 @@ final class RenderQueueViewModel {
                               preferences: RenderDeliveryPreferences? = nil) -> UUID? {
         guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
         guard Self.isUsableFile(sourceURL) else {
-            reportRenderError("The imported video could not be read. Choose it again.")
+            reportRenderError("The selected video could not be read. Choose it again.")
             return nil
         }
         if let existing = jobs.first(where: { $0.sourceURL.standardizedFileURL == sourceURL.standardizedFileURL }) {
@@ -365,7 +365,7 @@ final class RenderQueueViewModel {
     private func requestImportDiscard(at index: Int) {
         jobs[index].discardImportedMedia = true
         jobs[index].status = .failed
-        jobs[index].errorMessage = "Removing imported video…"
+        jobs[index].errorMessage = "Removing video…"
         jobs[index].cleanupWarning = nil
         guard persistJobs() else {
             isPersistenceBlocked = true
@@ -571,7 +571,7 @@ final class RenderQueueViewModel {
                 update(id) {
                     $0.mediaCleanupCompleted = allRemoved
                     $0.cleanupWarning = warnings.isEmpty ? nil : Array(Set(warnings)).sorted().joined(separator: " ")
-                    if latest.isDiscardingImport { $0.errorMessage = "Could not remove the imported video. Try again." }
+                    if latest.isDiscardingImport { $0.errorMessage = "Could not remove the video. Try again." }
                 }
             }
             // Cleanup write failure never changes delivery into a retry. Missing
