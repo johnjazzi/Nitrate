@@ -16,6 +16,14 @@ struct RenderJob: Codable, Identifiable, Equatable {
     var printGauge: PrintGauge?
     /// Immutable enqueue-time preferences; nil preserves legacy delivery behavior.
     var deliveryPreferences: RenderDeliveryPreferences?
+    /// Nil preserves legacy camera jobs. Imported assets never expose playback
+    /// or export another copy of their original into Photos.
+    var isImportedVideo: Bool? = nil
+    /// Durable removal intent. Recovery and Retry clean files without rendering.
+    var discardImportedMedia: Bool? = nil
+    var isDiscardingImport: Bool { isImportedVideo == true && discardImportedMedia == true }
+    var permitsLocalMedia: Bool { isImportedVideo != true }
+    var shouldSaveOriginal: Bool { isImportedVideo != true && deliveryPreferences?.saveOriginalLog == true }
     let trimStartSeconds: Double?
     let trimEndSeconds: Double?
     let createdAt: Date

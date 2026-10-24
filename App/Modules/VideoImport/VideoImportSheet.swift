@@ -107,7 +107,12 @@ struct VideoImportSheet: View {
             .onChange(of: pickerItem) { _, item in
                 if let item { importFile(item) }
             }
-            .onDisappear { cancelImport() }
+            .onChange(of: isPresented) { _, shown in
+                if !shown { cancelImport() }
+            }
+            .onDisappear {
+                if !isPresented { cancelImport() }
+            }
         }
     }
 

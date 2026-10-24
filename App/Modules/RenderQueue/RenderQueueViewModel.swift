@@ -18,7 +18,7 @@ final class RenderQueueViewModel {
     private let injectedRender: RenderOperation?
     private let saveOperation: SaveOperation
     private let postDeliveryOperation: PostDeliveryOperation?
-    private let receiptOperation: ReceiptOperation
+    private let receiptOperation: ReceiptOperation?
     private let mediaCleanup: RenderMediaCleanup
     private var worker: Task<Void, Never>?
     private var renderer: PipelineRenderer?
@@ -100,7 +100,7 @@ final class RenderQueueViewModel {
         injectedRender = render
         saveOperation = save ?? Self.saveToPhotoLibrary
         postDeliveryOperation = postDelivery
-        receiptOperation = receipt ?? { await RenderReceiptService.capture(url: $0, renderDurationSeconds: $1) }
+        receiptOperation = receipt
         self.mediaCleanup = mediaCleanup
         self.sessionId = sessionId
     }
@@ -113,6 +113,7 @@ final class RenderQueueViewModel {
             let persisted = try (loadOverride ?? { try self.persister.load() })()
             jobs = persisted.map { job in
                 var recovered = job
+                if recovered.isImportedVideo == true { recovered.receipt?.thumbnailJPEG = nil }
                 if recovered.status == .processing {
                     recovered.status = .pending
                     recovered.sessionId = sessionId
@@ -149,6 +150,33 @@ final class RenderQueueViewModel {
                 journal.acknowledge(source)
             }
         }
+    }
+
+    @discardableResult
+    func enqueueImportedVideo(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge? = nil,
+                              preferences: RenderDeliveryPreferences? = nil) -> UUID? {
+        guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
+        guard Self.isUsableFile(sourceURL) else {
+            reportRenderError("The imported video could not be read. Choose it again.")
+            return nil
+        }
+        if let existing = jobs.first(where: { $0.sourceURL.standardizedFileURL == sourceURL.standardizedFileURL }) {
+            return existing.isImportedVideo == true ? existing.id : nil
+        }
+        var delivery = preferences ?? DeliverySettings.renderPreferences()
+        delivery.saveOriginalLog = false
+        var imported = RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso, printGauge: gauge,
+                                 sessionId: sessionId, deliveryPreferences: delivery)
+        imported.isImportedVideo = true
+        jobs.append(imported)
+        guard persistJobs() else {
+            jobs.removeAll { $0.id == imported.id }
+            isPersistenceBlocked = true
+            publishQueueMessage()
+            return nil
+        }
+        processNext()
+        return imported.id
     }
 
     func enqueue(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge? = nil,
@@ -236,6 +264,7 @@ final class RenderQueueViewModel {
     /// Deliver an awaiting entry's kept original to Photos without rendering it.
     func exportOriginal(jobId: UUID) {
         guard let index = jobs.firstIndex(where: { $0.id == jobId }),
+              jobs[index].isImportedVideo != true,
               jobs[index].status == .awaitingStock || jobs[index].originalOnly == true else { return }
         jobs[index].originalOnly = true
         jobs[index].status = .pending
@@ -256,6 +285,8 @@ final class RenderQueueViewModel {
     /// its handoff when this returns true.
     @discardableResult
     func enqueueOriginalOnly(sourceURL: URL, reason: String) -> Bool {
+        guard !sourceURL.lastPathComponent.hasPrefix("clip_import_"),
+              !jobs.contains(where: { $0.sourceURL == sourceURL && $0.isImportedVideo == true }) else { return false }
         guard Self.isUsableFile(sourceURL) else {
             externalErrorMessage = "The kept recording is no longer available to save "
                 + "(\(reason))."
@@ -281,6 +312,7 @@ final class RenderQueueViewModel {
             failureAlert = nil
             presentedFailureEventId = nil
         }
+        if jobs[index].isDiscardingImport { requestImportDiscard(at: index); return }
         jobs[index].status = .pending
         jobs[index].errorMessage = nil
         jobs[index].sessionId = sessionId
@@ -322,8 +354,25 @@ final class RenderQueueViewModel {
             failureAlert = nil
             presentedFailureEventId = nil
         }
+        if let index = jobs.firstIndex(where: { $0.id == jobId }), jobs[index].isImportedVideo == true {
+            requestImportDiscard(at: index)
+            return
+        }
         jobs.removeAll { $0.id == jobId }
         persistJobs()
+    }
+
+    private func requestImportDiscard(at index: Int) {
+        jobs[index].discardImportedMedia = true
+        jobs[index].status = .failed
+        jobs[index].errorMessage = "Removing imported video…"
+        jobs[index].cleanupWarning = nil
+        guard persistJobs() else {
+            isPersistenceBlocked = true
+            publishQueueMessage()
+            return
+        }
+        retryMediaCleanup()
     }
 
     private var rendererInitError: String?
@@ -339,6 +388,9 @@ final class RenderQueueViewModel {
     @discardableResult
     private func persistJobs(allowWhileBlocked: Bool = false) -> Bool {
         guard allowWhileBlocked || !isPersistenceBlocked else { return false }
+        for index in jobs.indices where jobs[index].isImportedVideo == true {
+            jobs[index].receipt?.thumbnailJPEG = nil
+        }
         do {
             if let persistOverride { try persistOverride(jobs) } else { try persister.save(jobs) }
             persistenceErrorMessage = nil
@@ -392,14 +444,18 @@ final class RenderQueueViewModel {
     private func processNext(allowCleanup: Bool = true) {
         guard !isPersistenceBlocked else { return }
         guard worker == nil else { return }
-        guard let job = jobs.first(where: { $0.status == .pending }) else {
+        guard let job = jobs.first(where: { $0.status == .pending && !$0.isDiscardingImport }) else {
             isRenderPausedForAccess = false
-            if allowCleanup { retryMediaCleanup() }
+            // A removal requested while this worker was suspended gets one sweep.
+            // A failed unlink sets a warning and waits for Retry or activation.
+            if allowCleanup || jobs.contains(where: { $0.isDiscardingImport && $0.cleanupWarning == nil }) {
+                retryMediaCleanup()
+            }
             return
         }
         // Delivering a kept original is not the paid feature, so a rescue job
         // always runs. Only rendering the film look is gated.
-        if job.originalOnly != true, !renderAllowed() {
+        if job.originalOnly != true || job.isImportedVideo == true, !renderAllowed() {
             isRenderPausedForAccess = true
             publishQueueMessage()
             return
@@ -435,31 +491,46 @@ final class RenderQueueViewModel {
     }
 
     private static func needsMediaCleanup(_ job: RenderJob) -> Bool {
+        if job.isDiscardingImport { return true }
         guard job.status == .completed, job.receipt != nil,
               job.mediaCleanupCompleted != true else { return false }
-        if job.originalOnly == true { return job.sourceSavedToPhotos == true }
+        if job.originalOnly == true, job.isImportedVideo != true { return job.sourceSavedToPhotos == true }
         return job.outputSavedToPhotos == true
-            && (job.deliveryPreferences?.saveOriginalLog != true || job.sourceSavedToPhotos == true)
+            && (!job.shouldSaveOriginal || job.sourceSavedToPhotos == true)
     }
 
     private func ensureReceipt(_ id: UUID, url: URL) async -> Bool {
         guard job(id)?.receipt == nil else { return true }
-        let receipt = await receiptOperation(url, nil)
+        let receipt = await captureReceipt(id, url: url, elapsed: nil)
         update(id) { $0.receipt = receipt }
         guard persistJobs() else { pauseAfterDurableFailure(id); return false }
         return true
+    }
+
+    private func captureReceipt(_ id: UUID, url: URL, elapsed: Double?) async -> RenderReceipt {
+        let imported = job(id)?.isImportedVideo == true
+        var receipt: RenderReceipt
+        if let receiptOperation {
+            receipt = await receiptOperation(url, elapsed)
+        } else {
+            receipt = await RenderReceiptService.capture(url: url, renderDurationSeconds: elapsed,
+                                                         includeThumbnail: !imported)
+        }
+        if imported { receipt.thumbnailJPEG = nil }
+        return receipt
     }
 
     private func cleanupDeliveredMedia() async {
         guard !isPersistenceBlocked else { return }
         let candidates = jobs.filter(Self.needsMediaCleanup).map(\.id)
         guard !candidates.isEmpty else { return }
-        // Reconfirm the receipt, all delivery outcomes, and terminal status on
-        // disk before crossing the destructive boundary (also on relaunch).
+        // Reconfirm delivery or an explicit import-discard request on disk
+        // before crossing the destructive boundary, including after relaunch.
         guard persistJobs() else { isPersistenceBlocked = true; return }
         for id in candidates {
             guard !isPersistenceBlocked, let current = job(id), Self.needsMediaCleanup(current) else { continue }
-            if let output = current.outputURL, Self.isUsableFile(output), let postDeliveryOperation {
+            if !current.isDiscardingImport, let output = current.outputURL,
+               Self.isUsableFile(output), let postDeliveryOperation {
                 await postDeliveryOperation(output, id)
             }
             // A diagnostic may suspend while a new consumer is enqueued. Resolve
@@ -471,7 +542,8 @@ final class RenderQueueViewModel {
             for url in urls {
                 let path = RenderMediaCleanup.canonicalPath(url)
                 let protected = jobs.contains { other in
-                    guard other.id != id, !Self.isFullyDeliveredReceipt(other) else { return false }
+                    guard other.id != id, !other.isDiscardingImport,
+                          !Self.isFullyDeliveredReceipt(other) else { return false }
                     return ([other.sourceURL] + [other.outputURL].compactMap { $0 }).contains {
                         RenderMediaCleanup.canonicalPath($0) == path
                     }
@@ -493,9 +565,14 @@ final class RenderQueueViewModel {
                     warnings.append("Local movie cleanup failed: \(error.localizedDescription)")
                 }
             }
-            update(id) {
-                $0.mediaCleanupCompleted = allRemoved
-                $0.cleanupWarning = warnings.isEmpty ? nil : Array(Set(warnings)).sorted().joined(separator: " ")
+            if latest.isDiscardingImport, allRemoved {
+                jobs.removeAll { $0.id == id }
+            } else {
+                update(id) {
+                    $0.mediaCleanupCompleted = allRemoved
+                    $0.cleanupWarning = warnings.isEmpty ? nil : Array(Set(warnings)).sorted().joined(separator: " ")
+                    if latest.isDiscardingImport { $0.errorMessage = "Could not remove the imported video. Try again." }
+                }
             }
             // Cleanup write failure never changes delivery into a retry. Missing
             // files are safe on the next launch; confirmed save flags stay set.
@@ -505,9 +582,9 @@ final class RenderQueueViewModel {
 
     private static func isFullyDeliveredReceipt(_ job: RenderJob) -> Bool {
         guard job.status == .completed, job.receipt != nil else { return false }
-        if job.originalOnly == true { return job.sourceSavedToPhotos == true }
+        if job.originalOnly == true, job.isImportedVideo != true { return job.sourceSavedToPhotos == true }
         return job.outputSavedToPhotos == true
-            && (job.deliveryPreferences?.saveOriginalLog != true || job.sourceSavedToPhotos == true)
+            && (!job.shouldSaveOriginal || job.sourceSavedToPhotos == true)
     }
 
     private func executeJob(_ jobId: UUID) async {
@@ -515,7 +592,7 @@ final class RenderQueueViewModel {
 
         // A kept original is delivered verbatim and never rendered, on this run
         // or any relaunch.
-        if initial.originalOnly == true {
+        if initial.originalOnly == true, initial.isImportedVideo != true {
             await deliverOriginalOnly(jobId)
             return
         }
@@ -537,7 +614,7 @@ final class RenderQueueViewModel {
                     guard let url = outputURL, Self.isUsableFile(url) else {
                         throw QueueError.invalidOutput
                     }
-                    let receipt = await receiptOperation(url, elapsed)
+                    let receipt = await captureReceipt(jobId, url: url, elapsed: elapsed)
                     update(jobId) { $0.outputURL = url; $0.receipt = receipt }
                     guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
                 }
@@ -564,7 +641,7 @@ final class RenderQueueViewModel {
                 return
             }
         }
-        if initial.deliveryPreferences?.saveOriginalLog == true, job(jobId)?.sourceSavedToPhotos != true {
+        if initial.shouldSaveOriginal, job(jobId)?.sourceSavedToPhotos != true {
             do {
                 // Deliver the capture file unchanged, including its Log encoding,
                 // audio, orientation and custom metadata; cleanup follows full delivery.
@@ -596,7 +673,7 @@ final class RenderQueueViewModel {
 
     /// Deliver a kept original to Photos unchanged, without rendering it.
     private func deliverOriginalOnly(_ jobId: UUID) async {
-        guard let job = job(jobId) else { return }
+        guard let job = job(jobId), job.isImportedVideo != true else { return }
         if job.sourceSavedToPhotos == true {
             if Self.isUsableFile(job.sourceURL) {
                 guard await ensureReceipt(jobId, url: job.sourceURL) else { return }
@@ -644,7 +721,8 @@ final class RenderQueueViewModel {
         return try await renderer.render(sourceURL: job.sourceURL, config: config,
                                          trimRange: job.trimRange,
                                          bitrate: job.deliveryPreferences?.quality.averageBitRate ?? DeliverySettings.averageBitRate,
-                                         capturePolicy: job.capturePolicy)
+                                         capturePolicy: job.capturePolicy,
+                                         isImportedSource: job.isImportedVideo == true)
     }
 
     private func failRender(_ jobId: UUID, error: Error) async {
@@ -656,6 +734,13 @@ final class RenderQueueViewModel {
             case .invalidOutput, .photosPermissionDenied:
                 break
             }
+        }
+        if job(jobId)?.isImportedVideo == true {
+            update(jobId) {
+                $0.status = .failed
+                $0.errorMessage = "Render failed: \(renderMessage)"
+            }
+            return
         }
         if job(jobId)?.sourceSavedToPhotos == true {
             update(jobId) {

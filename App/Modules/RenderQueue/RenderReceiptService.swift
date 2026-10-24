@@ -16,7 +16,8 @@ enum RenderReceiptService {
         "source-color-validation", "capture-color-space", "source-color-test-bypass"
     ].map { "com.filmemulation." + $0 })
 
-    static func capture(url: URL, renderDurationSeconds: Double?) async -> RenderReceipt {
+    static func capture(url: URL, renderDurationSeconds: Double?,
+                        includeThumbnail: Bool = true) async -> RenderReceipt {
         var receipt = RenderReceipt(renderDurationSeconds: renderDurationSeconds)
         receipt.appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         receipt.appBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
@@ -54,6 +55,7 @@ enum RenderReceiptService {
                 receipt.metadata[key] = value
             }
         }
+        guard includeThumbnail else { return receipt }
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 320, height: 320)

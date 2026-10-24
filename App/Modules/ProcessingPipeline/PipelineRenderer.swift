@@ -99,10 +99,12 @@ final class PipelineRenderer: @unchecked Sendable {
         config: FilmStockConfig,
         trimRange: CMTimeRange? = nil,
         bitrate: Int = RenderEncodingContract.averageBitRate,
-        capturePolicy: RenderCapturePolicy? = nil
+        capturePolicy: RenderCapturePolicy? = nil,
+        isImportedSource: Bool = false
     ) async throws -> URL {
         (try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange,
-                                    bitrate: bitrate, capturePolicy: capturePolicy)).outputURL
+                                    bitrate: bitrate, capturePolicy: capturePolicy,
+                                    isImportedSource: isImportedSource)).outputURL
     }
 
     private static func captureColorSpace(from asset: AVAsset) async throws -> String? {
@@ -120,6 +122,7 @@ final class PipelineRenderer: @unchecked Sendable {
         trimRange: CMTimeRange? = nil,
         bitrate: Int = RenderEncodingContract.averageBitRate,
         capturePolicy: RenderCapturePolicy? = nil,
+        isImportedSource: Bool = false,
         collectDecodedBufferEvidence: Bool = false
     ) async throws -> (outputURL: URL, counters: RenderDiagnosticsManifest.Counters,
                        sourceColorProvenance: RenderInputColorProvenance,
@@ -272,7 +275,8 @@ final class PipelineRenderer: @unchecked Sendable {
         )
         writer.metadata = try RenderMovieMetadata.make(
             config: config, bitrate: bitrate, sourceColorProvenance: sourceColorProvenance,
-            orientation: deliveryOrientation, capturePolicy: capturePolicy
+            orientation: deliveryOrientation, capturePolicy: capturePolicy,
+            isImportedSource: isImportedSource, sourceNominalFrameRate: Double(nominalFrameRate)
         )
 
         // Audio passthrough writer input

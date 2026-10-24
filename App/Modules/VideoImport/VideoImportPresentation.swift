@@ -71,9 +71,13 @@ struct VideoImportPresentation: Equatable, Sendable {
 final class VideoImportFileLease: @unchecked Sendable {
     let url: URL
     private let lock = NSLock()
+    private let directory: URL?
     private var queueOwnsFile = false
 
-    init(url: URL) { self.url = url }
+    init(url: URL, directory: URL? = nil) {
+        self.url = url
+        self.directory = directory
+    }
 
     func transferToQueue() {
         lock.lock()
@@ -87,7 +91,8 @@ final class VideoImportFileLease: @unchecked Sendable {
         lock.unlock()
         if shouldDiscard {
             let ownedURL = url
-            Task { await VideoImportService.discard(ownedURL) }
+            let ownedDirectory = directory
+            Task { await VideoImportService.discard(ownedURL, directory: ownedDirectory) }
         }
     }
 }

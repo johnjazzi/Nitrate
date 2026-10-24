@@ -11,7 +11,7 @@ extension RenderJob {
 
     var receiptActions: QueueReceiptPresentation.Actions {
         .init(savedToPhotos: outputSavedToPhotos == true || sourceSavedToPhotos == true,
-              retainedOutput: retainedOutputURL != nil)
+              retainedOutput: permitsLocalMedia && retainedOutputURL != nil)
     }
 
     var receiptTitle: String {
@@ -34,7 +34,9 @@ struct QueueReceiptCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 12) {
-                if job.receiptActions.openPhotos {
+                if !job.permitsLocalMedia {
+                    Image(systemName: "film").foregroundStyle(.secondary)
+                } else if job.receiptActions.openPhotos {
                     Button(action: openPhotos) { poster }
                         .buttonStyle(.borderless)
                         .accessibilityLabel("Open Photos for saved recording")
@@ -85,7 +87,7 @@ struct QueueReceiptCard: View {
 
     private var poster: some View {
         Group {
-            if let data = job.receipt?.thumbnailJPEG, let image = UIImage(data: data) {
+            if job.permitsLocalMedia, let data = job.receipt?.thumbnailJPEG, let image = UIImage(data: data) {
                 Image(uiImage: image).resizable().scaledToFit()
             } else {
                 VStack(spacing: 4) {

@@ -11,14 +11,17 @@ struct VideoImportPresentationTests {
         #expect(state.selectedStockID == nil)
         let token = state.begin()
         #expect(state.isLoading && !state.canRender)
-        #expect(state.validating(token))
-        #expect(state.accept(url: url, token: token))
+        let beganValidation = state.validating(token)
+        #expect(beganValidation)
+        let accepted = state.accept(url: url, token: token)
+        #expect(accepted)
         #expect(!state.canRender)
         state.selectStock("5219")
         #expect(state.canRender && state.selectedURL == url)
         // Merely selecting a stock does not submit or relinquish the file.
         #expect(state.phase == .ready)
-        #expect(state.submitted() == url)
+        let releasedSelection = state.submitted() == url
+        #expect(releasedSelection)
         #expect(!state.canRender && state.selectedURL == nil)
     }
 
@@ -26,8 +29,10 @@ struct VideoImportPresentationTests {
         var state = VideoImportPresentation()
         let token = state.begin()
         state.reset()
-        #expect(!state.validating(token))
-        #expect(!state.accept(url: url, token: token))
+        let rejectedStaleValidation = !state.validating(token)
+        #expect(rejectedStaleValidation)
+        let rejectedStaleSelection = !state.accept(url: url, token: token)
+        #expect(rejectedStaleSelection)
         state.fail("Late failure", token: token)
         #expect(state.errorMessage == nil && state.selectedURL == nil)
     }
@@ -35,20 +40,24 @@ struct VideoImportPresentationTests {
     @Test func replacingAFileInvalidatesTheOldTransferAndStock() {
         var state = VideoImportPresentation()
         let old = state.begin()
-        #expect(state.accept(url: url, token: old))
+        let acceptedFirstSelection = state.accept(url: url, token: old)
+        #expect(acceptedFirstSelection)
         state.selectStock("5219")
         let current = state.begin()
         #expect(current != old)
         #expect(state.selectedURL == nil && state.selectedStockID == nil)
-        #expect(!state.accept(url: url, token: old))
-        #expect(state.accept(url: url, token: current))
+        let rejectedStaleSelection = !state.accept(url: url, token: old)
+        #expect(rejectedStaleSelection)
+        let acceptedCurrentSelection = state.accept(url: url, token: current)
+        #expect(acceptedCurrentSelection)
         #expect(!state.canRender)
     }
 
     @Test func failedEnqueueRetainsTheSelectedFileForRetry() {
         var state = VideoImportPresentation()
         let token = state.begin()
-        #expect(state.accept(url: url, token: token))
+        let accepted = state.accept(url: url, token: token)
+        #expect(accepted)
         state.selectStock("5219")
         state.enqueueFailed("Could not save the queue.")
         #expect(state.canRender)

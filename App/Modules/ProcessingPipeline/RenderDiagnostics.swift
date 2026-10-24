@@ -297,7 +297,9 @@ enum RenderMovieMetadata {
     static func make(config: FilmStockConfig, bitrate: Int = RenderEncodingContract.averageBitRate,
                      sourceColorProvenance: RenderInputColorProvenance? = nil,
                      orientation: RenderDeliveryOrientation? = nil,
-                     capturePolicy: RenderCapturePolicy? = nil) throws -> [AVMetadataItem] {
+                     capturePolicy: RenderCapturePolicy? = nil,
+                     isImportedSource: Bool = false,
+                     sourceNominalFrameRate: Double? = nil) throws -> [AVMetadataItem] {
         try config.validate()
         let snapshot = RenderDiagnosticsManifest.RecipeSnapshot(config: config,
             averageBitRate: bitrate, codec: RenderEncodingContract.codec,
@@ -327,7 +329,15 @@ enum RenderMovieMetadata {
             "render-settings-schema": "1", "render-settings": json
         ]
         var metadataValues = values
-        if let capturePolicy {
+        if isImportedSource {
+            metadataValues["source-origin"] = "photos-import"
+            metadataValues["shutter-speed"] = "unknown-or-not-recorded"
+            metadataValues["shutter-angle"] = "unknown-or-not-recorded"
+            metadataValues["capture-frame-rate"] = "unknown-or-not-recorded"
+            if let sourceNominalFrameRate, sourceNominalFrameRate.isFinite, sourceNominalFrameRate > 0 {
+                metadataValues["source-nominal-frame-rate"] = String(sourceNominalFrameRate)
+            }
+        } else if let capturePolicy {
             // Provenance only: the mode's integer frame rate travels with the
             // render. Legacy jobs (nil policy) emit no such key and stay
             // byte-for-byte as before.
