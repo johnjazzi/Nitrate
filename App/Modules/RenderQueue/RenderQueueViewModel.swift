@@ -46,6 +46,15 @@ final class RenderQueueViewModel {
     private var acknowledgedFailureEventId: UUID?
     private var presentedFailureEventId: UUID?
 
+    /// Ephemeral render progress for the job being processed, keyed by id. It
+    /// is never persisted and is removed the moment the job leaves processing,
+    /// so a stale percentage can never be presented as current.
+    private var jobProgress: [UUID: RenderJobProgress] = [:]
+    /// The render attempt that currently owns a job's progress. A progress
+    /// callback must carry this token to be accepted, so a callback from a
+    /// superseded attempt cannot overwrite a later phase or a retry.
+    private var renderAttempts: [UUID: UUID] = [:]
+
     var library: FilmStockLibrary?
     var jobs: [RenderJob] = []
     var rendererErrorMessage: String?
@@ -71,6 +80,11 @@ final class RenderQueueViewModel {
             .sorted { $0.createdAt > $1.createdAt }
     }
     var completedJobs: [RenderJob] { jobs.filter { $0.status == .completed } }
+
+    /// Ephemeral progress for an active job, or `nil` when the job is not
+    /// rendering or saving. Never a stored value: it disappears on completion,
+    /// failure or retry.
+    func progress(for jobId: UUID) -> RenderJobProgress? { jobProgress[jobId] }
 
     func dismissRendererError() {
         if let presentedFailureEventId {
@@ -359,6 +373,7 @@ final class RenderQueueViewModel {
             return
         }
         jobs.removeAll { $0.id == jobId }
+        clearProgress(jobId: jobId)
         persistJobs()
     }
 
@@ -428,6 +443,7 @@ final class RenderQueueViewModel {
     /// so an already-confirmed side effect is not repeated.
     private func pauseAfterDurableFailure(_ jobId: UUID) {
         update(jobId) { $0.status = .pending }
+        clearProgress(jobId: jobId)
         isPersistenceBlocked = true
         publishQueueMessage()
     }
@@ -620,6 +636,9 @@ final class RenderQueueViewModel {
                 }
                 guard let outputURL, Self.isUsableFile(outputURL) else { throw QueueError.invalidOutput }
                 guard await ensureReceipt(jobId, url: outputURL) else { return }
+                // The render is done; delivery to Photos is what remains. The
+                // job is not "saved" until the save call returns below.
+                beginSavingPhase(jobId: jobId)
                 try await saveOperation(outputURL)
                 update(jobId) { $0.outputSavedToPhotos = true }
                 // Persist the first success before attempting the original.
@@ -710,7 +729,13 @@ final class RenderQueueViewModel {
     }
 
     private func render(_ job: RenderJob) async throws -> URL {
-        if let injectedRender { return try await injectedRender(job) }
+        if let injectedRender {
+            // An injected render does not drive the frame loop, so its progress
+            // is indeterminate: publish the phase with no fraction so the UI
+            // can still show activity without a fabricated percentage.
+            beginRenderingPhase(jobId: job.id)
+            return try await injectedRender(job)
+        }
         guard let renderer else {
             throw QueueError.rendererUnavailable(rendererInitError ?? "Metal pipeline could not start. Reboot the app.")
         }
@@ -718,11 +743,68 @@ final class RenderQueueViewModel {
             throw QueueError.stockUnavailable(job.stockId)
         }
         // The render reads only the job's persisted policy, never live UI.
+        let attempt = beginRenderingPhase(jobId: job.id)
+        let jobId = job.id
+        let onProgress: @Sendable (Double) -> Void = { [weak self] fraction in
+            Task { @MainActor in
+                self?.deliverRenderFraction(jobId: jobId, attempt: attempt, fraction: fraction)
+            }
+        }
         return try await renderer.render(sourceURL: job.sourceURL, config: config,
                                          trimRange: job.trimRange,
                                          bitrate: job.deliveryPreferences?.quality.averageBitRate ?? DeliverySettings.averageBitRate,
                                          capturePolicy: job.capturePolicy,
-                                         isImportedSource: job.isImportedVideo == true)
+                                         isImportedSource: job.isImportedVideo == true,
+                                         progress: onProgress)
+    }
+
+    // MARK: - Ephemeral render progress
+
+    /// Begin a fresh rendering phase for `jobId` and return its attempt token.
+    /// A retry or a re-render starts a new attempt, which fences any callback
+    /// still in flight from the previous one.
+    @discardableResult
+    private func beginRenderingPhase(jobId: UUID) -> UUID {
+        let attempt = UUID()
+        renderAttempts[jobId] = attempt
+        jobProgress[jobId] = RenderJobProgress(phase: .rendering, fractionComplete: nil)
+        return attempt
+    }
+
+    /// Move `jobId` to the saving phase before any Photos side effect. Clearing
+    /// the attempt token and moving off `.rendering` means a late renderer
+    /// callback can no longer overwrite this state.
+    private func beginSavingPhase(jobId: UUID) {
+        renderAttempts[jobId] = nil
+        jobProgress[jobId] = RenderJobProgress(phase: .saving, fractionComplete: nil)
+    }
+
+    /// Drop all ephemeral progress for a job. Called on completion, failure,
+    /// retry and removal so a finished job never presents a stored percentage.
+    private func clearProgress(jobId: UUID) {
+        renderAttempts[jobId] = nil
+        jobProgress[jobId] = nil
+    }
+
+    /// Fence and test seam: the render attempt that currently owns `jobId`'s
+    /// progress, if a render phase is active. A progress callback must carry
+    /// this token to be accepted.
+    func activeRenderAttempt(for jobId: UUID) -> UUID? { renderAttempts[jobId] }
+
+    /// Record a renderer progress fraction for a job's active render attempt.
+    /// The renderer calls this through `render(_:)`'s progress callback (hopped
+    /// to the main actor); tests call it directly to exercise the fence.
+    ///
+    /// A fraction from a superseded attempt, or one arriving after the job has
+    /// left the rendering phase, is ignored, as is a non-increasing fraction,
+    /// so a late callback can never overwrite saving, terminal or retry state.
+    func deliverRenderFraction(jobId: UUID, attempt: UUID, fraction: Double) {
+        guard renderAttempts[jobId] == attempt,
+              jobProgress[jobId]?.phase == .rendering,
+              fraction.isFinite else { return }
+        let bounded = min(max(fraction, 0), 1)
+        if let existing = jobProgress[jobId]?.fractionComplete, bounded <= existing { return }
+        jobProgress[jobId] = RenderJobProgress(phase: .rendering, fractionComplete: bounded)
     }
 
     private func failRender(_ jobId: UUID, error: Error) async {
@@ -779,6 +861,10 @@ final class RenderQueueViewModel {
         if previousStatus != .failed, jobs[index].status == .failed,
            let message = jobs[index].errorMessage {
             failureAlert = (id, UUID(), message)
+        }
+        // A terminal job carries no ephemeral progress.
+        if jobs[index].status == .completed || jobs[index].status == .failed {
+            clearProgress(jobId: id)
         }
     }
 
