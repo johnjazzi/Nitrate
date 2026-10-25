@@ -45,6 +45,22 @@ struct CameraModeCarouselGestureTests {
     }
 }
 
+/// The row's fixed metrics, which the render shots below depend on. Kept
+/// deterministic and non-rendering so the touch-target floor is pinned even
+/// when the pixel suites are skipped.
+struct CameraModeCarouselMetricsTests {
+    @Test func theRowHeightIsTheMinimumTouchHeight() {
+        #expect(CameraModeCarousel.height == 44)
+    }
+
+    @Test func theNarrowestRealSlotFitsTwoControlsAtTheTouchFloor() {
+        // 96pt is the smallest camera slot the row is placed in; both mode
+        // controls must still meet the 44pt touch width there.
+        #expect(CameraModeCarousel.minimumControlWidth == 44)
+        #expect(CameraModeCarousel.minimumControlWidth * 2 <= 96)
+    }
+}
+
 /// Native proof of the real row. These render the actual `CameraModeCarousel`
 /// with `ImageRenderer` and measure its pixels, so a blank or mis-sized row
 /// fails here rather than shipping. Nothing in this suite claims gesture
@@ -52,8 +68,32 @@ struct CameraModeCarouselGestureTests {
 /// resolved drag means.
 @MainActor
 struct CameraModeCarouselRenderTests {
-    private let narrowWidth: CGFloat = 200
-    private let defaultWidth: CGFloat = 360
+    private let narrowWidth: CGFloat = 96
+    private let defaultWidth: CGFloat = 200
+
+    @Test func compactStripFitsItsRealCameraSlotWithoutDrawingOutsideIt() throws {
+        #expect(CameraModeCarousel.height == 44)
+        let margin = 24
+        let scale = 2
+        for width: CGFloat in [96, 120, 180, 200] {
+            for mode in CameraMode.visibleModes {
+                let view = carousel(active: mode).frame(width: width, height: 44).padding(CGFloat(margin))
+                let renderer = ImageRenderer(content: view)
+                renderer.scale = CGFloat(scale)
+                let image = try #require(renderer.cgImage)
+                let data = try pixels(image)
+                var outside = 0
+                for y in 0..<image.height {
+                    for x in 0..<image.width {
+                        let inside = x >= margin * scale && x < (margin + Int(width)) * scale
+                            && y >= margin * scale && y < (margin + 44) * scale
+                        if !inside, data[(y * image.width + x) * 4 + 3] > 20 { outside += 1 }
+                    }
+                }
+                #expect(outside == 0, "Mode glyphs must stay inside the \(width)pt camera slot.")
+            }
+        }
+    }
 
     @Test func rendersNonBlankWithTheActiveLetterInOrangeAtBothWidths() throws {
         for width in [narrowWidth, defaultWidth] {
@@ -85,7 +125,8 @@ struct CameraModeCarouselRenderTests {
         // "develop" state carries strictly more ink than "video".
         let develop = try pixels(render(carousel(active: .develop), width: defaultWidth, name: "carousel-develop"))
         let video = try pixels(render(carousel(active: .video), width: defaultWidth, name: "carousel-video"))
-        #expect(develop != video, "The active label moves, so the two states cannot render identically.")
+        let distinct = develop != video
+        #expect(distinct, "The active label moves, so the two states cannot render identically.")
         #expect(ink(develop) > ink(video),
                 "Only the active lowercase title is painted, so the longer active word carries more ink.")
     }

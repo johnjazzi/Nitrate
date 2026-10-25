@@ -40,10 +40,16 @@ enum CameraModeCarouselGesture {
 /// Compact mode row that sits below the shooting bar.
 ///
 /// The row shows the visible mode letters D and V at all times. Only the
-/// selected mode also shows its lowercase word beside its letter, so the mode
+/// selected mode also paints its lowercase word beside its letter, so the mode
 /// reads at a glance without any inactive word ever being spoken by VoiceOver.
-/// The inactive word still reserves its layout space, so switching the active
-/// mode cannot move the row's footprint.
+///
+/// Each control owns an equal share of the row and lays out the *full* word in
+/// both states; the inactive word is transparent rather than removed. That keeps
+/// the row's footprint identical as the active mode moves, and it means the row
+/// never clips a selected word away — the whole "D develop" / "V video" string
+/// is scaled down (via `minimumScaleFactor`) to fit the share it is handed. It
+/// fits the real camera slots from 96pt up, where two controls still meet the
+/// 44pt touch floor.
 ///
 /// The parent owns the selection and the placement; the carousel only reports
 /// taps and deliberate horizontal swipes back through `onSelect`. The hidden
@@ -55,12 +61,19 @@ struct CameraModeCarousel: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Fixed row height. Keeps the row from resizing as the active label changes.
-    static let height: CGFloat = 52
+    /// Fixed row height. Keeps the row from resizing as the active label changes,
+    /// and is itself the minimum touch height.
+    static let height: CGFloat = 44
 
-    private let itemSpacing: CGFloat = 4
-    private let labelSpacing: CGFloat = 6
-    private let minimumHitHeight: CGFloat = 44
+    /// The narrowest width a control is allowed to shrink to, so both controls
+    /// stay tappable inside the smallest real slot (96pt fits two 44pt targets).
+    static let minimumControlWidth: CGFloat = 44
+
+    private let itemSpacing: CGFloat = 6
+    private let labelPadding: CGFloat = 3
+    /// How far the composed label may scale down before it truncates. At the
+    /// 96pt slot this keeps both words legible rather than clipped.
+    private let minimumScale: CGFloat = 0.3
 
     init(selected: CameraMode, enabled: Bool, onSelect: @escaping (CameraMode) -> Void) {
         self.selected = selected
@@ -84,32 +97,43 @@ struct CameraModeCarousel: View {
     // MARK: - Items
 
     private func item(_ mode: CameraMode) -> some View {
-        let isActive = mode == selected
-        return Button {
+        Button {
             guard enabled else { return }
             onSelect(mode)
         } label: {
-            HStack(spacing: labelSpacing) {
-                Text(mode.letter)
-                    .font(NitrateTypography.font(size: 15, relativeTo: .headline))
-                    .foregroundStyle(isActive ? Color.orange : Color.white.opacity(0.45))
-                Text(mode.title)
-                    .font(NitrateTypography.font(size: 13, relativeTo: .subheadline))
-                    .foregroundStyle(Color.white.opacity(0.9))
-                    // The inactive word keeps its space but is neither painted
-                    // nor exposed to VoiceOver.
-                    .opacity(isActive ? 1 : 0)
-                    .accessibilityHidden(!isActive)
-            }
-            .padding(.horizontal, 12)
-            .frame(minHeight: minimumHitHeight)
-            .contentShape(Rectangle())
+            label(mode)
+                .padding(.horizontal, labelPadding)
+                .frame(minWidth: Self.minimumControlWidth,
+                       maxWidth: .infinity,
+                       minHeight: Self.height)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
         .accessibilityLabel(mode.voiceLabel)
         .accessibilityIdentifier(mode.accessibilityIdentifier)
-        .accessibilityAddTraits(isActive ? .isSelected : [])
+        .accessibilityAddTraits(mode == selected ? .isSelected : [])
+    }
+
+    /// The single composed label for a control: the always-visible capital
+    /// followed by the lowercase word. The word is laid out in both states so
+    /// the row's footprint is stable, but only the selected mode paints it —
+    /// the unselected word is fully transparent, so it reserves its space
+    /// without reading, and VoiceOver speaks the button's own label instead.
+    ///
+    /// It is one `Text` so `minimumScaleFactor` shrinks the whole string to the
+    /// control's share; the selected word is scaled, never clipped.
+    private func label(_ mode: CameraMode) -> some View {
+        let isActive = mode == selected
+        let letter = Text(mode.letter)
+            .font(NitrateTypography.font(size: 14, relativeTo: .headline))
+            .foregroundColor(isActive ? .orange : Color.white.opacity(0.45))
+        let word = Text(" " + mode.title)
+            .font(NitrateTypography.font(size: 12, relativeTo: .subheadline))
+            .foregroundColor(isActive ? Color.white.opacity(0.9) : Color.white.opacity(0))
+        return (letter + word)
+            .lineLimit(1)
+            .minimumScaleFactor(minimumScale)
     }
 
     // MARK: - Swipe
