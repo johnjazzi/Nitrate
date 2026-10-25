@@ -38,25 +38,9 @@ enum CameraModeCarouselGesture {
     }
 }
 
-/// Centred mode row that sits below the shooting bar.
-///
-/// It is a true carousel, not two fixed half-buttons. The selected mode is a
-/// single 44pt target held at the row's centre: its capital is centred and
-/// accented, and its lowercase name sits in a band directly beneath it. The
-/// other visible mode is drawn as a ghosted letter on its natural side — `D`
-/// always reads left of `V` — and never borrows the accent. The hidden photo
-/// mode is never laid out, hit-testable or announced.
-///
-/// The height and the selected target are fixed at 44pt, so the touch floor
-/// never shrinks. From 132pt up (the real phone slot is 200pt) the centred
-/// target and a full adjacent 44pt neighbour both fit, and the neighbour is a
-/// live button. Below 132pt there is no room for a truthful second target, so
-/// the row falls back to a compact form: the selection stays centred and
-/// tappable, the neighbour becomes a decorative ghost, and the swipe and
-/// accessibility adjustment still move the selection.
-///
-/// The parent owns the selection; the carousel only reports taps and deliberate
-/// horizontal swipes back through `onSelect`.
+/// The selected mode stays centered, with its title below and ghosted neighbors.
+/// Slots below 132pt use swipes and accessibility adjustment for the neighbor,
+/// preserving the centered 44pt target. The parent owns the selection.
 struct CameraModeCarousel: View {
     let selected: CameraMode
     let enabled: Bool
@@ -135,7 +119,12 @@ struct CameraModeCarousel: View {
                 .offset(x: selected == .develop ? Self.minimumControlWidth : -Self.minimumControlWidth)
             item(selected, interactive: true)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(selected.voiceLabel)
+        .accessibilityIdentifier(selected.accessibilityIdentifier)
+        .accessibilityAddTraits(.isSelected)
         .accessibilityAdjustableAction(adjust)
+        .disabled(!enabled)
     }
 
     /// Shifts the centred pair so the selected mode — the leading half when
@@ -197,10 +186,7 @@ struct CameraModeCarousel: View {
         }
     }
 
-    /// The capital over its lowercase name. The name is laid out in both states
-    /// so the row's height never moves, but only the selected mode paints it —
-    /// the inactive name is transparent, so it reserves its band without
-    /// reading. The caption scales to fit the target rather than being clipped.
+    /// Keep both caption bands laid out so selection never changes row height.
     private func label(_ mode: CameraMode) -> some View {
         let isActive = mode == selected
         return VStack(spacing: 0) {

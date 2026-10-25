@@ -71,7 +71,7 @@ struct CameraModeCarouselRenderTests {
                         if !inside, data[(y * image.width + x) * 4 + 3] > 20 { outside += 1 }
                     }
                 }
-                #expect(outside == 0, "The centred row must stay inside the \\(width)pt camera slot.")
+                #expect(outside == 0, "The centred row must stay inside the \(width)pt camera slot.")
             }
         }
     }
@@ -85,27 +85,31 @@ struct CameraModeCarouselRenderTests {
             let centreInPoints = Double(width) / 2
             for active in CameraMode.visibleModes {
                 let image = try render(carousel(active: active), width: width,
-                                       name: "carousel-centred-\\(active.rawValue)-\\(Int(width))")
+                                       name: "carousel-centred-\(active.rawValue)-\(Int(width))")
                 #expect(image.height == Int(CameraModeCarousel.height * 2),
                         "The row keeps its fixed height at every width.")
                 let data = try pixels(image)
-                #expect(ink(data) > 400, "The mode letters must be visible at \\(width)pt.")
+                #expect(ink(data) > 400, "The mode letters must be visible at \(width)pt.")
 
                 // The active capital paints the accent and sits centred — not
                 // parked in a left or right half.
                 let letter = pixels(matching: accentInk, in: data, image: image)
-                #expect(letter.count > 40, "The selected letter must paint the accent at \\(width)pt.")
+                #expect(letter.count > 40, "The selected letter must paint the accent at \(width)pt.")
                 let letterMidX = Double(letter.map(\.x).reduce(0, +)) / Double(letter.count) / 2
-                #expect(abs(letterMidX - centreInPoints) <= centreInPoints * 0.1,
+                #expect(abs(letterMidX - centreInPoints) <= 2,
                         "The selected letter is centred, not owned by a half.")
 
                 // Its lowercase caption is a band strictly below the capital.
                 let caption = pixels(matching: brightInk, in: data, image: image)
-                #expect(caption.count > 20, "The selected mode paints its lowercase caption at \\(width)pt.")
+                #expect(caption.count > 20, "The selected mode paints its lowercase caption at \(width)pt.")
                 let captionMidY = Double(caption.map(\.y).reduce(0, +)) / Double(max(caption.count, 1))
                 let letterMidY = Double(letter.map(\.y).reduce(0, +)) / Double(letter.count)
                 #expect(captionMidY > letterMidY + 8,
-                        "The caption sits in a band below the capital, not beside it.")
+                        "The caption sits below the capital.")
+                #expect(try #require(caption.map(\.y).min()) > #require(letter.map(\.y).max()))
+                let captionMidX = Double(caption.map(\.x).reduce(0, +)) / Double(caption.count) / 2
+                #expect(abs(captionMidX - centreInPoints) <= 2,
+                        "The caption is centered beneath the selected letter.")
                 captionInk[active, default: 0] += caption.count
 
                 // The neighbour keeps only a ghosted letter, on the correct side:
@@ -143,10 +147,10 @@ struct CameraModeCarouselRenderTests {
     @Test func landscapeLabelsRotateWithoutExpandingTheStrip() throws {
         for width: CGFloat in [96, 200] {
             for mode in CameraMode.visibleModes {
-                let upright = try pixels(render(carousel(active: mode), width: width, name: "upright-\\(mode.rawValue)"))
+                let upright = try pixels(render(carousel(active: mode), width: width, name: "upright-\(mode.rawValue)"))
                 for degrees in [-90.0, 90.0] {
                     let view = CameraModeCarousel(selected: mode, enabled: true, rotationDegrees: degrees, onSelect: { _ in })
-                    let rotated = try pixels(render(view, width: width, name: "landscape-\\(mode.rawValue)-\\(Int(degrees))"))
+                    let rotated = try pixels(render(view, width: width, name: "landscape-\(mode.rawValue)-\(Int(degrees))"))
                     let different = rotated != upright
                     #expect(different)
                     #expect(ink(rotated) > 100)
