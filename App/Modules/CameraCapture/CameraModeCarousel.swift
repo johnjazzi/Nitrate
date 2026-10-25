@@ -38,23 +38,25 @@ enum CameraModeCarouselGesture {
     }
 }
 
-/// Compact mode row that sits below the shooting bar.
+/// Centred mode row that sits below the shooting bar.
 ///
-/// The row shows the visible mode letters D and V at all times. Only the
-/// selected mode also paints its lowercase word beside its letter, so the mode
-/// reads at a glance without any inactive word ever being spoken by VoiceOver.
+/// It is a true carousel, not two fixed half-buttons. The selected mode is a
+/// single 44pt target held at the row's centre: its capital is centred and
+/// accented, and its lowercase name sits in a band directly beneath it. The
+/// other visible mode is drawn as a ghosted letter on its natural side — `D`
+/// always reads left of `V` — and never borrows the accent. The hidden photo
+/// mode is never laid out, hit-testable or announced.
 ///
-/// Each control owns an equal share of the row and lays out the *full* word in
-/// both states; the inactive word is transparent rather than removed. That keeps
-/// the row's footprint identical as the active mode moves, and it means the row
-/// never clips a selected word away — the whole "D develop" / "V video" string
-/// is scaled down (via `minimumScaleFactor`) to fit the share it is handed. It
-/// fits the real camera slots from 96pt up, where two controls still meet the
-/// 44pt touch floor.
+/// The height and the selected target are fixed at 44pt, so the touch floor
+/// never shrinks. From 132pt up (the real phone slot is 200pt) the centred
+/// target and a full adjacent 44pt neighbour both fit, and the neighbour is a
+/// live button. Below 132pt there is no room for a truthful second target, so
+/// the row falls back to a compact form: the selection stays centred and
+/// tappable, the neighbour becomes a decorative ghost, and the swipe and
+/// accessibility adjustment still move the selection.
 ///
-/// The parent owns the selection and the placement; the carousel only reports
-/// taps and deliberate horizontal swipes back through `onSelect`. The hidden
-/// photo mode is never laid out, never hit-testable and never announced.
+/// The parent owns the selection; the carousel only reports taps and deliberate
+/// horizontal swipes back through `onSelect`.
 struct CameraModeCarousel: View {
     let selected: CameraMode
     let enabled: Bool
@@ -63,19 +65,22 @@ struct CameraModeCarousel: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Fixed row height. Keeps the row from resizing as the active label changes,
-    /// and is itself the minimum touch height.
+    /// Fixed row height. Keeps the row from resizing as the active label
+    /// changes, and is itself the minimum touch height.
     static let height: CGFloat = 44
 
-    /// The narrowest width a control is allowed to shrink to, so both controls
-    /// stay tappable inside the smallest real slot (96pt fits two 44pt targets).
+    /// The selected target's fixed width — the touch floor it never shrinks
+    /// below. Also one control's share of the centred pair.
     static let minimumControlWidth: CGFloat = 44
 
-    private let itemSpacing: CGFloat = 6
+    /// The narrowest width that shows the centred 44pt target and a full
+    /// adjacent 44pt neighbour without overlap: 2 × (44/2 + 44) = 132pt. Below
+    /// it the row uses the compact fallback.
+    static let compactThreshold: CGFloat = minimumControlWidth * 3
+
     private let labelPadding: CGFloat = 3
-    /// How far the composed label may scale down before it truncates. At the
-    /// 96pt slot this keeps both words legible rather than clipped.
-    private let minimumScale: CGFloat = 0.3
+    /// How far the caption may scale down before it truncates.
+    private let minimumScale: CGFloat = 0.5
 
     init(selected: CameraMode, enabled: Bool, rotationDegrees: Double = 0,
          onSelect: @escaping (CameraMode) -> Void) {
@@ -86,10 +91,10 @@ struct CameraModeCarousel: View {
     }
 
     var body: some View {
-        HStack(spacing: itemSpacing) {
-            ForEach(CameraMode.visibleModes) { mode in
-                item(mode)
-            }
+        GeometryReader { proxy in
+            strip(compact: proxy.size.width < Self.compactThreshold)
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
         }
         .frame(height: Self.height)
         .opacity(enabled ? 1 : 0.4)
@@ -98,53 +103,116 @@ struct CameraModeCarousel: View {
         .sensoryFeedback(.selection, trigger: selected)
     }
 
-    // MARK: - Items
+    // MARK: - Layout
 
-    private func item(_ mode: CameraMode) -> some View {
-        Button {
-            guard enabled else { return }
-            onSelect(mode)
-        } label: {
-            GeometryReader { geometry in
-                let quarterTurn = abs(rotationDegrees).truncatingRemainder(dividingBy: 180) == 90
-                let faceWidth = quarterTurn ? geometry.size.height : geometry.size.width
-                let faceHeight = quarterTurn ? geometry.size.width : geometry.size.height
-                label(mode)
-                    .padding(.horizontal, labelPadding)
-                    .frame(width: faceWidth, height: faceHeight)
-                    .rotationEffect(.degrees(rotationDegrees))
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-            }
-            .frame(minWidth: Self.minimumControlWidth, maxWidth: .infinity,
-                   minHeight: Self.height, maxHeight: Self.height)
-            .contentShape(Rectangle())
+    @ViewBuilder
+    private func strip(compact: Bool) -> some View {
+        if compact {
+            compactStrip
+        } else {
+            fullStrip
         }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .accessibilityLabel(mode.voiceLabel)
-        .accessibilityIdentifier(mode.accessibilityIdentifier)
-        .accessibilityAddTraits(mode == selected ? .isSelected : [])
     }
 
-    /// The single composed label for a control: the always-visible capital
-    /// followed by the lowercase word. The word is laid out in both states so
-    /// the row's footprint is stable, but only the selected mode paints it —
-    /// the unselected word is fully transparent, so it reserves its space
-    /// without reading, and VoiceOver speaks the button's own label instead.
-    ///
-    /// It is one `Text` so `minimumScaleFactor` shrinks the whole string to the
-    /// control's share; the selected word is scaled, never clipped.
+    /// The centred target with a full, live neighbour immediately beside it.
+    /// The pair is nudged off its own centre so the *selected* target lands on
+    /// the row's centre.
+    private var fullStrip: some View {
+        HStack(spacing: 0) {
+            ForEach(CameraMode.visibleModes) { mode in
+                item(mode, interactive: true)
+            }
+        }
+        .fixedSize()
+        .offset(x: centeringOffset)
+    }
+
+    /// The compact fallback: the centred target stays live, the neighbour is a
+    /// decorative ghost, and the adjustment action still moves the selection.
+    private var compactStrip: some View {
+        ZStack {
+            item(neighbour, interactive: false)
+                .offset(x: selected == .develop ? Self.minimumControlWidth : -Self.minimumControlWidth)
+            item(selected, interactive: true)
+        }
+        .accessibilityAdjustableAction(adjust)
+    }
+
+    /// Shifts the centred pair so the selected mode — the leading half when
+    /// Develop is selected, the trailing half when Video is — lands on centre.
+    /// The whole block slides as the selection changes, animating both letters.
+    private var centeringOffset: CGFloat {
+        let index = CGFloat(CameraMode.visibleModes.firstIndex(of: selected) ?? 0)
+        return (1 - 2 * index) * (Self.minimumControlWidth / 2)
+    }
+
+    /// The other visible mode, drawn as the ghosted neighbour.
+    private var neighbour: CameraMode {
+        CameraMode.visibleModes.first { $0 != selected } ?? selected
+    }
+
+    private func adjust(_ direction: AccessibilityAdjustmentDirection) {
+        guard enabled else { return }
+        switch direction {
+        case .increment: if selected == .develop { onSelect(.video) }
+        case .decrement: if selected == .video { onSelect(.develop) }
+        default: break
+        }
+    }
+
+    // MARK: - Items
+
+    /// One mode control. When `interactive` it is a live, labelled button; when
+    /// not it is a decorative ghost that is never hit-testable or announced.
+    private func item(_ mode: CameraMode, interactive: Bool) -> some View {
+        let face = GeometryReader { geometry in
+            let quarterTurn = abs(rotationDegrees).truncatingRemainder(dividingBy: 180) == 90
+            let faceWidth = quarterTurn ? geometry.size.height : geometry.size.width
+            let faceHeight = quarterTurn ? geometry.size.width : geometry.size.height
+            label(mode)
+                .padding(.horizontal, labelPadding)
+                .frame(width: faceWidth, height: faceHeight)
+                .rotationEffect(.degrees(rotationDegrees))
+                .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+        .frame(width: Self.minimumControlWidth, height: Self.height)
+        .contentShape(Rectangle())
+
+        return Group {
+            if interactive {
+                Button {
+                    guard enabled else { return }
+                    onSelect(mode)
+                } label: {
+                    face
+                }
+                .buttonStyle(.plain)
+                .disabled(!enabled)
+                .accessibilityLabel(mode.voiceLabel)
+                .accessibilityIdentifier(mode.accessibilityIdentifier)
+                .accessibilityAddTraits(mode == selected ? .isSelected : [])
+            } else {
+                face.accessibilityHidden(true)
+            }
+        }
+    }
+
+    /// The capital over its lowercase name. The name is laid out in both states
+    /// so the row's height never moves, but only the selected mode paints it —
+    /// the inactive name is transparent, so it reserves its band without
+    /// reading. The caption scales to fit the target rather than being clipped.
     private func label(_ mode: CameraMode) -> some View {
         let isActive = mode == selected
-        let letter = Text(mode.letter)
-            .font(NitrateTypography.font(size: 14, relativeTo: .headline))
-            .foregroundColor(isActive ? .orange : Color.white.opacity(0.45))
-        let word = Text(" " + mode.title)
-            .font(NitrateTypography.font(size: 12, relativeTo: .subheadline))
-            .foregroundColor(isActive ? Color.white.opacity(0.9) : Color.white.opacity(0))
-        return (letter + word)
-            .lineLimit(1)
-            .minimumScaleFactor(minimumScale)
+        return VStack(spacing: 0) {
+            Text(mode.letter)
+                .font(NitrateTypography.font(size: 14, relativeTo: .headline))
+                .foregroundColor(isActive ? .orange : Color.white.opacity(0.45))
+            Text(mode.title)
+                .font(NitrateTypography.font(size: 12, relativeTo: .subheadline))
+                .foregroundColor(Color.white.opacity(isActive ? 0.9 : 0))
+                .lineLimit(1)
+                .minimumScaleFactor(minimumScale)
+        }
     }
 
     // MARK: - Swipe
