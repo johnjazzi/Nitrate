@@ -158,4 +158,98 @@ struct DaylightExposureRescueGeometryTests {
         #expect(DaylightExposureRescueGeometry.buttonRect(above: exposure,
                                                           in: CGSize(width: 390, height: 20)) == nil)
     }
+
+    // MARK: - Manual-control exclusion
+
+    /// The manual controls hug the physical right of the preview, overlapping the
+    /// exposure column's own footprint — the case that made the "Too bright"
+    /// affordance collide with them.
+    private let manualControls = CGRect(x: 346, y: 120, width: 44, height: 500)
+
+    @Test func keepsThePlainAnchorWhenTheManualControlsDoNotReachIt() throws {
+        // A left-hand exclusion leaves the historical above-the-column slot clear.
+        let far = CGRect(x: 20, y: 120, width: 44, height: 500)
+        let rect = try #require(DaylightExposureRescueGeometry.buttonRect(
+            above: exposure, in: viewport, excluding: far))
+        #expect(rect == DaylightExposureRescueGeometry.buttonRect(above: exposure, in: viewport))
+        #expect(rect.size == CGSize(width: 92, height: 44))
+        #expect(rect.maxY == exposure.minY - 6)
+        #expect(!rect.intersects(far))
+    }
+
+    @Test func portraitAvoidsTheManualControlsAboveLeftWithoutOverlap() throws {
+        let base = try #require(DaylightExposureRescueGeometry.buttonRect(above: exposure, in: viewport))
+        #expect(base.intersects(manualControls), "The unadjusted anchor really does collide here.")
+
+        let rect = try #require(DaylightExposureRescueGeometry.buttonRect(
+            above: exposure, in: viewport, excluding: manualControls))
+        #expect(rect.size == CGSize(width: 92, height: 44))
+        #expect(!rect.intersects(manualControls), "The slot must never overlap the manual controls.")
+        // Above-left: both edges clear the controls by the gap.
+        #expect(rect.maxY <= manualControls.minY - DaylightExposureRescueGeometry.gapBesideControls)
+        #expect(rect.maxX <= manualControls.minX - DaylightExposureRescueGeometry.gapBesideControls)
+        // Still above the exposure column and inside the canvas.
+        #expect(rect.maxY <= exposure.minY - DaylightExposureRescueGeometry.gapAboveExposure)
+        #expect(CGRect(origin: .zero, size: viewport).contains(rect))
+    }
+
+    @Test func quarterTurnAvoidsTheManualControlsWithRotatedBounds() throws {
+        for degrees in [90.0, -90.0] {
+            let rect = try #require(DaylightExposureRescueGeometry.buttonRect(
+                above: exposure, in: viewport, rotationDegrees: degrees, excluding: manualControls))
+            #expect(rect.size == CGSize(width: 44, height: 92),
+                    "The reserved bound turns for the hold; the face does not shrink.")
+            #expect(!rect.intersects(manualControls))
+            #expect(rect.maxY <= manualControls.minY - DaylightExposureRescueGeometry.gapBesideControls)
+            #expect(rect.maxX <= manualControls.minX - DaylightExposureRescueGeometry.gapBesideControls)
+            #expect(CGRect(origin: .zero, size: viewport).contains(rect))
+        }
+    }
+
+    @Test func fallsBackToALeftOffsetWhenThereIsNoRoomAboveTheControls() throws {
+        // A full-height manual column leaves no vertical room, but the left of the
+        // column is still free: keep the exposure anchor and shift left.
+        let tall = CGRect(x: 346, y: 0, width: 44, height: 844)
+        let rect = try #require(DaylightExposureRescueGeometry.buttonRect(
+            above: exposure, in: viewport, excluding: tall))
+        #expect(rect.maxY == exposure.minY - DaylightExposureRescueGeometry.gapAboveExposure)
+        #expect(rect.maxX <= tall.minX - DaylightExposureRescueGeometry.gapBesideControls)
+        #expect(!rect.intersects(tall))
+        #expect(CGRect(origin: .zero, size: viewport).contains(rect))
+    }
+
+    @Test func returnsNilWhenNoPlacementClearsTheControls() {
+        // The controls span the whole canvas: no slot can stay inside the
+        // viewport and clear them, so the affordance is omitted rather than drawn
+        // over the controls.
+        let everything = CGRect(x: 0, y: 0, width: viewport.width, height: viewport.height)
+        #expect(DaylightExposureRescueGeometry.buttonRect(
+            above: exposure, in: viewport, excluding: everything) == nil)
+    }
+
+    @Test func degenerateExclusionFallsBackToThePlainAnchor() throws {
+        for degenerate in [CGRect.zero, CGRect(x: 100, y: 100, width: 0, height: 50),
+                           CGRect(x: 100, y: 100, width: 50, height: 0)] {
+            let rect = try #require(DaylightExposureRescueGeometry.buttonRect(
+                above: exposure, in: viewport, excluding: degenerate))
+            #expect(rect == DaylightExposureRescueGeometry.buttonRect(above: exposure, in: viewport))
+        }
+    }
+
+    @Test func neverIntersectsTheManualControlsAcrossHolds() throws {
+        let canvases = [CGSize(width: 390, height: 844), CGSize(width: 320, height: 568),
+                        CGSize(width: 430, height: 932)]
+        for canvas in canvases {
+            let column = CGRect(x: canvas.width - 92, y: canvas.height - 340, width: 92, height: 300)
+            let controls = CGRect(x: canvas.width - 44, y: 120, width: 44, height: canvas.height - 320)
+            for degrees in [0.0, 90.0, -90.0, 180.0] {
+                guard let rect = DaylightExposureRescueGeometry.buttonRect(
+                    above: column, in: canvas, rotationDegrees: degrees,
+                    excluding: controls) else { continue }
+                #expect(!rect.intersects(controls),
+                        "Hold \(degrees) on \(canvas) must not overlap the manual controls.")
+                #expect(CGRect(origin: .zero, size: canvas).contains(rect))
+            }
+        }
+    }
 }

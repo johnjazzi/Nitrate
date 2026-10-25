@@ -38,9 +38,11 @@ struct CameraDesignRenderTests {
     @MainActor @Test func rescueButtonRendersInsideItsReservedBoundsInEveryHold() throws {
         let size = CGSize(width: 390, height: 750)
         let exposure = CGRect(x: 282, y: 560, width: 92, height: 168)
+        let manualControls = CGRect(x: 330, y: 450, width: 44, height: 140)
         for degrees in [0.0, 90.0, -90.0] {
             let rect = try #require(DaylightExposureRescueGeometry.buttonRect(
-                above: exposure, in: size, rotationDegrees: degrees))
+                above: exposure, in: size, rotationDegrees: degrees, excluding: manualControls))
+            #expect(!rect.intersects(manualControls), "The rescue face must clear the manual controls.")
             let view = ZStack(alignment: .topLeading) {
                 Color.black
                 ExposureRescueButton(armed: false, enabled: true, action: {})
