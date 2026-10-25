@@ -131,6 +131,42 @@ struct CameraModeCarouselRenderTests {
                 "Only the active lowercase title is painted, so the longer active word carries more ink.")
     }
 
+    @Test func onlyTheSelectedSidePaintsTheLowercaseWord() throws {
+        // "D develop" / "V video": the lowercase word belongs to the selected
+        // mode alone; the inactive side shows only its ghosted letter. Splitting
+        // the render down the gap between the two controls measures this
+        // directly — whichever half owns the selection must own the bulk of the
+        // ink, because the word is drawn there and nowhere else.
+        for (active, selectedIsLeft) in [(CameraMode.develop, true), (CameraMode.video, false)] {
+            let image = try render(carousel(active: active), width: defaultWidth,
+                                   name: "carousel-word-\(active.rawValue)")
+            let data = try pixels(image)
+            let left = ink(data, image: image, leftHalf: true)
+            let right = ink(data, image: image, leftHalf: false)
+            let selected = selectedIsLeft ? left : right
+            let inactive = selectedIsLeft ? right : left
+            #expect(selected > inactive,
+                    "The selected word must paint only its own half; the inactive half keeps just a ghosted letter.")
+        }
+    }
+
+    @Test func onlyTheSelectedSideCarriesTheAccentColour() throws {
+        // Subtle emphasis, not a filled segmented control: exactly one letter is
+        // accented. Measuring the accent per half proves the ghosted neighbour
+        // never picks up the accent colour the selected letter alone carries.
+        for (active, selectedIsLeft) in [(CameraMode.develop, true), (CameraMode.video, false)] {
+            let image = try render(carousel(active: active), width: defaultWidth,
+                                   name: "carousel-accent-\(active.rawValue)")
+            let data = try pixels(image)
+            let left = orangeInk(data, image: image, leftHalf: true)
+            let right = orangeInk(data, image: image, leftHalf: false)
+            let selected = selectedIsLeft ? left : right
+            let inactive = selectedIsLeft ? right : left
+            #expect(selected > 40, "The selected letter paints the accent colour.")
+            #expect(inactive <= 4, "The ghosted neighbour is never accented, so the row is not a filled segmented control.")
+        }
+    }
+
     // MARK: - Helpers
 
     private func carousel(active: CameraMode) -> some View {
@@ -188,6 +224,39 @@ struct CameraModeCarouselRenderTests {
                 count += 1
             }
             index += 4
+        }
+        return count
+    }
+
+    /// Painted-pixel count restricted to one half of the row, split down the
+    /// gap between the two controls (the midpoint never holds a glyph).
+    private func ink(_ data: [UInt8], image: CGImage, leftHalf: Bool) -> Int {
+        let midpoint = image.width / 2
+        let columns = leftHalf ? 0..<midpoint : midpoint..<image.width
+        var count = 0
+        for y in 0..<image.height {
+            for x in columns where data[(y * image.width + x) * 4 + 3] > 20 { count += 1 }
+        }
+        return count
+    }
+
+    /// Accent-colour count restricted to one half of the row, so the test can
+    /// prove the accent sits on the selected side alone.
+    private func orangeInk(_ data: [UInt8], image: CGImage, leftHalf: Bool) -> Int {
+        let midpoint = image.width / 2
+        let columns = leftHalf ? 0..<midpoint : midpoint..<image.width
+        var count = 0
+        for y in 0..<image.height {
+            for x in columns {
+                let index = (y * image.width + x) * 4
+                let red = Int(data[index])
+                let green = Int(data[index + 1])
+                let blue = Int(data[index + 2])
+                let alpha = Int(data[index + 3])
+                if alpha > 128, red > 150, green > 60, green < 210, blue < 120, red > blue + 60 {
+                    count += 1
+                }
+            }
         }
         return count
     }
