@@ -24,6 +24,7 @@ enum CameraModeCarouselGesture {
     static func outcome(translation: CGSize,
                         from current: CameraMode,
                         visible: [CameraMode] = CameraMode.visibleModes) -> Outcome {
+        // Only the labels rotate; the row and its drag coordinates stay fixed.
         let horizontal = translation.width
         let vertical = translation.height
 
@@ -58,6 +59,7 @@ struct CameraModeCarousel: View {
     let selected: CameraMode
     let enabled: Bool
     let onSelect: (CameraMode) -> Void
+    let rotationDegrees: Double
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -75,10 +77,12 @@ struct CameraModeCarousel: View {
     /// 96pt slot this keeps both words legible rather than clipped.
     private let minimumScale: CGFloat = 0.3
 
-    init(selected: CameraMode, enabled: Bool, onSelect: @escaping (CameraMode) -> Void) {
+    init(selected: CameraMode, enabled: Bool, rotationDegrees: Double = 0,
+         onSelect: @escaping (CameraMode) -> Void) {
         self.selected = selected
         self.enabled = enabled
         self.onSelect = onSelect
+        self.rotationDegrees = rotationDegrees
     }
 
     var body: some View {
@@ -101,12 +105,19 @@ struct CameraModeCarousel: View {
             guard enabled else { return }
             onSelect(mode)
         } label: {
-            label(mode)
-                .padding(.horizontal, labelPadding)
-                .frame(minWidth: Self.minimumControlWidth,
-                       maxWidth: .infinity,
-                       minHeight: Self.height)
-                .contentShape(Rectangle())
+            GeometryReader { geometry in
+                let quarterTurn = abs(rotationDegrees).truncatingRemainder(dividingBy: 180) == 90
+                let faceWidth = quarterTurn ? geometry.size.height : geometry.size.width
+                let faceHeight = quarterTurn ? geometry.size.width : geometry.size.height
+                label(mode)
+                    .padding(.horizontal, labelPadding)
+                    .frame(width: faceWidth, height: faceHeight)
+                    .rotationEffect(.degrees(rotationDegrees))
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+            }
+            .frame(minWidth: Self.minimumControlWidth, maxWidth: .infinity,
+                   minHeight: Self.height, maxHeight: Self.height)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -138,12 +149,17 @@ struct CameraModeCarousel: View {
 
     // MARK: - Swipe
 
+    func resolvedSwipe(_ translation: CGSize) -> CameraModeCarouselGesture.Outcome {
+        guard enabled else { return .none }
+        return CameraModeCarouselGesture.outcome(translation: translation, from: selected)
+    }
+
     private var swipeGesture: some Gesture {
         DragGesture(minimumDistance: CameraModeCarouselGesture.minimumTravel)
             .onEnded { value in
                 guard enabled else { return }
                 guard case let .select(mode) =
-                        CameraModeCarouselGesture.outcome(translation: value.translation, from: selected)
+                        resolvedSwipe(value.translation)
                 else { return }
                 onSelect(mode)
             }

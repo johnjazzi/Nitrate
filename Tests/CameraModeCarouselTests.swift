@@ -167,6 +167,22 @@ struct CameraModeCarouselRenderTests {
         }
     }
 
+    @Test func landscapeLabelsRotateWithoutExpandingTheStrip() throws {
+        for width: CGFloat in [96, 200] {
+            for mode in CameraMode.visibleModes {
+                let upright = try pixels(render(carousel(active: mode), width: width, name: "upright-\(mode.rawValue)"))
+                for degrees in [-90.0, 90.0] {
+                    let view = CameraModeCarousel(selected: mode, enabled: true, rotationDegrees: degrees, onSelect: { _ in })
+                    let rotated = try pixels(render(view, width: width, name: "landscape-\(mode.rawValue)-\(Int(degrees))"))
+                    let different = rotated != upright
+                    #expect(different)
+                    #expect(ink(rotated) > 100)
+                    #expect(rotated.count == upright.count)
+                }
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     private func carousel(active: CameraMode) -> some View {

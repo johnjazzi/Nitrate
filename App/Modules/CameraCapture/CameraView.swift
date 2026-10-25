@@ -11,11 +11,12 @@ struct CameraView: View {
     @AppStorage(MeteringIndicatorPreferences.showsIndicatorKey) private var showsMeteringIndicator = MeteringIndicatorPreferences.defaultShowsIndicator
     var videoGravity: AVLayerVideoGravity = .resizeAspectFill
     var selectedStockLUTName: String? = nil
+    var previewEnabled = true
 
     var body: some View {
         CameraPreviewRepresentable(previewLayer: $previewLayer, camera: viewModel.session,
                                    videoGravity: videoGravity, mode: .resolved(previewMode),
-                                   active: scenePhase == .active,
+                                   active: scenePhase == .active && previewEnabled,
                                    transitioning: viewModel.isSwitchingCameraLens,
                                    lens: viewModel.activeLens, selectedStockLUTName: selectedStockLUTName)
             .overlay {

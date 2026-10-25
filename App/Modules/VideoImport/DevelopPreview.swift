@@ -27,7 +27,10 @@ struct DevelopPreview: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(DevelopPreviewChrome.surface)
         .onChange(of: pickerItem) { _, item in
-            if let item { model.select(item) }
+            if let item {
+                model.select(item)
+                pickerItem = nil
+            }
         }
     }
 

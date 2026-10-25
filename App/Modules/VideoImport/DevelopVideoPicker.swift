@@ -1,4 +1,5 @@
 #if os(iOS)
+import SwiftUI
 import PhotosUI
 import CoreTransferable
 import UniformTypeIdentifiers

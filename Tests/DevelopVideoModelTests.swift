@@ -56,7 +56,7 @@ struct DevelopVideoModelTests {
             if condition() { return }
             try await Task.sleep(for: .milliseconds(5))
         }
-        Issue.record(message)
+        Issue.record("\(message)")
     }
 
     // MARK: - Selection lifecycle
@@ -103,6 +103,7 @@ struct DevelopVideoModelTests {
         let gate = DevelopGate()
 
         model.select(transfer: { await gate.suspend(); return Self.transfer(first, directory: files.directory) })
+        await gate.waitUntilSuspended()
         model.select(transfer: { Self.transfer(second, directory: files.directory) })
         try await Self.waitUntil { model.video?.url == second }
 
@@ -121,6 +122,7 @@ struct DevelopVideoModelTests {
         let gate = DevelopGate()
 
         model.select(transfer: { await gate.suspend(); return Self.transfer(source, directory: files.directory) })
+        await gate.waitUntilSuspended()
         model.cancelSelection()
 
         #expect(model.isLoading == false)
@@ -247,6 +249,7 @@ struct DevelopVideoModelTests {
         // A new, unqueued selection in flight when Develop is left.
         let transferGate = DevelopGate()
         model.select(transfer: { await transferGate.suspend(); return Self.transfer(queued, directory: files.directory) })
+        await transferGate.waitUntilSuspended()
         model.leaveDevelop()
 
         #expect(model.activeJobID == id)
@@ -269,6 +272,13 @@ private actor DevelopGate {
     func suspend() async {
         if resumed { return }
         await withCheckedContinuation { continuation = $0 }
+    }
+    func waitUntilSuspended() async {
+        for _ in 0..<400 {
+            if continuation != nil { return }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        Issue.record("The deferred provider was not entered.")
     }
     func resume() {
         resumed = true

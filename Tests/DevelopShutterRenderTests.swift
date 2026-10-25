@@ -112,10 +112,14 @@ struct DevelopShutterRenderTests {
 
     /// Count of pixels that carry the accent: clearly red-dominant and bright.
     private func orangeInk(_ data: [UInt8]) -> Int {
-        stride(from: 0, to: data.count, by: 4).filter {
-            data[$0 + 3] > 200 && Int(data[$0]) > Int(data[$0 + 1]) + 40
-                && data[$0] > 120 && data[$0 + 2] < 130
-        }.count
+        var count = 0
+        for index in stride(from: 0, to: data.count, by: 4) {
+            let red = Int(data[index])
+            let green = Int(data[index + 1])
+            if data[index + 3] > 200, red > green + 40,
+               data[index] > 120, data[index + 2] < 130 { count += 1 }
+        }
+        return count
     }
 
     /// Count of painted (non-transparent) pixels, so a blank render fails.
