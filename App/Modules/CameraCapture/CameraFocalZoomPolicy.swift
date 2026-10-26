@@ -24,10 +24,10 @@ enum CameraFocalZoomPolicy {
     /// Ruler landmarks shared with the UI, so haptics land on the same values
     /// the policy treats as boundaries. The single shared source the UI may
     /// alias for its own ruler.
-    static let majorTicks: [Double] = [13, 24, 35, 50, 75, 96, 110, 150]
+    static let majorTicks: [Double] = [13, 24, 35, 50, 75, 96, 110, 150, 200, 300, 400]
 
     static let minimumFocalLengthMM: Double = 13
-    static let maximumFocalLengthMM: Double = 150
+    static let maximumFocalLengthMM: Double = 400
 
     /// Below this the target prefers the ultrawide camera.
     static let ultraWideUpperBoundMM: Double = 24
@@ -43,7 +43,7 @@ enum CameraFocalZoomPolicy {
     /// the 24↔96 gap, so a deliberate reversal still switches promptly.
     static let boundaryHysteresisMM: Double = 1.0
 
-    /// Clamp a requested focal length into the valid, finite 13...150 range.
+    /// Clamp a requested focal length into the valid, finite 13...400 range.
     /// Non-finite input is refused rather than coerced.
     static func clampedTarget(_ millimeters: Double) -> Double? {
         guard millimeters.isFinite else { return nil }

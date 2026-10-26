@@ -701,10 +701,13 @@ struct ContentView: View {
         scenePhase == .active
     }
 
-    /// A zoom arrow only runs while the capture is idle and nothing covers the
-    /// camera screen, matching the pinch's own gate.
+    /// Controlled zoom arrows remain usable during recording. Lifecycle,
+    /// transitions, unavailable snapshots and covering sheets still block them;
+    /// pinch zoom retains the stricter captureBusy gate.
     private var canUseZoomControls: Bool {
-        scenePhase == .active && !captureBusy && cameraViewModel.zoomSnapshot != nil
+        scenePhase == .active && !cameraViewModel.isStartingRecording
+            && !cameraViewModel.isStoppingRecording && !cameraViewModel.isChangingFrameRate
+            && !cameraViewModel.isSwitchingCameraLens && cameraViewModel.zoomSnapshot != nil
             && !showSettings && !showQueueSheet && !showStockSheet && !showDaylightRescue
     }
 
