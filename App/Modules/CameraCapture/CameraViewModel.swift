@@ -483,7 +483,7 @@ final class CameraViewModel {
               let snapshot = zoomSnapshot,
               let target = CameraFocalZoomPolicy.clampedTarget(millimeters) else { return }
         // The engine decides on the RAW gesture intent, only clamped to the
-        // valid 13...150 mm range. It must not be pre-clamped to the active
+        // valid 13...400 mm range. It must not be pre-clamped to the active
         // lens's device window: during an in-flight switch that window still
         // belongs to the *old* lens, so a clamp there would corrupt the
         // coalesced target (e.g. a 96.5 mm dither pinching onto a wide device
@@ -504,7 +504,7 @@ final class CameraViewModel {
     }
 
     /// Drive a decision to the session. `targetMM` is the raw pinch intent from
-    /// the engine (clamped only to 13...150 mm); `multiplier` is the active
+    /// the engine (clamped only to 13...400 mm); `multiplier` is the active
     /// device's real display multiplier, so the display factor is converted on
     /// the tier's own native base and the session clamps it to the device's
     /// achievable window in `setDisplayZoom`.

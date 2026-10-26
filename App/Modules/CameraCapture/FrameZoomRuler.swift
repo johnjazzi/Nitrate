@@ -130,9 +130,8 @@ struct FrameZoomRuler: View {
 /// iterating an unbounded user value, so a runaway display factor can neither
 /// trap `Int(_:)` nor grow an array without limit.
 enum FrameZoomRulerScale {
-    /// The landmarks the pinch ruler and its haptics already share, kept
-    /// verbatim so the stationary `FocalLengthRuler`, `crossesMajorTick` and the
-    /// pinch tests are unchanged. The controlled ruler only *adds* above 150.
+    /// Shared pinch landmarks through 400 mm. The controlled ruler also adds
+    /// landmarks outside this window when the active lens supports them.
     static let fixedLandmarks: [Double] = CameraFocalZoomPolicy.majorTicks
 
     /// Nice round focal lengths above the fixed landmarks, for the controlled
@@ -151,7 +150,7 @@ enum FrameZoomRulerScale {
     /// The window the ruler should draw.
     ///
     /// A valid available range is used as-is. Otherwise the ruler falls back to
-    /// the fixed 13…150 landmarks, and — for a finite current value beyond that
+    /// the fixed pinch landmarks, and — for a finite current value beyond that
     /// fixed window — to a bounded neighbourhood of it, so the readout never
     /// renders an empty rail.
     static func resolvedRange(currentMM: Double, available: ClosedRange<Double>?) -> ClosedRange<Double> {
