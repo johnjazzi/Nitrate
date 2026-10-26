@@ -13,7 +13,6 @@ struct QueueSheetView: View {
     @State private var playbackJob: RenderJob?
     @State private var metadataJob: RenderJob?
     @State private var photosOpenFailed = false
-    @State private var showVideoImport = false
 
     private var latestRender: RenderJob? {
         let candidates = viewModel.jobs.map {
@@ -65,17 +64,6 @@ struct QueueSheetView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Section {
-                    Button { showVideoImport = true } label: {
-                        Label("Process Video", systemImage: "square.and.arrow.down")
-                            .frame(minHeight: 44)
-                    }
-                    .disabled(cameraViewModel.isRecording || cameraViewModel.isStartingRecording
-                              || cameraViewModel.isStoppingRecording || viewModel.library == nil)
-                    .accessibilityIdentifier("videoImport.open")
-                    Text("Apple Log 2 only.")
-                        .font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
-                }
                 Section("Storage") {
                     CameraStorageSummary(
                         freeSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.freeSpaceBytes : nil,
@@ -102,7 +90,7 @@ struct QueueSheetView: View {
                         ContentUnavailableView(
                             "No Render Jobs",
                             systemImage: "tray",
-                            description: Text("Record a video or process one from Photos.")
+                            description: Text("Record a video or use Develop to choose a clip.")
                         )
                     }
                 } else {
@@ -170,11 +158,6 @@ struct QueueSheetView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { isPresented = false }
-                }
-            }
-            .sheet(isPresented: $showVideoImport) {
-                if let library = viewModel.library {
-                    VideoImportSheet(library: library, queue: viewModel, isPresented: $showVideoImport)
                 }
             }
             .sheet(item: $shareTarget) { job in

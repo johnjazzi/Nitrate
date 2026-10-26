@@ -13,6 +13,8 @@ struct ContentView: View {
 
     @State private var showStockSheet = false
     @State private var showQueueSheet = false
+    @State private var cameraMode = CameraModeSelection()
+    @State private var developModel: DevelopVideoModel
     @State private var showSettings = false
     @State private var showDaylightRescue = false
     @Environment(\.scenePhase) private var scenePhase
@@ -40,6 +42,7 @@ struct ContentView: View {
         self.cameraViewModel = cameraViewModel
         self.library = library
         self.renderQueueViewModel = renderQueueViewModel
+        _developModel = State(initialValue: DevelopVideoModel(queue: renderQueueViewModel))
         self.purchaseViewModel = purchaseViewModel
         self.stockSelectorHint = stockSelectorHint
         let stock = library.lastSelectedStockId.flatMap { id in
@@ -128,9 +131,21 @@ struct ContentView: View {
                 Color.black.ignoresSafeArea()
 
                 cameraLayer(in: previewRect(in: geometry))
+                    .opacity(isDevelopMode ? 0 : 1)
+                    .allowsHitTesting(!isDevelopMode)
+
+                if isDevelopMode {
+                    let rect = previewRect(in: geometry)
+                    DevelopPreview(model: developModel, queue: renderQueueViewModel)
+                        .frame(width: rect.width, height: rect.height)
+                        .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
+                        .position(x: rect.midX, y: rect.midY)
+                }
 
                 VStack(spacing: 0) {
                     topBar
+                        .disabled(isDevelopMode)
+                        .opacity(isDevelopMode ? 0.3 : 1)
                         .background(controlMeasurement("top"))
 
                     Spacer()
@@ -138,6 +153,16 @@ struct ContentView: View {
                     controlBar(horizontalInset: controlBarHorizontalInset(in: geometry))
                         .padding(.bottom, 8)
                         .background(controlMeasurement("bottom"))
+                }
+
+                if let bottom = controlBounds["bottom"],
+                   let slot = CameraModeStripGeometry.frame(
+                    controls: bottom, canvasWidth: geometry.size.width,
+                    horizontalInset: controlBarHorizontalInset(in: geometry)) {
+                    CameraModeCarousel(selected: cameraMode.selected, enabled: canChangeCameraMode,
+                                       rotationDegrees: statusRotationDegrees, onSelect: selectCameraMode)
+                        .frame(width: slot.width, height: slot.height)
+                        .position(x: slot.midX, y: slot.midY)
                 }
 
                 if let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
@@ -148,26 +173,12 @@ struct ContentView: View {
                     }
                 }
 
-                // A canvas sibling, not a child painted beyond the shooting bar:
-                // visibility never resizes the preview and the whole button is hittable.
-                if shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
-                   let rect = DaylightExposureRescueGeometry.buttonRect(
-                    above: exposure, in: geometry.size, rotationDegrees: statusRotationDegrees) {
-                    ExposureRescueButton(armed: cameraViewModel.sessionFrameRate == .daylight60,
-                                         enabled: cameraViewModel.canChangeSessionFrameRate,
-                                         action: { showDaylightRescue = true })
-                        .frame(width: 92, height: 44)
-                        .rotationEffect(.degrees(statusRotationDegrees))
-                        .frame(width: rect.width, height: rect.height)
-                        .position(x: rect.midX, y: rect.midY)
-                }
-
                 // Below the threshold the rescue trigger is gone, but an armed
                 // session must still have a visible way back to 24 fps. This is
                 // the same status face in its idle-armed form: no dot, no timer,
                 // and a non-sizing sibling so it reserves no toolbar slot, never
                 // hides the lens key and cannot resize the preview.
-                if !shouldOfferDaylightRescue, recordPresentation == .idle,
+                if !isDevelopMode, !shouldOfferDaylightRescue, recordPresentation == .idle,
                    cameraViewModel.sessionFrameRate == .daylight60,
                    let top = controlBounds["top"], let bottom = controlBounds["bottom"],
                    let badge = DaylightIdleBadgeGeometry.rect(
@@ -227,7 +238,7 @@ struct ContentView: View {
                     }
                 }
 
-                if showManualControls, legacyManualControlsEnabled,
+                if showManualControls, legacyManualControlsEnabled, !isDevelopMode,
                    let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
                     ManualControlsOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
                                           excluding: RecordingStatusOverlayGeometry.rect(
@@ -251,6 +262,21 @@ struct ContentView: View {
                     .transition(.opacity)
                 }
 
+                // A canvas sibling, not a child painted beyond the shooting bar:
+                // visibility never resizes the preview and the whole button is hittable.
+                if !isDevelopMode, shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
+                   let rect = DaylightExposureRescueGeometry.buttonRect(
+                    above: exposure, in: geometry.size, rotationDegrees: statusRotationDegrees,
+                    excluding: daylightRescueExclusion(in: geometry)) {
+                    ExposureRescueButton(armed: cameraViewModel.sessionFrameRate == .daylight60,
+                                         enabled: cameraViewModel.canChangeSessionFrameRate,
+                                         action: { showDaylightRescue = true })
+                        .frame(width: 92, height: 44)
+                        .rotationEffect(.degrees(statusRotationDegrees))
+                        .frame(width: rect.width, height: rect.height)
+                        .position(x: rect.midX, y: rect.midY)
+                }
+
                 // Preserved pinch behaviour: with Zoom Controls off the ruler
                 // still appears only while a pinch is live, in its original
                 // stationary slot above the shooting bar.
@@ -266,6 +292,8 @@ struct ContentView: View {
                 }
 
                 debugControlsOverlay(in: geometry)
+                    .disabled(isDevelopMode)
+                    .opacity(isDevelopMode ? 0.3 : 1)
 
                 errorOverlays
             }
@@ -629,9 +657,26 @@ struct ContentView: View {
                         canChangeStabilization: cameraViewModel.canSetRecordingStabilization,
                         selectStabilization: { cameraViewModel.setRecordingStabilization($0) })
                         .frame(width: 44, height: 140)
+                        .background(controlMeasurement("inlineManual"))
                 }
             }
         }
+    }
+
+    /// Reserve the visible manual surface so the rescue button stays clear.
+    private func daylightRescueExclusion(in geometry: GeometryProxy) -> CGRect? {
+        if legacyManualControlsEnabled {
+            guard showManualControls,
+                  let top = controlBounds["top"], let bottom = controlBounds["bottom"] else { return nil }
+            return ManualControlsOverlayGeometry.rect(
+                viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
+                excluding: RecordingStatusOverlayGeometry.rect(
+                    viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
+                    rotationDegrees: statusRotationDegrees),
+                expanded: manualControlsExpanded, rotationDegrees: statusRotationDegrees)
+        }
+        guard showInlineManualControls else { return nil }
+        return controlBounds["inlineManual"]
     }
 
     /// The panel's AF/MF key and the Settings switch share one state, and every
@@ -697,7 +742,7 @@ struct ContentView: View {
     /// from the measured control bounds, never the ruler's own size, so a ruler
     /// cannot feed back into the preview frame.
     private func frameRulerBounds(in geometry: GeometryProxy) -> CGRect? {
-        guard let top = controlBounds["top"], let bottom = controlBounds["bottom"] else { return nil }
+        guard !isDevelopMode, let top = controlBounds["top"], let bottom = controlBounds["bottom"] else { return nil }
         let preview = previewRect(in: geometry)
         guard preview.width > 0, preview.height > 0 else { return nil }
         let safe = CGRect(x: 0, y: top.maxY, width: geometry.size.width,
@@ -710,7 +755,7 @@ struct ContentView: View {
         // One structural identity in both modes: no camera lifecycle transition.
         CameraView(viewModel: cameraViewModel,
                    videoGravity: .resizeAspectFill,
-                   selectedStockLUTName: selectedStock?.lutName)
+                   selectedStockLUTName: selectedStock?.lutName, previewEnabled: !isDevelopMode)
             .frame(width: rect.width, height: rect.height)
             .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
             .overlay {
@@ -952,6 +997,7 @@ struct ContentView: View {
     /// Any modal, sheet, fault, warning or in-flight take/transition pauses the
     /// hint's active clock and clears its sustained condition.
     private var isStockHintActive: Bool {
+        guard !isDevelopMode else { return false }
         guard scenePhase == .active else { return false }
         guard !cameraViewModel.isStartingRecording,
               !cameraViewModel.isRecording,
@@ -988,8 +1034,41 @@ struct ContentView: View {
                 showStockSheet = true
             },
             showsStockHint: stockSelectorHint.isCueVisible,
-            horizontalInset: horizontalInset
+            horizontalInset: horizontalInset,
+            isDevelopMode: isDevelopMode,
+            developCanRender: developModel.canRender(stock: selectedStock, queue: renderQueueViewModel),
+            developIsBusy: developIsBusy,
+            onDevelopRender: {
+                guard let stock = selectedStock else { return }
+                let gauge = library.lastGauge(for: stock.stockId) ?? .neutral
+                _ = developModel.render(stock: stock, iso: currentISO, gauge: gauge, queue: renderQueueViewModel)
+            }
         )
+    }
+
+    private var canChangeCameraMode: Bool {
+        scenePhase == .active && !captureBusy && !cameraViewModel.isChangingFrameRate
+            && !cameraViewModel.isSwitchingCameraLens && !showStockSheet && !showQueueSheet
+            && !showSettings && !showDaylightRescue
+    }
+
+    private var isDevelopMode: Bool { cameraMode.selected == .develop }
+
+    private var developIsBusy: Bool {
+        guard let id = developModel.activeJobID,
+              let job = renderQueueViewModel.jobs.first(where: { $0.id == id }) else { return false }
+        return job.status == .pending || job.status == .processing
+    }
+
+    private func selectCameraMode(_ mode: CameraMode) {
+        guard canChangeCameraMode else { return }
+        guard cameraMode.select(mode, enabled: true) else { return }
+        if mode == .video {
+            developModel.leaveDevelop()
+        } else {
+            cameraViewModel.endSlowZoom()
+            pinchIsActive = false
+        }
     }
 
     /// The shooting bar's horizontal margin. In Frame Mode it aligns the bar's
@@ -1079,12 +1158,13 @@ struct ContentView: View {
         StockSheetView(
             library: library,
             renderQueueViewModel: renderQueueViewModel,
-            sourceURL: currentSourceURL,
-            awaitingStockJobId: awaitingStockJobId,
-            capturePolicy: currentSourceURL.flatMap { cameraViewModel.capturePolicy(for: $0) },
+            sourceURL: isDevelopMode ? nil : currentSourceURL,
+            awaitingStockJobId: isDevelopMode ? nil : awaitingStockJobId,
+            capturePolicy: isDevelopMode ? nil : currentSourceURL.flatMap { cameraViewModel.capturePolicy(for: $0) },
             isPresented: $showStockSheet,
             selectedStock: $selectedStock,
-            currentISO: $currentISO
+            currentISO: $currentISO,
+            selectionOnly: isDevelopMode
         )
     }
 
@@ -1129,6 +1209,7 @@ private struct StockSheetView: View {
     @Binding var isPresented: Bool
     @Binding var selectedStock: FilmStockConfig?
     @Binding var currentISO: Float
+    var selectionOnly = false
 
     @State private var stocks: [FilmStockConfig] = []
     @State private var localSelection: FilmStockConfig?
@@ -1148,9 +1229,9 @@ private struct StockSheetView: View {
 
                         if localSelection != nil { gaugePicker }
 
-                        if let url = sourceURL {
+                        if let url = sourceURL, !selectionOnly {
                             renderButton(sourceURL: url)
-                        } else {
+                        } else if !selectionOnly {
                             Text("Record a video to render.")
                                 .font(NitrateTypography.font(.caption))
                                 .foregroundStyle(.secondary)

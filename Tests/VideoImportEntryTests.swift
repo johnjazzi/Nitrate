@@ -7,21 +7,25 @@ struct VideoImportEntryTests {
                    encoding: .utf8)
     }
 
-    @Test func shippingQueueHasAReachableProcessVideoAction() throws {
+    @Test func developIsTheOnlyVideoEntryAndTheQueueHasNoLegacyImportAction() throws {
         let sheet = try source("App/Modules/RenderQueue/QueueSheetView.swift")
-        #expect(sheet.contains("Label(\"Process Video\", systemImage: \"square.and.arrow.down\")"))
-        #expect(sheet.contains(".sheet(isPresented: $showVideoImport)"))
-        #expect(sheet.contains("VideoImportSheet(library: library, queue: viewModel, isPresented: $showVideoImport)"))
-        #expect(sheet.contains(".disabled(cameraViewModel.isRecording"))
+        #expect(!sheet.contains("Process Video"))
+        #expect(!sheet.contains("showVideoImport"))
+        #expect(!sheet.contains("VideoImportSheet"))
+        #expect(!sheet.contains("videoImport.open"))
     }
 
-    @Test func processingSheetUsesConsistentCopy() throws {
-        let sheet = try source("App/Modules/VideoImport/VideoImportSheet.swift")
-        #expect(sheet.contains(".navigationTitle(\"Process Video\")"))
-        #expect(sheet.contains("\"Preparing video…\""))
-        #expect(!sheet.contains("\"Cancel import\""))
-        #expect(!sheet.contains("Could not import"))
-        #expect(!sheet.contains("could not be imported"))
+    @Test func cameraHasADirectDevelopModeWithoutOpeningTheQueue() throws {
+        let screen = try source("App/ContentView.swift")
+        #expect(screen.contains("CameraModeCarousel(selected: cameraMode.selected"))
+        #expect(screen.contains("DevelopPreview(model: developModel, queue: renderQueueViewModel)"))
+        #expect(!screen.contains(".sheet(isPresented: developPresented"))
+        #expect(screen.contains("developModel.leaveDevelop()"))
+        #expect(screen.contains("isDevelopMode: isDevelopMode"))
+        #expect(screen.contains("selectionOnly: isDevelopMode"))
+        #expect(screen.contains(".allowsHitTesting(!isDevelopMode)"))
+        #expect(screen.contains("guard canChangeCameraMode else { return }"))
+        #expect(screen.contains("CameraModeStripGeometry.frame"))
     }
 
     @Test func importedVideosCannotReachTheLegacyPlayer() throws {

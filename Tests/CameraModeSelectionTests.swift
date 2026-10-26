@@ -1,6 +1,21 @@
 import Foundation
 import Testing
 
+@MainActor
+struct CameraModeLandscapeSwipeTests {
+    @Test func swipeFollowsTheVisibleRowRegardlessOfLabelRotation() {
+        for degrees in [-90.0, 0.0, 90.0] {
+            let view = CameraModeCarousel(selected: .develop, enabled: true,
+                                          rotationDegrees: degrees, onSelect: { _ in })
+            #expect(view.resolvedSwipe(CGSize(width: -40, height: 0)) == .select(.video))
+            #expect(view.resolvedSwipe(CGSize(width: 0, height: -40)) == .none)
+            let disabled = CameraModeCarousel(selected: .develop, enabled: false,
+                                              rotationDegrees: degrees, onSelect: { _ in })
+            #expect(disabled.resolvedSwipe(CGSize(width: -40, height: 0)) == .none)
+        }
+    }
+}
+
 /// Behavioural contract for the pure mode-selection model: which modes the
 /// compact carousel may offer, what a selection change means, and the three
 /// rejection cases (disabled capture, a repeat selection, and the hidden photo
@@ -42,12 +57,6 @@ struct CameraModeSelectionTests {
         var selection = CameraModeSelection()
         #expect(selection.select(.photo, enabled: true) == false)
         #expect(selection.selected == .video, "The hidden photo mode can never be selected.")
-    }
-
-    @Test func returnToVideoRestoresVideoFromAnotherMode() {
-        var selection = CameraModeSelection(selected: .develop)
-        selection.returnToVideo()
-        #expect(selection.selected == .video)
     }
 
     @Test func glyphsTitlesAndIdentifiersMapToTheThreeModes() {

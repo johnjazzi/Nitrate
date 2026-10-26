@@ -16,6 +16,13 @@ struct MovieWritingReliabilityTests {
 
     private final class BundleToken {}
 
+    private final class ProgressSamples: @unchecked Sendable {
+        private let lock = NSLock()
+        private var samples: [Double] = []
+        func append(_ value: Double) { lock.withLock { samples.append(value) } }
+        var values: [Double] { lock.withLock { samples } }
+    }
+
     @Test func trimmedRenderRetainsAudioAndStartsAtZero() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -28,7 +35,14 @@ struct MovieWritingReliabilityTests {
 
         let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory, allowsSyntheticInputForTests: true)
         let trim = CMTimeRange(start: CMTime(value: 2, timescale: 10), duration: CMTime(value: 4, timescale: 10))
-        let output = try await renderer.render(sourceURL: source, config: config, trimRange: trim, bitrate: 2_000_000)
+        let progress = ProgressSamples()
+        let output = try await renderer.render(sourceURL: source, config: config, trimRange: trim,
+                                               bitrate: 2_000_000, progress: { progress.append($0) })
+        let samples = progress.values
+        #expect(samples.last == 1)
+        #expect(samples.contains { $0 > 0 && $0 < 1 })
+        #expect(samples == samples.sorted())
+        #expect(samples.count <= 102)
         defer { try? FileManager.default.removeItem(at: output) }
 
         let outputAsset = AVURLAsset(url: output)

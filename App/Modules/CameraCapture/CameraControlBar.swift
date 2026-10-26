@@ -44,13 +44,36 @@ struct CameraControlBar: View {
     /// smaller value so the outer controls line up with the viewfinder edges;
     /// 16 keeps the original spacing when the caller omits it.
     var horizontalInset: CGFloat = 16
+    /// True while the bar is serving the inline Develop mode. Every Develop
+    /// property below defaults off, so a caller that omits them gets the exact
+    /// Video shooting bar it had before.
+    var isDevelopMode: Bool = false
+    /// The parent reports whether a Develop render can start right now. The
+    /// centre Render action is enabled only when this is true.
+    var developCanRender: Bool = false
+    /// True while a Develop render is in flight. It disables the centre action
+    /// and the left stock/gauge slot until the render reports back.
+    var developIsBusy: Bool = false
+    /// The only thing the Develop centre action does. It never touches capture.
+    var onDevelopRender: () -> Void = {}
 
     var body: some View {
         CameraShootingLayout() {
             selectorRow
+                // Video keeps the stock/gauge slot live; Develop disables it
+                // only while a render is busy, without moving the well.
+                .disabled(isDevelopMode && developIsBusy)
+                .opacity(isDevelopMode && developIsBusy ? 0.4 : 1)
             storageIndicator
             recordButton
-            exposureControl.frame(width: CameraControlGeometry.exposureWidth)
+            exposureControl
+                .frame(width: CameraControlGeometry.exposureWidth)
+                // Develop greys and disables exposure in place. The frame, the
+                // measured footprint and the published bounds stay identical,
+                // so neither the bar's geometry nor the parent's floats move.
+                .disabled(isDevelopMode)
+                .opacity(isDevelopMode ? 0.4 : 1)
+                .grayscale(isDevelopMode ? 1 : 0)
         }
         .padding(.horizontal, horizontalInset)
     }
@@ -342,7 +365,20 @@ struct CameraControlBar: View {
         )
     }
 
+    /// The centre slot. Video shows the REC control with the chosen face;
+    /// Develop replaces it with the Render action. The two never overlap.
+    @ViewBuilder
     private var recordButton: some View {
+        if isDevelopMode {
+            developRenderButton
+        } else {
+            videoRecordButton
+        }
+    }
+
+    /// The Video REC control, unchanged: it keeps the classic/modern face
+    /// preference, the immediate haptic and the capture state machine.
+    private var videoRecordButton: some View {
         let presentation = recordPresentation
         let action = RecordButtonPresentationPolicy.action(for: presentation)
         return Button {
@@ -394,6 +430,31 @@ struct CameraControlBar: View {
             guard generation == pressGeneration else { return }
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { isUnclicked = false }
         }
+    }
+
+    // MARK: - Develop render action
+
+    /// The centre slot's action in Develop mode. It is a Render action and
+    /// nothing else: a tap calls the parent's render closure, and no path from
+    /// here reaches the capture session, the REC presentations or the REC
+    /// haptics. It is enabled only when the parent says a render can start and
+    /// none is already running.
+    private var developRenderEnabled: Bool {
+        developCanRender && !developIsBusy
+    }
+
+    private var developRenderButton: some View {
+        let enabled = developRenderEnabled
+        return Button {
+            guard enabled else { return }
+            onDevelopRender()
+        } label: {
+            DevelopShutterFace(isEnabled: enabled)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityIdentifier("develop.render")
+        .accessibilityLabel("Render video")
     }
 
     private var queueStatus: CameraStatusPresentation {
