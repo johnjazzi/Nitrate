@@ -238,7 +238,13 @@ struct ManualFocusRulerTests {
         #expect(screen.contains("end: cameraViewModel.endSlowZoom(revision:)"))
         #expect(screen.contains("step: cameraViewModel.stepDisplayZoom"))
         #expect(screen.contains("millimeters: pinchIsActive ? pinchFocalLength"))
-        // Cancellation on zoom-off, background, lens and capture transitions.
+        // Controlled arrows are allowed during the take, but lifecycle and
+        // transition gates remain independent; cancellation still tracks availability.
+        #expect(screen.contains("scenePhase == .active && !cameraViewModel.isStartingRecording"))
+        #expect(screen.contains("!cameraViewModel.isStoppingRecording"))
+        #expect(screen.contains("!cameraViewModel.isChangingFrameRate"))
+        #expect(screen.contains("!cameraViewModel.isSwitchingCameraLens"))
+        #expect(screen.contains("cameraViewModel.zoomSnapshot != nil"))
         #expect(screen.contains(".onChange(of: zoomControlsEnabled)"))
         #expect(screen.contains(".onChange(of: captureBusy)"))
     }
