@@ -1,6 +1,6 @@
 # Photo capture and processing contract
 
-Companion to `spec-photo-mode.md`. Requirements are proposed behavior, not claims that these components already exist.
+Companion to `spec-photo-mode.md`. Requirements describe the accepted scope and proposed implementation, not claims that these components already exist. The detailed transform and work packages are in `implementation-plan.md`.
 
 ## Current baseline and integration boundaries
 
@@ -14,7 +14,7 @@ Baseline inspected: commit `859fe26` on `feat/apple-log2-video-import`, October 
 | `FilmStockLibrary/FilmStockConfig.swift`, `StockLoader.swift` | Photo category vocabulary exists. The two active catalogue entries are video recipes; no ready photo catalogue follows from the enum. Add compatible photo selection without changing historical video jobs. |
 | `ProcessingPipeline/PipelineRenderer.swift` | Movie input validation is Log 2-specific. Single-frame GPU work is a reuse seam, not a DNG renderer or production still writer. Extract common stages without routing stills through the movie front door. |
 | `RenderQueue/RenderJob.swift` | Contains movie trim, frame-rate/capture policy and Log-original delivery assumptions. Use a separate versioned Photo job store; do not fabricate movie fields for stills. |
-| `Resources/stocks.json`, `App/Resources/stocks.json` | Keep catalogue copies byte-identical. Existing 5207/5219 inputs declare Rec.2020 / Apple Log 2; their provenance is user-declared, not a measured RAW calibration. |
+| `Resources/stocks.json`, `App/Resources/stocks.json` | Keep catalogue copies byte-identical. The catalogue currently declares Rec.2020 / Apple Log 2, but generator/provenance establish actual Apple Wide Gamut / Log 2 input and Rec.709-primary gamma-2.4 output. Use the actual cube domain for photos; do not silently rewrite historical video recipes. Provenance is not measured RAW calibration. |
 
 ## Mode transition and shooting interface
 
@@ -32,7 +32,7 @@ Baseline inspected: commit `859fe26` on `feat/apple-log2-video-import`, October 
 
 Use the active capture output's `availableRawPhotoPixelFormatTypes` filtered by `AVCapturePhotoOutput.isBayerRAWPixelFormat`. Do not turn on ProRAW or assume every advertised RAW type is Bayer. Attach the output to a valid configured session before trusting its capabilities.
 
-Resolution policy proposes a 12 MP upper budget. Inspect the active format's `supportedMaxPhotoDimensions`, configure `AVCapturePhotoOutput.maxPhotoDimensions` during configuration, and use valid per-request dimensions. Select the largest supported candidate within the budget for the proven Bayer path. The output's dimension cap is not a promise about the returned DNG: record and validate actual RAW dimensions. If the device cannot meet the agreed capture contract, report unsupported rather than downsampling an unbounded capture and claiming the memory budget was respected.
+The owner approved a 12 MP-class budget. Proposed concrete cap: 12,192,768 pixels, including 4032×3024; do not reject that nominal-12-MP size using a 12,000,000 cutoff. Inspect the active format's `supportedMaxPhotoDimensions`, configure `AVCapturePhotoOutput.maxPhotoDimensions` during configuration, and use valid per-request dimensions. Select the largest supported candidate within the budget for the proven Bayer path. The output's dimension cap is not a promise about the returned DNG: record and validate actual RAW dimensions. If the device cannot meet the agreed capture contract, report unsupported rather than downsampling an unbounded capture and claiming the memory budget was respected.
 
 Create fresh `AVCapturePhotoSettings` for each request. Retain its delegate by `uniqueID` until the terminal capture callback. Accept only the expected RAW resource, reject duplicate/foreign callbacks, and write DNG data atomically to an app-owned capture directory. Do not request a processed companion solely to enable Nitrate processing. Snapshot capture orientation/zoom and actual exposure/WB metadata with the request; reconcile actual returned metadata without relabeling requested values as measured.
 
@@ -52,20 +52,20 @@ A timeout invalidates the request's presentation epoch but retains ownership of 
 
 Required pipeline:
 
-`DNG → deterministic RAW decode → explicitly color-managed scene-linear working RGB → spatial halation → Log 2 encoding/compatible LUT → glow → still grain → sRGB delivery conversion → JPEG`
+`DNG → color-managed extended-linear sRGB → linear Apple Wide Gamut → Apple Log 2 adapter → shared linear pre-LUT halation → 5207/5219 LUT and contrast → glow → float still grain → gamma-2.4-to-sRGB conversion → JPEG`
 
 1. Use `CIRAWFilter(imageURL:)` or an equivalent SDK-backed RAW decoder. Freeze the decoder version and supported settings in the job. Preserve DNG bytes. Read actual output extent and apply orientation exactly once.
 2. Establish, by fixture evidence, the decoder's transfer, gamut, baseline exposure and WB behavior. Render to half-float buffers using an explicit color-managed context. A half-float pixel format alone says nothing about transfer or primaries. Do not assume `CIRAWFilter.outputImage` is the desired scene-linear space.
 3. Disable optional sharpening, local tone mapping, contrast boosts and noise/detail enhancement where supported. Record unsupported controls and decoder defaults. RAW still requires demosaicing and may require optical/color correction; never claim Apple processing is entirely absent.
-4. Define a named, versioned adapter to scene-linear Rec.2020 with documented reference-white/exposure normalization and negative/highlight handling. Convert primaries and transfer through real math, not new metadata tags. If RAW output cannot meet this contract, stop the slice; do not pass an appearance-matched SDR image through the LUT.
-5. Apply the established spatial halation behavior in scene-linear light. Encode the resulting working RGB to Apple Log 2 before sampling the reused LUT. Existing shader encode/decode helpers are candidates only after their range and round-trip behavior are exercised against the photo input.
+4. Define a named, versioned adapter to scene-linear Apple Wide Gamut with documented reference-white/exposure normalization and negative/highlight handling. Use the explicit linear-sRGB-to-AppleWG matrix in `implementation-plan.md`; Rec.2020 is not the generated cube's actual input gamut. Convert primaries and transfer through real math, not new metadata tags. If RAW output cannot meet this contract, stop the slice; do not pass an appearance-matched SDR image through the LUT.
+5. Encode adapter output to Apple Log 2 for the existing halation entry point, which decodes, scatters in linear light and re-encodes before the LUT. This preserves the shared stage contract without adding a pre-LUT display transform. Existing shader encode/decode helpers are candidates only after their range and round-trip behavior are exercised against the photo input.
 6. Run the selected compatible LUT and the current established output-contrast/glow/grain behavior. Extract shared stages; do not reorder the video pipeline or make a second incompatible interpretation of the same recipe.
 7. Realize grain once using a stored per-shot seed and snapshotted print gauge/strength. Retry must reproduce the same decoded pixels within the documented decoder/GPU tolerance; an OS decoder mismatch requires a visible incompatible-retry result, not a silent new look. Photo grain scale follows output geometry and gauge, never frame-rate pairing.
-8. Convert the declared LUT output into SDR sRGB; include a real matching ICC/profile/tag contract. Do not attach an sRGB label to Rec.709-encoded values without conversion. Encode JPEG at proposed quality 0.95; reopen it and verify nonblank image, dimensions, orientation and profile before saving.
+8. Convert the actual LUT output (Rec.709 primaries, pure gamma 2.4) into SDR sRGB after float-output grain; include a real matching ICC/profile/tag contract. Do not substitute the piecewise Rec.709 camera transfer or attach an sRGB label without conversion. Encode JPEG at proposed quality 0.95; reopen it and verify nonblank image, dimensions, orientation and profile before saving.
 
 ## Stock readiness
 
-Propose two explicit photo variants of the existing 5207 and 5219 creative looks. Give each a distinct photo stock ID, recipe revision and RAW-adapter identity; do not reclassify existing video entries. Sharing a cube is permitted only when the adapter delivers its exact declared input and real-DNG acceptance passes for that look. A new photo recipe is not automatically color-contract `verified`.
+The owner approved the 5207 and 5219 looks. Add two explicit photo variants of those creative recipes. Give each a distinct photo stock ID, recipe revision and RAW-adapter identity; do not reclassify existing video entries. Sharing a cube is permitted only when the adapter delivers its exact declared input and real-DNG acceptance passes for that look. A new photo recipe is not automatically color-contract `verified`.
 
 Record cube hash, adapter revision, working-space contract, decoder version/settings, halation/glow/grain parameters, seed and output profile/quality. Persist the resolved snapshot, not just a catalogue ID that a later release may change. If a required historic asset is unavailable after update, retain the source and explain why retry is unavailable; never substitute today's LUT.
 

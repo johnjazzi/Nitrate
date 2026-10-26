@@ -1,16 +1,17 @@
 ---
 id: SPEC-photo-mode
-status: proposed-for-review
+status: scope-accepted-implementation-plan-for-review
 created: 2026-10-25
 companions:
   - capture-and-processing.md
   - delivery-and-validation.md
+  - implementation-plan.md
 sources: []
 ---
 
 # Nitrate Photo mode
 
-**Review draft. No Photo implementation is authorized by this document.** This file and its two companions define the proposed build contract. Product defaults below are proposals, not previously approved decisions or verified hardware capabilities. The append-only `.memlog.md` records their origin.
+**Scope accepted; implementation design for review. No runtime implementation is authorized by this document.** The owner accepted the scope and explicitly approved the 12 MP budget and 5207/5219 looks. This file and its three companions define the build contract. Output codec remains a proposal while JPEG versus HEIF is discussed; hardware/color feasibility is unverified. The append-only `.memlog.md` records decisions. See `implementation-plan.md` for the stage-by-stage LUT transform, proposed files, dependencies and tests.
 
 ## Why
 
@@ -64,25 +65,25 @@ Bring Nitrate's pick-a-stock-and-shoot experience to still photography. Capture 
 
 On an eligible physical phone, select Photo, pick a stock, take repeated portrait and landscape shots, and see film-rendered JPEGs in Photos. Confirm optional RAW delivery, recovery after failed saves/relaunch, bounded resources, and successful return to both Video and Develop. No implementation or performance claim is established by this spec review.
 
-## Proposed defaults to review
+## Defaults and review decisions
 
-These are explicit assumptions so implementation can proceed without inventing policy after approval:
+The scope and 12 MP / stock decisions are accepted. JPEG remains a compatibility-first proposal, not a requirement imposed by Photos. Implementation and physical-device gates are still pending:
 
 | Decision | Proposed first slice |
 |---|---|
 | Capture | Bayer RAW only; unavailable cameras are explained, never silently converted to ProRAW/JPEG capture. |
-| Resolution and framing | Largest proven Bayer configuration at or below 12 MP; native still aspect, no aspect picker or extra crop beyond the selected supported zoom. Preserve the whole usable RAW extent. |
+| Resolution and framing | Approved 12 MP-class budget; proposed concrete cap 12,192,768 pixels (includes 4032×3024), subject to actual Bayer capability. Use native still aspect, no aspect picker or extra crop beyond the selected supported zoom. Preserve the whole usable RAW extent. |
 | Exposure | Auto exposure with EV; optional manual ISO and shutter, bounded by active photo hardware. Start each Photo session in Auto; keep manual pins session-only and separate from Video. |
-| Output | SDR JPEG, embedded sRGB profile, encoder quality 0.95. No HDR or untagged output. |
+| Output | Proposed SDR JPEG, embedded sRGB profile, encoder quality 0.95. Photos also supports HEIF; no codec change is implied by that support. No HDR or untagged output. |
 | Originals | Independent `Save original RAW` preference, default Off. Recoverability does not depend on this preference. |
-| Stocks | Begin with still-specific 5207 and 5219 recipe variants, only after the RAW-to-Log 2 bridge and both looks pass acceptance. No claim of still color equivalence from existing video LUTs alone. |
+| Stocks | Approved 5207 and 5219 looks; create still-specific recipe variants only after the RAW-to-Apple-Wide-Gamut/Log 2 bridge and both looks pass acceptance. No claim of still color equivalence from existing video LUTs alone. |
 | Workflow | Stock selected before capture; automatic processing and delivery, no confirmation/editor screen. Remember Photo stock and gauge separately from Video. |
 | Scheduling | One sensor request in flight; serial shared GPU scheduling; persisted photo queue with its own schema. |
 | Unsupported Photo entry | Leave P visible but disabled with an accessible explanation once the feature is released; keep Video/Develop usable. Hide P entirely before release gating. |
 
 ## Open questions
 
-1. Approve the proposed first-slice defaults, especially Bayer-only capture, the 12 MP budget, JPEG delivery and 5207/5219 launch looks, or provide replacements.
+1. Retain compatibility-first JPEG or choose HEIF delivery after the format explanation/comparison in the implementation plan. The approved 12 MP budget and 5207/5219 looks are not open questions.
 2. The actual Bayer format/resolution/lens matrix and decoder behavior need physical-device evidence. Failure of those gates requires a revised proposal, not an undocumented fallback.
 
 All other implementation acceptance criteria are defined in the companions. These review questions do not authorize coding or publication.
