@@ -19,11 +19,24 @@ struct FocalLengthRulerTests {
         #expect(FocalLengthRulerScale.offset(millimeters: 110, selected: 96) >= 24)
     }
 
+    @Test func pinchLandmarksAndMinorTicksReachFourHundredMillimetres() throws {
+        #expect(FocalLengthRulerScale.majorTicks.contains(200))
+        #expect(FocalLengthRulerScale.majorTicks.contains(300))
+        #expect(FocalLengthRulerScale.majorTicks.contains(400))
+        #expect(FocalLengthRulerScale.crossesMajorTick(from: 384, to: 400))
+        #expect(FocalLengthRulerScale.crossesMajorTick(from: 401, to: 400))
+        #expect(!FocalLengthRulerScale.crossesMajorTick(from: 400, to: 384),
+                "Departing a landmark must not repeat its arrival haptic")
+        // Source wiring: the Canvas must draw minors through the same ceiling.
+        let ruler = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/FocalLengthRuler.swift"),
+                               encoding: .utf8)
+        #expect(ruler.contains("through: CameraFocalZoomPolicy.maximumFocalLengthMM"))
+    }
+
     // MARK: - Controlled-zoom ruler range
 
-    /// The ruler's fixed landmarks are the pinch ruler's, unchanged: the
-    /// stationary `FocalLengthRuler`, `crossesMajorTick` and the pinch tests all
-    /// keep their exact values.
+    /// Both rulers share landmarks; a narrower active lens window retains only
+    /// reachable values and its own endpoints.
     @Test func controlledRulerPreservesFixedPinchLandmarks() {
         #expect(FrameZoomRulerScale.fixedLandmarks == CameraFocalZoomPolicy.majorTicks)
         #expect(FocalLengthRulerScale.majorTicks == CameraFocalZoomPolicy.majorTicks)
@@ -113,7 +126,7 @@ struct FocalLengthRulerTests {
             minimumDisplayFactor: 1, maximumDisplayFactor: .greatestFiniteMagnitude,
             multiplier: .leastNormalMagnitude, tier: .telephoto) == nil)
         #expect(FrameZoomRulerScale.resolvedRange(currentMM: .greatestFiniteMagnitude,
-                                                 available: nil) == 13...150)
+                                                 available: nil) == 13...400)
         let extreme = Double.greatestFiniteMagnitude
         #expect(FrameZoomRulerScale.minorTicks(in: extreme...extreme).count <= 128)
         #expect(FrameZoomRulerScale.minorTicks(in: 1...10_000).count <= 128)
@@ -150,12 +163,11 @@ struct FocalLengthRulerTests {
     }
 
     /// Without a live range the ruler still bounds the rail around a finite
-    /// current value past 150 rather than rendering blank; the fixed 13…150
-    /// window is unchanged for the pinch landmarks.
+    /// current value past the pinch window rather than rendering blank.
     @Test func resolvedRangeFallsBackAroundCurrentValueBeyondFixedWindow() {
-        #expect(FrameZoomRulerScale.resolvedRange(currentMM: 50, available: nil) == 13...150)
-        #expect(FrameZoomRulerScale.resolvedRange(currentMM: 150, available: nil) == 13...150)
-        #expect(FrameZoomRulerScale.resolvedRange(currentMM: .nan, available: nil) == 13...150)
+        #expect(FrameZoomRulerScale.resolvedRange(currentMM: 50, available: nil) == 13...400)
+        #expect(FrameZoomRulerScale.resolvedRange(currentMM: 150, available: nil) == 13...400)
+        #expect(FrameZoomRulerScale.resolvedRange(currentMM: .nan, available: nil) == 13...400)
 
         for current in [350.0, 384.0, 400.0] {
             let range = FrameZoomRulerScale.resolvedRange(currentMM: current, available: nil)

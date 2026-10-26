@@ -26,6 +26,11 @@ enum CameraZoomDirection: Sendable { case out, `in` }
 enum CameraZoomPolicy {
     static let defaultDisplayCeiling = 5.0
     static let telephotoDisplayCeiling = 16.0
+    /// Convert the main camera's 150 mm limit into its published display scale.
+    /// The native crop is 150 / 24; the device's display multiplier is separate.
+    static func mainWideDisplayCeiling(multiplier: Double) -> Double {
+        multiplier * (150.0 / 24.0)
+    }
     static let rampRate: Float = 0.25
 
     struct Bounds: Equatable, Sendable {

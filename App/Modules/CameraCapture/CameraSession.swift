@@ -1081,8 +1081,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
         // Use the installed physical capture device, not a lens selection that
         // may still be pending while the session reconfigures or rolls back.
-        let displayCeiling = device.deviceType == .builtInTelephotoCamera && device.position == .back
-            ? CameraZoomPolicy.telephotoDisplayCeiling : CameraZoomPolicy.defaultDisplayCeiling
+        let displayCeiling: Double
+        if device.position == .back && device.deviceType == .builtInTelephotoCamera {
+            displayCeiling = CameraZoomPolicy.telephotoDisplayCeiling
+        } else if device.position == .back && device.deviceType == .builtInWideAngleCamera {
+            displayCeiling = CameraZoomPolicy.mainWideDisplayCeiling(multiplier: multiplier)
+        } else {
+            displayCeiling = CameraZoomPolicy.defaultDisplayCeiling
+        }
         return CameraZoomPolicy.bounds(multiplier: multiplier,
                                        effectiveMinimum: Double(device.minAvailableVideoZoomFactor),
                                        effectiveMaximum: Double(device.maxAvailableVideoZoomFactor),

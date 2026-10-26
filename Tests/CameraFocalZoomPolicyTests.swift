@@ -22,7 +22,7 @@ struct CameraFocalZoomPolicyTests {
 
     @Test func majorTicksAreTheSharedRulerLandmarks() {
         // The policy owns the landmarks; the UI aliases this array for its ruler.
-        #expect(CameraFocalZoomPolicy.majorTicks == [13, 24, 35, 50, 75, 96, 110, 150])
+        #expect(CameraFocalZoomPolicy.majorTicks == [13, 24, 35, 50, 75, 96, 110, 150, 200, 300, 400])
     }
 
     @Test func lensTierSwitchesAtTwentyFourAndNinetySix() {
@@ -36,12 +36,14 @@ struct CameraFocalZoomPolicyTests {
 
     // MARK: - Clamping and non-finite input
 
-    @Test func clampsTargetsToTheThirteenToHundredFiftyRange() {
+    @Test func clampsTargetsToTheThirteenToFourHundredRange() {
         #expect(CameraFocalZoomPolicy.clampedTarget(5) == 13)
         #expect(CameraFocalZoomPolicy.clampedTarget(13) == 13)
         #expect(CameraFocalZoomPolicy.clampedTarget(77) == 77)
         #expect(CameraFocalZoomPolicy.clampedTarget(150) == 150)
-        #expect(CameraFocalZoomPolicy.clampedTarget(400) == 150)
+        #expect(CameraFocalZoomPolicy.clampedTarget(384) == 384)
+        #expect(CameraFocalZoomPolicy.clampedTarget(400) == 400)
+        #expect(CameraFocalZoomPolicy.clampedTarget(401) == 400)
     }
 
     @Test func rejectsNonFiniteTargets() {
@@ -199,6 +201,15 @@ struct CameraFocalZoomPolicyTests {
             == .adjust(tier: .telephoto, targetMM: 120))
         #expect(!engine.isSwitching)
         #expect(engine.pendingTargetMM == nil)
+    }
+
+    @Test func highTargetAndLatestInFlightUpdateSurviveWideToTelephotoSwitch() {
+        var engine = CameraFocalZoomEngine(activeTier: .wide)
+        #expect(engine.request(targetMM: 384, available: allTiers) == .switchLens(to: .telephoto, targetMM: 384))
+        #expect(engine.request(targetMM: 400, available: allTiers) == .ignore)
+        #expect(engine.pendingTargetMM == 400)
+        #expect(engine.switchCommitted(to: .telephoto, available: allTiers)
+            == .adjust(tier: .telephoto, targetMM: 400))
     }
 
     @Test func aCoalescedTargetThatCrossedBackIssuesTheOppositeSwitch() {
@@ -399,7 +410,7 @@ struct CameraFocalZoomPolicyTests {
         #expect(model.contains("tier(forFocalLength: requested, currentlyOn: activeTier)"),
                 "The readout normalizer must use the engine's hysteresis-aware switch decision.")
         #expect(model.contains("let target = CameraFocalZoomPolicy.clampedTarget(millimeters)"),
-                "setFocalLengthZoom must hand the engine raw intent, clamped only to 13...150 mm.")
+                "setFocalLengthZoom must hand the engine raw intent, clamped only to the shared pinch window.")
         #expect(!model.contains("focalEngine.request(targetMM: normalized"),
                 "The engine must never be fed a device-window-clamped target (it corrupts the coalesced pending target).")
     }

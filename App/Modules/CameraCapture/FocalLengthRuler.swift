@@ -2,6 +2,9 @@ import SwiftUI
 
 enum FocalLengthRulerScale {
     static let majorTicks = CameraFocalZoomPolicy.majorTicks
+    static let minorTicks: [Double] = stride(
+        from: 15.0, through: CameraFocalZoomPolicy.maximumFocalLengthMM, by: 5
+    ).filter { !majorTicks.contains($0) }
 
     static func offset(millimeters: Double, selected: Double) -> Double {
         guard millimeters.isFinite, selected.isFinite, millimeters > 0, selected > 0 else { return 0 }
@@ -27,7 +30,7 @@ struct FocalLengthRuler: View {
                 .font(NitrateTypography.font(size: 12))
                 .foregroundStyle(.yellow)
             Canvas { context, size in
-                for value in stride(from: 15.0, through: 150, by: 5) where !FocalLengthRulerScale.majorTicks.contains(value) {
+                for value in FocalLengthRulerScale.minorTicks {
                     let x = size.width / 2 + FocalLengthRulerScale.offset(millimeters: value, selected: millimeters)
                     guard x >= 0, x <= size.width else { continue }
                     var path = Path()

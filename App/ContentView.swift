@@ -148,20 +148,6 @@ struct ContentView: View {
                     }
                 }
 
-                // A canvas sibling, not a child painted beyond the shooting bar:
-                // visibility never resizes the preview and the whole button is hittable.
-                if shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
-                   let rect = DaylightExposureRescueGeometry.buttonRect(
-                    above: exposure, in: geometry.size, rotationDegrees: statusRotationDegrees) {
-                    ExposureRescueButton(armed: cameraViewModel.sessionFrameRate == .daylight60,
-                                         enabled: cameraViewModel.canChangeSessionFrameRate,
-                                         action: { showDaylightRescue = true })
-                        .frame(width: 92, height: 44)
-                        .rotationEffect(.degrees(statusRotationDegrees))
-                        .frame(width: rect.width, height: rect.height)
-                        .position(x: rect.midX, y: rect.midY)
-                }
-
                 // Below the threshold the rescue trigger is gone, but an armed
                 // session must still have a visible way back to 24 fps. This is
                 // the same status face in its idle-armed form: no dot, no timer,
@@ -249,6 +235,21 @@ struct ContentView: View {
                         )
                     }
                     .transition(.opacity)
+                }
+
+                // A canvas sibling, not a child painted beyond the shooting bar:
+                // visibility never resizes the preview and the whole button is hittable.
+                if shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
+                   let rect = DaylightExposureRescueGeometry.buttonRect(
+                    above: exposure, in: geometry.size, rotationDegrees: statusRotationDegrees,
+                    excluding: daylightRescueExclusion(in: geometry)) {
+                    ExposureRescueButton(armed: cameraViewModel.sessionFrameRate == .daylight60,
+                                         enabled: cameraViewModel.canChangeSessionFrameRate,
+                                         action: { showDaylightRescue = true })
+                        .frame(width: 92, height: 44)
+                        .rotationEffect(.degrees(statusRotationDegrees))
+                        .frame(width: rect.width, height: rect.height)
+                        .position(x: rect.midX, y: rect.midY)
                 }
 
                 // Preserved pinch behaviour: with Zoom Controls off the ruler
@@ -629,9 +630,27 @@ struct ContentView: View {
                         canChangeStabilization: cameraViewModel.canSetRecordingStabilization,
                         selectStabilization: { cameraViewModel.setRecordingStabilization($0) })
                         .frame(width: 44, height: 140)
+                        .background(controlMeasurement("inlineManual"))
                 }
             }
         }
+    }
+
+    /// Reserve the visible manual surface, not the full camera canvas, so the
+    /// contextual rescue button can stay clear without resizing either surface.
+    private func daylightRescueExclusion(in geometry: GeometryProxy) -> CGRect? {
+        if legacyManualControlsEnabled {
+            guard showManualControls,
+                  let top = controlBounds["top"], let bottom = controlBounds["bottom"] else { return nil }
+            return ManualControlsOverlayGeometry.rect(
+                viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
+                excluding: RecordingStatusOverlayGeometry.rect(
+                    viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
+                    rotationDegrees: statusRotationDegrees),
+                expanded: manualControlsExpanded, rotationDegrees: statusRotationDegrees)
+        }
+        guard showInlineManualControls else { return nil }
+        return controlBounds["inlineManual"]
     }
 
     /// The panel's AF/MF key and the Settings switch share one state, and every
@@ -682,10 +701,13 @@ struct ContentView: View {
         scenePhase == .active
     }
 
-    /// A zoom arrow only runs while the capture is idle and nothing covers the
-    /// camera screen, matching the pinch's own gate.
+    /// Controlled zoom arrows remain usable during recording. Lifecycle,
+    /// transitions, unavailable snapshots and covering sheets still block them;
+    /// pinch zoom retains the stricter captureBusy gate.
     private var canUseZoomControls: Bool {
-        scenePhase == .active && !captureBusy && cameraViewModel.zoomSnapshot != nil
+        scenePhase == .active && !cameraViewModel.isStartingRecording
+            && !cameraViewModel.isStoppingRecording && !cameraViewModel.isChangingFrameRate
+            && !cameraViewModel.isSwitchingCameraLens && cameraViewModel.zoomSnapshot != nil
             && !showSettings && !showQueueSheet && !showStockSheet && !showDaylightRescue
     }
 

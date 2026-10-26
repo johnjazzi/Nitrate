@@ -8,6 +8,12 @@ struct CameraDesignTests {
         #expect(screen.contains("DaylightExposureRescuePolicy.shouldOffer("))
         #expect(screen.contains("DaylightExposureRescueGeometry.buttonRect("))
         #expect(screen.contains("controlBounds[\"exposure\"]"))
+        #expect(screen.contains("excluding: daylightRescueExclusion(in: geometry)"))
+        #expect(screen.contains(".background(controlMeasurement(\"inlineManual\"))"))
+        let manualLayer = try #require(screen.range(of: "ManualControlsOverlay(viewport:"))
+        let rescueLayer = try #require(screen.range(of: "ExposureRescueButton(armed:"))
+        #expect(manualLayer.lowerBound < rescueLayer.lowerBound,
+                "The rescue button must draw above the manual controls, not behind them.")
         // An in-camera overlay, not a system sheet: no page-level presentation.
         #expect(screen.contains("DaylightExposureRescueOverlay("))
         #expect(!screen.contains(".sheet(isPresented: $showDaylightRescue)"))

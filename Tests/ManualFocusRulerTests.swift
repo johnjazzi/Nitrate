@@ -243,6 +243,23 @@ struct ManualFocusRulerTests {
         #expect(screen.contains(".onChange(of: captureBusy)"))
     }
 
+    /// Source wiring only: the iOS screen is not part of this macOS target.
+    @Test func controlledZoomGateAllowsRecordingButRetainsTransitionGuards() throws {
+        let screen = try source("App/ContentView.swift")
+        let start = try #require(screen.range(of: "private var canUseZoomControls: Bool {"))
+        let remainder = screen[start.upperBound...]
+        let end = try #require(remainder.firstIndex(of: "}"))
+        let gate = String(remainder[..<end])
+        #expect(!gate.contains("captureBusy"), "Recording must not disable controlled zoom arrows")
+        #expect(!gate.contains("isRecording"), "A live take permits zoom within the active lens")
+        for guardExpression in ["scenePhase == .active", "!cameraViewModel.isStartingRecording",
+                                "!cameraViewModel.isStoppingRecording", "!cameraViewModel.isChangingFrameRate",
+                                "!cameraViewModel.isSwitchingCameraLens", "cameraViewModel.zoomSnapshot != nil",
+                                "!showSettings", "!showQueueSheet", "!showStockSheet", "!showDaylightRescue"] {
+            #expect(gate.contains(guardExpression), "Controlled zoom must retain: \(guardExpression)")
+        }
+    }
+
     @Test func settingsRowsAreDefaultOffAndNonPersistent() throws {
         let screen = try source("App/ContentView.swift")
         let settings = try source("App/Modules/Purchase/PurchaseView.swift")
