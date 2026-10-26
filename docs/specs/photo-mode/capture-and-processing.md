@@ -43,7 +43,18 @@ A timeout invalidates the request's presentation epoch but retains ownership of 
 ## Exposure, focus and white balance
 
 - Preserve existing ISO presentation, supported range, Float/Lock semantics. Add a Photo-only shutter ruler (placement is still proposed), with independent Float/Lock state and the complete active RAW-format `minExposureDuration...maxExposureDuration` range. No arbitrary endpoints and no video frame-rate ceiling. Revalidate both controls on active-format/lens changes.
-- Define all four states: ISO Float + shutter Float = photo AE plus EV; ISO Lock + shutter Float = controller holds ISO while duration floats; ISO Float + shutter Lock = controller holds duration while ISO floats; both Lock = meter-only EV indication, with no exposure mutation. EV affects only the floating variable (both-floating uses normal AE bias); with both locked, EV is display-only. `setExposureModeCustom` locks BOTH ISO and duration, so mixed states require an explicit controller that meters the floating variable while preserving the pin, coordinating metering/stabilization and avoiding periodic auto reopening/flicker. Validate finite values and active-format ranges before AVFoundation setters. Use `.speed` prioritization when honoring manual pins and compare requested settings with actual DNG EXIF. Handle long-exposure busy time, timeout, cadence, and restoration. Set `activeMaxExposureDuration` as the Photo AE ceiling after format/preset selection; restore/reset appropriately on Video transitions because format/preset changes reset it.
+- Show photographic shutter labels, useful detents, haptic feedback, a live duration readout and an unambiguous Float/Lock indication. Placement alongside the existing controls remains a proposal; preserve framing and the compact layout.
+
+| ISO | Shutter | Metering and EV behavior |
+|---|---|---|
+| Float | Float | Photo auto exposure controls both; normal AE compensation applies. |
+| Float | Lock | Hold the requested duration exactly; the mixed-mode controller meters ISO and applies EV through ISO only. |
+| Lock | Float | Hold the requested ISO exactly; the mixed-mode controller meters duration and applies EV through duration only. |
+| Lock | Lock | Hold both; display metered deviation from the requested EV without changing either capture value. |
+
+- `setExposureModeCustom` locks **both** values. Mixed states require an explicit metering/stabilization controller; never periodically reopen auto exposure. At a floating variable’s hardware limit, show that the target cannot be reached rather than changing its locked counterpart.
+- Validate finite values and active-format ranges before AVFoundation setters. Revalidate pins after a lens/format change; visibly release or reject unsupported values. Use `.speed` prioritization for Bayer capture and when honoring manual pins. Compare requested settings against actual DNG EXIF.
+- Set `activeMaxExposureDuration` to the supported Photo AE ceiling after format/preset selection. Format/preset changes reset it; restore/reset the Video policy explicitly. Account for long-exposure cadence, truthful capture-busy feedback and exposure-dependent timeout handling.
 - Focus and aperture remain capability-gated. Never promise user-adjustable aperture on fixed-aperture cameras.
 - Keep the existing video WB lock behavior untouched. For photos, snapshot the selected stock's neutral-WB policy at capture and apply the agreed neutral temperature/tint exactly once in RAW development. Do not apply capture color gains and a second look-dependent WB shift without a documented transform test.
 - A photo's sensor ISO/shutter/WB, selected creative grain/gauge and recipe identity are separate fields. Do not use film-stock ISO as fabricated EXIF capture ISO.
@@ -82,6 +93,8 @@ Then validate the RAW color adapter on neutral, exposure-ramp, saturated-color, 
 Retrieved from Apple's documentation on October 25, 2026. These establish API contracts, not Nitrate device readiness.
 
 - RAW capture, Bayer/ProRAW distinction and DNG file data: `https://developer.apple.com/documentation/avfoundation/capturing-photos-in-raw-and-apple-proraw-formats`
+- Custom duration/ISO and `.speed`: `https://developer.apple.com/documentation/avfoundation/avcapturedevice/setexposuremodecustom(duration:iso:completionhandler:)`
+- AE ceiling and format resets: `https://developer.apple.com/documentation/avfoundation/avcapturedevice/activemaxexposureduration`
 - Decoder and available control families: `https://developer.apple.com/documentation/coreimage/cirawfilter`
 - Active-format dimension constraints and configuration timing: `https://developer.apple.com/documentation/avfoundation/avcapturephotooutput/maxphotodimensions`
 - Photos access-level authorization: `https://developer.apple.com/documentation/photos/phphotolibrary/requestauthorization(for:handler:)`

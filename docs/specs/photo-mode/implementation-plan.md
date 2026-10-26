@@ -1,6 +1,6 @@
 # Photo mode implementation plan
 
-Status: Owner authorizes implementation beginning with P0/P1 capture/color feasibility only. This does not authorize broad UI/queue fan-out or production release; device feasibility has not passed.
+Status: Implementation begins with P0/P1 capture/color feasibility. These technical gates must pass before broad UI/queue work; continuing the accepted scope does not require a second implementation approval. Publication and release remain separately approved. Device feasibility has not passed.
 
 Read with `spec-photo-mode.md`, `capture-and-processing.md` and `delivery-and-validation.md`. All named new types/files below are proposed. No broad parallel implementation starts before P0 and P1 pass.
 
@@ -163,7 +163,7 @@ Implement each package as a reviewed, independently verified commit. Write asser
 | **P3: Photo recipes** | Add distinct photo IDs via `FilmStockConfig`/`FilmStockLibrary.photoStocks()`; surgical additions to both `stocks.json` copies; reuse hash-pinned existing cubes, set truthful AppleWG/Log2 input and gamma-2.4 Rec.709 output, adapter/output revisions. | Photo vs Video filtering; independent selection keys; catalogue copies equal; original video entries unchanged; snapshot round-trip; missing asset/revision fails rather than substitutes. | P1, API agreed with P2 |
 | **P4: Persistence and scheduling** | Proposed `PhotoJob.swift`, `PhotoJobStore.swift`, capture journal and a shared render coordinator; integrate readiness/backpressure with current video queue without rewriting its JSON schema. | Real temporary-file round trips; journal/job acknowledgment interruption; corrupt store; container path changes; legacy movie fixtures; one active photo/video renderer; ready-job order; immutable recipe/seed and unavailable-history behavior. | P0 + P2/P3 snapshot contract |
 | **P5: Delivery and recovery** | Proposed `PhotoDeliveryService.swift` sharing safe receipt/Photos primitives; JPEG first, optional original DNG separate; add-only authorization, per-save durable flags, uncertain-outcome state and safe cleanup. | Actual-file injection tests for each save/persist/unlink failure; confirmed save not repeated; ambiguous crash asks before retry; original-only recovery; shared path protection. Real Photos JPEG and optional DNG save on phone. | P4 |
-| **P6: UI and controls (later authorization required)** | `CameraModeSelection.swift`, current centered carousel, `ContentView`, `CameraControlBar`, `CameraViewModel`; capability-gated P, native-aspect neutral preview, still shutter, photo controls/stock/gauge state and storage/queue status. Reconcile latest integration work first. | Actual narrow/landscape view renders, no REC timer/60fps/stabilization in P; selection commits only after session config; focus mapping, unsupported lens, one-capture busy state, Video/Develop preservation. | P0 and shared APIs; ship only after P5 |
+| **P6: UI and controls (after feasibility)** | `CameraModeSelection.swift`, current centered carousel, `ContentView`, `CameraControlBar`, `CameraViewModel`; capability-gated P, native-aspect neutral preview, still shutter, photo controls/stock/gauge state and storage/queue status. Reconcile latest integration work first. | Actual narrow/landscape view renders, no REC timer/60fps/stabilization in P; selection commits only after session config; focus mapping, unsupported lens, one-capture busy state, Video/Develop preservation. | P0 and shared APIs; ship only after P5 |
 | **P7: Integrated acceptance** | `project.yml` membership/XcodeGen, targeted tests, full suite, Debug + Release-optimized compilation, signed development build; capture evidence and owner image review. | Every A01–A12 requirement in delivery companion; real 20-shot queue/resource workload, permissions/relaunch/partial save, both stocks/all eligible lenses/holds, Video record/render and Develop import afterward. P stays production-hidden until accepted. | P0–P6 |
 
 **Parallel boundaries:** after P1, P2/P3 and model/store preparation may run in isolated worktrees only after matching snapshot/renderer interfaces are written down. Do not let separate workers modify `CameraSession.swift`, `ContentView.swift` or catalogue arrays concurrently. Integrate engine/recipe/store commits before UI wiring. No worker installs over the coordinator's shared phone.
@@ -191,6 +191,14 @@ protocol PhotoRendering: Sendable {
 ```
 
 `PhotoRenderReceipt` records actual encoded properties and diagnostics separately from settings. The renderer must not save to Photos, own the capture session or mutate UI selection. Capture must not resolve a recipe again after the shutter. Delivery must not render a second time merely because a save failed. Keep full-resolution textures/CI objects actor-confined rather than passing non-Sendable GPU state through public boundaries.
+
+### P0 incremental exit gates
+
+1. **P0a — Capture/restoration:** Add a production-hidden, explicit Debug capture path. Produce one real Bayer DNG within the native 12-MP-class budget, retain measured source metadata and restore a validated Log 2 movie with audio. Initial automatic Photo exposure is sufficient for this first experiment. The evidence directory is not a production Photo queue and does not mean a shot was delivered to Photos.
+2. **P0b — Exposure:** Extend the same capture seam with the four ISO/shutter combinations. Exercise lock transitions, compensation, supported endpoints, lens revalidation and long exposures; compare requests with returned DNG exposure values. Preserve existing ISO UI behavior. Test limits and feedback without silently changing a locked variable or reopening AE.
+3. **P1 — Color:** Use retained real DNGs for the explicitly color-managed decode and RAW adapter. Calibrate normalization from chart/exposure evidence. Synthetic CPU/GPU parity alone cannot close the real-RAW gate.
+
+Keep P hidden throughout. Do not start broad renderer, queue, delivery or Photo UI work while these gates remain incomplete.
 
 ## 5. Verification specifics and evidence already obtained
 

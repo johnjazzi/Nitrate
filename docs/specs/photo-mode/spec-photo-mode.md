@@ -1,6 +1,6 @@
 ---
 id: SPEC-photo-mode
-status: scope-accepted-implementation-plan-for-review
+status: implementation-feasibility-gates
 created: 2026-10-25
 companions:
   - capture-and-processing.md
@@ -11,7 +11,7 @@ sources: []
 
 # Nitrate Photo mode
 
-**Scope accepted; owner authorizes Photo implementation beginning with P0/P1 capture and color feasibility only.** The later UI, queue, delivery, fan-out and production-release gates remain separate approvals. The owner accepted the scope and explicitly approved the 12 MP budget and 5207/5219 looks. This file and its three companions define the build contract. Output codec remains a proposal while JPEG versus HEIF is discussed; hardware/color feasibility is unverified. The append-only `.memlog.md` records decisions. See `implementation-plan.md` for the stage-by-stage LUT transform, proposed files, dependencies and tests.
+**Scope accepted; implementation starts with P0/P1 capture and color feasibility.** Those technical gates must pass before broad UI, queue or delivery work. Continue the accepted scope after they pass; publication and release still require explicit approval. The owner accepted the scope and explicitly approved the 12 MP budget and 5207/5219 looks. This file and its three companions define the build contract. Output codec remains a proposal while JPEG versus HEIF is discussed; hardware/color feasibility is unverified. The append-only `.memlog.md` records decisions. See `implementation-plan.md` for the stage-by-stage LUT transform, proposed files, dependencies and tests.
 
 ## Why
 

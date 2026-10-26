@@ -58,7 +58,7 @@ Suspend starting new GPU work when background execution is unavailable. Persist 
 
 ## Proposed implementation slices
 
-1. **P0/P1 feasibility/color gate (authorized to start):** Real Bayer DNG capture, dimension evidence, exposure-control semantics and working-space decode; restore Video. Validate adapter/color fixtures. Authorization does not extend to broad UI/queue fan-out or release.
+1. **P0/P1 feasibility/color gate (authorized to start):** Real Bayer DNG capture, dimension evidence, exposure-control semantics and working-space decode; restore Video. Validate adapter/color fixtures. Broad UI/queue work waits for the capture/color gates to pass. Publication and release require separate approval.
 2. **Shared processing seam:** Production still renderer, immutable recipe/seed, file encoder and compatibility-specific photo catalogue. Preserve video stage order and validation.
 3. **Durability/delivery:** Photo journal/store, shared scheduler, receipts, add-only saves, partial-delivery recovery and cleanup. Exercise failure injection with actual disposable files.
 4. **Shooting UI:** Capability-gated P, still shutter, photo controls and independent selections; integrate the latest approved carousel/Develop layout. Add files to `project.yml` through XcodeGen.
