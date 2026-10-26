@@ -58,7 +58,7 @@ Suspend starting new GPU work when background execution is unavailable. Persist 
 
 ## Proposed implementation slices
 
-1. **Feasibility/color gate:** Real Bayer DNG capture, dimension evidence, working-space decode and restoration of Video. Validate adapter/color fixtures before broad implementation.
+1. **P0/P1 feasibility/color gate (authorized to start):** Real Bayer DNG capture, dimension evidence, exposure-control semantics and working-space decode; restore Video. Validate adapter/color fixtures. Authorization does not extend to broad UI/queue fan-out or release.
 2. **Shared processing seam:** Production still renderer, immutable recipe/seed, file encoder and compatibility-specific photo catalogue. Preserve video stage order and validation.
 3. **Durability/delivery:** Photo journal/store, shared scheduler, receipts, add-only saves, partial-delivery recovery and cleanup. Exercise failure injection with actual disposable files.
 4. **Shooting UI:** Capability-gated P, still shutter, photo controls and independent selections; integrate the latest approved carousel/Develop layout. Add files to `project.yml` through XcodeGen.
@@ -71,8 +71,8 @@ Proposed files: `CameraPhotoCapture.swift`, `PhotoCapturePolicy.swift`, `StillRe
 | ID | Coverage | Required proof |
 |---|---|---|
 | A01 | CAP-1/8: visibility/transition | Hidden P before release; eligible/unsupported after release; taps and swipes; selected centering; VoiceOver; configuration failure/rollback; recording/finalization guards; late callbacks cannot select a stale mode. |
-| A02 | CAP-2: capability | Bayer vs ProRAW format distinction; no RAW; valid dimension candidates and returned DNG bounds; unsupported lens; format changes invalidate stale capability. |
-| A03 | CAP-2/7: capture lifecycle | Fresh request ID, one in flight, duplicate/mismatched callback, source-write failure, terminal error, timeout/late DNG, background interruption and journal acknowledgment boundary. |
+| A02 | CAP-2: capability | Bayer vs ProRAW format distinction; no RAW; valid dimension candidates and returned DNG bounds; unsupported lens; format changes invalidate stale capability; exercise Bayer 12-MP-class including 4032×3024 where supported. |
+| A03 | CAP-2/7: capture lifecycle | Fresh request ID, one in flight, duplicate/mismatched callback, source-write failure, terminal error, timeout/late DNG, background interruption and journal acknowledgment boundary; four independent ISO/shutter states, EV only on floating values, both-locked meter-only/no mutation, finite/range rejection, mixed-mode metering without periodic auto reopening, `.speed` manual-pin prioritization, requested-vs-DNG-EXIF comparison, activeMaxExposureDuration timing/reset, long-exposure busy/timeout/cadence/restore. |
 | A04 | CAP-3/4: snapshots | Stock/gauge/preference edits after capture cannot change jobs; missing old cube/decoder fails visibly; deterministic persisted seed; separate creative ISO and measured capture ISO. |
 | A05 | CAP-4: color | Real DNG decode fixture plus neutral/exposure ramps; explicit primaries/transfer; finite output; negative/highlight policy; no direct linear/SDR-to-Log2-LUT path; both photo recipes; sRGB conversion rather than retagging. |
 | A06 | CAP-4: encoded image | Open actual JPEG, check useful image content/profile/dimensions and orientation exactly once; verify spatial highlight effects and gauge-aware grain separately from aesthetic acceptance. |
@@ -80,7 +80,7 @@ Proposed files: `CameraPhotoCapture.swift`, `PhotoCapturePolicy.swift`, `StillRe
 | A08 | CAP-6: persistence | Real file/job round trips; orphan DNG; missing/invalid DNG; corrupt store quarantine; immutable snapshots; container relocation; schema migration; legacy video JSON unchanged. |
 | A09 | CAP-6: cleanup | Never unlink undelivered/shared sources; completed cleanup write/unlink failure; missing-file-safe retry; receipt generated before deletion; unowned/path-traversal rejection. |
 | A10 | CAP-7/8: scheduling | One shared active GPU job, ready-job FIFO, blocked-photo skip, repeated shooting backpressure, foreground recovery, Video/Develop remain usable after photo failure. |
-| A11 | CAP-1/8: native UI renders | Narrow/default widths and both landscape holds; neutral preview; still aspect and focus coordinates; fixed control clearance; disabled controls; no REC timer or stock-look review in Photo. |
+| A11 | CAP-1/8: native UI renders | Narrow/default widths and both landscape holds; neutral preview; still aspect and focus coordinates; fixed control clearance; disabled controls; no REC timer or stock-look review in Photo; existing ISO UI/range unchanged, Photo-only shutter ruler proposal and independent Float/Lock, full RAW-format duration range, meter-only both-lock semantics. |
 | A12 | CAP-8: regressions | Existing capture/Log2 input tests, movie metadata, audio sync, video WB lock, daylight exception lifetime, import output-only saves, independent selections and original-save preferences. |
 
 Run focused RED/GREEN tests during implementation. At integration run `python3 scripts/verify.py verify`, then `python3 scripts/verify.py device` outside the sandbox. Confirm Release-optimized compilation too. Executed counts and result bundles must be recorded; source-string assertions alone do not prove pixels, actual framework saves or interaction behavior.

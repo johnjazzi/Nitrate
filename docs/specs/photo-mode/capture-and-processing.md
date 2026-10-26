@@ -4,7 +4,7 @@ Companion to `spec-photo-mode.md`. Requirements describe the accepted scope and 
 
 ## Current baseline and integration boundaries
 
-Baseline inspected: commit `859fe26` on `feat/apple-log2-video-import`, October 25, 2026. Other worktrees contain later Develop/carousel changes; reconcile their landed interface before implementation. This spec does not authorize replacing that work with the baseline layout.
+Baseline: source integration `b0f1009`; verified pinch change `deaf0bf`. Feature worktree parent `feat/photo-mode` includes the docs merge. This spec does not authorize replacing that work with the baseline layout.
 
 | Existing component | Evidence and required boundary |
 |---|---|
@@ -42,8 +42,8 @@ A timeout invalidates the request's presentation epoch but retains ownership of 
 
 ## Exposure, focus and white balance
 
-- Photo Auto uses the active device's photo-appropriate auto-exposure mode and existing EV interaction. It must not inherit the video's fixed 180-degree shutter or fake a photo frame-rate setting.
-- Optional manual ISO and shutter are bounded by the active format. Changing lens revalidates their pair; an unsupported pin must be visibly released or rejected, not silently labeled locked.
+- Preserve existing ISO presentation, supported range, Float/Lock semantics. Add a Photo-only shutter ruler (placement is still proposed), with independent Float/Lock state and the complete active RAW-format `minExposureDuration...maxExposureDuration` range. No arbitrary endpoints and no video frame-rate ceiling. Revalidate both controls on active-format/lens changes.
+- Define all four states: ISO Float + shutter Float = photo AE plus EV; ISO Lock + shutter Float = controller holds ISO while duration floats; ISO Float + shutter Lock = controller holds duration while ISO floats; both Lock = meter-only EV indication, with no exposure mutation. EV affects only the floating variable (both-floating uses normal AE bias); with both locked, EV is display-only. `setExposureModeCustom` locks BOTH ISO and duration, so mixed states require an explicit controller that meters the floating variable while preserving the pin, coordinating metering/stabilization and avoiding periodic auto reopening/flicker. Validate finite values and active-format ranges before AVFoundation setters. Use `.speed` prioritization when honoring manual pins and compare requested settings with actual DNG EXIF. Handle long-exposure busy time, timeout, cadence, and restoration. Set `activeMaxExposureDuration` as the Photo AE ceiling after format/preset selection; restore/reset appropriately on Video transitions because format/preset changes reset it.
 - Focus and aperture remain capability-gated. Never promise user-adjustable aperture on fixed-aperture cameras.
 - Keep the existing video WB lock behavior untouched. For photos, snapshot the selected stock's neutral-WB policy at capture and apply the agreed neutral temperature/tint exactly once in RAW development. Do not apply capture color gains and a second look-dependent WB shift without a documented transform test.
 - A photo's sensor ISO/shutter/WB, selected creative grain/gauge and recipe identity are separate fields. Do not use film-stock ISO as fabricated EXIF capture ISO.

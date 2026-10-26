@@ -11,7 +11,7 @@ sources: []
 
 # Nitrate Photo mode
 
-**Scope accepted; implementation design for review. No runtime implementation is authorized by this document.** The owner accepted the scope and explicitly approved the 12 MP budget and 5207/5219 looks. This file and its three companions define the build contract. Output codec remains a proposal while JPEG versus HEIF is discussed; hardware/color feasibility is unverified. The append-only `.memlog.md` records decisions. See `implementation-plan.md` for the stage-by-stage LUT transform, proposed files, dependencies and tests.
+**Scope accepted; owner authorizes Photo implementation beginning with P0/P1 capture and color feasibility only.** The later UI, queue, delivery, fan-out and production-release gates remain separate approvals. The owner accepted the scope and explicitly approved the 12 MP budget and 5207/5219 looks. This file and its three companions define the build contract. Output codec remains a proposal while JPEG versus HEIF is discussed; hardware/color feasibility is unverified. The append-only `.memlog.md` records decisions. See `implementation-plan.md` for the stage-by-stage LUT transform, proposed files, dependencies and tests.
 
 ## Why
 
@@ -73,7 +73,7 @@ The scope and 12 MP / stock decisions are accepted. JPEG remains a compatibility
 |---|---|
 | Capture | Bayer RAW only; unavailable cameras are explained, never silently converted to ProRAW/JPEG capture. |
 | Resolution and framing | Approved 12 MP-class budget; proposed concrete cap 12,192,768 pixels (includes 4032×3024), subject to actual Bayer capability. Use native still aspect, no aspect picker or extra crop beyond the selected supported zoom. Preserve the whole usable RAW extent. |
-| Exposure | Auto exposure with EV; optional manual ISO and shutter, bounded by active photo hardware. Start each Photo session in Auto; keep manual pins session-only and separate from Video. |
+| Exposure | Keep the existing ISO presentation, range, Float/Lock behavior unchanged. Add a Photo-only shutter ruler (placement remains a proposal) with independent Float/Lock state. Each control spans the active RAW format’s full supported minimum-to-maximum duration/ISO range; do not impose arbitrary endpoints or a video-FPS ceiling. Start Photo in Auto; pins remain Photo-session-only. |
 | Output | Proposed SDR JPEG, embedded sRGB profile, encoder quality 0.95. Photos also supports HEIF; no codec change is implied by that support. No HDR or untagged output. |
 | Originals | Independent `Save original RAW` preference, default Off. Recoverability does not depend on this preference. |
 | Stocks | Approved 5207 and 5219 looks; create still-specific recipe variants only after the RAW-to-Apple-Wide-Gamut/Log 2 bridge and both looks pass acceptance. No claim of still color equivalence from existing video LUTs alone. |
@@ -83,7 +83,7 @@ The scope and 12 MP / stock decisions are accepted. JPEG remains a compatibility
 
 ## Open questions
 
-1. Retain compatibility-first JPEG or choose HEIF delivery after the format explanation/comparison in the implementation plan. The approved 12 MP budget and 5207/5219 looks are not open questions.
+1. Retain proposed compatibility-first JPEG/sRGB; no codec switch is authorized. The approved 12 MP budget and 5207/5219 looks are not open questions.
 2. The actual Bayer format/resolution/lens matrix and decoder behavior need physical-device evidence. Failure of those gates requires a revised proposal, not an undocumented fallback.
 
 All other implementation acceptance criteria are defined in the companions. These review questions do not authorize coding or publication.
