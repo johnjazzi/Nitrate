@@ -204,6 +204,86 @@ final class CameraSession: NSObject, @unchecked Sendable {
 #if DEBUG
     private var debugSmokeURL: URL?
     private var debugSmokeTimedOut = false
+    /// References and mutations are confined to sessionQueue.
+    private final class DebugPhotoRun: @unchecked Sendable {
+        let device: AVCaptureDevice
+        let format: AVCaptureDevice.Format
+        let color: AVCaptureColorSpace
+        let minimumFrame: CMTime
+        let maximumFrame: CMTime
+        let maximumExposure: CMTime
+        let exposureMode: AVCaptureDevice.ExposureMode
+        let iso: Float
+        let duration: CMTime
+        let bias: Float
+        let whiteBalanceMode: AVCaptureDevice.WhiteBalanceMode
+        let gains: AVCaptureDevice.WhiteBalanceGains
+        let zoom: CGFloat
+        let inputs: [AVCaptureInput]
+        let outputs: [AVCaptureOutput]
+        let preset: AVCaptureSession.Preset
+        let videoSettings: [String: Any]
+        let shutterPriority: Bool
+        let directory: URL
+        let completion: @MainActor @Sendable (Result<URL, Error>) -> Void
+        var shouldRestart: Bool
+        var interrupted = false
+        var graphChanged = false
+        var evidence: [String: String]
+        var restorationBarrier: PhotoCompletionBarrier
+        var restorationStarted = false
+        var restorationFailure: String?
+        var captureFailure: String?
+
+        init(owner: CameraSession, device: AVCaptureDevice, directory: URL,
+             completion: @escaping @MainActor @Sendable (Result<URL, Error>) -> Void) {
+            self.device = device
+            format = device.activeFormat
+            color = device.activeColorSpace
+            minimumFrame = device.activeVideoMinFrameDuration
+            maximumFrame = device.activeVideoMaxFrameDuration
+            maximumExposure = device.activeMaxExposureDuration
+            exposureMode = device.exposureMode
+            iso = device.iso
+            duration = device.exposureDuration
+            bias = device.exposureTargetBias
+            whiteBalanceMode = device.whiteBalanceMode
+            gains = device.deviceWhiteBalanceGains
+            zoom = device.videoZoomFactor
+            inputs = owner.session.inputs
+            outputs = owner.session.outputs
+            preset = owner.session.sessionPreset
+            videoSettings = owner.videoOutput.videoSettings
+            shutterPriority = owner.isShutterPriority
+            shouldRestart = owner.session.isRunning
+            self.directory = directory
+            self.completion = completion
+            var required: Set<PhotoCompletionStep> = [.graphConfigured, .biasApplied]
+            if exposureMode == .custom || exposureMode == .locked { required.insert(.exposureApplied) }
+            if whiteBalanceMode == .locked { required.insert(.whiteBalanceApplied) }
+            restorationBarrier = PhotoCompletionBarrier(waitingFor: required)
+            evidence = ["status": "prepared", "lens": owner.activeLens.rawValue,
+                        "deviceType": device.deviceType.rawValue,
+                        "videoFormat": CameraSession.captureFormatSubtypeDescription(device.activeFormat),
+                        "videoColorSpace": String(device.activeColorSpace.rawValue),
+                        "videoMinFrameSeconds": String(device.activeVideoMinFrameDuration.seconds),
+                        "videoMaxFrameSeconds": String(device.activeVideoMaxFrameDuration.seconds),
+                        "videoMaxExposureSeconds": String(device.activeMaxExposureDuration.seconds),
+                        "videoExposureMode": String(device.exposureMode.rawValue),
+                        "videoISO": String(device.iso), "videoExposureSeconds": String(device.exposureDuration.seconds),
+                        "videoBias": String(device.exposureTargetBias),
+                        "videoWBMode": String(device.whiteBalanceMode.rawValue),
+                        "videoWBGains": "\(gains.redGain),\(gains.greenGain),\(gains.blueGain)",
+                        "videoZoom": String(Double(device.videoZoomFactor)), "videoPreset": owner.session.sessionPreset.rawValue,
+                        "inputTypes": inputs.map { String(describing: type(of: $0)) }.joined(separator: ","),
+                        "outputTypes": outputs.map { String(describing: type(of: $0)) }.joined(separator: ","),
+                        "os": ProcessInfo.processInfo.operatingSystemVersionString,
+                        "videoAudioProof": "notRun"]
+        }
+    }
+    private var debugPhotoRun: DebugPhotoRun?
+    private var debugPhotoCapture: CameraPhotoCapture?
+
     /// Phase timestamps for the current start request, so the request-to-running
     /// latency can be attributed to a specific stage instead of guessed at.
     private struct StartPhases {
@@ -1081,8 +1161,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
         // Use the installed physical capture device, not a lens selection that
         // may still be pending while the session reconfigures or rolls back.
-        let displayCeiling = device.deviceType == .builtInTelephotoCamera && device.position == .back
-            ? CameraZoomPolicy.telephotoDisplayCeiling : CameraZoomPolicy.defaultDisplayCeiling
+        let displayCeiling: Double
+        if device.position == .back && device.deviceType == .builtInTelephotoCamera {
+            displayCeiling = CameraZoomPolicy.telephotoDisplayCeiling
+        } else if device.position == .back && device.deviceType == .builtInWideAngleCamera {
+            displayCeiling = CameraZoomPolicy.mainWideDisplayCeiling(multiplier: multiplier)
+        } else {
+            displayCeiling = CameraZoomPolicy.defaultDisplayCeiling
+        }
         return CameraZoomPolicy.bounds(multiplier: multiplier,
                                        effectiveMinimum: Double(device.minAvailableVideoZoomFactor),
                                        effectiveMaximum: Double(device.maxAvailableVideoZoomFactor),
@@ -2672,6 +2758,342 @@ final class CameraSession: NSObject, @unchecked Sendable {
         return true
     }
 
+    func startDebugPhotoRawCapture(completion: @escaping @MainActor @Sendable (Result<URL, Error>) -> Void) {
+        sessionQueue.async { [weak self] in
+            guard let self, self.isConfigured, !self.isRecordingOrPending,
+                  !self.frameRateTransitionPending, let device = self.activeDevice else {
+                DispatchQueue.main.async { completion(.failure(CameraError.writerUnavailable("Photo RAW P0: camera busy or unavailable"))) }
+                return
+            }
+            let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("PhotoModeP0", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let run = DebugPhotoRun(owner: self, device: device, directory: directory, completion: completion)
+            self.debugPhotoRun = run
+            self.cancelZoomOnQueue()
+            self.invalidateMetering()
+            self.isShutterPriority = false
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try self.writeDebugPhotoEvidence(run)
+                let output = try self.configureDebugPhotoGraph(run)
+                let formats = output.availableRawPhotoPixelFormatTypes.filter(AVCapturePhotoOutput.isBayerRAWPixelFormat)
+                guard let pixelFormat = formats.first,
+                      let dimensions = PhotoCapturePolicy.selectDimensions(
+                        candidates: device.activeFormat.supportedMaxPhotoDimensions.map {
+                            .init(width: Int($0.width), height: Int($0.height))
+                        }, bayerPixelFormats: formats, pixelFormat: pixelFormat) else {
+                    throw CameraError.writerUnavailable("Photo RAW P0: no Bayer format within the native 12MP-class budget")
+                }
+                let size = CMVideoDimensions(width: Int32(dimensions.width), height: Int32(dimensions.height))
+                output.maxPhotoDimensions = size
+                output.maxPhotoQualityPrioritization = .speed
+                run.evidence["photoFormat"] = Self.captureFormatSubtypeDescription(device.activeFormat)
+                run.evidence["photoDimensions"] = "\(dimensions.width)x\(dimensions.height)"
+                run.evidence["photoMinExposureSeconds"] = String(device.activeFormat.minExposureDuration.seconds)
+                run.evidence["photoMaxExposureSeconds"] = String(device.activeFormat.maxExposureDuration.seconds)
+                run.evidence["photoAEMaxExposureSeconds"] = String(device.activeMaxExposureDuration.seconds)
+                run.evidence["bayerFormat"] = String(pixelFormat)
+                run.evidence["status"] = "capturing"
+                try self.writeDebugPhotoEvidence(run)
+                let helper = try CameraPhotoCapture(output: output, pixelFormat: pixelFormat, dimensions: size,
+                    directory: directory, queue: self.sessionQueue,
+                    timeoutInterval: max(30, device.activeFormat.maxExposureDuration.seconds * 2 + 10)) { [weak self, run] result in
+                        guard let self, self.debugPhotoRun === run else { return }
+                        let failure = result.failure ?? (result.dngURL == nil ? "missing validated DNG" : nil)
+                        self.completeDebugPhotoRun(run, captureFailure: failure)
+                    }
+                self.debugPhotoCapture = helper
+                self.session.startRunning()
+                guard self.session.isRunning else { throw CameraError.writerUnavailable("Photo RAW P0: photo session did not start") }
+                try helper.start()
+            } catch {
+                // Every throwing operation occurs before capturePhoto is invoked.
+                self.completeDebugPhotoRun(run, captureFailure: error.localizedDescription)
+            }
+        }
+    }
+
+    private func configureDebugPhotoGraph(_ run: DebugPhotoRun) throws -> AVCapturePhotoOutput {
+        if session.isRunning { session.stopRunning() }
+        let output = AVCapturePhotoOutput()
+        session.beginConfiguration()
+        run.graphChanged = true
+        do {
+            defer { session.commitConfiguration() }
+            for old in session.outputs { session.removeOutput(old) }
+            guard session.canSetSessionPreset(.photo) else { throw CameraError.cannotAddOutput }
+            session.sessionPreset = .photo
+            guard session.canAddOutput(output) else { throw CameraError.cannotAddOutput }
+            session.addOutput(output)
+        }
+        let device = run.device
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        guard device.isExposureModeSupported(.continuousAutoExposure),
+              Self.debugPhotoDurationSupported(device.activeFormat.maxExposureDuration, device: device) else {
+            throw CameraError.writerUnavailable("Photo RAW P0: unsupported photo auto-exposure range")
+        }
+        if device.activeFormat.supportedColorSpaces.contains(.sRGB) {
+            device.activeColorSpace = .sRGB
+        } else if device.activeFormat.supportedColorSpaces.contains(.P3_D65) {
+            device.activeColorSpace = .P3_D65
+        } else {
+            throw CameraError.writerUnavailable("Photo RAW P0: no neutral photo color space")
+        }
+        device.exposureMode = .continuousAutoExposure
+        device.activeMaxExposureDuration = device.activeFormat.maxExposureDuration
+        device.setExposureTargetBias(min(max(0, device.minExposureTargetBias), device.maxExposureTargetBias))
+        return output
+    }
+
+    private static func debugPhotoDurationSupported(_ value: CMTime, device: AVCaptureDevice) -> Bool {
+        value.isNumeric && value.seconds.isFinite && value.seconds > 0
+            && CMTimeCompare(value, device.activeFormat.minExposureDuration) >= 0
+            && CMTimeCompare(value, device.activeFormat.maxExposureDuration) <= 0
+    }
+
+    private func restoreDebugPhotoGraph(_ run: DebugPhotoRun) throws {
+        guard run.graphChanged else { return }
+        if session.isRunning { session.stopRunning() }
+        do {
+            session.beginConfiguration()
+            defer { session.commitConfiguration() }
+            for output in session.outputs { session.removeOutput(output) }
+            for input in session.inputs where !run.inputs.contains(where: { $0 === input }) { session.removeInput(input) }
+            for input in run.inputs where !session.inputs.contains(where: { $0 === input }) {
+                guard session.canAddInput(input) else { throw CameraError.cannotAddInput }
+                session.addInput(input)
+            }
+            guard session.canSetSessionPreset(run.preset) else { throw CameraError.cannotAddOutput }
+            session.sessionPreset = run.preset
+            for output in run.outputs {
+                guard session.canAddOutput(output) else { throw CameraError.cannotAddOutput }
+                session.addOutput(output)
+            }
+            try restoreDebugPhotoDevice(run)
+        }
+        // A detached output advertises fallback formats. Reconnect and commit
+        // the Log2 graph before validating and restoring its original pixel type.
+        guard let pixelFormat = run.videoSettings[kCVPixelBufferPixelFormatTypeKey as String] as? NSNumber,
+              videoOutput.availableVideoPixelFormatTypes.contains(UInt32(truncating: pixelFormat)) else {
+            throw CameraError.writerUnavailable("Photo RAW P0: restored graph rejects original video pixel format")
+        }
+        videoOutput.videoSettings = run.videoSettings
+    }
+
+    private func restoreDebugPhotoDevice(_ run: DebugPhotoRun) throws {
+        let device = run.device
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        guard run.format.supportedColorSpaces.contains(run.color) else { throw CameraError.appleLog2NotSupported }
+        device.activeFormat = run.format
+        device.activeColorSpace = run.color
+        let framesSupported = run.format.videoSupportedFrameRateRanges.contains {
+            CMTimeCompare(run.minimumFrame, $0.minFrameDuration) >= 0
+                && CMTimeCompare(run.maximumFrame, $0.maxFrameDuration) <= 0
+        }
+        guard framesSupported, CMTimeCompare(run.minimumFrame, run.maximumFrame) <= 0,
+              device.isExposureModeSupported(run.exposureMode),
+              device.isWhiteBalanceModeSupported(run.whiteBalanceMode), run.zoom.isFinite,
+              run.zoom >= device.minAvailableVideoZoomFactor, run.zoom <= device.maxAvailableVideoZoomFactor else {
+            throw CameraError.writerUnavailable("Photo RAW P0: original video settings are no longer supported")
+        }
+        if CMTimeCompare(run.maximumFrame, device.activeVideoMinFrameDuration) < 0 {
+            device.activeVideoMinFrameDuration = run.minimumFrame
+            device.activeVideoMaxFrameDuration = run.maximumFrame
+        } else {
+            device.activeVideoMaxFrameDuration = run.maximumFrame
+            device.activeVideoMinFrameDuration = run.minimumFrame
+        }
+        if run.maximumExposure.isValid {
+            guard Self.debugPhotoDurationSupported(run.maximumExposure, device: device) else {
+                throw CameraError.writerUnavailable("Photo RAW P0: invalid original AE ceiling")
+            }
+            device.activeMaxExposureDuration = run.maximumExposure
+        } else { device.activeMaxExposureDuration = .invalid }
+        device.videoZoomFactor = run.zoom
+    }
+
+    private func applyDebugPhotoRestoredControls(_ run: DebugPhotoRun) throws {
+        let device = run.device
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        // Frame-stamped completions must be requested on the committed, running
+        // video graph, not while replacing the stopped Photo graph.
+        guard run.bias.isFinite, run.bias >= device.minExposureTargetBias, run.bias <= device.maxExposureTargetBias else {
+            throw CameraError.writerUnavailable("Photo RAW P0: invalid original exposure bias")
+        }
+        if device.exposureTargetBias == run.bias {
+            run.restorationBarrier.complete(.biasApplied)
+            run.evidence["biasRestore"] = "unchanged"
+        } else {
+            device.setExposureTargetBias(run.bias) { [weak self, run] time in
+                self?.sessionQueue.async { [weak self, run] in
+                    self?.debugPhotoSettingApplied(.biasApplied, run: run, time: time)
+                }
+            }
+        }
+        if run.exposureMode == .custom || run.exposureMode == .locked {
+            guard device.isExposureModeSupported(.custom), Self.debugPhotoDurationSupported(run.duration, device: device),
+                  run.iso.isFinite, run.iso >= device.activeFormat.minISO, run.iso <= device.activeFormat.maxISO else {
+                throw CameraError.writerUnavailable("Photo RAW P0: invalid original custom exposure")
+            }
+            device.setExposureModeCustom(duration: run.duration, iso: run.iso) { [weak self, run] time in
+                self?.sessionQueue.async { [weak self, run] in
+                    self?.debugPhotoSettingApplied(.exposureApplied, run: run, time: time)
+                }
+            }
+        } else { device.exposureMode = run.exposureMode }
+        if run.whiteBalanceMode == .locked {
+            guard device.isLockingWhiteBalanceWithCustomDeviceGainsSupported,
+                  [run.gains.redGain, run.gains.greenGain, run.gains.blueGain].allSatisfy({
+                      $0.isFinite && $0 >= 1 && $0 <= device.maxWhiteBalanceGain
+                  }) else { throw CameraError.writerUnavailable("Photo RAW P0: invalid original WB gains") }
+            device.setWhiteBalanceModeLocked(with: run.gains) { [weak self, run] time in
+                self?.sessionQueue.async { [weak self, run] in
+                    self?.debugPhotoSettingApplied(.whiteBalanceApplied, run: run, time: time)
+                }
+            }
+        } else { device.whiteBalanceMode = run.whiteBalanceMode }
+    }
+
+    private func completeDebugPhotoRun(_ run: DebugPhotoRun, captureFailure: String?) {
+        guard debugPhotoRun === run, !run.restorationStarted else { return }
+        run.restorationStarted = true
+        run.captureFailure = captureFailure
+        do {
+            try restoreDebugPhotoGraph(run)
+            isShutterPriority = run.shutterPriority
+            if !run.graphChanged {
+                run.evidence["restoration"] = "unchanged"
+                for step: PhotoCompletionStep in [.graphConfigured, .exposureApplied, .whiteBalanceApplied, .biasApplied] {
+                    run.restorationBarrier.complete(step)
+                }
+                verifyDebugPhotoRestorationIfReady(run)
+                return
+            }
+            run.restorationBarrier.complete(.graphConfigured)
+            guard run.shouldRestart, !run.interrupted else {
+                throw CameraError.writerUnavailable("Photo experiment interrupted; restored values remain unverified")
+            }
+            configureRawLandscapeRecordingConnection()
+            applyRecordingStabilization()
+            refreshPreviewFormat()
+            updatePreviewConnection()
+            session.startRunning()
+            guard session.isRunning else { throw CameraError.writerUnavailable("Restored video session did not start") }
+            try applyDebugPhotoRestoredControls(run)
+            run.evidence["restoration"] = "awaitingDeviceAcknowledgments"
+            try writeDebugPhotoEvidence(run)
+            sessionQueue.asyncAfter(deadline: .now() + max(15, run.duration.seconds * 2 + 5)) { [weak self, run] in
+                guard let self, self.debugPhotoRun === run else { return }
+                run.restorationFailure = "device restoration acknowledgment timed out"
+                self.finishDebugPhotoRun(run)
+            }
+            verifyDebugPhotoRestorationIfReady(run)
+        } catch {
+            run.restorationFailure = error.localizedDescription
+            finishDebugPhotoRun(run)
+        }
+    }
+
+    private func debugPhotoSettingApplied(_ step: PhotoCompletionStep, run: DebugPhotoRun, time: CMTime) {
+        guard debugPhotoRun === run, run.restorationStarted else { return }
+        guard !run.interrupted, run.shouldRestart, time.isNumeric, time.seconds.isFinite else {
+            run.restorationFailure = "invalid or interrupted device restoration acknowledgment"
+            finishDebugPhotoRun(run)
+            return
+        }
+        if step == .exposureApplied, run.exposureMode == .locked {
+            do {
+                try run.device.lockForConfiguration()
+                defer { run.device.unlockForConfiguration() }
+                guard run.device.isExposureModeSupported(.locked) else { throw CameraError.appleLog2NotSupported }
+                run.device.exposureMode = .locked
+            } catch {
+                run.restorationFailure = error.localizedDescription
+                finishDebugPhotoRun(run)
+                return
+            }
+        }
+        run.evidence["ack_\(step)"] = String(time.seconds)
+        run.restorationBarrier.complete(step)
+        verifyDebugPhotoRestorationIfReady(run)
+    }
+
+    private func verifyDebugPhotoRestorationIfReady(_ run: DebugPhotoRun) {
+        guard debugPhotoRun === run, run.restorationBarrier.isReady else { return }
+        let device = run.device
+        let actualGains = device.deviceWhiteBalanceGains
+        func near(_ actual: Double, _ expected: Double, floor: Double) -> Bool {
+            actual.isFinite && expected.isFinite && abs(actual - expected) <= max(floor, abs(expected) * 0.001)
+        }
+        let manualExposure = run.exposureMode == .custom || run.exposureMode == .locked
+        let exposureMatches = !manualExposure || (
+            near(Double(device.iso), Double(run.iso), floor: 0.01)
+                && near(device.exposureDuration.seconds, run.duration.seconds, floor: 0.000001))
+        let gainsMatch = run.whiteBalanceMode != .locked || (
+            near(Double(actualGains.redGain), Double(run.gains.redGain), floor: 0.001)
+                && near(Double(actualGains.greenGain), Double(run.gains.greenGain), floor: 0.001)
+                && near(Double(actualGains.blueGain), Double(run.gains.blueGain), floor: 0.001))
+        let graphMatches = session.inputs.count == run.inputs.count && session.outputs.count == run.outputs.count
+            && run.inputs.allSatisfy { old in session.inputs.contains { $0 === old } }
+            && run.outputs.allSatisfy { old in session.outputs.contains { $0 === old } }
+        run.evidence["restoredISO"] = String(device.iso)
+        run.evidence["restoredExposureSeconds"] = String(device.exposureDuration.seconds)
+        run.evidence["restoredWBGains"] = "\(actualGains.redGain),\(actualGains.greenGain),\(actualGains.blueGain)"
+        run.evidence["restoredExposureMode"] = String(device.exposureMode.rawValue)
+        run.evidence["restoredWBMode"] = String(device.whiteBalanceMode.rawValue)
+        run.evidence["restoredBias"] = String(device.exposureTargetBias)
+        guard !run.interrupted, run.shouldRestart, session.isRunning, graphMatches,
+              device.activeFormat === run.format, device.activeColorSpace == run.color,
+              session.sessionPreset == run.preset, device.exposureMode == run.exposureMode,
+              device.whiteBalanceMode == run.whiteBalanceMode, exposureMatches, gainsMatch,
+              near(device.activeVideoMinFrameDuration.seconds, run.minimumFrame.seconds, floor: 0.000001),
+              near(device.activeVideoMaxFrameDuration.seconds, run.maximumFrame.seconds, floor: 0.000001),
+              near(Double(device.videoZoomFactor), Double(run.zoom), floor: 0.0001),
+              near(Double(device.exposureTargetBias), Double(run.bias), floor: 0.001) else {
+            run.restorationFailure = "video restoration postcondition failed after device acknowledgments"
+            finishDebugPhotoRun(run)
+            return
+        }
+        run.evidence["restoration"] = "frameworkConfirmed"
+        finishDebugPhotoRun(run)
+    }
+
+    private func finishDebugPhotoRun(_ run: DebugPhotoRun) {
+        guard debugPhotoRun === run else { return }
+        var failure = run.restorationFailure ?? run.captureFailure
+        if run.interrupted { failure = failure ?? "capture experiment interrupted by backgrounding" }
+        if run.restorationFailure != nil || run.interrupted {
+            if session.isRunning { session.stopRunning() }
+            isConfigured = false
+            run.evidence["restoration"] = "failedStopped"
+        }
+        run.evidence["runningAfter"] = String(session.isRunning)
+        run.evidence["status"] = failure == nil ? "captureAndConfigurationComplete" : "failed"
+        if let failure { run.evidence["failure"] = String(failure.prefix(600)) }
+        do { try writeDebugPhotoEvidence(run) }
+        catch {
+            failure = "session evidence could not be persisted: \(error.localizedDescription)"
+            if session.isRunning { session.stopRunning() }
+            isConfigured = false
+        }
+        debugPhotoCapture = nil
+        debugPhotoRun = nil
+        let result: Result<URL, Error> = failure.map { .failure(CameraError.writerUnavailable("Photo RAW P0: \($0)")) }
+            ?? .success(run.directory)
+        print("Photo RAW P0 evidence: \(run.directory.path); \(failure ?? "capture/configuration complete; video/audio still unverified")")
+        DispatchQueue.main.async { run.completion(result) }
+    }
+
+    private func writeDebugPhotoEvidence(_ run: DebugPhotoRun) throws {
+        let data = try JSONSerialization.data(withJSONObject: run.evidence, options: [.sortedKeys])
+        guard data.count <= 8192 else { throw CameraError.writerUnavailable("Photo RAW P0: session evidence too large") }
+        try data.write(to: run.directory.appendingPathComponent("session.json"), options: .atomic)
+    }
+
     func startDebugSmokeCapture() {
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured, self.session.isRunning, !self.isRecordingOrPending else {
@@ -2739,7 +3161,12 @@ final class CameraSession: NSObject, @unchecked Sendable {
         return publicRecordingState
     }
 
-    private var isRecordingOrPending: Bool { recordingActive || recordingFinishing || recordingStartPending }
+    private var isRecordingOrPending: Bool {
+#if DEBUG
+        if debugPhotoRun != nil { return true }
+#endif
+        return recordingActive || recordingFinishing || recordingStartPending
+    }
 
     private func refreshPublicRecordingState() {
         recordingStateLock.lock()
@@ -2756,6 +3183,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
     func start() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+#if DEBUG
+            if let run = self.debugPhotoRun { run.shouldRestart = true; return }
+#endif
             // A session boundary always begins at the default mode, even when a
             // previous take was still draining when the reset was queued.
             self.applyDeferredFrameRateReset()
@@ -2774,6 +3204,18 @@ final class CameraSession: NSObject, @unchecked Sendable {
     func stop() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+#if DEBUG
+            if let run = self.debugPhotoRun {
+                run.shouldRestart = false
+                run.interrupted = true
+                if self.session.isRunning { self.session.stopRunning() }
+                if run.restorationStarted {
+                    run.restorationFailure = "video restoration interrupted by backgrounding"
+                    self.finishDebugPhotoRun(run)
+                }
+                return
+            }
+#endif
             self.cancelZoomOnQueue()
             self.publishZoom()
             self.suspendPreview(true)

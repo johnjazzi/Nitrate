@@ -172,6 +172,7 @@ final class CameraViewModel {
     private var cameraConfigured = false
 #if DEBUG
     private var didStartDebugSmokeCapture = false
+    private var debugPhotoExperimentInFlight = false
 #endif
 
     // MARK: - Actions
@@ -302,6 +303,13 @@ final class CameraViewModel {
 
     /// Runs on the main queue once the session has been configured.
     private func startSession() {
+#if DEBUG
+        if debugPhotoExperimentInFlight {
+            isChangingFrameRate = true
+            session.start()
+            return
+        }
+#endif
         session.onCameraOperationError { [weak self] error, sourceLens in
             guard let self,
                   !self.isSwitchingCameraLens,
@@ -316,6 +324,33 @@ final class CameraViewModel {
         }
         session.start()
 #if DEBUG
+        if !didStartDebugSmokeCapture, CommandLine.arguments.contains("--smoke-photo-raw-p0") {
+            didStartDebugSmokeCapture = true
+            debugPhotoExperimentInFlight = true
+            isChangingFrameRate = true
+            UIApplication.shared.isIdleTimerDisabled = true
+            stopExposurePolling()
+            stopShutterPriorityLoop()
+            session.startDebugPhotoRawCapture { [weak self] result in
+                guard let self else { return }
+                self.debugPhotoExperimentInFlight = false
+                self.isChangingFrameRate = false
+                switch result {
+                case .success:
+                    guard self.lifecycleGate.isActive else { return }
+                    self.startSession()
+                    if CommandLine.arguments.contains("--keep-hevc-log2-smoke") {
+                        self.session.startDebugSmokeCapture()
+                    }
+                case .failure(let error):
+                    self.cameraConfigured = false
+                    if self.lifecycleGate.isActive {
+                        self.errorMessage = "Photo RAW P0 failed: \(error.localizedDescription)"
+                    }
+                }
+            }
+            return
+        }
         if !didStartDebugSmokeCapture,
            CommandLine.arguments.contains("--smoke-hevc-log2-capture") {
             didStartDebugSmokeCapture = true

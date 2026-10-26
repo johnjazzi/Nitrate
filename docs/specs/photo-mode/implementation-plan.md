@@ -6,7 +6,7 @@ Read with `spec-photo-mode.md`, `capture-and-processing.md` and `delivery-and-va
 
 ## 1. Decisions and corrected color contract
 
-- Capture Bayer DNG at a native **12 MP-class** resolution. Proposed concrete maximum: 12,192,768 pixels, which includes 4032×3024. A strict 12,000,000 cutoff would incorrectly exclude that common nominal-12-MP size. Verify the actual RAW dimensions, not just the requested photo size.
+- Capture Bayer DNG at a native **12 MP-class** resolution. Proposed concrete maximum: 12,192,768 usable pixels, which includes 4032×3024. A strict 12,000,000 cutoff would incorrectly exclude that common nominal-12-MP size. Verify the actual RAW dimensions, not just the requested photo size. The first physical P0a DNG has 4224×3024 coded Bayer storage with a 4032×3024 DNG ActiveArea/DefaultCropSize. Validate that usable area against the request and bound backing storage separately to the measured 4224×3024 ceiling; do not reject padding as an oversized image or accept an unbounded sensor buffer. Retain these measured limits until another device/layout is demonstrated.
 - Reuse the actual 5207 and 5219 color cubes. Do not bake a second film look, apply a monitoring LUT first or feed decoded RAW directly into a Log cube.
 - The cubes consume **Apple Wide Gamut primaries + Apple Log 2 transfer**. This is established by `tools/lut-generation/generate.py`, `docs/lut-provenance.md` and the pinned OpenColorIO source. The current catalogue's `Rec.2020` input label is stale; it is not the mathematical input of these generated cubes.
 - Their output is **Rec.709 primaries + pure gamma 2.4**, not the piecewise Rec.709 camera transfer function. Export must use the real generator contract rather than its generic catalogue transfer label.
