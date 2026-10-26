@@ -114,7 +114,14 @@ struct CameraModeCarouselRenderTests {
 
                 // The neighbour keeps only a ghosted letter, on the correct side:
                 // D always reads left of V.
+                let letterTop = try #require(letter.map(\.y).min())
+                let letterBottom = try #require(letter.map(\.y).max())
                 let ghost = pixels(matching: dimInk, in: data, image: image)
+                    .filter { $0.y >= letterTop && $0.y <= letterBottom }
+                #expect(!ghost.isEmpty)
+                let ghostMidX = Double(ghost.map(\.x).reduce(0, +)) / Double(max(ghost.count, 1)) / 2
+                #expect((34...40).contains(abs(ghostMidX - letterMidX)),
+                        "Keep the ghosted letter close while preserving 44pt touch targets.")
                 let ghostLeft = ghost.filter { $0.x < image.width / 2 }.count
                 let ghostRight = ghost.filter { $0.x >= image.width / 2 }.count
                 if active == .develop {
@@ -225,7 +232,7 @@ struct CameraModeCarouselRenderTests {
     /// The ghosted neighbour: a dim, unaccented grey.
     private func dimInk(_ red: Int, _ green: Int, _ blue: Int, _ alpha: Int) -> Bool {
         alpha > 25 && alpha < 150 && red > 40 && red < 160
-            && abs(red - green) < 30 && abs(green - blue) < 30
+            && abs(red - green) < 6 && abs(green - blue) < 6
     }
 
     /// Count of visibly painted pixels (the row draws on a transparent ground).

@@ -22,8 +22,8 @@ you no preview of it at all.
 Three commitments follow from that:
 
 - **A focused workflow.** Choose a film stock, capture a take, and render to
-  Photos. The planned import flow will apply the same stock rendering to a
-  selected Apple Log 2 video, within the permanent scope promise below.
+  Photos. Develop applies the same rendering to an Apple Log 2 video selected
+  through the system picker.
 - **The original is never destroyed.** The camera writes a real Apple Log 2
   recording. The film look is a render of that file, and the Log original can be
   kept alongside the render. Nothing is baked in at capture time.
@@ -36,14 +36,16 @@ Three commitments follow from that:
 
 **Nitrate will never add trimming, timelines, projects, or editing adjustments.**
 
-The planned video import flow is **pick a file → pick a stock → press Render →
-save to Photos**. It will support **Apple Log 2 only**, with no preview or
-playback of the selected clip or rendered result inside Nitrate. Watch the
-finished video in Photos.
+Choose **D** below the shutter to open Develop, then **choose a clip → choose a
+stock and gauge → press Render → save to Photos**. Storage & Queue shows jobs
+and saved results; clip selection lives in Develop.
 
-Import will access only the video selected through the system Photos picker,
-without requesting photo-library read permission. Saving will use add-only
-Photos access. The original video will remain unchanged.
+Develop accepts **Apple Log 2 only**. The selected clip and rendered result have
+no in-app preview or playback. Watch the finished video in Photos.
+
+Develop accesses only the video selected through the system Photos picker,
+without requesting photo-library read permission. Saving uses add-only Photos
+access. The original video remains unchanged.
 
 This scope applies to future releases as well.
 

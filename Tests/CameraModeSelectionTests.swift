@@ -59,12 +59,6 @@ struct CameraModeSelectionTests {
         #expect(selection.selected == .video, "The hidden photo mode can never be selected.")
     }
 
-    @Test func returnToVideoRestoresVideoFromAnotherMode() {
-        var selection = CameraModeSelection(selected: .develop)
-        selection.returnToVideo()
-        #expect(selection.selected == .video)
-    }
-
     @Test func glyphsTitlesAndIdentifiersMapToTheThreeModes() {
         #expect(CameraMode.develop.letter == "D")
         #expect(CameraMode.video.letter == "V")

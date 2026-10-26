@@ -24,8 +24,7 @@ enum CameraMode: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// The lowercase word shown beside the letter, but only for the selected
-    /// mode. Matches `rawValue` by definition.
+    /// The lowercase title shown below the selected letter.
     var title: String { rawValue }
 
     /// The spoken name used for the row's VoiceOver label.
@@ -71,11 +70,5 @@ struct CameraModeSelection: Equatable, Sendable {
         guard mode != selected else { return false }
         selected = mode
         return true
-    }
-
-    /// Returns to Video, the mode the parent restores after the Develop flow
-    /// (the Process Video import) dismisses.
-    mutating func returnToVideo() {
-        selected = .video
     }
 }

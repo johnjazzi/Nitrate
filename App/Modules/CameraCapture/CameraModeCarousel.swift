@@ -163,6 +163,8 @@ struct CameraModeCarousel: View {
                 .frame(width: faceWidth, height: faceHeight)
                 .rotationEffect(.degrees(rotationDegrees))
                 .frame(width: geometry.size.width, height: geometry.size.height)
+                // Bring the ghost inward without moving either 44pt touch target.
+                .offset(x: mode == selected ? 0 : (mode == .develop ? 6 : -6))
         }
         .frame(width: Self.minimumControlWidth, height: Self.height)
         .contentShape(Rectangle())

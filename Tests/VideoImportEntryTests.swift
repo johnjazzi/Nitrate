@@ -7,21 +7,12 @@ struct VideoImportEntryTests {
                    encoding: .utf8)
     }
 
-    @Test func shippingQueueHasAReachableProcessVideoAction() throws {
+    @Test func developIsTheOnlyVideoEntryAndTheQueueHasNoLegacyImportAction() throws {
         let sheet = try source("App/Modules/RenderQueue/QueueSheetView.swift")
-        #expect(sheet.contains("Label(\"Process Video\", systemImage: \"square.and.arrow.down\")"))
-        #expect(sheet.contains(".sheet(isPresented: $showVideoImport)"))
-        #expect(sheet.contains("VideoImportSheet(library: library, queue: viewModel, isPresented: $showVideoImport)"))
-        #expect(sheet.contains(".disabled(cameraViewModel.isRecording"))
-    }
-
-    @Test func processingSheetUsesConsistentCopy() throws {
-        let sheet = try source("App/Modules/VideoImport/VideoImportSheet.swift")
-        #expect(sheet.contains(".navigationTitle(\"Process Video\")"))
-        #expect(sheet.contains("\"Preparing video…\""))
-        #expect(!sheet.contains("\"Cancel import\""))
-        #expect(!sheet.contains("Could not import"))
-        #expect(!sheet.contains("could not be imported"))
+        #expect(!sheet.contains("Process Video"))
+        #expect(!sheet.contains("showVideoImport"))
+        #expect(!sheet.contains("VideoImportSheet"))
+        #expect(!sheet.contains("videoImport.open"))
     }
 
     @Test func cameraHasADirectDevelopModeWithoutOpeningTheQueue() throws {
