@@ -56,26 +56,32 @@ struct CameraControlBar: View {
     var developIsBusy: Bool = false
     /// The only thing the Develop centre action does. It never touches capture.
     var onDevelopRender: () -> Void = {}
+    var isPhotoMode = false
+    var photoStatus: String? = nil
+    var onPhotoCapture: () -> Void = {}
+    var photoExposure: PhotoExposureSnapshot? = nil
+    var onPhotoISO: (Float) -> Void = { _ in }
+    var onPhotoISOLock: () -> Void = {}
+    var onPhotoDuration: (Double) -> Void = { _ in }
+    var onPhotoShutterLock: () -> Void = {}
 
     var body: some View {
-        CameraShootingLayout() {
-            selectorRow
-                // Video keeps the stock/gauge slot live; Develop disables it
-                // only while a render is busy, without moving the well.
-                .disabled(isDevelopMode && developIsBusy)
-                .opacity(isDevelopMode && developIsBusy ? 0.4 : 1)
-            storageIndicator
-            recordButton
-            exposureControl
-                .frame(width: CameraControlGeometry.exposureWidth)
-                // Develop greys and disables exposure in place. The frame, the
-                // measured footprint and the published bounds stay identical,
-                // so neither the bar's geometry nor the parent's floats move.
-                .disabled(isDevelopMode)
-                .opacity(isDevelopMode ? 0.4 : 1)
-                .grayscale(isDevelopMode ? 1 : 0)
+        VStack(spacing: 0) {
+            CameraShootingLayout() {
+                selectorRow
+                    .disabled(isDevelopMode && developIsBusy)
+                    .opacity(isDevelopMode && developIsBusy ? 0.4 : 1)
+                storageIndicator
+                recordButton
+                exposureControl
+                    .frame(width: CameraControlGeometry.exposureWidth)
+                    .disabled(isDevelopMode)
+                    .opacity(isDevelopMode ? 0.4 : 1)
+                    .grayscale(isDevelopMode ? 1 : 0)
+            }
+            .padding(.horizontal, horizontalInset)
+
         }
-        .padding(.horizontal, horizontalInset)
     }
 
     // MARK: - Left selector row
@@ -149,7 +155,8 @@ struct CameraControlBar: View {
                 meteredEV: cameraViewModel.liveExposureTargetOffset,
                 targetEV: cameraViewModel.isManualExposure ? 0 : cameraViewModel.liveExposureBias,
                 isManual: cameraViewModel.isManualExposure,
-                isAvailable: cameraViewModel.hasExposureMeter
+                isAvailable: cameraViewModel.hasExposureMeter,
+                trackHeight: 120
             )
             exposureSetting
                 .frame(width: 48)
@@ -253,6 +260,12 @@ struct CameraControlBar: View {
                     tint: .yellow,
                     length: 120
                 )
+                // One stable handle for the control, the same way the photo
+                // shutter rail names its ruler: the ISO chooser is the control an
+                // operator drags, so a test (and VoiceOver) has to be able to find
+                // this one and not the EV ruler that shares the column.
+                .accessibilityIdentifier("camera.isoRuler")
+                .accessibilityLabel("ISO")
             } else {
                 // Ruler rather than a 1:1 slider: EV compensation needs
                 // repeatable 0.1 EV detents, with 12pt of travel per tick.
@@ -290,7 +303,11 @@ struct CameraControlBar: View {
     }
 
     private var isoSliderRange: ClosedRange<Double> {
-        let range = cameraViewModel.session.isoRange
+        // Video reads the recorder's own band (`CameraSession.videoISORange`):
+        // the shared idle format is still-capable and wider than the Apple Log 2
+        // format a take will use, so the active format's range would offer ISO
+        // the take cannot take. Photo keeps the still format's wider range.
+        let range = cameraViewModel.isoBandForCurrentMode()
         return Double(range.lowerBound)...Double(range.upperBound)
     }
 
@@ -357,6 +374,14 @@ struct CameraControlBar: View {
         }
     }
 
+    /// The shutter's spoken state: the blocking reason while a tap could not
+    /// start a capture, otherwise the delivery status.
+    private var photoShutterAccessibilityValue: String {
+        let readiness = cameraViewModel.photoShutterReadiness
+        if readiness != .capturing, let reason = readiness.blockedReason { return reason }
+        return photoStatus ?? "Ready"
+    }
+
     private var recordPresentation: RecordButtonPresentation {
         RecordButtonPresentationPolicy.presentation(
             isRecording: cameraViewModel.isRecording,
@@ -369,7 +394,33 @@ struct CameraControlBar: View {
     /// Develop replaces it with the Render action. The two never overlap.
     @ViewBuilder
     private var recordButton: some View {
-        if isDevelopMode {
+        if isPhotoMode {
+            Button(action: onPhotoCapture) {
+                ZStack {
+                    // Donut face inside the unchanged camera ring: light grey with
+                    // concave shading, hole open to the preview.
+                    PhotoShutterFace()
+                    Circle().stroke(.white.opacity(0.8), lineWidth: 2).frame(width: 78, height: 78)
+                }
+                // The face is deliberately not hit-testable (its shading must not
+                // intercept the preview) and its middle is an open hole, so without
+                // this the button's only tappable pixels were the 2pt outer ring:
+                // a tap on the centre — where an operator actually taps — did
+                // nothing at all, with no state to explain it.
+                .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            // Never disabled, never dimmed: a tap always reaches the camera and
+            // may fail, but a control that looks dead and says nothing is worse
+            // than a refusal the operator can read (see `PhotoShutterReadiness`).
+            .accessibilityLabel("Capture RAW photo")
+            // The delivery status used to sit above the shutter as text. It is
+            // carried here instead, so VoiceOver and the UI tests still see it
+            // without drawing anything over the preview.
+            .accessibilityValue(photoShutterAccessibilityValue)
+            .accessibilityIdentifier("photo.shutter")
+            .sensoryFeedback(.impact(weight: .medium), trigger: cameraViewModel.isPhotoCaptureBusy)
+        } else if isDevelopMode {
             developRenderButton
         } else {
             videoRecordButton
@@ -482,7 +533,11 @@ struct CameraControlBar: View {
                     isStorageLow: isStorageLow,
                     queueStatus: queueStatus,
                     isRecording: recordPresentation.showsLiveChrome,
-                    isStopping: cameraViewModel.isStoppingRecording
+                    isStopping: cameraViewModel.isStoppingRecording,
+                    photoFreeBytes: isPhotoMode && cameraViewModel.hasStorageSnapshot ? cameraViewModel.freeSpaceBytes : nil,
+                    isPhotoMode: isPhotoMode,
+                    isRenderingPhoto: renderQueueViewModel.currentJob?.isPhoto == true,
+                    isSavingPhoto: activePhotoRenderIsSaving
                 )
             }
         .buttonStyle(.plain)
@@ -491,9 +546,20 @@ struct CameraControlBar: View {
         .accessibilityLabel("Storage, render queue, and estimated recording time remaining")
         .accessibilityValue("\(recordPresentation.showsLiveChrome ? "Recording. " : "")"
                             + "\(estimatedTimeText). \(freeSpaceText) free. "
-                            + "\(isStorageLow ? "Low storage. " : "")\(queueStatus.accessibilityDescription)")
-        .accessibilityHint("Tap for storage and render queue details, video playback, sharing, and retry controls.")
+                            + "\(isStorageLow ? "Low storage. " : "")\(photoRenderAccessibilityStatus)\(queueStatus.accessibilityDescription)")
+        .accessibilityIdentifier("camera.queueLCD")
+        .accessibilityHint("Tap for storage and render queue details, photo and video previews, sharing, and retry controls.")
         }
+    }
+
+    private var activePhotoRenderIsSaving: Bool {
+        guard let current = renderQueueViewModel.currentJob, current.isPhoto == true else { return false }
+        return renderQueueViewModel.progress(for: current.id)?.phase == .saving
+    }
+
+    private var photoRenderAccessibilityStatus: String {
+        guard renderQueueViewModel.currentJob?.isPhoto == true else { return "" }
+        return activePhotoRenderIsSaving ? "Saving photo. " : "Rendering photo. "
     }
 
     private var estimatedTimeText: String {

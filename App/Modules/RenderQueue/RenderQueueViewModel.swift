@@ -17,6 +17,7 @@ final class RenderQueueViewModel {
     private let loadOverride: (() throws -> [RenderJob])?
     private let injectedRender: RenderOperation?
     private let saveOperation: SaveOperation
+    private let hasInjectedSave: Bool
     private let postDeliveryOperation: PostDeliveryOperation?
     private let receiptOperation: ReceiptOperation?
     private let mediaCleanup: RenderMediaCleanup
@@ -113,6 +114,7 @@ final class RenderQueueViewModel {
         loadOverride = load
         injectedRender = render
         saveOperation = save ?? Self.saveToPhotoLibrary
+        hasInjectedSave = save != nil
         postDeliveryOperation = postDelivery
         receiptOperation = receipt
         self.mediaCleanup = mediaCleanup
@@ -191,6 +193,35 @@ final class RenderQueueViewModel {
         }
         processNext()
         return imported.id
+    }
+
+    /// Returns an ID only after persistence; the same serial worker owns Photos delivery.
+    @discardableResult
+    func enqueuePhoto(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge,
+                      cropZoom: Double, seed: UInt32) -> UUID? {
+        guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
+        guard Self.isUsableFile(sourceURL), sourceURL.pathExtension.lowercased() == "dng",
+              iso.isFinite, iso > 0, cropZoom.isFinite, cropZoom >= 1 else {
+            reportRenderError("The captured photo or its settings could not be read. Original DNG kept locally.")
+            return nil
+        }
+        if let existing = jobs.first(where: { $0.sourceURL.standardizedFileURL == sourceURL.standardizedFileURL }) {
+            return existing.isPhoto == true ? existing.id : nil
+        }
+        var photo = RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso,
+                              printGauge: gauge, sessionId: sessionId)
+        photo.isPhoto = true
+        photo.photoCropZoom = cropZoom
+        photo.photoGrainSeed = seed
+        jobs.append(photo)
+        guard persistJobs() else {
+            jobs.removeAll { $0.id == photo.id }
+            isPersistenceBlocked = true
+            publishQueueMessage()
+            return nil
+        }
+        processNext()
+        return photo.id
     }
 
     func enqueue(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge? = nil,
@@ -318,6 +349,29 @@ final class RenderQueueViewModel {
         publishQueueMessage()
         processNext()
         return accepted
+    }
+
+    /// Re-run photo development for an already-developed Photo job. The saved
+    /// DNG is the durable source, so a wrong-looking JPEG can be replaced
+    /// without recapturing and without touching any Video job.
+    func redevelopPhoto(jobId: UUID) {
+        guard let index = jobs.firstIndex(where: { $0.id == jobId }),
+              jobs[index].isPhoto == true, jobs[index].hasRedevelopableOriginal,
+              jobs[index].status == .completed || jobs[index].status == .failed else { return }
+        if let stale = jobs[index].outputURL { try? FileManager.default.removeItem(at: stale) }
+        jobs[index].status = .pending
+        jobs[index].outputURL = nil
+        jobs[index].receipt = nil
+        jobs[index].outputSavedToPhotos = nil
+        jobs[index].errorMessage = nil
+        jobs[index].sessionId = sessionId
+        clearProgress(jobId: jobId)
+        guard persistJobs() else {
+            isPersistenceBlocked = true
+            publishQueueMessage()
+            return
+        }
+        processNext()
     }
 
     func retry(jobId: UUID) {
@@ -507,6 +561,8 @@ final class RenderQueueViewModel {
     }
 
     private static func needsMediaCleanup(_ job: RenderJob) -> Bool {
+        // Photo history plays the retained JPEG; never unlink its original DNG.
+        guard job.isPhoto != true else { return false }
         if job.isDiscardingImport { return true }
         guard job.status == .completed, job.receipt != nil,
               job.mediaCleanupCompleted != true else { return false }
@@ -545,7 +601,7 @@ final class RenderQueueViewModel {
         guard persistJobs() else { isPersistenceBlocked = true; return }
         for id in candidates {
             guard !isPersistenceBlocked, let current = job(id), Self.needsMediaCleanup(current) else { continue }
-            if !current.isDiscardingImport, let output = current.outputURL,
+            if current.isPhoto != true, !current.isDiscardingImport, let output = current.outputURL,
                Self.isUsableFile(output), let postDeliveryOperation {
                 await postDeliveryOperation(output, id)
             }
@@ -639,7 +695,7 @@ final class RenderQueueViewModel {
                 // The render is done; delivery to Photos is what remains. The
                 // job is not "saved" until the save call returns below.
                 beginSavingPhase(jobId: jobId)
-                try await saveOperation(outputURL)
+                try await saveOutput(outputURL, isPhoto: initial.isPhoto == true)
                 update(jobId) { $0.outputSavedToPhotos = true }
                 // Persist the first success before attempting the original.
                 guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
@@ -736,6 +792,14 @@ final class RenderQueueViewModel {
             beginRenderingPhase(jobId: job.id)
             return try await injectedRender(job)
         }
+        if job.isPhoto == true {
+            beginRenderingPhase(jobId: job.id)
+            return try await Task.detached(priority: .userInitiated) {
+                try DevelopmentPhotoRenderer.render(originalDNG: job.sourceURL, stockID: job.stockId,
+                    gauge: job.printGauge ?? .neutral, seed: job.photoGrainSeed ?? 0,
+                    cropZoom: job.photoCropZoom ?? 1)
+            }.value
+        }
         guard let renderer else {
             throw QueueError.rendererUnavailable(rendererInitError ?? "Metal pipeline could not start. Reboot the app.")
         }
@@ -817,6 +881,13 @@ final class RenderQueueViewModel {
                 break
             }
         }
+        if job(jobId)?.isPhoto == true {
+            update(jobId) {
+                $0.status = .failed
+                $0.errorMessage = "Photo development failed: \(renderMessage). Original DNG remains in the app."
+            }
+            return
+        }
         if job(jobId)?.isImportedVideo == true {
             update(jobId) {
                 $0.status = .failed
@@ -873,6 +944,17 @@ final class RenderQueueViewModel {
               let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attrs[.size] as? Int64 else { return false }
         return size > 0
+    }
+
+    private func saveOutput(_ url: URL, isPhoto: Bool) async throws {
+        if isPhoto, !hasInjectedSave {
+            switch await DevelopmentPhotoLibrarySaver.shared.save(originalDNG: url) {
+            case .success: return
+            case .failure(.alreadySaved): return // Durable image receipt confirms earlier delivery.
+            case .failure(let error): throw error
+            }
+        }
+        try await saveOperation(url)
     }
 
     private nonisolated static func saveToPhotoLibrary(_ url: URL) async throws {

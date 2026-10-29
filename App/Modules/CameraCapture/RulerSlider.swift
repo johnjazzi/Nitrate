@@ -49,9 +49,14 @@ struct RulerSlider: View {
     var length: CGFloat = 96
     var width: CGFloat = 56
 
+    enum Orientation { case vertical, horizontal }
+    var orientation: Orientation = .vertical
+
     @State private var drag = RulerDragState()
     @State private var feedbackTrigger = 0
+#if os(iOS)
     @Environment(\.cameraDeviceOrientation) private var deviceOrientation
+#endif
 
     /// The scale actually used for layout: the caller's, or linear travel at the
     /// configured detent size.
@@ -72,7 +77,8 @@ struct RulerSlider: View {
         Canvas { context, size in
             draw(in: &context, size: size)
         }
-        .frame(width: width, height: length)
+        .frame(width: orientation == .horizontal ? length : width,
+               height: orientation == .horizontal ? width : length)
         .contentShape(Rectangle())
         .gesture(dragGesture)
         .sensoryFeedback(.selection, trigger: feedbackTrigger)
@@ -98,7 +104,7 @@ struct RulerSlider: View {
                 // higher position is a higher value.
                 let position = drag.update(
                     valuePosition: effectiveScale.toPosition(value),
-                    translation: Double(gesture.translation.height),
+                    translation: Double(orientation == .horizontal ? -gesture.translation.width : gesture.translation.height),
                     bounds: effectiveScale.toPosition(range.lowerBound)...effectiveScale.toPosition(range.upperBound)
                 )
                 setPosition(position)
@@ -133,13 +139,19 @@ struct RulerSlider: View {
     }
 
     private func fireHaptic() {
+#if os(iOS)
         CameraHaptics.prepareForCaptureFeedback()
+#endif
         feedbackTrigger &+= 1
     }
 
     // MARK: - Rendering
 
     private func draw(in context: inout GraphicsContext, size: CGSize) {
+        if orientation == .horizontal {
+            drawHorizontal(in: &context, size: size)
+            return
+        }
         let centerY = size.height / 2
         let centerPosition = selectedPosition
 
@@ -172,12 +184,39 @@ struct RulerSlider: View {
         context.stroke(pointer, with: .color(tint), lineWidth: 2)
     }
 
+    private func drawHorizontal(in context: inout GraphicsContext, size: CGSize) {
+        for tick in visibleTicks(halfHeight: Double(size.width / 2)) {
+            let x = size.width / 2 + CGFloat(tick.position - selectedPosition)
+            guard x >= -2, x <= size.width + 2 else { continue }
+            let tickLength = tick.isMajor ? size.height * 0.42 : size.height * 0.22
+            var path = Path()
+            path.move(to: CGPoint(x: x, y: size.height - tickLength))
+            path.addLine(to: CGPoint(x: x, y: size.height))
+            context.stroke(path, with: .color(.white.opacity(tick.isMajor ? 0.85 : 0.3)),
+                           lineWidth: tick.isMajor ? 1.5 : 1)
+            if tick.isMajor {
+                context.draw(Text(tickLabel(tick.value))
+                    .font(NitrateTypography.font(size: 8))
+                    .foregroundStyle(.white.opacity(0.7)),
+                    at: CGPoint(x: x, y: 8), anchor: .center)
+            }
+        }
+        var pointer = Path()
+        pointer.move(to: CGPoint(x: size.width / 2, y: 0))
+        pointer.addLine(to: CGPoint(x: size.width / 2, y: size.height))
+        context.stroke(pointer, with: .color(tint), lineWidth: 2)
+    }
+
     /// Turn only the label about its original centre. Tracks, pointer, detents
     /// and gesture coordinates remain in the portrait control's coordinates.
     private func drawLabel(_ label: Text, in context: GraphicsContext, tickY: CGFloat) {
         let resolved = context.resolve(label)
         let size = resolved.measure(in: CGSize(width: CGFloat.infinity, height: CGFloat.infinity))
+#if os(iOS)
         let degrees = CameraGlyphRotation.degrees(for: deviceOrientation)
+#else
+        let degrees: Double = 0
+#endif
         let fit = abs(degrees) == 90 && size.width > 0 && size.height > 0
             ? min(1, min(size.width / size.height, size.height / size.width)) : 1
         var glyphContext = context

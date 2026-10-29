@@ -1,4 +1,5 @@
 import AVFoundation
+import Foundation
 
 /// AD-7: Codable job model for the render queue.
 /// Persisted to disk to survive app backgrounding.
@@ -19,11 +20,31 @@ struct RenderJob: Codable, Identifiable, Equatable {
     /// Nil preserves legacy camera jobs. Imported assets never expose playback
     /// or export another copy of their original into Photos.
     var isImportedVideo: Bool? = nil
+    /// Photo jobs share queue persistence/retry but retain their DNG and JPEG.
+    /// Optional fields keep every pre-Photo queue readable as a Video queue.
+    var isPhoto: Bool? = nil
+    var photoCropZoom: Double? = nil
+    var photoGrainSeed: UInt32? = nil
+    var retainedOutputURL: URL? {
+        guard let outputURL, outputURL.isFileURL,
+              let values = try? outputURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+              values.isRegularFile == true, (values.fileSize ?? 0) > 0 else { return nil }
+        return outputURL
+    }
+    /// The retained DNG is still on disk, so a Photo job can be developed again.
+    var hasRedevelopableOriginal: Bool {
+        guard isPhoto == true, sourceURL.isFileURL else { return false }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue else { return false }
+        return (try? sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) ?? 0 > 0
+    }
+
     /// Durable removal intent. Recovery and Retry clean files without rendering.
     var discardImportedMedia: Bool? = nil
     var isDiscardingImport: Bool { isImportedVideo == true && discardImportedMedia == true }
     var permitsLocalMedia: Bool { isImportedVideo != true }
-    var shouldSaveOriginal: Bool { isImportedVideo != true && deliveryPreferences?.saveOriginalLog == true }
+    var shouldSaveOriginal: Bool { isPhoto != true && isImportedVideo != true && deliveryPreferences?.saveOriginalLog == true }
     let trimStartSeconds: Double?
     let trimEndSeconds: Double?
     let createdAt: Date

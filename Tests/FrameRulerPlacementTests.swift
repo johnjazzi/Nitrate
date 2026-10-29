@@ -17,6 +17,34 @@ import Testing
 struct FrameRulerPlacementTests {
     private let frame = CGRect(x: 40, y: 120, width: 300, height: 520)
 
+    @Test func photoShutterIsHorizontalAtPreviewTopWithoutCoveringEitherEdgeRail() {
+        for degrees: Double in [0, 90, -90, 180] {
+            let shutter = FrameRulerPlacementGeometry.photoShutterRect(inFrame: frame, orientationDegrees: degrees)
+            let focus = FrameRulerPlacementGeometry.rect(inFrame: frame, edge: .right, thickness: 44, orientationDegrees: degrees)
+            let zoom = FrameRulerPlacementGeometry.rect(inFrame: frame, edge: .left, thickness: 44, orientationDegrees: degrees)
+            #expect(!shutter.isNull)
+            #expect(frame.contains(shutter))
+            #expect(!shutter.intersects(focus))
+            #expect(!shutter.intersects(zoom))
+            #expect(shutter.width > shutter.height)
+            #expect(shutter.height == 56)
+            #expect(shutter.minY <= frame.minY + 48)
+            #expect(shutter.maxY < frame.midY, "pinch remains available in the preview center")
+        }
+    }
+
+    @Test func photoShutterAvoidsDiagnosticHitTargetsAndRejectsCrampedBounds() {
+        let diagnostic = CGRect(x: 16, y: 120, width: 60, height: 92)
+        let bounds = CGRect(x: 0, y: 120, width: 390, height: 500)
+        let shutter = FrameRulerPlacementGeometry.photoShutterRect(
+            inFrame: bounds, orientationDegrees: 0, excluding: diagnostic)
+        #expect(!shutter.isNull)
+        #expect(!shutter.intersects(diagnostic))
+        #expect(bounds.contains(shutter))
+        #expect(FrameRulerPlacementGeometry.photoShutterRect(
+            inFrame: CGRect(x: 0, y: 0, width: 120, height: 60), orientationDegrees: 0).isNull)
+    }
+
     // MARK: - Edge mapping
 
     @Test func physicalRightEdgeMapsToThePhysicalHold() {

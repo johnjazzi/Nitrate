@@ -844,6 +844,21 @@ enum ExposureIndicatorPolicy {
 enum CameraExposureBiasPreference {
     static let preferenceKey = "camera.exposureBiasEV"
 
+    /// UI-test isolation: a runner-driven process must neither read nor write the
+    /// operator's stored compensation.
+    ///
+    /// A test toggles manual exposure by long-pressing the exposure column, and
+    /// that column is a value ruler: the press can land on a detent and the app
+    /// then holds (and saved) that value for real. Automated runs left the app
+    /// opening at whichever end of the range a synthetic finger happened to hit
+    /// — which reads to the operator as "the EV is always wrong by default". The
+    /// tests therefore launch with this argument and see the house default only.
+    static let isolationArgument = "--ui-isolated-defaults"
+
+    static var isIsolated: Bool {
+        CommandLine.arguments.contains(isolationArgument)
+    }
+
     /// A little over a stop under the meter. It holds highlight detail in the
     /// ordinary daylight this camera is usually pointed at, and it sits inside
     /// the ±3 EV span `CameraSession.exposureBiasRange` permits on every device.
@@ -864,12 +879,13 @@ enum CameraExposureBiasPreference {
     }
 
     static func load(from defaults: UserDefaults = .standard) -> Float {
-        resolved(storedValue(in: defaults))
+        guard !isIsolated else { return defaultValue }
+        return resolved(storedValue(in: defaults))
     }
 
     /// Persist the value the app is actually holding, i.e. after device clamping.
     static func save(_ ev: Float, to defaults: UserDefaults = .standard) {
-        guard ev.isFinite else { return }
+        guard ev.isFinite, !isIsolated else { return }
         defaults.set(ev, forKey: preferenceKey)
     }
 }

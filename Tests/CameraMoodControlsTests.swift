@@ -158,6 +158,42 @@ struct CameraMoodControlsTests {
                 "A finalising take falls back to the plain face, never the recording headline.")
     }
 
+    @MainActor @Test func photoLCDShowsFreeCapacityInsteadOfVideoDuration() throws {
+        let idle = CameraStatusPresentation(outstandingCount: 0, pendingCount: 0, isProcessing: false,
+            failedCount: 0, errorMessage: nil, latestResultCompleted: false, latestResultSavedToPhotos: nil)
+        let slot = CameraControlGeometry(width: 288, height: 168).lcd.size
+        let low = RecordingTimeLCD(estimatedSeconds: 754, isStorageLow: false, queueStatus: idle,
+            photoFreeBytes: 12_500_000_000)
+        let high = RecordingTimeLCD(estimatedSeconds: 754, isStorageLow: false, queueStatus: idle,
+            photoFreeBytes: 97_300_000_000)
+        #expect(low.capacityText == "12.5 GB")
+        #expect(high.capacityText == "97.3 GB")
+        #expect(pixelsDigest(try render(lcdFrame(low, slot: slot), name: "photo-lcd-low")) !=
+                pixelsDigest(try render(lcdFrame(high, slot: slot), name: "photo-lcd-high")),
+                "Visible capacity must change with free bytes, not stay on Video remaining time.")
+    }
+
+    @MainActor @Test func photoRenderingOwnsTheLCDEvenWhenCapacityIsAvailable() {
+        let rendering = CameraStatusPresentation(outstandingCount: 1, pendingCount: 0, isProcessing: true,
+            failedCount: 0, errorMessage: nil, latestResultCompleted: false, latestResultSavedToPhotos: nil)
+        let lcd = RecordingTimeLCD(estimatedSeconds: 754, isStorageLow: false, queueStatus: rendering,
+            photoFreeBytes: 12_500_000_000, isPhotoMode: true)
+        #expect(lcd.showsRenderingActivity,
+                "Active Photo rendering must replace idle free-space digits with the render activity, not hide behind them.")
+    }
+
+    @Test func photoLensMenuIsNotBlanketDisabled() throws {
+        let screen = try String(contentsOf: TestRepository.url(for: "App/ContentView.swift"), encoding: .utf8)
+        #expect(!screen.contains(".disabled(isPhotoMode || cameraViewModel.isPhotoCaptureBusy)"),
+            "Photo must allow the actual top lens menu, not only direct session calls.")
+    }
+
+    @Test func photoModeKeepsStorageVisible() throws {
+        let bar = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraControlBar.swift"), encoding: .utf8)
+        #expect(!bar.contains(".opacity(isPhotoMode ? 0 : 1)"), "Photo must not hide free capacity.")
+        #expect(!bar.contains(".accessibilityHidden(isPhotoMode)"))
+    }
+
     @Test func barOwnsTheWellRecordingStateAndTheLockHapticOnce() throws {
         let bar = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraControlBar.swift"),
                              encoding: .utf8)

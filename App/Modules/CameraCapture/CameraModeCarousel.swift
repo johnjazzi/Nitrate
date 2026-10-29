@@ -46,6 +46,8 @@ struct CameraModeCarousel: View {
     let enabled: Bool
     let onSelect: (CameraMode) -> Void
     let rotationDegrees: Double
+    var photoAvailable = false
+    private var visibleModes: [CameraMode] { CameraMode.visibleModes(photoAvailable: photoAvailable) }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -67,11 +69,12 @@ struct CameraModeCarousel: View {
     private let minimumScale: CGFloat = 0.5
 
     init(selected: CameraMode, enabled: Bool, rotationDegrees: Double = 0,
-         onSelect: @escaping (CameraMode) -> Void) {
+         onSelect: @escaping (CameraMode) -> Void, photoAvailable: Bool = false) {
         self.selected = selected
         self.enabled = enabled
         self.onSelect = onSelect
         self.rotationDegrees = rotationDegrees
+        self.photoAvailable = photoAvailable
     }
 
     var body: some View {
@@ -103,7 +106,7 @@ struct CameraModeCarousel: View {
     /// the row's centre.
     private var fullStrip: some View {
         HStack(spacing: 0) {
-            ForEach(CameraMode.visibleModes) { mode in
+            ForEach(visibleModes) { mode in
                 item(mode, interactive: true)
             }
         }
@@ -115,7 +118,7 @@ struct CameraModeCarousel: View {
     /// decorative ghost, and the adjustment action still moves the selection.
     private var compactStrip: some View {
         ZStack {
-            item(neighbour, interactive: false)
+            item(neighbour, interactive: true)
                 .offset(x: selected == .develop ? Self.minimumControlWidth : -Self.minimumControlWidth)
             item(selected, interactive: true)
         }
@@ -131,20 +134,23 @@ struct CameraModeCarousel: View {
     /// Develop is selected, the trailing half when Video is — lands on centre.
     /// The whole block slides as the selection changes, animating both letters.
     private var centeringOffset: CGFloat {
-        let index = CGFloat(CameraMode.visibleModes.firstIndex(of: selected) ?? 0)
-        return (1 - 2 * index) * (Self.minimumControlWidth / 2)
+        let index = CGFloat(visibleModes.firstIndex(of: selected) ?? 0)
+        return (CGFloat(visibleModes.count - 1) - 2 * index) * (Self.minimumControlWidth / 2)
     }
 
     /// The other visible mode, drawn as the ghosted neighbour.
     private var neighbour: CameraMode {
-        CameraMode.visibleModes.first { $0 != selected } ?? selected
+        guard let index = visibleModes.firstIndex(of: selected) else { return selected }
+        return visibleModes[index > 0 ? index - 1 : min(index + 1, visibleModes.count - 1)]
     }
 
     private func adjust(_ direction: AccessibilityAdjustmentDirection) {
         guard enabled else { return }
         switch direction {
-        case .increment: if selected == .develop { onSelect(.video) }
-        case .decrement: if selected == .video { onSelect(.develop) }
+        case .increment:
+            if case .select(let mode) = resolvedSwipe(CGSize(width: -60, height: 0)) { onSelect(mode) }
+        case .decrement:
+            if case .select(let mode) = resolvedSwipe(CGSize(width: 60, height: 0)) { onSelect(mode) }
         default: break
         }
     }
@@ -207,7 +213,7 @@ struct CameraModeCarousel: View {
 
     func resolvedSwipe(_ translation: CGSize) -> CameraModeCarouselGesture.Outcome {
         guard enabled else { return .none }
-        return CameraModeCarouselGesture.outcome(translation: translation, from: selected)
+        return CameraModeCarouselGesture.outcome(translation: translation, from: selected, visible: visibleModes)
     }
 
     private var swipeGesture: some Gesture {

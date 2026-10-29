@@ -54,8 +54,8 @@ import Testing
                 "the leading icon is decorative; the label carries the name")
         // Both row containers lead with the icon-and-label view.
         #expect(source.components(separatedBy: "SettingsRowLabel(icon: icon, title: title)").count - 1 == 2)
-        // The six primary rows each pass a distinct leading symbol.
-        for icon in ["camera.filters", "record.circle", "button.programmable",
+        // The five remaining primary rows each pass a distinct leading symbol.
+        for icon in ["record.circle", "button.programmable",
                      "viewfinder", "square.and.arrow.down", "arrow.up.arrow.down.circle"] {
             #expect(source.contains("icon: \"\(icon)\""), "the \(icon) row must lead with its icon")
         }
@@ -76,7 +76,7 @@ import Testing
         let source = try source()
         let button = try #require(source.components(separatedBy: "private struct SettingsInfoButton").last)
             .components(separatedBy: "private struct SettingsControlRow")[0]
-        for setting in ["previewMode", "recordingIndicatorStyle", "recordButtonAppearance",
+        for setting in ["recordingIndicatorStyle", "recordButtonAppearance",
                         "saveOriginalLog", "renderQuality", "showFramedPreview"] {
             #expect(!button.contains(setting),
                     "the info button must not read or write \(setting)")
@@ -106,11 +106,11 @@ import Testing
                 "the value button opens a menu of the choices")
         #expect(controls.contains(#"Image(systemName: "chevron.down")"#),
                 "the value button is marked with a chevron")
-        // The four short exclusive choices each use the compact value button, and
+        // The three short exclusive choices each use the compact value button, and
         // each keeps its semantic native picker at the call site (so the choices
         // stay reachable and the selected one is checked).
-        #expect(source.components(separatedBy: "SettingsSelectionRow(title:").count - 1 == 4)
-        for title in ["Preview Color", "Recording Indicator", "Record button", "Rendered File Size"] {
+        #expect(source.components(separatedBy: "SettingsSelectionRow(title:").count - 1 == 3)
+        for title in ["Recording Indicator", "Record button", "Rendered File Size"] {
             #expect(source.contains("SettingsSelectionRow(title: \"\(title)\""),
                     "\(title) must use the compact value button")
             #expect(source.contains("Picker(\"\(title)\""),
@@ -158,8 +158,8 @@ import Testing
 
     @Test func helpKeepsTheQualifiersWhileTheLongParagraphsAreGone() throws {
         let source = try source()
-        for qualifier in ["Recording uses Apple Log 2", "Film effects are applied after recording",
-                          "falls back to Log", "timer starts when recording is confirmed",
+        for qualifier in ["Native camera preview. Film processing is applied only to saved output.",
+                          "timer starts when recording is confirmed",
                           "Choose a raised or flat record button", "space for camera controls",
                           "additional, ungraded Apple Log 2", "uses more storage",
                           "60 Mbps", "30 Mbps", "can soften grain", "Resolution and frame rate stay the same",
@@ -188,15 +188,9 @@ import Testing
 
     @Test func existingAccessibilityAndPersistenceContractsAreUnchanged() throws {
         let source = try source()
-        #expect(source.contains("@AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.neutral.rawValue"))
         #expect(source.contains("@AppStorage(RecordingIndicatorStyle.preferenceKey)"))
         #expect(source.contains("@AppStorage(RecordButtonAppearance.preferenceKey)"))
         #expect(source.contains("@AppStorage(DeliverySettings.saveOriginalLogKey) private var saveOriginalLog = false"))
         #expect(source.contains("@AppStorage(DeliverySettings.renderQualityKey) private var renderQuality = RenderExportQuality.high.rawValue"))
-        // The Preview Color choices keep their order and tags.
-        let neutral = try #require(source.range(of: #"Text("Neutral").tag(CameraPreviewMode.neutral)"#)?.lowerBound)
-        let stock = try #require(source.range(of: #"Text("Stock LUT").tag(CameraPreviewMode.stock)"#)?.lowerBound)
-        let log = try #require(source.range(of: #"Text("Log").tag(CameraPreviewMode.log)"#)?.lowerBound)
-        #expect(neutral < stock && stock < log)
     }
 }

@@ -35,7 +35,8 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
 
     init(output: AVCapturePhotoOutput, pixelFormat: OSType,
          dimensions: CMVideoDimensions, directory: URL, queue: DispatchQueue,
-         timeoutInterval: TimeInterval = 30, onTerminal: @escaping @Sendable (CameraPhotoCaptureResult) -> Void) throws {
+         timeoutInterval: TimeInterval = PhotoExposureCadence.captureTransactionTimeout,
+         onTerminal: @escaping @Sendable (CameraPhotoCaptureResult) -> Void) throws {
         guard timeoutInterval.isFinite, timeoutInterval > 0 else { throw CaptureError.invalidSettings }
         self.timeoutInterval = timeoutInterval
         self.output = output
@@ -94,6 +95,12 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
                 self.evidence["timedOut"] = "true"
                 self.transaction = state
                 self.recordManifest()
+                // The framework's terminal callback is normally last. When it never
+                // arrives the transaction is closed here instead: `finishIfReady`
+                // waits for `frameworkTerminated`, so a dropped terminal would hold
+                // `capturing` for the rest of the session and leave the shutter dead
+                // with nothing said.
+                self.finishAfterTimeout()
             case .alreadyFailed, .terminal: break
             }
         }
@@ -160,15 +167,24 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
                     self.evidence["pixelBufferWidth"] = String(dimensions.0)
                     self.evidence["pixelBufferHeight"] = String(dimensions.1)
                     let storage = PhotoCapturePolicy.Dimensions(width: dimensions.0, height: dimensions.1)
-                    guard PhotoCapturePolicy.permitsBayerStorage(storage, usable: actual),
-                          let area = (props[kCGImagePropertyDNGDictionary] as? [CFString: Any])?[kCGImagePropertyDNGActiveArea]
-                            as? [NSNumber], area.count == 4 else { throw CaptureError.invalidDNG }
-                    self.evidence["activeArea"] = area.map { $0.stringValue }.joined(separator: ",")
-                    let bounds = area.map(\.intValue)
-                    guard bounds[0] >= 0, bounds[1] >= 0,
-                          bounds[2] <= storage.height, bounds[3] <= storage.width,
-                          bounds[2] - bounds[0] == actual.height,
-                          bounds[3] - bounds[1] == actual.width else { throw CaptureError.invalidDNG }
+                    guard PhotoCapturePolicy.permitsBayerStorage(storage, usable: actual) else {
+                        throw CaptureError.invalidDNG
+                    }
+                    if let area = (props[kCGImagePropertyDNGDictionary] as? [CFString: Any])?[kCGImagePropertyDNGActiveArea]
+                        as? [NSNumber] {
+                        guard area.count == 4 else { throw CaptureError.invalidDNG }
+                        self.evidence["activeArea"] = area.map { $0.stringValue }.joined(separator: ",")
+                        let bounds = area.map(\.intValue)
+                        guard bounds[0] >= 0, bounds[1] >= 0,
+                              bounds[2] <= storage.height, bounds[3] <= storage.width,
+                              bounds[2] - bounds[0] == actual.height,
+                              bounds[3] - bounds[1] == actual.width else { throw CaptureError.invalidDNG }
+                    } else {
+                        // Unpadded front-camera Bayer DNGs omit the optional ActiveArea tag.
+                        // Padded storage still requires explicit, validated usable bounds.
+                        guard storage == actual else { throw CaptureError.invalidDNG }
+                        self.evidence["activeArea"] = "fullBuffer"
+                    }
                 }
                 self.evidence["rawWidth"] = String(w); self.evidence["rawHeight"] = String(h)
                 self.evidence["dngBytes"] = String((attrs[.size] as? NSNumber)?.intValue ?? 0)
@@ -220,6 +236,22 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
         terminalDelivered = true
         onTerminal(CameraPhotoCaptureResult(dngURL: failure == nil ? dngURL : nil,
             evidence: evidence, failure: failure, timedOut: state.timedOut))
+    }
+
+    /// Close a timed-out transaction without the framework's terminal callback.
+    private func finishAfterTimeout() {
+        guard !terminalDelivered, var state = transaction, state.timedOut else { return }
+        guard state.finish(uniqueID: state.uniqueID) else { return }
+        transaction = state
+        frameworkTerminated = true
+        completionBarrier.complete(.rawProcessed)
+        completionBarrier.complete(.captureTerminated)
+        failure = failure ?? "capture timed out awaiting framework terminal callback"
+        evidence["status"] = "timedOutAwaitingTerminal"
+        recordManifest()
+        terminalDelivered = true
+        onTerminal(CameraPhotoCaptureResult(dngURL: nil, evidence: evidence,
+                                            failure: failure, timedOut: true))
     }
 
     private static func captureMetadata(_ metadata: [String: Any]) -> [String: String] {

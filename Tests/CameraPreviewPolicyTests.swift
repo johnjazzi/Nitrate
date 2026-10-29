@@ -251,15 +251,6 @@ struct CameraPreviewPolicyTests {
         #expect(!source.contains("HLGTo"))
     }
 
-    @Test func expectedLensHandoffDoesNotDisableTheLUTPreview() throws {
-        let source = try String(contentsOf: TestRepository.root.appendingPathComponent(
-            "App/Modules/CameraCapture/CameraView.swift"), encoding: .utf8)
-        #expect(!source.contains("active: scenePhase == .active && !viewModel.isSwitchingCameraLens"),
-                "An expected lens handoff must not be treated as leaving the active scene")
-        #expect(source.contains("transitioning: viewModel.isSwitchingCameraLens"),
-                "Pass the expected handoff separately so the preview can retain its last valid image")
-    }
-
     @Test func independentPreviewDoesNotReplaceTheWriter() throws {
         let root = TestRepository.root
         let recorder = try String(contentsOf: root.appendingPathComponent(
@@ -309,7 +300,8 @@ struct CameraPreviewPolicyTests {
             #expect(!attach.contains(forbidden))
             #expect(!refresh.contains(forbidden))
         }
-        #expect(session.components(separatedBy: "attachPreviewOutput()").count == 3)
+        #expect(session.components(separatedBy: "attachPreviewOutput()").count == 4,
+                "Preview attachment is owned by its helper, explicit tap ownership and the committed Video graph.")
         #expect(session.contains("previewOwner != nil && !previewSuspended && isConfigured && session.isRunning"))
         #expect(session.contains("self.suspendPreview(true)"))
         #expect(session.contains("defer { self.suspendPreview(false) }"))
@@ -393,68 +385,15 @@ struct CameraPreviewPolicyTests {
         }
     }
 
-    @Test func selectedStockNameReachesQueueOwnedRendererWithoutEffects() throws {
-        // Wiring/lifetime source guards complement the pure token/parser tests.
+    @Test func shootingPreviewUsesNativeLayerWithoutFilmProcessing() throws {
         let root = TestRepository.root
-        let content = try String(contentsOf: root.appendingPathComponent("App/ContentView.swift"), encoding: .utf8)
         let view = try String(contentsOf: root.appendingPathComponent("App/Modules/CameraCapture/CameraView.swift"), encoding: .utf8)
-        let renderer = try String(contentsOf: root.appendingPathComponent("App/Modules/CameraCapture/CameraPreviewRenderer.swift"), encoding: .utf8)
-        let policy = try String(contentsOf: root.appendingPathComponent(
-            "App/Modules/CameraCapture/CameraPreviewPolicy.swift"), encoding: .utf8)
         let settings = try String(contentsOf: root.appendingPathComponent("App/Modules/Purchase/PurchaseView.swift"), encoding: .utf8)
-        #expect(content.contains("selectedStockLUTName: selectedStock?.lutName"))
-        #expect(view.contains("var selectedStockLUTName: String? = nil"))
-        #expect(view.contains("let requested = mode != .log && active"))
-        #expect(view.contains("let lutName = mode.lutName(for: selectedStockLUTName)"))
-        #expect(view.contains("resolvedLUTName != lutName"))
-        #expect(!view.contains("self.selectedStockLUTName != selectedStockLUTName"))
-        #expect(view.contains("selectedLUTName: resolvedLUTName"))
-        #expect(view.contains("let shouldAttach = wantsLUT && window != nil && renderer != nil"))
-        #expect(view.contains("camera.removePreviewTap(owner: owner)"))
-        for surface in [view, settings] {
-            #expect(surface.contains("@AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.neutral.rawValue"))
+        #expect(view.contains("AVCaptureVideoPreviewLayer"))
+        for forbidden in ["MTKView", "CameraPreviewRenderer", "setPreviewTap", "Live preview paused", "setPhotoPreviewConnection"] {
+            #expect(!view.contains(forbidden), "Shooting preview must not use film rendering or slow-shutter blackout.")
         }
-        let neutralOption = try #require(settings.range(of: "Text(\"Neutral\").tag(CameraPreviewMode.neutral)"))
-        let stockOption = try #require(settings.range(of: "Text(\"Stock LUT\").tag(CameraPreviewMode.stock)"))
-        let logOption = try #require(settings.range(of: "Text(\"Log\").tag(CameraPreviewMode.log)"))
-        #expect(neutralOption.lowerBound < stockOption.lowerBound)
-        #expect(stockOption.lowerBound < logOption.lowerBound)
-        #expect(policy.contains("case .neutral: return \"AppleLog2ToRec709.cube\""))
-        #expect(renderer.contains("selection.select(selectedLUTName)"))
-        #expect(renderer.contains("if nameChanged { renderQueue.async"))
-        #expect(renderer.contains("guard isSelected(requested) else { return }"))
-        #expect(renderer.contains("loadedSelection == selected"))
-        #expect(renderer.contains("guard let self, self.isCurrentStatus(key, revision: current) else { return }"))
-        #expect(renderer.contains("return active && revision == current && publishedStatus == key"))
-        #expect(renderer.contains("CameraPreviewCube.parse"))
-        #expect(renderer.contains("subdirectory: \"Preview\""))
-        #expect(renderer.contains("Preview LUT active [\\(selectedName)]"))
-        #expect(!renderer.contains("Stock LUT preview"))
-        #expect(renderer.components(separatedBy: "encoder.setFragmentTexture(lut, index: 2)").count == 2)
-        #expect(renderer.components(separatedBy: "encoder.drawPrimitives").count == 2)
-        for forbidden in ["PipelineRenderer(", "grain", "halation", "toneMapper", "CIImage"] {
-            #expect(!renderer.contains(forbidden))
-        }
-    }
-
-    @Test func handoffNoticeMatchesTheFaultHeadlineFontAndCentersOverTheFrame() throws {
-        let view = try String(contentsOf: TestRepository.root.appendingPathComponent(
-            "App/Modules/CameraCapture/CameraView.swift"), encoding: .utf8)
-        // Both the handoff notice and the fault headline render in the shared
-        // bundled face at 46pt; the handoff is drawn by UIKit, so it goes through
-        // the same typography helper's font constructor.
-        #expect(view.contains("handoffLabel.font = NitrateTypography.uiFont(size: 46)"))
-        let fault = try String(contentsOf: TestRepository.root.appendingPathComponent(
-            "App/Modules/CameraCapture/RecordingFailureOverlay.swift"), encoding: .utf8)
-        #expect(fault.contains("NitrateTypography.font(size: 46)"),
-                "The fault headline must share the 46pt bundled face.")
-        #expect(view.contains("handoffLabel.textAlignment = .center"))
-        #expect(view.contains("handoffLabel.center = CGPoint(x: bounds.midX, y: bounds.midY)"))
-        #expect(view.contains("handoffLabel.isUserInteractionEnabled = false"))
-        #expect(view.contains("self.handoffLabel.text = lutActive ? warning : nil"),
-                "Only an informational notice belongs in the centered treatment")
-        #expect(view.contains("self.monitorLabel.text = lutActive ? nil : warning"),
-                "Real errors must retain their separate warning treatment")
+        #expect(!settings.contains("Picker(\"Preview Color\""))
     }
 
     @Test func aHeldLensHandoffHasAnExplicitNotice() throws {
@@ -689,15 +628,6 @@ struct CameraPreviewPolicyTests {
         // Real errors are never routed through the holdable transitional path.
         #expect(renderer.contains("reject(.fatal(\"Preview LUT GPU error"))
         #expect(renderer.contains("reject(.transitional(\"Preview LUT unsupported for this source"))
-    }
-
-    @Test func previewViewForwardsTheExpectedHandoffSeparately() throws {
-        let view = try String(contentsOf: TestRepository.root.appendingPathComponent(
-            "App/Modules/CameraCapture/CameraView.swift"), encoding: .utf8)
-        #expect(view.contains("transitioning: viewModel.isSwitchingCameraLens"))
-        #expect(view.contains("uiView.update(mode: mode, active: active, transitioning: transitioning"))
-        // A lens change alone must no longer synchronously reset the drawable.
-        #expect(!view.contains("activeLens != lens || resolvedLUTName != lutName"))
     }
 
     private func expectScale(source: SIMD2<Float>, view: SIMD2<Float>, turns: Int,

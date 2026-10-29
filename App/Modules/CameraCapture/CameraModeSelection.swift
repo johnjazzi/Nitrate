@@ -42,32 +42,20 @@ enum CameraMode: String, CaseIterable, Identifiable, Sendable {
     /// The modes the carousel lays out, in reading order. `photo` is deliberately
     /// omitted so it can never appear in the layout, a hit target or VoiceOver.
     static let visibleModes: [CameraMode] = [.develop, .video]
+
+    static func visibleModes(photoAvailable: Bool) -> [CameraMode] {
+        photoAvailable ? [.develop, .video, .photo] : visibleModes
+    }
 }
 
 /// Selection state for the mode carousel, kept free of SwiftUI so the rules can
 /// be exercised without rendering.
-///
-/// The parent owns the instance and feeds the resulting `selected` back into the
-/// view. The model never allows a move that would strand the UI on a hidden or
-/// unavailable mode: the hidden photo mode, a disabled capture session and a
-/// repeat selection are all rejected without changing state.
 struct CameraModeSelection: Equatable, Sendable {
     private(set) var selected: CameraMode
-
-    /// Opens on Video, the mode the shutter row starts in.
-    init(selected: CameraMode = .video) {
-        self.selected = selected
-    }
-
-    /// Moves to `mode` when it is a visible, enabled, different mode.
-    ///
-    /// Returns `true` only when the selection actually changed, so a caller can
-    /// gate haptics or animations on a real transition.
+    init(selected: CameraMode = .video) { self.selected = selected }
     @discardableResult
-    mutating func select(_ mode: CameraMode, enabled: Bool) -> Bool {
-        guard enabled else { return false }
-        guard CameraMode.visibleModes.contains(mode) else { return false }
-        guard mode != selected else { return false }
+    mutating func select(_ mode: CameraMode, enabled: Bool, photoAvailable: Bool = false) -> Bool {
+        guard enabled, CameraMode.visibleModes(photoAvailable: photoAvailable).contains(mode), mode != selected else { return false }
         selected = mode
         return true
     }

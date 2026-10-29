@@ -1,8 +1,31 @@
 # Photo mode implementation plan
 
-Status: Implementation begins with P0/P1 capture/color feasibility. These technical gates must pass before broad UI/queue work; continuing the accepted scope does not require a second implementation approval. Publication and release remain separately approved. Device feasibility has not passed.
+Status: P0a physical Bayer capture/Video restoration passed. Independent exposure (P0b) and real RAW color evidence (P1) remain unfinished. The owner authorized exposing an experimental Photo mode in the Dev build while these proceed; see `development-exposure-increment.md`. Production visibility, broad queue/delivery work, publication and release remain separately gated.
 
 Read with `spec-photo-mode.md`, `capture-and-processing.md` and `delivery-and-validation.md`. All named new types/files below are proposed. No broad parallel implementation starts before P0 and P1 pass.
+
+## Current priority: shooting-interface parity
+
+Owner correction: working capture is not acceptance of Photo mode. Photo must feel like the existing Video camera, with a still shutter and an independent shutter-duration control. Preserve the working capture/development path while correcting the interface; do not expand processing or queue work during this pass.
+
+### Required interface contract
+
+- Reuse Video's applicable controls, placement, styling, gestures, discovery and feedback: ISO/EV, focus, aperture, lens/zoom, stock/gauge, Settings and mode carousel. Recording-only tally/timer, frame-rate rescue and recording stabilization remain inapplicable in Photo.
+- Preserve a stable camera/preview identity and framed width during mode changes. The native still aspect is intentional; transitional wrong-aspect frames, unrelated layout jumps, flashes and dead controls are not.
+- Shutter duration uses the existing ruler interaction vocabulary, photographic detents and independent Float/Lock. It must not behave like a separate experimental slider panel.
+- Requested values, selected detents and lock state update synchronously with accepted touch intent. Hardware application remains serialized, coalesced and duration-paced. A delayed sensor acknowledgment must not pull an active gesture backwards or block its visual feedback. Keep measured exposure distinct from selected intent.
+- Mode changes preserve the prior working selection until commit, provide immediate input acknowledgment, and recover explicitly on failure. Do not mask unbounded stalls with a frozen frame.
+- Keep debug/calibration explanations out of the normal shooting chrome; retain truthful diagnostics in their existing diagnostic surface.
+
+### Ordered work and acceptance
+
+1. Audit each applicable Video control against Photo and trace touch → selected intent → hardware acknowledgment. Reproduce shutter snapback/lag before fixing it.
+2. Separate requested presentation state from measured exposure and reuse the established ruler/Float-Lock treatment. Exercise rapid drags, reversals, lock toggles and delayed/out-of-order acknowledgments; assert the latest intent stays visible and hardware work stays bounded.
+3. Correct shared control layout/discovery and mode-transition identity/geometry without replacing the capture pipeline. Inspect the composed camera in portrait and both landscape holds.
+4. Exercise Photo↔Video repeatedly through the normal UI, all applicable controls, long-shutter changes, capture/save and Video recording afterward. Record transition motion and control response, not only screenshots or a successful callback.
+5. Run full verification and a signed device build. Owner hands-on acceptance remains required for feel; passing capture or source-contract tests does not close this gate.
+
+Color calibration, durable recovery and the remaining production gates stay open separately. The immediate work is the camera experience, not broadening that scope.
 
 ## 1. Decisions and corrected color contract
 
@@ -198,7 +221,7 @@ protocol PhotoRendering: Sendable {
 2. **P0b — Exposure:** Extend the same capture seam with the four ISO/shutter combinations. Exercise lock transitions, compensation, supported endpoints, lens revalidation and long exposures; compare requests with returned DNG exposure values. Preserve existing ISO UI behavior. Test limits and feedback without silently changing a locked variable or reopening AE.
 3. **P1 — Color:** Use retained real DNGs for the explicitly color-managed decode and RAW adapter. Calibrate normalization from chart/exposure evidence. Synthetic CPU/GPU parity alone cannot close the real-RAW gate.
 
-Keep P hidden throughout. Do not start broad renderer, queue, delivery or Photo UI work while these gates remain incomplete.
+Keep P hidden in production/TestFlight. The authorized Dev-only experiment may expose working capture/exposure controls with truthful local-DNG and uncalibrated-color status before P0b/P1 finish. Do not present it as completed JPEG/Photos delivery or broaden into queue/editor work.
 
 ## 5. Verification specifics and evidence already obtained
 
@@ -211,7 +234,7 @@ Documentation-time calculations were executed with a Python reference, not infer
   - 5207: `f483e2fb151b3b4699b8d5fd1c36df9f583952941d48c0bc99dd311e574d32b5`
   - 5219: `d2320ea308730f3aa5186d66691b91d4a94595806970cbb16059c2d067d4924a`
 
-**Still unverified:** real Bayer negotiation at this budget; actual decoder/WB/exposure normalization; GPU parity of the new photo adapter; memory, latency, image quality, JPEG/HEIF grain comparison and Photos delivery. Existing cube math does not prove the new RAW path is correct.
+**Verified P0a:** real native4032×3024 Bayer DNG, full CIRAW decode, confirmed Video graph/WB restoration and subsequent4K24 HEVC Main10 with independently decoded audio/video. **Still unverified:** independent exposure modes, actual decoder/WB/exposure normalization, GPU parity of the new photo adapter, sustained memory/latency, final image quality, JPEG/HEIF grain comparison and Photos delivery. Existing cube math does not prove the new RAW path is correct.
 
 Do not set all rendered-grain tests to exact JPEG byte equality. Compare precodec float checkpoints numerically, inspect decoded JPEG at suitable tolerances, and separately judge encoded grain/halation in Photos. A UI source-string assertion is neither a color test nor hardware proof.
 

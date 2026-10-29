@@ -85,6 +85,26 @@ enum GrainModel {
     /// coarse gauge is not silently clipped back to a small footprint.
     static let footprintCeiling: Float = 16.0
 
+    /// Still presence boost for Photo delivery. Video grain is re-randomised
+    /// every frame, so the eye integrates ~2-3 frames and reads the same
+    /// per-pixel amplitude as ~1.6x; a 3024-px-wide still also loses ~1.27x more
+    /// than a 3840-px frame when both are shown at the same size. Stills apply
+    /// `baseAmount · gaugeAmplitude · stillPresenceGain`; the kernel's headroom
+    /// budget still bounds the excursion in the deepest shadows and highlights.
+    static let stillPresenceGain: Float = 2.0
+
+    /// Dye-cloud chroma strength as a fraction of the shared luminance grain.
+    ///
+    /// Film grain is overwhelmingly a *density* fluctuation: the three emulsion
+    /// layers move together and the result reads as monochrome. The colour layers
+    /// add only a small decorrelated component. Video can carry the full amount
+    /// because the eye integrates several frames of a re-randomised field, but a
+    /// single still inspected at 1:1 shows the anti-correlated red/blue term as
+    /// coloured specks — red, green and blue pixels — which no real emulsion
+    /// produces. Stills therefore use `stillChromaAmount`.
+    static let videoChromaAmount: Float = 0.12
+    static let stillChromaAmount: Float = 0.02
+
     /// Effective footprint: stock size x gauge size, clamped off the sampling
     /// floor. At 75mm on a 1.3 stock this is 1.3 x 0.55 = 0.715 -> floored to
     /// 0.95. The remaining graininess at 75mm is removed by the 0.15 amplitude

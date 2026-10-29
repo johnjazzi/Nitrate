@@ -14,6 +14,17 @@ struct ContentView: View {
     @State private var showStockSheet = false
     @State private var showQueueSheet = false
     @State private var cameraMode = CameraModeSelection()
+    /// A mode refusal the row's own gate cannot express (an unavailable shared idle
+    /// camera, a failed profile switch). Shown with the row and cleared shortly after.
+    @State private var modeRefusalNotice: String?
+    @State private var modeRefusalTask: Task<Void, Never>?
+#if DEBUG
+    private var photoModeAvailable: Bool {
+        DevelopmentPhotoFeature.isAvailable(isDebugBuild: true, bundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+    }
+#else
+    private var photoModeAvailable: Bool { false }
+#endif
     @State private var developModel: DevelopVideoModel
     @State private var showSettings = false
     @State private var showDaylightRescue = false
@@ -160,16 +171,28 @@ struct ContentView: View {
                     controls: bottom, canvasWidth: geometry.size.width,
                     horizontalInset: controlBarHorizontalInset(in: geometry)) {
                     CameraModeCarousel(selected: cameraMode.selected, enabled: canChangeCameraMode,
-                                       rotationDegrees: statusRotationDegrees, onSelect: selectCameraMode)
+                                       rotationDegrees: statusRotationDegrees, onSelect: selectCameraMode,
+                                       photoAvailable: photoModeAvailable)
                         .frame(width: slot.width, height: slot.height)
                         .position(x: slot.midX, y: slot.midY)
+                        // A dimmed row that cannot say why is the bug, not the
+                        // refusal: the letters are disabled, so they can never
+                        // explain themselves on a tap. The reason is shown while
+                        // the row is blocked, and any refusal the row cannot gate
+                        // shows itself here for a moment.
+                        .overlay(alignment: .top) {
+                            if let reason = cameraViewModel.shootingModeBlockedReason ?? modeRefusalNotice {
+                                modeStatusCapsule(reason)
+                                    .offset(y: -30)
+                            }
+                        }
                 }
 
                 if let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
                     RecordingStatusOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
                                            rotationDegrees: statusRotationDegrees,
-                                           isInteractive: canManageDaylightMode) {
-                        recordingStatus
+                                           isInteractive: canManageDaylightMode && !isPhotoMode) {
+                        if isPhotoMode { EmptyView() } else { recordingStatus }
                     }
                 }
 
@@ -178,7 +201,7 @@ struct ContentView: View {
                 // the same status face in its idle-armed form: no dot, no timer,
                 // and a non-sizing sibling so it reserves no toolbar slot, never
                 // hides the lens key and cannot resize the preview.
-                if !isDevelopMode, !shouldOfferDaylightRescue, recordPresentation == .idle,
+                if !isDevelopMode, !isPhotoMode, !shouldOfferDaylightRescue, recordPresentation == .idle,
                    cameraViewModel.sessionFrameRate == .daylight60,
                    let top = controlBounds["top"], let bottom = controlBounds["bottom"],
                    let badge = DaylightIdleBadgeGeometry.rect(
@@ -194,6 +217,22 @@ struct ContentView: View {
                 // preview while they appear and disappear. Drawn before the
                 // manual panel, so an open panel sits above the focus ruler.
                 if let bounds = frameRulerBounds(in: geometry) {
+                    if isPhotoMode, showsPhotoShutterRail,
+                       let exposure = cameraViewModel.photoExposureSnapshot {
+                        let rect = FrameRulerPlacementGeometry.photoShutterRect(
+                            inFrame: bounds, orientationDegrees: statusRotationDegrees,
+                            excluding: controlBounds["diagnostic"])
+                        if !rect.isNull {
+                            PhotoShutterControl(snapshot: exposure,
+                                setDuration: cameraViewModel.setPhotoShutterDuration,
+                                setLocked: cameraViewModel.setPhotoShutterLocked, width: rect.width)
+                                .id(cameraViewModel.activeLens)
+                                .disabled(cameraViewModel.isPhotoCaptureBusy || cameraViewModel.isChangingFrameRate)
+                                .frame(width: rect.width, height: rect.height)
+                                .clipped()
+                                .position(x: rect.midX, y: rect.midY)
+                        }
+                    }
                     if legacyManualControlsEnabled {
                         // Legacy fallback (debug flag on): the committed
                         // in-frame rulers, each shown by its own Settings
@@ -264,7 +303,7 @@ struct ContentView: View {
 
                 // A canvas sibling, not a child painted beyond the shooting bar:
                 // visibility never resizes the preview and the whole button is hittable.
-                if !isDevelopMode, shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
+                if !isDevelopMode, !isPhotoMode, shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
                    let rect = DaylightExposureRescueGeometry.buttonRect(
                     above: exposure, in: geometry.size, rotationDegrees: statusRotationDegrees,
                     excluding: daylightRescueExclusion(in: geometry)) {
@@ -356,17 +395,26 @@ struct ContentView: View {
             flashRecordingFailure()
         }
         .onAppear {
+            cameraViewModel.onPhotoCaptured = { source, stock, gauge, seed, crop in
+                renderQueueViewModel.enqueuePhoto(sourceURL: source, stockId: stock,
+                    iso: cameraViewModel.photoExposureSnapshot?.iso ?? cameraViewModel.liveISO,
+                    gauge: gauge, cropZoom: crop, seed: seed)
+            }
             availableLenses = cameraViewModel.session.availableLenses
             if !availableLenses.contains(selectedLens) {
                 selectedLens = availableLenses.first ?? .wide
             }
-            if let selectedStock { applyStockWhiteBalance(selectedStock) }
+            if let selectedStock {
+                cameraViewModel.developmentPhotoStockID = selectedStock.stockId
+                applyStockWhiteBalance(selectedStock)
+            }
             stockSelectorHint.update(stockHintInputs)
         }
         .onChange(of: selectedStock) { _, newStock in
             // A new reference moves what the estimate is compared with.
             stockSelectorHint.resetMismatch()
             if let stock = newStock {
+                cameraViewModel.developmentPhotoStockID = stock.stockId
                 applyStockWhiteBalance(stock)
             }
         }
@@ -542,12 +590,28 @@ struct ContentView: View {
     /// is debug-only: a Release build resolves it false even if a device still
     /// carries the preference from a debug install.
     private var legacyManualControlsEnabled: Bool {
+        // Photo uses the current manual surface so its Shutter Control toggle
+        // remains reachable even when the legacy Video fallback was selected.
+        if isPhotoMode { return false }
         #if DEBUG
-        CameraManualControlsFeatureFlags.resolvedLegacyManualControls(
+        return CameraManualControlsFeatureFlags.resolvedLegacyManualControls(
             stored: legacyManualControlsStored, isDebugBuild: true)
         #else
-        false
+        return false
         #endif
+    }
+
+    /// Whether the Photo shutter rail is mounted.
+    ///
+    /// The rail is not only a manual-panel control: pinning the ISO pins the
+    /// shutter with it (the film standard, 1/48s), and the shutter is then the
+    /// operator's only exposure control — so it sticks on its own even when the
+    /// manual panel is collapsed. The other manual controls keep their own
+    /// toggles.
+    private var showsPhotoShutterRail: Bool {
+        guard isPhotoMode else { return false }
+        if showInlineManualControls { return true }
+        return cameraViewModel.photoExposureSnapshot?.isoLocked == true
     }
 
     /// The toolbar's manual key reads as active while either presentation is
@@ -655,7 +719,8 @@ struct ContentView: View {
                         setAperture: { cameraViewModel.setLensAperture($0) },
                         stabilization: cameraViewModel.recordingStabilization,
                         canChangeStabilization: cameraViewModel.canSetRecordingStabilization,
-                        selectStabilization: { cameraViewModel.setRecordingStabilization($0) })
+                        selectStabilization: { cameraViewModel.setRecordingStabilization($0) },
+                        isPhotoMode: isPhotoMode)
                         .frame(width: 44, height: 140)
                         .background(controlMeasurement("inlineManual"))
                 }
@@ -731,7 +796,7 @@ struct ContentView: View {
     /// transitions, unavailable snapshots and covering sheets still block them;
     /// pinch zoom retains the stricter captureBusy gate.
     private var canUseZoomControls: Bool {
-        scenePhase == .active && !cameraViewModel.isStartingRecording
+        scenePhase == .active && !cameraViewModel.isPhotoCaptureBusy && !cameraViewModel.isStartingRecording
             && !cameraViewModel.isStoppingRecording && !cameraViewModel.isChangingFrameRate
             && !cameraViewModel.isSwitchingCameraLens && cameraViewModel.zoomSnapshot != nil
             && !showSettings && !showQueueSheet && !showStockSheet && !showDaylightRescue
@@ -755,13 +820,16 @@ struct ContentView: View {
         // One structural identity in both modes: no camera lifecycle transition.
         CameraView(viewModel: cameraViewModel,
                    videoGravity: .resizeAspectFill,
-                   selectedStockLUTName: selectedStock?.lutName, previewEnabled: !isDevelopMode)
+                   selectedStockLUTName: isPhotoMode ? nil : selectedStock?.lutName,
+                   previewEnabled: !isDevelopMode,
+                   developmentPhotoPreview: isPhotoMode)
             .frame(width: rect.width, height: rect.height)
             .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
             .overlay {
                 if showFramedPreview {
                     RoundedRectangle(cornerRadius: 16)
                         .strokeBorder(.white.opacity(0.25), lineWidth: 2)
+                        .allowsHitTesting(false)
                 }
             }
             .overlay(alignment: .topTrailing) {
@@ -770,6 +838,7 @@ struct ContentView: View {
                         .padding(12)
                 }
             }
+            .contentShape(Rectangle())
             .modifier(FocalPinchZoom(camera: cameraViewModel, isActive: $pinchIsActive, millimeters: $pinchFocalLength))
             .position(x: rect.midX, y: rect.midY)
     }
@@ -813,6 +882,7 @@ struct ContentView: View {
     @ViewBuilder private func debugControlsOverlay(in geometry: GeometryProxy) -> some View {
         if let top = controlBounds["top"] {
             VStack(alignment: .leading, spacing: 4) { diagnosticButtons }
+                .background(controlMeasurement("diagnostic"))
                 .padding(.leading, 16)
                 .padding(.top, top.maxY)
                 .frame(width: geometry.size.width, height: geometry.size.height,
@@ -953,6 +1023,7 @@ struct ContentView: View {
             selectedLens: selectedLens,
             onSelectLens: selectLens
         )
+        .disabled(cameraViewModel.isPhotoCaptureBusy || cameraViewModel.isSwitchingCameraLens || cameraViewModel.isChangingFrameRate)
     }
 
     private func selectLens(_ lens: CameraLens) {
@@ -1042,16 +1113,41 @@ struct ContentView: View {
                 guard let stock = selectedStock else { return }
                 let gauge = library.lastGauge(for: stock.stockId) ?? .neutral
                 _ = developModel.render(stock: stock, iso: currentISO, gauge: gauge, queue: renderQueueViewModel)
-            }
+            },
+            isPhotoMode: isPhotoMode,
+            photoStatus: photoDeliveryStatus,
+            onPhotoCapture: cameraViewModel.takeDevelopmentPhoto,
+            photoExposure: cameraViewModel.photoExposureSnapshot,
+            onPhotoISO: { cameraViewModel.setManualISO($0) },
+            onPhotoISOLock: { cameraViewModel.toggleISOLock(currentISO: cameraViewModel.liveISO) },
+            onPhotoDuration: cameraViewModel.setPhotoShutterDuration,
+            onPhotoShutterLock: cameraViewModel.togglePhotoShutterLock
         )
     }
 
     private var canChangeCameraMode: Bool {
-        scenePhase == .active && !captureBusy && !cameraViewModel.isChangingFrameRate
+        scenePhase == .active && cameraViewModel.canChangeShootingMode && !captureBusy && !cameraViewModel.isPhotoCaptureBusy && !cameraViewModel.isChangingFrameRate
             && !cameraViewModel.isSwitchingCameraLens && !showStockSheet && !showQueueSheet
             && !showSettings && !showDaylightRescue
     }
 
+    private var photoDeliveryStatus: String? {
+        if cameraViewModel.isPhotoCaptureBusy { return cameraViewModel.photoCaptureStatus }
+        guard let id = cameraViewModel.photoRenderJobID,
+              let job = renderQueueViewModel.jobs.first(where: { $0.id == id }) else {
+            return cameraViewModel.photoCaptureStatus
+        }
+        switch job.status {
+        case .pending: return "Photo queued for development"
+        case .processing:
+            return renderQueueViewModel.progress(for: id)?.phase == .saving ? "Saving photo to Photos…" : "Developing photo…"
+        case .completed: return job.outputSavedToPhotos == true ? "Photo saved to Photos" : "Photo developed"
+        case .failed: return "Original kept locally · photo development failed"
+        case .awaitingStock: return "Choose a photo stock"
+        }
+    }
+
+    private var isPhotoMode: Bool { cameraMode.selected == .photo }
     private var isDevelopMode: Bool { cameraMode.selected == .develop }
 
     private var developIsBusy: Bool {
@@ -1060,9 +1156,44 @@ struct ContentView: View {
         return job.status == .pending || job.status == .processing
     }
 
+    /// Say why a mode change was refused, where the operator is looking.
+    private func showModeRefusal(_ text: String) {
+        modeRefusalNotice = text
+        modeRefusalTask?.cancel()
+        modeRefusalTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            if modeRefusalNotice == text { modeRefusalNotice = nil }
+        }
+    }
+
     private func selectCameraMode(_ mode: CameraMode) {
         guard canChangeCameraMode else { return }
-        guard cameraMode.select(mode, enabled: true) else { return }
+        guard CameraMode.visibleModes(photoAvailable: photoModeAvailable).contains(mode),
+              mode != cameraMode.selected else { return }
+        if mode == .photo {
+            cameraViewModel.setDevelopmentPhotoMode(true) { result in
+                guard case .success = result else {
+                    showModeRefusal("Photo needs the shared camera, which is not ready")
+                    return
+                }
+                _ = cameraMode.select(.photo, enabled: true, photoAvailable: photoModeAvailable)
+                developModel.leaveDevelop()
+            }
+            return
+        }
+        if cameraMode.selected == .photo {
+            cameraViewModel.setDevelopmentPhotoMode(false) { result in
+                guard case .success = result else {
+                    showModeRefusal("The camera is still finishing the photo mode change")
+                    return
+                }
+                _ = cameraMode.select(mode, enabled: true, photoAvailable: photoModeAvailable)
+                if mode == .video { developModel.leaveDevelop() }
+            }
+            return
+        }
+        guard cameraMode.select(mode, enabled: true, photoAvailable: photoModeAvailable) else { return }
         if mode == .video {
             developModel.leaveDevelop()
         } else {
@@ -1106,11 +1237,48 @@ struct ContentView: View {
                         .padding(.bottom, 140)
                 }
             }
+            // Photo state belongs in the mode, not on the shutter button: the
+            // button carries no text any more, so a refusal, a wait or a delayed
+            // delivery has to be readable somewhere the operator is already
+            // looking. A refusal outranks the delivery status while it lasts.
+            if isPhotoMode, let status = cameraViewModel.photoShutterNotice ?? photoDeliveryStatus {
+                VStack {
+                    Spacer()
+                    photoStatusStrip(status)
+                        .padding(.bottom, 140)
+                }
+            }
             if showsRecordingFailure {
                 RecordingFailureOverlay(detail: failureDetail)
                     .transition(.opacity)
             }
         }
+    }
+
+    private func photoStatusStrip(_ status: String) -> some View {
+        statusCapsule(status, identifier: "photo.statusStrip")
+    }
+
+    /// The mode row's own status face, the same capsule the photo strip uses.
+    private func modeStatusCapsule(_ status: String) -> some View {
+        statusCapsule(status, identifier: "camera.modeStatus")
+    }
+
+    private func statusCapsule(_ status: String, identifier: String) -> some View {
+        Text(status)
+            .foregroundStyle(.white)
+            .font(NitrateTypography.font(.caption))
+            .cameraUpright()
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.black.opacity(0.72))
+            .clipShape(Capsule())
+            .accessibilityIdentifier(identifier)
+            .accessibilityLabel(status)
+            .padding(.horizontal, 16)
+            .allowsHitTesting(false)
     }
 
     private func cameraErrorBanner(_ message: String) -> some View {

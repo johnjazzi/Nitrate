@@ -10,6 +10,7 @@ struct CameraMoodLayoutTests {
     @Test func framedPreviewFillsTwoByThreeWithoutChangingCaptureIdentity() throws {
         let screen = try source("App/ContentView.swift")
         #expect(screen.contains("videoGravity: .resizeAspectFill"))
+        #expect(!screen.contains("videoGravity: isPhotoMode ?"))
         #expect(screen.components(separatedBy: "CameraView(viewModel:").count == 2)
         #expect(screen.contains("RecordingTallyLight(isRecording:"))
         #expect(screen.contains(".overlay(alignment: .topTrailing)"))

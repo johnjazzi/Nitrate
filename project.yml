@@ -92,6 +92,14 @@ schemes:
       targets:
         - RenderCLITests
 
+  CameraInteraction:
+    build:
+      targets:
+        Nitrate: all
+        CameraInteractionUITests: all
+    test:
+      targets:
+        - CameraInteractionUITests
   CameraDesign:
     build:
       targets:
@@ -101,6 +109,16 @@ schemes:
         - CameraDesignTests
 
 targets:
+  CameraInteractionUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: Nitrate
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app.dev.interaction-tests
+      TEST_TARGET_NAME: Nitrate
   CameraDesignTests:
     type: bundle.unit-test
     platform: macOS
@@ -270,6 +288,18 @@ targets:
       # testable on macOS (the AVFoundation call site stays in the iOS session).
       - path: App/Modules/CameraCapture/StockSelectorHintPolicy.swift
       - path: App/Modules/CameraCapture/PhotoCapturePolicy.swift
+      - path: App/Modules/CameraCapture/PhotoExposureSnapshot.swift
+      - path: App/Modules/CameraCapture/PhotoExposureIntentPresentation.swift
+      - path: App/Modules/CameraCapture/CameraShootingModeGate.swift
+      - path: App/Modules/CameraCapture/PhotoExposurePolicy.swift
+      - path: App/Modules/CameraCapture/PhotoExposureCadence.swift
+      - path: App/Modules/CameraCapture/PhotoShutterFloatPolicy.swift
+      - path: App/Modules/CameraCapture/CameraVideoISORangePolicy.swift
+      - path: App/Modules/CameraCapture/DevelopmentPhotoFeature.swift
+      - path: App/Modules/CameraCapture/PhotoShutterPresentation.swift
+      - path: App/Modules/ProcessingPipeline/PhotoColorMath.swift
+      - path: App/Modules/ProcessingPipeline/PhotoZoomGeometry.swift
+      - path: App/Modules/ProcessingPipeline/RAWToLog2Stage.swift
       - path: Resources/Shaders/
         type: metal
       - path: Resources/Grain/grain3d.raw
@@ -330,6 +360,21 @@ targets:
       - path: App/Modules/CameraCapture/CameraFrameRatePolicy.swift
       - path: App/Modules/CameraCapture/StockSelectorHintPolicy.swift
       - path: App/Modules/CameraCapture/PhotoCapturePolicy.swift
+      - path: App/Modules/CameraCapture/PhotoExposureSnapshot.swift
+      - path: App/Modules/CameraCapture/PhotoExposureIntentPresentation.swift
+      - path: App/Modules/CameraCapture/CameraShootingModeGate.swift
+      - path: App/Modules/CameraCapture/PhotoExposurePolicy.swift
+      - path: App/Modules/CameraCapture/PhotoExposureCadence.swift
+      - path: App/Modules/CameraCapture/PhotoShutterFloatPolicy.swift
+      - path: App/Modules/CameraCapture/CameraVideoISORangePolicy.swift
+      - path: App/Modules/CameraCapture/DevelopmentPhotoFeature.swift
+      - path: App/Modules/CameraCapture/PhotoShutterPresentation.swift
+      - path: App/Modules/CameraCapture/PhotoShutterControl.swift
+      - path: App/Modules/CameraCapture/PhotoShutterFace.swift
+      - path: App/Modules/CameraCapture/RulerSlider.swift
+      - path: App/Modules/ProcessingPipeline/PhotoColorMath.swift
+      - path: App/Modules/ProcessingPipeline/PhotoZoomGeometry.swift
+      - path: App/Modules/ProcessingPipeline/RAWToLog2Stage.swift
       - path: App/Modules/CameraCapture/StockSelectorHintModel.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
       - path: App/Modules/CameraCapture/FramedPreviewLayout.swift

@@ -22,6 +22,18 @@ enum RenderReceiptService {
         receipt.appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         receipt.appBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
         receipt.fileSizeBytes = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map(Int64.init)
+        if let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any] {
+            receipt.pixelWidth = properties[kCGImagePropertyPixelWidth] as? Int
+            receipt.pixelHeight = properties[kCGImagePropertyPixelHeight] as? Int
+            receipt.codec = CGImageSourceGetType(imageSource) as String?
+            if includeThumbnail, let thumbnail = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 320
+            ] as CFDictionary) { receipt.thumbnailJPEG = jpeg(thumbnail) }
+            return receipt
+        }
         let asset = AVURLAsset(url: url)
         if let duration = try? await asset.load(.duration), duration.seconds.isFinite, duration.seconds >= 0 {
             receipt.durationSeconds = duration.seconds

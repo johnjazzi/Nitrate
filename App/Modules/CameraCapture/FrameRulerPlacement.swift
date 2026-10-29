@@ -89,6 +89,28 @@ enum FrameRulerPlacementGeometry {
         }
     }
 
+    /// A horizontal canvas-top overlay, independent of preview sizing. Leave
+    /// the existing side-rail touch slots and diagnostic buttons unobstructed.
+    static func photoShutterRect(inFrame frame: CGRect, orientationDegrees: Double,
+                                 excluding diagnostic: CGRect? = nil) -> CGRect {
+        guard frame.width.isFinite, frame.height.isFinite,
+              frame.minX.isFinite, frame.minY.isFinite else { return .null }
+        let sideways = abs(normalized(orientationDegrees)) == 90
+        let sideInset: CGFloat = sideways ? 4 : 48
+        let topInset: CGFloat = sideways ? 48 : 4
+        var left = frame.minX + sideInset
+        let right = frame.maxX - sideInset
+        let top = frame.minY + topInset
+        if let diagnostic, diagnostic.maxY > top, diagnostic.minY < top + 56 {
+            left = max(left, diagnostic.maxX + 4)
+        }
+        let width = min(360, right - left)
+        guard width >= 164, frame.height >= topInset + 60 else { return .null }
+        let result = CGRect(x: left + (right - left - width) / 2, y: top,
+                            width: width, height: 56)
+        return frame.contains(result) ? result : .null
+    }
+
     /// Reduce any angle to its equivalent in (-180, 180], leaving non-finite
     /// input at 0 so a bad sensor read cannot place a ruler off-frame.
     static func normalized(_ degrees: Double) -> Double {

@@ -130,4 +130,23 @@ struct DaylightCapturePolicyLedgerTests {
         #expect(ledger.policy(for: url("a")) == nil)
         #expect(ledger.policies.isEmpty)
     }
+
+    @Test func leavingPhotoHandsTheIdleGraphTheFrameRateShutter() {
+        let at24 = VideoExposureContract.idle(frameRate: .standard24, isManualExposure: false,
+                                              manualISO: 400, bias: -1.2)
+        #expect(abs(at24.durationSeconds - 1.0 / 48.0) < 1e-9)
+        #expect(at24.lockedISO == nil, "Video meters ISO unless the operator holds one")
+        #expect(at24.exposureBias == -1.2)
+
+        let at60 = VideoExposureContract.idle(frameRate: .daylight60, isManualExposure: false,
+                                              manualISO: 400, bias: 0)
+        #expect(abs(at60.durationSeconds - 1.0 / 120.0) < 1e-9)
+    }
+
+    @Test func aHeldManualISOComesBackWithTheContract() {
+        let manual = VideoExposureContract.idle(frameRate: .standard24, isManualExposure: true,
+                                                manualISO: 800, bias: 0)
+        #expect(manual.lockedISO == 800)
+        #expect(abs(manual.durationSeconds - 1.0 / 48.0) < 1e-9)
+    }
 }

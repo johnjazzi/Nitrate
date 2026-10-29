@@ -14,6 +14,12 @@ struct GrainUniforms {
     float grainSize;     // effective grain footprint (stock size × gauge size)
     float edgeBoostMultiplier;
     float gaugeAmplitude; // print gauge amplitude multiplier (m00581)
+    // Strength of the anti-correlated red/blue dye-cloud component relative to
+    // the shared luminance grain. Real emulsion grain is overwhelmingly a
+    // density (luminance) fluctuation; the colour layers add only a little
+    // decorrelated grain. Video can carry more of it because the eye integrates
+    // several frames, a single still viewed at 1:1 cannot.
+    float chromaAmount;
 };
 
 /// Pass 2: 3D noise volume grain with temporal coherence (AD-9).
@@ -109,7 +115,9 @@ kernel void pass2_grain(
     float2 chromaCoord = fract(pixelCoord * 1.618033989f + frameOffset.yx + float2(0.317f, 0.113f));
     float chroma = (grainVol.sample(grain_sampler, float3(chromaCoord, zSlice)).r - 0.5f) * 2.0f;
     float shared = fine * 0.74f + clump * 0.26f;
-    float3 grain = shared + float3(-0.12f, 0.015f, 0.12f) * chroma;
+    float chromaAmount = isfinite(uniforms.chromaAmount) && uniforms.chromaAmount >= 0.0f
+        ? uniforms.chromaAmount : 0.0f;
+    float3 grain = shared + float3(-1.0f, 0.125f, 1.0f) * (chroma * chromaAmount);
 
     float luminance = dot(base, float3(0.2126f, 0.7152f, 0.0722f));
     float latitude = smoothstep(0.015f, 0.13f, luminance)
@@ -123,7 +131,7 @@ kernel void pass2_grain(
     // bounded by 0.23; shared, chroma and dither terms are included below.
     // Reserve two delivery-code steps to keep positive values out of 8-bit black.
     float3 headroom = max(float3(0.0f), min(base, 1.0f - base) - (2.0f / 255.0f));
-    float maximumExcursion = latitude * 0.23f * (amount * 1.12f + 0.004f);
+    float maximumExcursion = latitude * 0.23f * (amount * (1.0f + chromaAmount) + 0.004f);
     float3 budgetScale = maximumExcursion > 0.0f
         ? min(float3(1.0f), headroom / maximumExcursion) : float3(1.0f);
     float3 result = clamp(base + excursion * budgetScale, 0.0f, 1.0f);

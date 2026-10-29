@@ -19,6 +19,21 @@ import Foundation
 
     static func main() async {
         let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments.first == "--raw-exposure-probe", arguments.count == 2 {
+            do { try PhotoPipelineProbe.exposureProbe(input: URL(fileURLWithPath: arguments[1])) }
+            catch { print("RAW probe failed: \(error)"); exit(1) }
+            return
+        }
+        if arguments.first == "--photo-probe", arguments.count == 4 {
+            do {
+                try PhotoPipelineProbe.run(input: URL(fileURLWithPath: arguments[1]), stock: arguments[2],
+                    directory: URL(fileURLWithPath: arguments[3], isDirectory: true))
+            } catch {
+                print("Photo probe failed: \(error)")
+                exit(1)
+            }
+            return
+        }
         guard arguments.count >= 2 else {
             print("Usage: RenderCLI <input.mov> <stockId> [iso] [--bitrate <bps>] [--diagnostics <bundle-directory>]")
             exit(1)

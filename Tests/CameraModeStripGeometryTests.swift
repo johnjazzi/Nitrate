@@ -35,6 +35,17 @@ struct CameraModeStripGeometryTests {
         }
     }
 
+    @Test func photoControlsKeepTheExitModeStripVisible() throws {
+        let bar = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraControlBar.swift"), encoding: .utf8)
+        #expect(bar.contains("CameraShootingLayout()"))
+        #expect(bar.contains("exposureControl\n                    .frame(width: CameraControlGeometry.exposureWidth)"))
+        #expect(!bar.contains("if isPhotoMode { exposureControl.frame"),
+                "Photo must share Video's measured shooting layout, not supply a different bar height.")
+        let strip = CameraModeStripGeometry.frame(controls: CGRect(x: 0, y: 600, width: 390, height: 180),
+            canvasWidth: 390, horizontalInset: 16)
+        #expect(strip != nil)
+    }
+
     @Test func aSlotTooNarrowForBothTouchTargetsIsNotUsed() {
         let strip = CameraModeStripGeometry.frame(
             controls: CGRect(x: 0, y: 600, width: 300, height: 180), canvasWidth: 300, horizontalInset: 20)

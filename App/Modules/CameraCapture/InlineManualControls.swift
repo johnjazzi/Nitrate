@@ -74,6 +74,9 @@ struct InlineManualControls: View {
     let stabilization: CameraStabilizationSnapshot
     let canChangeStabilization: Bool
     let selectStabilization: (CameraStabilizationMode) -> Void
+    var isPhotoMode = false
+    var shutterControlEnabled = false
+    var toggleShutterControl: () -> Void = {}
 
     private var effectiveStabilization: CameraStabilizationMode {
         InlineManualControlPresentation.effectiveMode(stabilization)
@@ -88,7 +91,7 @@ struct InlineManualControls: View {
         VStack(spacing: 4) {
             focusButton
             apertureButton
-            stabilizationButton
+            if !isPhotoMode { stabilizationButton }
         }
         .frame(width: 44)
         .font(NitrateTypography.font(size: 12))
