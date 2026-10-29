@@ -106,6 +106,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
     private var microphoneInput: AVCaptureDeviceInput?
     private var microphoneAdded = false
     private var isConfigured = false
+    private var desiredSessionRunning = false
+    private var lifecycleEpoch: UInt64 = 0
+    private var controllerEpoch: UInt64 = 0
+    private var videoStartup = CameraVideoStartupOwnership()
+    private var sessionObservers: [NSObjectProtocol] = []
+    private var sessionInterrupted = false
+    private var sessionRecoveryPending = false
+    private let traceRunID = UUID().uuidString
     private var recordingActive = false
     private var recordingFinishing = false
     /// Session shutdown must not discard video still delayed by stabilization.
@@ -293,13 +301,12 @@ final class CameraSession: NSObject, @unchecked Sendable {
     private var retainedPhotoOutput: AVCapturePhotoOutput?
     private var sharedIdleEnabled = false
     private var sharedGraph = SharedCameraGraphOwnership()
-    private var sharedProfileObserver: (@MainActor @Sendable (Bool, Bool, Bool) -> Void)?
+    private var sharedProfileObserver: (@MainActor @Sendable (CameraSessionDeliveryContext, Bool, Bool, Bool) -> Void)?
+    private var sharedSnapshotObserver: (@MainActor @Sendable (CameraSessionDeliveryContext, PhotoExposureSnapshot) -> Void)?
     private var sharedPhotoIntent: DevelopmentPhotoController.Intent?
     private var sharedVideoManualISO: Float?
     private var sharedVideoAperture: Float?
     private var sharedVideoZoom: Double = 1
-    private var videoStartExposureInFlight = false
-    private var sharedVideoBiasResetInFlight = false
     private struct SharedVideoRequest: Sendable {
         let epoch: UInt64
         let url: URL
@@ -311,13 +318,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// Enabled only for the development Photo feature. Production Video retains
     /// its original Log2 lifecycle when the feature is unavailable.
     func enableSharedIdlePreview(
-        onUpdate: @escaping @MainActor @Sendable (PhotoExposureSnapshot) -> Void,
-        onProfile: @escaping @MainActor @Sendable (Bool, Bool, Bool) -> Void) {
+        onUpdate: @escaping @MainActor @Sendable (CameraSessionDeliveryContext, PhotoExposureSnapshot) -> Void,
+        onProfile: @escaping @MainActor @Sendable (CameraSessionDeliveryContext, Bool, Bool, Bool) -> Void) {
         sessionQueue.async {
             guard DevelopmentPhotoFeature.isAvailable(isDebugBuild: true,
                 bundleIdentifier: Bundle.main.bundleIdentifier ?? "") else { return }
             self.sharedIdleEnabled = true
-            self.developmentPhotoUpdate = onUpdate
+            self.sharedSnapshotObserver = onUpdate
+            self.developmentPhotoUpdate = { _ in }
             self.sharedProfileObserver = onProfile
         }
     }
@@ -333,13 +341,16 @@ final class CameraSession: NSObject, @unchecked Sendable {
     private func publishSharedProfile() {
         let video = sharedGraph.actual == .video && session.isRunning
         let busy = sharedGraph.isBusy || sharedGraph.actual != sharedGraph.desired
+            || videoStartup.active != nil || videoStartup.requiresRecovery || sessionRecoveryPending || sessionInterrupted
         let observer = sharedProfileObserver
         // A stopped graph is not a configured camera. Reporting the raw
         // `isConfigured` after a background transition left the view model
         // believing the camera was ready, so the foreground path skipped
         // configure/start and never reinstalled the idle graph.
-        let configured = isConfigured && sharedGraph.actual != .stopped
-        DispatchQueue.main.async { observer?(video, busy, configured) }
+        let configured = isConfigured && session.isRunning && sharedGraph.actual != .stopped
+        let context = CameraSessionDeliveryContext(lifecycle: lifecycleEpoch, controller: controllerEpoch)
+        traceVideoExposure("profile desired=\(sharedGraph.desired) actual=\(sharedGraph.actual) lease=\(String(describing: sharedGraph.lease)) busy=\(busy)")
+        DispatchQueue.main.async { observer?(context, video, busy, configured) }
     }
 
     /// Only this queue advances profile ownership. Cancellation/background change
@@ -348,8 +359,12 @@ final class CameraSession: NSObject, @unchecked Sendable {
     private func driveSharedGraph() {
         guard sharedIdleEnabled, !sharedGraph.isBusy, !photoLensOwnership.isPending,
               !recordingActive, !recordingStartPending, !recordingFinishing,
-              !videoStartExposureInFlight, !sharedVideoBiasResetInFlight,
+              videoStartup.active == nil, !sessionInterrupted,
               recorderCompletionBridge.activeEpoch == nil else { return }
+        if sessionRecoveryPending || videoStartup.requiresRecovery {
+            resetSharedSessionAtSafeBoundary()
+            return
+        }
         if sharedGraph.desired == .video, sharedGraph.actual == .video {
             launchSharedVideoRequest()
             return
@@ -376,6 +391,15 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
     private func finishSharedGraphTransition(_ lease: SharedCameraGraphOwnership.Lease) {
         guard sharedGraph.owns(lease) else { return }
+        // A notification can arrive while the controller is draining. Its real
+        // terminal releases this lease, but must not install a stale graph before
+        // the queued explicit recovery boundary gets its turn.
+        if sessionRecoveryPending {
+            sharedGraph.finish(lease, actual: sharedGraph.actual)
+            driveSharedGraph()
+            publishSharedProfile()
+            return
+        }
         // A cancellation during the controller drain never installs the stale
         // destination. Finish the entered lease, then reconcile the new intent.
         guard lease.target == sharedGraph.desired else {
@@ -515,12 +539,19 @@ final class CameraSession: NSObject, @unchecked Sendable {
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
-            sharedVideoBiasResetInFlight = true
+            guard let token = videoStartup.begin(.bias) else { return }
+            armVideoStartupDeadline(token)
             device.setExposureTargetBias(0) { [weak self] _ in
                 guard let session = self else { return }
                 session.sessionQueue.async { [weak session] in
                     guard let session else { return }
-                    session.sharedVideoBiasResetInFlight = false
+                    guard session.videoStartup.finish(token) else {
+                        session.traceVideoExposure("stale-bias-ack token=\(token.epoch)"); return
+                    }
+                    if session.sessionRecoveryPending {
+                        session.settleVideoStartupOnQueue()
+                        return
+                    }
                     guard session.sharedGraph.acceptsVideoRequest(request.epoch),
                           session.sharedVideoRequest?.epoch == request.epoch else {
                         session.sharedLaunchScheduledEpoch = nil
@@ -576,8 +607,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
               !sharedDeviceTransitionInFlight else { return }
         let current = controller.intentSnapshot
         do {
-            try controller.restoreIntent(.init(iso: iso, duration: current.duration,
-                                               ev: exposureBiasEV, aperture: current.aperture))
+            let idle = VideoExposureContract.idle(frameRate: frameRate, isManualExposure: iso != nil,
+                manualISO: iso ?? 0, bias: exposureBiasEV, heldDuration: current.duration)
+            try controller.restoreIntent(.init(iso: idle.lockedISO, duration: idle.durationSeconds,
+                                               ev: idle.exposureBias, aperture: current.aperture))
         } catch { reportDevelopmentPhotoError(error) }
     }
 
@@ -763,9 +796,12 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// file so one pull from the device says which side owned an exposure write:
     /// Photo's controller, or Video's own device writers.
     private func traceVideoExposure(_ event: String) {
+#if DEBUG
         guard CommandLine.arguments.contains("--trace-photo-exposure") else { return }
         let device = activeDevice
-        let line = "Video exposure trace: t=\(ProcessInfo.processInfo.systemUptime) event=\(event) "
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        let line = "Video exposure trace: run=\(traceRunID) build=\(build) lifecycle=\(lifecycleEpoch) controllerEpoch=\(controllerEpoch) t=\(ProcessInfo.processInfo.systemUptime) event=\(event) "
+            + "desired=\(sharedGraph.desired) actual=\(sharedGraph.actual) requestEpoch=\(sharedGraph.requestEpoch) graphOwner=\(String(describing: sharedGraph.lease)) lensOwner=\(photoLensOwnership.isPending) recorderOwner=\(String(describing: recorderCompletionBridge.activeEpoch)) videoOwner=\(String(describing: videoStartup.active)) recovery=\(sessionRecoveryPending) "
             + "expMode=\(device?.exposureMode.rawValue ?? -1) ISO=\(device?.iso ?? -1) "
             + "duration=\(device?.exposureDuration.seconds ?? -1) bias=\(device?.exposureTargetBias ?? -1) "
             + "deferred=\(defersVideoExposureWrites) controller=\(developmentPhotoController != nil) "
@@ -782,6 +818,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 _ = try? file.seekToEnd(); try? file.write(contentsOf: data)
             }
         }
+#endif
     }
 
     // MARK: - Setup
@@ -805,6 +842,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
     /// Shared synchronous configure body. MUST be called on `sessionQueue`.
     private func performConfigure() -> Error? {
+        installSessionObserversIfNeeded()
         // A pending reset is retried even when the session was already configured.
         applyDeferredFrameRateReset()
         guard !isConfigured else { return nil }
@@ -1846,12 +1884,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
         activeDevice?.iso ?? 0
     }
 
-    /// Metered exposure level's offset from the device's target exposure, in EV
-    /// (positive = over). This is the live meter the under/over indicator shows
-    /// and the shutter-priority stabiliser gates on; it is updated continuously
-    /// by the device, including while custom exposure is held.
+    /// Neutral-scene EV offset (raw target offset + installed hardware bias),
+    /// matching PhotoExposureSnapshot.meteringOffset in native AE and custom mode.
     var currentExposureTargetOffset: Float {
-        activeDevice?.exposureTargetOffset ?? 0
+        guard let device = activeDevice else { return 0 }
+        return device.exposureTargetOffset + device.exposureTargetBias
     }
 
     /// Whether the metered offset is readable (an active device is configured).
@@ -2888,6 +2925,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 // own queue, so it must be `@Sendable`: it re-enters sessionQueue
                 // through a fresh weak capture instead of handing the outer weak
                 // `self` (a captured var) to a nested concurrent block.
+                guard let token = self.videoStartup.begin(.exposure) else {
+                    self.failPendingStart(CameraError.captureRecoveryRequired("a video exposure owner is still pending"))
+                    return
+                }
+                self.armVideoStartupDeadline(token)
                 let completionHandler: @Sendable (CMTime) -> Void = { [weak self] syncTime in
                     let headOffset = Date().timeIntervalSince(startRequestedAt)
 #if DEBUG
@@ -2896,10 +2938,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
                     guard let session = self else { return }
                     session.sessionQueue.async { [weak session] in
                         guard let session else { return }
-#if DEBUG
-                        session.videoStartExposureInFlight = false
-                        defer { session.driveSharedGraph() }
-#endif
+                        guard session.videoStartup.finish(token) else {
+                            session.traceStartupOwner("stale-exposure-ack token=\(token.epoch)"); return
+                        }
+                        defer { session.settleVideoStartupOnQueue() }
                         guard session.recordingGeneration == generation,
                               session.recordingStartPending else { return }
                         // The custom-exposure completion is the last writer of the
@@ -2928,9 +2970,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
                                                            captureRotationAngle: captureRotationAngle)
                     }
                 }
-#if DEBUG
-                self.videoStartExposureInFlight = true
-#endif
                 if #available(iOS 27.0, *), let heldAperture = self.heldAperture(on: device) {
                     let parameters = CameraAperturePolicy.ExposureParameters(
                         aperture: heldAperture, duration: shutter, iso: iso)
@@ -2970,9 +3009,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
                     }
                 }
             } catch {
-#if DEBUG
-                self.videoStartExposureInFlight = false
-#endif
+                // A throw after issuing the hardware setter is not an ACK.
+                // Its token/deadline remains live until ACK or explicit recovery.
                 self.recordingStartPending = false
                 self.pendingStartCompletion = nil
                 self.recordingAperturePin = nil
@@ -3103,6 +3141,13 @@ final class CameraSession: NSObject, @unchecked Sendable {
 #if DEBUG
         returnToSharedIdleIfNeeded()
 #endif
+        if sessionRecoveryPending {
+#if DEBUG
+            if !sharedIdleEnabled { resetVideoSessionAtSafeBoundary() }
+#else
+            resetVideoSessionAtSafeBoundary()
+#endif
+        }
         let handler = onRecordingFinished
 #if DEBUG
         if let smokeURL = debugSmokeURL {
@@ -3294,6 +3339,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             }
             print("Debug frame: output attached, awaiting frame")
             let request = CameraDebugFrameRequest()
+            guard let sourceColorSpace = self.activeDevice?.activeColorSpace else { completion(nil); return }
             if let device = self.activeDevice, self.rotationCoordinator?.device !== device {
                 self.configureCaptureRotation(for: device)
             }
@@ -3312,7 +3358,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
                         completion(nil)
                         return
                     }
-                    let converted = DebugFrameConverter.rgbaHalfBuffer(from: buffer)
+                    let converted = DebugFrameConverter.rgbaHalfBuffer(from: buffer, sourceColorSpace: sourceColorSpace)
                     if let converted {
                         // The tap can fall back to its advertised format, which
                         // need not be 4K. Only its native aspect is needed here;
@@ -3479,9 +3525,15 @@ final class CameraSession: NSObject, @unchecked Sendable {
         if let connection = output.connection(with: .video), connection.videoScaleAndCropFactor != 1 {
             connection.videoScaleAndCropFactor = 1
         }
+        controllerEpoch &+= 1
+        let context = CameraSessionDeliveryContext(lifecycle: lifecycleEpoch, controller: controllerEpoch)
+        let observer = sharedSnapshotObserver
+        let delivery: @MainActor @Sendable (PhotoExposureSnapshot) -> Void
+        if sharedIdleEnabled { delivery = { snapshot in observer?(context, snapshot) } }
+        else { delivery = update }
         let controller = DevelopmentPhotoController(device: device, output: output,
             pixelFormat: pixelFormat, dimensions: size, directory: directory,
-            queue: sessionQueue, onUpdate: update) { [weak self] message in
+            queue: sessionQueue, onUpdate: delivery) { [weak self] message in
                 self?.reportDevelopmentPhotoError(CameraError.writerUnavailable(message))
             }
         developmentPhotoController = controller
@@ -4117,11 +4169,222 @@ final class CameraSession: NSObject, @unchecked Sendable {
         sessionQueue.async { [weak self] in self?.onRecordingFinished = handler }
     }
 
+    func setLifecycleEpoch(_ epoch: UInt64) {
+        sessionQueue.async { self.lifecycleEpoch = epoch }
+    }
+
+    /// Idempotent foreground/watchdog request. Never changes a Record destination
+    /// or tears down for an ordinary transient inactive scene.
+    func reconcileLifecycle() {
+        sessionQueue.async {
+            guard self.desiredSessionRunning else { return }
+            self.traceStartupOwner("reconcile")
+#if DEBUG
+            if self.sharedIdleEnabled {
+                self.driveSharedGraph()
+                self.publishSharedProfile()
+                return
+            }
+#endif
+            guard !self.sessionInterrupted else { return }
+            if self.sessionRecoveryPending { self.resetVideoSessionAtSafeBoundary() }
+            else if self.isConfigured, !self.session.isRunning { self.session.startRunning() }
+        }
+    }
+
+    private func installSessionObserversIfNeeded() {
+        guard sessionObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        for name in [AVCaptureSession.wasInterruptedNotification,
+                     AVCaptureSession.interruptionEndedNotification,
+                     AVCaptureSession.runtimeErrorNotification] {
+            let observer = center.addObserver(forName: name, object: session, queue: nil) { [weak self] notification in
+                let error = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError
+                let message = error?.localizedDescription ?? name.rawValue
+                let reset = error?.code == AVError.mediaServicesWereReset.rawValue
+                self?.sessionQueue.async { [weak self] in
+                    guard let self else { return }
+                    self.traceStartupOwner("notification=\(name.rawValue) reset=\(reset) message=\(message)")
+                    if name == AVCaptureSession.wasInterruptedNotification {
+                        self.sessionInterrupted = true
+                    } else {
+                        self.sessionInterrupted = false
+                    }
+                    // Runtime errors invalidate installed device state. An ended
+                    // interruption also reconciles even if the UI stayed active.
+                    self.sessionRecoveryPending = true
+                    self.cancelVideoStartupForRecovery()
+#if DEBUG
+                    if self.sharedIdleEnabled {
+                        if self.sharedGraph.desired == .video {
+                            self.sharedGraph.request(self.desiredSessionRunning ? .idle : .stopped)
+                        }
+                        self.publishSharedProfile()
+                        self.driveSharedGraph()
+                        return
+                    }
+#endif
+                    if !self.sessionInterrupted { self.resetVideoSessionAtSafeBoundary() }
+                }
+            }
+            sessionObservers.append(observer)
+        }
+    }
+
+    private func traceStartupOwner(_ event: String) {
+        guard CommandLine.arguments.contains("--trace-photo-exposure") else { return }
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        print("Camera lifecycle run=\(traceRunID) build=\(version)(\(build)) lifecycle=\(lifecycleEpoch) " +
+              "controller=\(controllerEpoch) desiredRunning=\(desiredSessionRunning) running=\(session.isRunning) " +
+              "interrupted=\(sessionInterrupted) recovery=\(sessionRecoveryPending) " +
+              "videoOwner=\(String(describing: videoStartup.active)) setterRecovery=\(videoStartup.requiresRecovery) event=\(event)")
+#if DEBUG
+        traceVideoExposure(event)
+#endif
+    }
+
+    private func armVideoStartupDeadline(_ token: CameraVideoStartupOwnership.Token) {
+        traceStartupOwner("setter-issued token=\(token.epoch) kind=\(token.kind.rawValue)")
+        sessionQueue.asyncAfter(deadline: .now() + 4) { [weak self] in
+            guard let self, self.videoStartup.expire(token) else { return }
+            self.sessionRecoveryPending = true
+            self.traceStartupOwner("setter-expired token=\(token.epoch)")
+            self.cancelVideoStartupForRecovery()
+#if DEBUG
+            if self.sharedIdleEnabled {
+                if self.sharedGraph.desired == .video {
+                    self.sharedGraph.request(self.desiredSessionRunning ? .idle : .stopped)
+                }
+                self.driveSharedGraph()
+                self.publishSharedProfile()
+                return
+            }
+#endif
+            self.resetVideoSessionAtSafeBoundary()
+        }
+    }
+
+    /// An ACK may be the last owner blocking an already-requested recovery.
+    /// Consume its token first, then reconcile in both shared-idle and Video builds.
+    private func settleVideoStartupOnQueue() {
+#if DEBUG
+        if sharedIdleEnabled {
+            driveSharedGraph()
+            publishSharedProfile()
+            return
+        }
+#endif
+        if sessionRecoveryPending { resetVideoSessionAtSafeBoundary() }
+    }
+
+    /// Resolve only the original user's request. Recorder terminal ownership and
+    /// RAW capture ownership are deliberately not manufactured by this path.
+    private func cancelVideoStartupForRecovery() {
+        if !recordingActive { recordingGeneration &+= 1 }
+#if DEBUG
+        let request = sharedVideoRequest
+        sharedVideoRequest = nil
+        sharedLaunchScheduledEpoch = nil
+        if let request { DispatchQueue.main.async { request.completion(CameraError.captureRecoveryRequired("video startup interrupted")) } }
+#endif
+        let completion = pendingStartCompletion
+        pendingStartCompletion = nil
+        recordingStartPending = false
+        if let completion { DispatchQueue.main.async { completion(CameraError.captureRecoveryRequired("video startup interrupted")) } }
+        if let epoch = recorderCompletionBridge.activeEpoch {
+            recordingFinishing = true
+            refreshPublicRecordingState()
+            if recordingActive { sampleBufferRecorder.stop() }
+            else {
+                recorderCompletionBridge.cancelUserStart(epoch: epoch)
+                sampleBufferRecorder.cancel()
+            }
+        }
+    }
+
+#if DEBUG
+    /// Entry requires every real recorder/RAW/lens owner to have drained. Setter
+    /// expiry is only permission to enter this explicit stop/reconfigure boundary.
+    private func resetSharedSessionAtSafeBoundary() {
+        guard let lease = sharedGraph.begin(sharedGraph.desired) else { return }
+        publishSharedProfile()
+        if let controller = developmentPhotoController {
+            sharedPhotoIntent = controller.intentSnapshot
+            controller.stop { [weak self] in
+                guard let self, self.sharedGraph.owns(lease) else { return }
+                self.developmentPhotoController = nil
+                self.completeSharedSessionReset(lease)
+            }
+        } else { completeSharedSessionReset(lease) }
+    }
+
+    private func completeSharedSessionReset(_ lease: SharedCameraGraphOwnership.Lease) {
+        guard sharedGraph.owns(lease) else { return }
+        guard !sessionInterrupted else {
+            sharedGraph.finish(lease, actual: sharedGraph.actual)
+            publishSharedProfile()
+            return
+        }
+        suspendPreview(true)
+        if session.isRunning { session.stopRunning() }
+        // Real stop + drained controller/writer, not a fake RAW terminal.
+        videoStartup.didResetStoppedSession()
+        sessionRecoveryPending = false
+        retainedPhotoOutput = nil
+        developmentPhotoSnapshot = nil
+        sharedGraph.finish(lease, actual: .stopped)
+        if let error = rebuildStoppedSession() {
+            sharedGraph.request(.stopped)
+            reportDevelopmentPhotoError(CameraError.captureRecoveryRequired(error.localizedDescription))
+            publishSharedProfile()
+            return
+        }
+        traceStartupOwner("reset-completed")
+        driveSharedGraph()
+        publishSharedProfile()
+    }
+#endif
+
+    private func rebuildStoppedSession() -> Error? {
+        guard !session.isRunning, recorderCompletionBridge.activeEpoch == nil else {
+            return CameraError.captureRecoveryRequired("a real recorder terminal is still pending")
+        }
+        session.beginConfiguration()
+        for input in session.inputs { session.removeInput(input) }
+        for output in session.outputs { session.removeOutput(output) }
+        session.commitConfiguration()
+        videoDeviceInput = nil
+        microphoneInput = nil
+        microphoneAdded = false
+        isConfigured = false
+        return performConfigure()
+    }
+
+    private func resetVideoSessionAtSafeBoundary() {
+        guard !sessionInterrupted, recorderCompletionBridge.activeEpoch == nil,
+              !recordingActive, !recordingFinishing, videoStartup.active == nil else { return }
+        if session.isRunning { session.stopRunning() }
+        videoStartup.didResetStoppedSession()
+        sessionRecoveryPending = false
+        if let error = rebuildStoppedSession() {
+            let observer = onCameraError
+            let lens = activeLens
+            DispatchQueue.main.async { observer?(error, lens) }
+        } else if desiredSessionRunning { session.startRunning(); suspendPreview(false) }
+    }
+
+    deinit {
+        for observer in sessionObservers { NotificationCenter.default.removeObserver(observer) }
+    }
+
     // MARK: - Session lifecycle
 
     func start() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            self.desiredSessionRunning = true
+            self.installSessionObserversIfNeeded()
 #if DEBUG
             if self.sharedIdleEnabled {
                 self.stopSessionAfterRecording = false
@@ -4154,6 +4417,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
     func stop() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            self.desiredSessionRunning = false
 #if DEBUG
             if self.sharedIdleEnabled {
                 self.sharedGraph.request(.stopped)

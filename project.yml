@@ -291,6 +291,8 @@ targets:
       - path: App/Modules/CameraCapture/PhotoExposureSnapshot.swift
       - path: App/Modules/CameraCapture/PhotoExposureIntentPresentation.swift
       - path: App/Modules/CameraCapture/CameraShootingModeGate.swift
+      - path: App/Modules/CameraCapture/CameraSessionLifecycle.swift
+      - path: App/Modules/CameraCapture/PhotoExposureOperationOwnership.swift
       - path: App/Modules/CameraCapture/PhotoExposurePolicy.swift
       - path: App/Modules/CameraCapture/PhotoExposureCadence.swift
       - path: App/Modules/CameraCapture/PhotoShutterFloatPolicy.swift
@@ -363,6 +365,8 @@ targets:
       - path: App/Modules/CameraCapture/PhotoExposureSnapshot.swift
       - path: App/Modules/CameraCapture/PhotoExposureIntentPresentation.swift
       - path: App/Modules/CameraCapture/CameraShootingModeGate.swift
+      - path: App/Modules/CameraCapture/CameraSessionLifecycle.swift
+      - path: App/Modules/CameraCapture/PhotoExposureOperationOwnership.swift
       - path: App/Modules/CameraCapture/PhotoExposurePolicy.swift
       - path: App/Modules/CameraCapture/PhotoExposureCadence.swift
       - path: App/Modules/CameraCapture/PhotoShutterFloatPolicy.swift

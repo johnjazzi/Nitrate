@@ -20,7 +20,7 @@ struct CameraControlBar: View {
     /// hold rather than at the moment the mode flips, and SwiftUI resets it
     /// automatically on release or cancellation — no mode change, no haptic.
     @GestureState private var isExposureHolding = false
-    /// Drives `.sensoryFeedback`; bumped on every REC tap so the press is felt
+    /// Drives `.sensoryFeedback`; bumped on every capture tap so the press is felt
     /// immediately instead of when capture reports it started.
     @State private var recordFeedbackTrigger = 0
     @State private var recordFeedback: RecordFeedback = .start
@@ -153,7 +153,7 @@ struct CameraControlBar: View {
         HStack(alignment: .top, spacing: 0) {
             ExposureIndicatorView(
                 meteredEV: cameraViewModel.liveExposureTargetOffset,
-                targetEV: cameraViewModel.isManualExposure ? 0 : cameraViewModel.liveExposureBias,
+                targetEV: cameraViewModel.liveExposureBias,
                 isManual: cameraViewModel.isManualExposure,
                 isAvailable: cameraViewModel.hasExposureMeter,
                 trackHeight: 120
@@ -346,7 +346,7 @@ struct CameraControlBar: View {
         )
     }
 
-    /// Immediate acknowledgement for a REC tap.
+    /// Immediate acknowledgement for a Photo or Video shutter tap.
     ///
     /// Capture cannot confirm a take started until the session queue, the
     /// custom-exposure settle and the asset writer have all run, so waiting for
@@ -395,7 +395,11 @@ struct CameraControlBar: View {
     @ViewBuilder
     private var recordButton: some View {
         if isPhotoMode {
-            Button(action: onPhotoCapture) {
+            Button {
+                recordFeedback = .start
+                recordFeedbackTrigger &+= 1
+                onPhotoCapture()
+            } label: {
                 ZStack {
                     // Donut face inside the unchanged camera ring: light grey with
                     // concave shading, hole open to the preview.
@@ -419,7 +423,7 @@ struct CameraControlBar: View {
             // without drawing anything over the preview.
             .accessibilityValue(photoShutterAccessibilityValue)
             .accessibilityIdentifier("photo.shutter")
-            .sensoryFeedback(.impact(weight: .medium), trigger: cameraViewModel.isPhotoCaptureBusy)
+            .sensoryFeedback(trigger: recordFeedbackTrigger) { _, _ in recordFeedback.sensory }
         } else if isDevelopMode {
             developRenderButton
         } else {

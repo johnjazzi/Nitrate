@@ -10,6 +10,8 @@ final class CameraViewModel {
     let session = CameraSession()
     let exposure = ExposureManager()
     private var sharedIdleRecoveryAttempted = false
+    private var sessionDelivery = CameraSessionDeliveryOwnership()
+    private var photoResults = CameraPhotoResultOwnership()
 
     init() {
         activeLens = session.activeLens
@@ -19,14 +21,14 @@ final class CameraViewModel {
 #if DEBUG
         if usesSharedIdlePreview {
             isChangingCaptureProfile = true
-            session.enableSharedIdlePreview(onUpdate: { [weak self] snapshot in
-                guard let self, self.lifecycleGate.isActive else { return }
+            session.enableSharedIdlePreview(onUpdate: { [weak self] context, snapshot in
+                guard let self, self.sessionDelivery.accepts(context) else { return }
                 self.trace("snapshot-published iso=\(snapshot.iso)")
                 self.photoExposureSnapshot = snapshot
                 if self.isDevelopmentPhotoMode { self.presentPhotoExposure(snapshot) }
                 self.refreshPhotoAperture()
-            }, onProfile: { [weak self] video, busy, configured in
-                guard let self else { return }
+            }, onProfile: { [weak self] context, video, busy, configured in
+                guard let self, self.sessionDelivery.accepts(context) else { return }
                 self.isVideoCaptureProfileActive = video
                 self.isChangingCaptureProfile = busy
                 if busy { self.armCaptureProfileWatchdog() } else { self.captureProfileWatchdog?.cancel(); self.captureProfileWatchdog = nil }
@@ -243,7 +245,8 @@ final class CameraViewModel {
     /// trace file so one pull explains a stalled mode or a dead camera.
     private func trace(_ event: String) {
         guard CommandLine.arguments.contains("--trace-photo-exposure") else { return }
-        let line = "Photo VM trace: t=\(ProcessInfo.processInfo.systemUptime) event=\(event) "
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        let line = "Photo VM trace: build=\(build) lifecycle=\(lifecycleGate.generation) t=\(ProcessInfo.processInfo.systemUptime) event=\(event) "
             + "mode=\(isDevelopmentPhotoMode) configured=\(cameraConfigured) gate=\(lifecycleGate.isActive) "
             + "profile=\(isChangingCaptureProfile) busy=\(isPhotoCaptureBusy) snapshot=\(photoExposureSnapshot != nil)"
         print(line)
@@ -276,6 +279,12 @@ final class CameraViewModel {
         endSlowZoom()
         guard lifecycleGate.isActive else { return }
         lifecycleGate.deactivate()
+        sessionDelivery.deactivate()
+        photoResults.invalidate()
+        photoCaptureWatchdog?.cancel()
+        photoCaptureWatchdog = nil
+        captureProfileWatchdog?.cancel()
+        captureProfileWatchdog = nil
 #if DEBUG
         photoGeneration &+= 1
         isPhotoCaptureBusy = false
@@ -313,7 +322,14 @@ final class CameraViewModel {
     }
 
     private func activateCameraIfNeeded() {
-        guard let generation = lifecycleGate.activate() else { trace("activate-rejected"); return }
+        guard let generation = lifecycleGate.activate() else {
+            // A transient inactive/active may leave AVFoundation stopped without
+            // a lifecycle boundary. Reconcile desired state, not a cached bool.
+            if lifecycleGate.isActive { session.reconcileLifecycle() }
+            return
+        }
+        sessionDelivery.activate(generation)
+        session.setLifecycleEpoch(generation)
         requestCameraAccess(generation: generation)
     }
 
@@ -366,7 +382,7 @@ final class CameraViewModel {
     }
 
     private func configureAndStart(generation: UInt64) {
-        guard lifecycleGate.accepts(generation), !configurationInFlight, !cameraConfigured else {
+        guard lifecycleGate.accepts(generation), !configurationInFlight else {
             trace("configure-skipped gate=\(lifecycleGate.accepts(generation)) inflight=\(configurationInFlight) configured=\(cameraConfigured)")
             return
         }
@@ -1249,29 +1265,8 @@ final class CameraViewModel {
         if enabled, let photoExposureSnapshot { presentPhotoExposure(photoExposureSnapshot) }
         else {
             restoreVideoExposurePresentation()
-            restoreIdleGraphVideoExposureContract()
         }
         completion(.success(()))
-    }
-
-    /// Leaving Photo hands the shared idle graph back to the video contract: a
-    /// 180° shutter at the mode's frame rate — 1/48, or 1/120 at 60 fps — with
-    /// ISO auto-metering unless the operator holds a manual ISO.
-    ///
-    /// The idle graph is the same camera in both modes, so without this the Photo
-    /// rail's shutter stayed pinned on the device and Video idled (and metered)
-    /// at the photo value instead of its own.
-    private func restoreIdleGraphVideoExposureContract() {
-#if DEBUG
-        guard usesSharedIdlePreview else { return }
-        // Photo's ISO band is wider than video's, so a held ISO has to be
-        // re-clamped here or Video would idle above what its take can take.
-        let contract = VideoExposureContract.idle(frameRate: sessionFrameRate,
-            isManualExposure: isManualExposure, manualISO: clampedVideoISO(manualISO),
-            bias: liveExposureBias)
-        session.applyDevelopmentPhotoIntent(iso: contract.lockedISO,
-            duration: contract.durationSeconds, ev: contract.exposureBias)
-#endif
     }
 
     private func presentPhotoExposure(_ snapshot: PhotoExposureSnapshot) {
@@ -1348,7 +1343,7 @@ final class CameraViewModel {
     /// Always attempt. The shutter is never disabled, so every tap reaches here
     /// and either starts a capture or says why it could not — an unresponsive
     /// control with no explanation is the one outcome that is not allowed.
-    func takeDevelopmentPhoto() {
+    func takeDevelopmentPhoto(gauge: PrintGauge? = nil) {
 #if DEBUG
         trace("photo-tap enter")
         // The mode toggle can show Photo before the camera has engaged it, and an
@@ -1390,24 +1385,23 @@ final class CameraViewModel {
         if errorMessage == photoShutterNotice { errorMessage = nil }
         photoShutterNotice = nil
         let generation = photoGeneration
+        let captureToken = photoResults.begin()
         isPhotoCaptureBusy = true
-        armPhotoCaptureWatchdog(generation)
+        armPhotoCaptureWatchdog(captureToken)
         let stockID = developmentPhotoStockID
-        let gauge = developmentPhotoGauge
+        let gauge = gauge ?? developmentPhotoGauge
         let grainSeed = UInt32.random(in: .min ... .max)
         let cropZoom = photoCropZoom
 
         photoCaptureStatus = "Capturing RAW…"
         session.captureDevelopmentPhoto { [weak self] result in
             guard let self else { return }
-            // Released before the generation check: a capture that belongs to a
-            // mode the operator has left must not leave the shutter busy.
-            self.photoCaptureWatchdog?.cancel()
-            self.photoCaptureWatchdog = nil
-            guard self.photoGeneration == generation else {
-                self.trace("photo-capture-completion stale")
+            guard self.photoGeneration == generation, self.photoResults.finish(captureToken) else {
+                self.trace("photo-capture-completion stale token=\(captureToken)")
                 return
             }
+            self.photoCaptureWatchdog?.cancel()
+            self.photoCaptureWatchdog = nil
             switch result {
             case .success(let url):
                 // Camera ownership ends at durable RAW capture, not GPU/Photos delivery.
@@ -1443,39 +1437,35 @@ final class CameraViewModel {
     /// A profile transition whose completion never lands must not leave the mode
     /// row greyed out with nothing said.
     ///
-    /// `isChangingCaptureProfile` is a UI gate fed by the session's profile
-    /// callback. Observed on device: a dropped update (the same class of loss as a
-    /// dropped setter or capture terminal) left the row dimmed and the V/P
-    /// letters disabled for the rest of the session, and a disabled control cannot
-    /// even report a refusal. The deadline is generous — a real rebuild is a
-    /// second or two — and clearing the gate is self-healing: if the transition
-    /// really is still running, its next update sets the flag again.
+    /// Ask the queue owner to reconcile and republish. Never clear a UI flag as
+    /// a substitute for settling the real hardware owner.
     private func armCaptureProfileWatchdog() {
         guard captureProfileWatchdog == nil else { return }
         captureProfileWatchdog = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(12))
             guard let self, !Task.isCancelled, self.isChangingCaptureProfile else { return }
             self.trace("capture-profile-watchdog")
-            self.isChangingCaptureProfile = false
             self.captureProfileWatchdog = nil
+            self.session.reconcileLifecycle()
+            self.errorMessage = "Camera recovery requested; waiting for the current hardware owner."
         }
     }
 
     /// A capture whose completion never arrives must not leave the shutter busy
     /// with nothing said. The deadline is the controller's own capture timeout
     /// plus slack for the round trip through the session queue.
-    private func armPhotoCaptureWatchdog(_ generation: UInt64) {
+    private func armPhotoCaptureWatchdog(_ token: UInt64) {
         photoCaptureWatchdog?.cancel()
         photoCaptureWatchdog = Task { @MainActor [weak self] in
-            // Backstop only: the session's own capture transaction deadline fires
-            // first and closes the transaction, which lets this completion arrive.
+            // UI backstop only. The RAW transaction remains owned until its real
+            // framework terminal; this timer cannot release session/graph ownership.
             try? await Task.sleep(for: .seconds(PhotoExposureCadence.captureTransactionTimeout + 2))
-            guard let self, !Task.isCancelled, self.photoGeneration == generation,
+            guard let self, !Task.isCancelled, self.photoResults.owns(token),
                   self.isPhotoCaptureBusy else { return }
             self.trace("photo-capture-watchdog")
             self.isPhotoCaptureBusy = false
             self.photoCaptureStatus = "RAW capture did not report back"
-            self.recordPhotoShutterNotice("The camera never reported the photo. Tap the shutter to try again.")
+            self.recordPhotoShutterNotice("The camera never reported the photo. Waiting for the camera to finish or reset.")
         }
     }
 

@@ -15,6 +15,22 @@ struct PhotoExposureDecision: Equatable, Sendable {
     let targetLimited: Bool
     let isSettling: Bool
     let usesAutoExposure: Bool
+
+    /// Reaching a hardware limit can end settling while still requiring the
+    /// final clamped command. Never use `isSettling` as write eligibility.
+    func command(for snapshot: PhotoExposureSnapshot) -> PhotoExposureCommand? {
+        guard !usesAutoExposure, iso != nil || durationSeconds != nil else { return nil }
+        let command = PhotoExposureCommand(iso: iso ?? snapshot.iso,
+            durationSeconds: durationSeconds ?? snapshot.durationSeconds)
+        guard PhotoExposureCadence.needsWrite(iso: command.iso, duration: command.durationSeconds,
+            actualISO: snapshot.iso, actualDuration: snapshot.durationSeconds) else { return nil }
+        return command
+    }
+}
+
+struct PhotoExposureCommand: Equatable, Sendable {
+    let iso: Float
+    let durationSeconds: Double
 }
 
 enum PhotoExposurePolicyError: Error, Equatable {
@@ -25,6 +41,10 @@ enum PhotoExposurePolicyError: Error, Equatable {
 }
 
 enum PhotoExposurePolicy {
+    static func usesNativeAutoExposure(isoLocked: Bool, shutterLocked: Bool, apertureHeld: Bool) -> Bool {
+        !isoLocked && !shutterLocked && !apertureHeld
+    }
+
     static func shouldSuspendPreview(durationSeconds: Double) -> Bool {
         durationSeconds.isFinite && durationSeconds > 1.0 / 8.0
     }
@@ -41,7 +61,8 @@ enum PhotoExposurePolicy {
     static let farCorrectionMultiplier: Float = 4
 
     static func decide(snapshot: PhotoExposureSnapshot,
-                       request: PhotoExposureRequest) throws -> PhotoExposureDecision {
+                       request: PhotoExposureRequest,
+                       apertureHeld: Bool = false) throws -> PhotoExposureDecision {
         guard request.ev.isFinite, request.measuredEV.isFinite,
               request.maxCorrectionEV.isFinite,
               snapshot.isoRange.lowerBound.isFinite, snapshot.isoRange.upperBound.isFinite,
@@ -64,7 +85,8 @@ enum PhotoExposurePolicy {
         let errorEV = request.ev - request.measuredEV
         let meteringOffset = -errorEV
         let settling = abs(errorEV) > settlingToleranceEV
-        if !snapshot.isoLocked && !snapshot.shutterLocked {
+        if usesNativeAutoExposure(isoLocked: snapshot.isoLocked, shutterLocked: snapshot.shutterLocked,
+                                  apertureHeld: apertureHeld) {
             return .init(iso: nil, durationSeconds: nil, meteringOffset: meteringOffset,
                          targetLimited: false, isSettling: settling, usesAutoExposure: true)
         }
@@ -82,6 +104,8 @@ enum PhotoExposurePolicy {
                          targetLimited: false, isSettling: false, usesAutoExposure: false)
         }
         let factor = pow(2.0, Double(correction))
+        // Explicit aperture with neither leg held retains the existing ISO-only
+        // policy. It reports ISO saturation rather than silently claiming AE.
         if !snapshot.isoLocked {
             let proposed = Double(snapshot.iso) * factor
             let value = min(max(proposed, Double(snapshot.isoRange.lowerBound)), Double(snapshot.isoRange.upperBound))

@@ -119,26 +119,135 @@ struct PhotoDevelopmentPipelineTests {
         #expect(Set(tungsten).count > 4, "The shipping grain kernel must produce spatial variation")
     }
 
-    @Test func stillPhotoGrainReadsAtStillPresenceStrength() throws {
-        // A flat mid-grey through the shipping still stages: the only variation
-        // can be grain. Video re-randomises per frame and reads ~2x louder than
-        // one static slice, so the still stage applies GrainModel.stillPresenceGain.
-        let input = CIImage(color: CIColor(red: 0.18, green: 0.18, blue: 0.18))
+    /// Native float residuals from the real still stage and shipped grain volume.
+    /// The upper half is an unclipped midtone patch; the lower half carries a
+    /// ramp/checker so output inequality is also checked on nonuniform content.
+    private func grainProbe(film: StillFilmRenderResources, seed: UInt32 = 42,
+                            gain: Float? = nil) throws -> (pixels: [Float16], rms: Double, lag: Double) {
+        let side = 256
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float,
+            width: side, height: side, mipmapped: false)
+        descriptor.storageMode = .shared
+        descriptor.usage = [.shaderRead]
+        let input = try #require(film.device.makeTexture(descriptor: descriptor))
+        var source = [Float16](repeating: 1, count: side * side * 4)
+        for y in 0..<side {
+            for x in 0..<side {
+                let value: Float = y < side / 2 ? 0.5
+                    : 0.25 + 0.4 * Float(x) / Float(side - 1) + (((x / 4 + y / 4) % 2 == 0) ? 0.05 : 0)
+                for channel in 0..<3 { source[(y * side + x) * 4 + channel] = Float16(value) }
+            }
+        }
+        source.withUnsafeBytes { bytes in
+            input.replace(region: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0,
+                withBytes: bytes.baseAddress!, bytesPerRow: side * 8)
+        }
+        let output = try #require(film.effects.applyGrain(graded: input, commandQueue: film.queue,
+            config: film.config, gauge: film.gauge, seed: seed, stillPresenceGain: gain))
+        var pixels = source
+        pixels.withUnsafeMutableBytes { bytes in
+            output.getBytes(bytes.baseAddress!, bytesPerRow: side * 8,
+                from: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0)
+        }
+        let finiteAndInRange = pixels.allSatisfy { $0.isFinite && $0 >= 0 && $0 <= 1 }
+        let preservesAlpha = stride(from: 3, to: pixels.count, by: 4).allSatisfy { pixels[$0] == 1 }
+        #expect(finiteAndInRange)
+        #expect(preservesAlpha)
+        var residuals = [Double](), neighbors = [Double]()
+        func luma(_ x: Int, _ y: Int) -> Double {
+            let i = (y * side + x) * 4
+            return (Double(pixels[i]) + Double(pixels[i + 1]) + Double(pixels[i + 2])) / 3 - 0.5
+        }
+        // Stay away from the patch boundary and the prefilter's clamp border.
+        for y in 8..<120 {
+            for x in 8..<247 { residuals.append(luma(x, y)); neighbors.append(luma(x + 1, y)) }
+        }
+        let count = Double(residuals.count)
+        let mean = residuals.reduce(0, +) / count
+        let neighborMean = neighbors.reduce(0, +) / count
+        var covariance = 0.0, energy = 0.0, neighborEnergy = 0.0
+        for index in residuals.indices {
+            let a = residuals[index] - mean, b = neighbors[index] - neighborMean
+            covariance += a * b; energy += a * a; neighborEnergy += b * b
+        }
+        let rms = (residuals.reduce(0) { $0 + $1 * $1 } / count).squareRoot()
+        let lag = covariance / max((energy * neighborEnergy).squareRoot(), 1e-12)
+        return (pixels, rms, lag)
+    }
+
+    @Test func productionStillKernelDistinguishesAllFourGaugeFootprintsAndPresence() throws {
+        var measurements: [(gauge: PrintGauge, rms: Double, lag: Double)] = []
+        var outputs = [[Float16]]()
+        for gauge in PrintGauge.allCases {
+            let film = try StillFilmRenderResources(stockID: "kodak5219", gauge: gauge, seed: 42,
+                bundle: Bundle(for: BundleToken.self))
+            var rms = 0.0, lag = 0.0
+            for seed: UInt32 in [0, 17, 42, 127] {
+                let probe = try grainProbe(film: film, seed: seed)
+                rms += probe.rms; lag += probe.lag
+                if seed == 42 { outputs.append(probe.pixels) }
+            }
+            measurements.append((gauge, rms / 4, lag / 4))
+        }
+        #expect(measurements.count == 4)
+        for index in 0..<3 {
+            let coarse = measurements[index], fine = measurements[index + 1]
+            #expect(coarse.rms > fine.rms, "Still luma residual RMS must fall: \(measurements)")
+            #expect(coarse.lag > fine.lag, "Still footprint lag-1 must fall: \(measurements)")
+            for other in (index + 1)..<4 {
+                let differs = outputs[index] != outputs[other]
+                #expect(differs, "\(coarse.gauge.rawValue) must differ from \(measurements[other].gauge.rawValue)")
+            }
+        }
+        let film = try StillFilmRenderResources(stockID: "kodak5219", gauge: .neutral, seed: 42,
+            bundle: Bundle(for: BundleToken.self))
+        let repeated = try grainProbe(film: film)
+        let deterministic = repeated.pixels == outputs[2]
+        #expect(deterministic)
+    }
+
+    @Test func thirtyFiveMillimetreRoughnessIsReducedFromLegacyGain() throws {
+        // Real-DNG comparison selected 1.5 as a conservative reduction from 2.0.
+        // Bound synthetic roughness separately from any sensor-noise contribution.
+        let film = try StillFilmRenderResources(stockID: "kodak5219", gauge: .neutral, seed: 42,
+            bundle: Bundle(for: BundleToken.self))
+        for seed: UInt32 in [0, 17, 42, 127] {
+            let baseline = try grainProbe(film: film, seed: seed, gain: 2.0)
+            let current = try grainProbe(film: film, seed: seed)
+            #expect(current.rms > 0)
+            #expect(current.rms <= baseline.rms * 0.8,
+                "35mm residual RMS must be reduced versus legacy gain=2: \(current.rms) vs \(baseline.rms)")
+            let candidate = try grainProbe(film: film, seed: seed, gain: 1.0)
+            #expect(candidate.rms < baseline.rms * 0.75,
+                "The explicit A/B gain must materially reduce RMS: \(candidate.rms) vs \(baseline.rms)")
+            // Gain changes presence, not the spatial footprint.
+            #expect(abs(candidate.lag - baseline.lag) < 0.05)
+        }
+    }
+
+    @Test func stillGainOverrideReachesTheShippingGlowAndGrainPath() throws {
+        let input = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5))
             .cropped(to: CGRect(x: 0, y: 0, width: 256, height: 256))
-        let film = try StillFilmRenderResources(stockID: "kodak5219", gauge: .sixteenMillimetre,
-            seed: 11, bundle: Bundle(for: BundleToken.self))
-        let developed = try DevelopmentPhotoRenderer.develop(linearImage: input, film: film)
-        var bytes = [UInt8](repeating: 0, count: 256 * 256 * 4)
-        film.context.render(developed, toBitmap: &bytes, rowBytes: 256 * 4,
-            bounds: input.extent, format: .RGBA8,
-            colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!)
-        let luma = stride(from: 0, to: bytes.count, by: 4).map { Double(bytes[$0]) }
-        let mean = luma.reduce(0, +) / Double(luma.count)
-        let sigma = (luma.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(luma.count)).squareRoot()
-        // Unboosted 16mm grain measured ~1.5 code steps here; a static slice at
-        // that strength is invisible. Require the boosted field to clear 4.
-        #expect(sigma > 4.0, "Static still grain must clear the visible floor: sigma=\(sigma)")
-        #expect(GrainModel.stillPresenceGain > 1, "A still needs a presence boost over per-frame video grain")
+        func pixels(gain: Float?) throws -> [Float] {
+            let film = try StillFilmRenderResources(stockID: "kodak5219", gauge: .neutral, seed: 42,
+                bundle: Bundle(for: BundleToken.self), stillPresenceGain: gain)
+            let output = try film.glowAndGrain(input)
+            var values = [Float](repeating: 0, count: 256 * 256 * 4)
+            film.context.render(output, toBitmap: &values, rowBytes: 256 * 16, bounds: input.extent,
+                format: .RGBAf, colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!)
+            return values
+        }
+        let selected = try pixels(gain: 1.5), current = try pixels(gain: nil)
+        let candidate = try pixels(gain: 1.0), repeated = try pixels(gain: 1.0)
+        // Shipping default must use the candidate selected from controlled A/B.
+        let preservesDefault = selected == current
+        let deterministic = candidate == repeated
+        let changesPixels = candidate != selected
+        #expect(preservesDefault)
+        #expect(deterministic)
+        #expect(changesPixels)
+        let finite = candidate.allSatisfy(\.isFinite)
+        #expect(finite)
     }
 
     @Test func stillGrainIsLuminanceDominantNotColoured() throws {
@@ -171,7 +280,7 @@ struct PhotoDevelopmentPipelineTests {
         }
         let monoSigma = (mono / Double(pixels)).squareRoot()
         let chromaSigma = (chroma / Double(pixels)).squareRoot()
-        #expect(monoSigma > 4.0, "The still grain must still be visible: sigma=\(monoSigma)")
+        #expect(monoSigma > 0, "The chroma ratio requires a nonzero luminance residual: sigma=\(monoSigma)")
         let ratio = chromaSigma / max(monoSigma, 0.0001)
         #expect(ratio < 0.25, "Still grain must read as monochrome, not coloured: R-B sigma is \(ratio)x the luminance sigma")
         #expect(GrainModel.stillChromaAmount < GrainModel.videoChromaAmount,

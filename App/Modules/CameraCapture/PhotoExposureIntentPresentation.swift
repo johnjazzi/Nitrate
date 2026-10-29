@@ -10,6 +10,7 @@ struct PhotoExposureIntentPresentation: Equatable {
     private(set) var iso: Float
     private(set) var pendingISO: Float?
     private(set) var isoRange: ClosedRange<Float>
+    private var sourceID: UUID?
 
     init(snapshot: PhotoExposureSnapshot) {
         duration = snapshot.durationSeconds
@@ -17,6 +18,7 @@ struct PhotoExposureIntentPresentation: Equatable {
         range = snapshot.shutterRange
         iso = snapshot.iso
         isoRange = snapshot.isoRange
+        sourceID = snapshot.sourceID
     }
 
     /// The operator moved the ISO ruler. Both readouts stay on this value until the
@@ -50,11 +52,16 @@ struct PhotoExposureIntentPresentation: Equatable {
     }
 
     mutating func reconcile(_ snapshot: PhotoExposureSnapshot) {
+        if snapshot.sourceID != sourceID {
+            self = Self(snapshot: snapshot)
+            return
+        }
         reconcileISO(snapshot)
         guard snapshot.shutterRange != range else {
             if let pendingDuration {
                 if snapshot.shutterLocked,
-                   abs(snapshot.durationSeconds - pendingDuration) <= max(0.000001, pendingDuration * 0.001) {
+                   !PhotoExposureCadence.needsWrite(iso: snapshot.iso, duration: pendingDuration,
+                       actualISO: snapshot.iso, actualDuration: snapshot.durationSeconds) {
                     self.pendingDuration = nil
                     duration = snapshot.durationSeconds
                 }

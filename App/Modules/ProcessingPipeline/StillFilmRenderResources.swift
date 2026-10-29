@@ -9,13 +9,20 @@ final class StillFilmRenderResources {
     let context: CIContext
     let effects: StillFilmEffectsStage
     let config: FilmStockConfig
-    let gauge: PrintGauge
+    var gauge: PrintGauge { config.effectivePrintGauge }
     let seed: UInt32
+    private let stillPresenceGain: Float?
     private let space: CGColorSpace
     private let lutPipeline: MTLComputePipelineState
     private let bundle: Bundle
 
-    init(stockID: String, gauge: PrintGauge, seed: UInt32, bundle: Bundle = .main) throws {
+    /// Explicit still-only calibration override; nil retains the shipping gain.
+    /// Keep this fixed with stock/gauge/seed when comparing candidate renders.
+    init(stockID: String, gauge: PrintGauge, seed: UInt32, bundle: Bundle = .main,
+         stillPresenceGain: Float? = nil) throws {
+        if let stillPresenceGain, !stillPresenceGain.isFinite || stillPresenceGain < 0 {
+            throw DevelopmentPhotoRenderer.RenderError.decode("Invalid still grain presence gain")
+        }
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue(),
               let library = try? device.makeDefaultLibrary(bundle: bundle),
               let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB),
@@ -26,9 +33,11 @@ final class StillFilmRenderResources {
         }
         struct Catalog: Decodable { let stocks: [FilmStockConfig] }
         let stocks = try JSONDecoder().decode(Catalog.self, from: Data(contentsOf: catalog)).stocks
-        guard let config = stocks.first(where: { $0.stockId == stockID }) else {
+        guard let template = stocks.first(where: { $0.stockId == stockID }) else {
             throw DevelopmentPhotoRenderer.RenderError.unsupportedStock(stockID)
         }
+        // One resolved recipe drives both GPU parameters and delivered metadata.
+        let config = template.overridingGauge(gauge)
         try config.validate()
         let bytes = try Data(contentsOf: grain)
         let n = 128
@@ -52,7 +61,8 @@ final class StillFilmRenderResources {
         }
         self.lutPipeline = try device.makeComputePipelineState(function: lutFunction)
         self.bundle = bundle
-        self.config = config; self.gauge = gauge; self.seed = seed
+        self.config = config; self.seed = seed
+        self.stillPresenceGain = stillPresenceGain
     }
 
     private func texture(_ image: CIImage) throws -> MTLTexture {
@@ -139,7 +149,8 @@ final class StillFilmRenderResources {
         let input = try texture(graded)
         guard let glowed = effects.applyGlow(graded: input, commandQueue: queue, strength: config.glowStrength),
               let grained = effects.applyGrain(graded: glowed, commandQueue: queue,
-                                              config: config, gauge: gauge, seed: seed) else {
+                                              config: config, gauge: gauge, seed: seed,
+                                              stillPresenceGain: stillPresenceGain) else {
             throw RenderError.stageFailed("photo-grain", "Still glow or grain failed")
         }
         return try image(grained)

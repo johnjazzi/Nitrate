@@ -396,3 +396,30 @@ a dropped update — the same class of loss already seen on setter acknowledgeme
 and capture terminals — left the row dimmed for the rest of the session. It now
 has a deadline; clearing it is self-healing because a real transition sets it
 again on its next update.
+
+## RAW color-noise reduction — October 29, 2026
+
+The original decoder explicitly requested zero color and luminance noise
+reduction. The unfinished NR changes preserved for the field-fix batch enable
+only the decoder's color-NR control, before Log conversion/LUT/film grain.
+
+Four local real-DNG sweeps measured median 32×32-block chroma high-pass sigma:
+
+| Capture ISO | NR 0 | NR 0.75 | NR 1.0 |
+|---|---:|---:|---:|
+| 640 | 0.02253 | 0.00387 | 0.00381 |
+| 1000 | 0.04821 | 0.00763 | 0.00764 |
+| 1600 | 0.06366 | 0.00937 | 0.00919 |
+| 12500 | 0.09238 | 0.02614 | 0.01838 |
+
+The current initial policy ramps logarithmically from zero at ISO 200 to 0.75
+at ISO 1000, then to 1.0 at ISO 12500. It reads capture EXIF ISO, not stock ISO.
+Luminance reduction remains zero. The production decoder replay at ISO 1000
+reported color=0.75 and chroma sigma 0.00763, and produced a readable JPEG.
+
+These are scene-dependent high-pass proxies, not measured detail retention or
+a universal camera calibration. The associated luma gradient decreases do not
+prove that only noise was removed. Nothing here establishes mood.camera's
+private processing. Film-gauge wiring and synthetic grain strength are separate
+issues, covered in `field-bugs-2026-10-29.md`. The NR settings dictionary is
+in-memory diagnostics, not yet a promise that the JPEG records those fields.

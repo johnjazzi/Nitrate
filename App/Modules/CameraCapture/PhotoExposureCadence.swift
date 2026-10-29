@@ -18,12 +18,9 @@ enum PhotoExposureCadence {
         return max(0.3, duration * 2 + 0.15)
     }
 
-    /// A setter acknowledgement that never arrives must not hold the shutter
-    /// hostage. AVFoundation has been observed to drop one after a profile
-    /// rebuild; the in-flight flag then stayed set and the shutter was greyed out
-    /// for the rest of the session with nothing said. Past this the flag is
-    /// dropped and the next cycle re-reads the device, which is the only source
-    /// of truth for the value actually installed.
+    /// Bounded logical acknowledgement lease for noncapture setters. Expiry
+    /// fences late callbacks and requires a session stop/reconfigure; it is not
+    /// proof of a physical terminal and never releases RAW capture ownership.
     static let setterTimeout: TimeInterval = 1.2
 
     /// How long a shutter tap may wait for the exposure to settle before it fails
@@ -37,14 +34,9 @@ enum PhotoExposureCadence {
     /// operator just set, short enough that the shutter never feels unresponsive.
     static let captureImpatience: TimeInterval = 0.2
 
-    /// How long a RAW capture transaction may wait for the framework's terminal
-    /// callback before the session closes it itself.
-    ///
-    /// A dropped terminal (the same class of loss already observed on a setter
-    /// acknowledgement) used to leave `capturing` set forever: the shutter was
-    /// dead for the rest of the session, the readiness reported "not ready", and
-    /// nothing said why. A RAW still that has not terminated by now is not coming,
-    /// and the operator has to be able to take the next photo.
+    /// Deadline for reporting a stalled RAW transaction. Timer expiry alone is
+    /// NOT a framework terminal; capture/output ownership needs a real terminal
+    /// callback or an explicitly coordinated session reset.
     static let captureTransactionTimeout: TimeInterval = 8
 
     static func needsWrite(iso: Float, duration: Double, actualISO: Float, actualDuration: Double) -> Bool {

@@ -28,14 +28,7 @@ enum DevelopmentPhotoRenderer {
         let inputSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
         let finished = try develop(linearImage: oriented, film: film, resourcesURL: resourcesURL)
         // LUT output is Rec.709 gamma 2.4. Decode it before the final sRGB encoding.
-        guard let outputKernel = CIColorKernel(source: """
-            kernel vec4 rec709ToLinear(__sample s) {
-              vec3 x=max(s.rgb,vec3(0.0));
-              return vec4(pow(x,vec3(2.4)),s.a);
-            }
-            """), let linear709 = outputKernel.apply(extent: finished.extent, arguments: [finished]) else {
-            throw RenderError.decode("Could not decode Rec.709 LUT output")
-        }
+        let linear709 = try FilmOutputDisplayConverter.linearImage(fromGamma24: finished)
         guard let srgb = CGColorSpace(name: CGColorSpace.sRGB) else { throw RenderError.decode("sRGB unavailable") }
         let context = CIContext(options: [.workingColorSpace: inputSpace, .outputColorSpace: srgb, .cacheIntermediates: false])
         let rendered = linear709

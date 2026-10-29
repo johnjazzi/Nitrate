@@ -85,13 +85,11 @@ enum GrainModel {
     /// coarse gauge is not silently clipped back to a small footprint.
     static let footprintCeiling: Float = 16.0
 
-    /// Still presence boost for Photo delivery. Video grain is re-randomised
-    /// every frame, so the eye integrates ~2-3 frames and reads the same
-    /// per-pixel amplitude as ~1.6x; a 3024-px-wide still also loses ~1.27x more
-    /// than a 3840-px frame when both are shown at the same size. Stills apply
-    /// `baseAmount · gaugeAmplitude · stillPresenceGain`; the kernel's headroom
-    /// budget still bounds the excursion in the deepest shadows and highlights.
-    static let stillPresenceGain: Float = 2.0
+    /// Photo-only presence. A native-crop A/B on a real 1000 ISO DNG at equal
+    /// stock/seed/gauge reduced residual RMS from 0.00957 (gain 2) to 0.00478
+    /// (gain 1.5) with texture still visible; 35 mm read as too rough before.
+    /// Video amplitude is touched by this constant.
+    static let stillPresenceGain: Float = 1.5
 
     /// Dye-cloud chroma strength as a fraction of the shared luminance grain.
     ///
@@ -106,8 +104,8 @@ enum GrainModel {
     static let stillChromaAmount: Float = 0.02
 
     /// Effective footprint: stock size x gauge size, clamped off the sampling
-    /// floor. At 75mm on a 1.3 stock this is 1.3 x 0.55 = 0.715 -> floored to
-    /// 0.95. The remaining graininess at 75mm is removed by the 0.15 amplitude
+    /// floor. At 75mm on a 1.3 stock this is 1.3 x 1.0 = 1.3, above the
+    /// 0.95 floor. The remaining graininess at 75mm is reduced by the 0.15 amplitude
     /// multiplier, not by pushing size further into the aliased zone.
     static func effectiveSize(stockGrainSize: Float, gauge: PrintGauge) -> Float {
         effectiveSize(stockGrainSize: stockGrainSize, sizeMultiplier: gauge.sizeMultiplier)

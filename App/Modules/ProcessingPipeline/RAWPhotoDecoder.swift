@@ -73,7 +73,16 @@ final class RAWPhotoDecoder {
         disable("detail", supported: raw.isDetailSupported) { raw.detailAmount = 0 }
         disable("contrast", supported: raw.isContrastSupported) { raw.contrastAmount = 0 }
         disable("luminanceNoiseReduction", supported: raw.isLuminanceNoiseReductionSupported) { raw.luminanceNoiseReductionAmount = 0 }
-        disable("colorNoiseReduction", supported: raw.isColorNoiseReductionSupported) { raw.colorNoiseReductionAmount = 0 }
+        // Colour noise reduction is the one RAW control the still path does ask for,
+        // and only as far as the capture's own ISO justifies: an untouched Bayer
+        // frame carries the sensor's multicoloured chroma speckle, which is exactly
+        // what an operator reads as "wrong grain". See PhotoNoiseReductionPolicy.
+        let captureISO = PhotoDeliveryMetadata.capture(fromDNG: url).iso
+        let colorNoiseReduction = PhotoNoiseReductionPolicy.colorAmount(iso: captureISO)
+        if raw.isColorNoiseReductionSupported { raw.colorNoiseReductionAmount = colorNoiseReduction }
+        settings["colorNoiseReduction"] = raw.isColorNoiseReductionSupported
+            ? "supported=true," + PhotoNoiseReductionPolicy.report(iso: captureISO)
+            : "supported=false,unchanged"
         disable("moireReduction", supported: raw.isMoireReductionSupported) { raw.moireReductionAmount = 0 }
         disable("despeckle", supported: raw.isDespeckleSupported) { raw.despeckleAmount = 0 }
         disable("localToneMap", supported: raw.isLocalToneMapSupported) { raw.localToneMapAmount = 0 }

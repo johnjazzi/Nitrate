@@ -522,13 +522,15 @@ struct ContentView: View {
             cameraViewModel.errorMessage = "Select a film stock before opening the debug frame."
             return
         }
+        let gauge = library.lastGauge(for: stock.stockId) ?? .neutral
+        let debugConfig = stock.overridingGauge(gauge)
         cameraViewModel.captureDebugFrame { buffer in
             guard let buffer else {
                 cameraViewModel.errorMessage = "Debug frame capture failed — is the camera running?"
                 return
             }
             debugHintDiagnostics = stockHintDiagnosticsSnapshot()
-            debugFrameViewModel = DebugFrameViewModel(frame: buffer, config: stock,
+            debugFrameViewModel = DebugFrameViewModel(frame: buffer, config: debugConfig,
                                                       stocks: library.videoStocks())
         }
     }
@@ -996,12 +998,12 @@ struct ContentView: View {
         CameraGlyphRotation.degrees(for: orientation.deviceOrientation)
     }
 
-    /// Same target as the live EV indicator: manual ISO targets zero; automatic
-    /// ISO compares against the user's selected EV bias, not an absolute +2 EV.
+    /// Meter readings use neutral scene EV in native AE and custom exposure alike.
+    /// Compare against the requested compensation regardless of which leg is held.
     private var shouldOfferDaylightRescue: Bool {
         DaylightExposureRescuePolicy.shouldOffer(
             meteredEV: cameraViewModel.liveExposureTargetOffset,
-            targetEV: cameraViewModel.isManualExposure ? 0 : cameraViewModel.liveExposureBias,
+            targetEV: cameraViewModel.liveExposureBias,
             isAvailable: cameraViewModel.hasExposureMeter)
     }
 
@@ -1116,7 +1118,10 @@ struct ContentView: View {
             },
             isPhotoMode: isPhotoMode,
             photoStatus: photoDeliveryStatus,
-            onPhotoCapture: cameraViewModel.takeDevelopmentPhoto,
+            onPhotoCapture: {
+                let gauge = selectedStock.flatMap { library.lastGauge(for: $0.stockId) } ?? .neutral
+                cameraViewModel.takeDevelopmentPhoto(gauge: gauge)
+            },
             photoExposure: cameraViewModel.photoExposureSnapshot,
             onPhotoISO: { cameraViewModel.setManualISO($0) },
             onPhotoISOLock: { cameraViewModel.toggleISOLock(currentISO: cameraViewModel.liveISO) },

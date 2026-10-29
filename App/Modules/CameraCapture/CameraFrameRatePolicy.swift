@@ -38,20 +38,18 @@ enum CameraFrameRate: Int, Codable, Equatable, Sendable, CaseIterable, Identifia
 /// not overriding it. The value type exists so the contract is decided once, in
 /// one place, instead of being re-derived by every caller.
 struct IdleExposureContract: Equatable, Sendable {
-    let durationSeconds: Double
+    let durationSeconds: Double?
     /// Nil leaves ISO metering automatically; a value pins the operator's ISO.
     let lockedISO: Float?
     let exposureBias: Float
 }
 
-/// The video exposure contract: a 180° shutter at the mode's frame rate (1/48 at
-/// 24 fps, 1/120 at 60 fps) with ISO auto-metering unless the operator holds a
-/// manual ISO. Photo is the exception — its rail owns the shutter — so leaving
-/// Photo must re-assert this contract on the idle graph.
+/// Shared idle retains explicit operator holds only. The recording start path
+/// separately owns its 180° shutter; changing UI modes never installs it.
 enum VideoExposureContract {
     static func idle(frameRate: CameraFrameRate, isManualExposure: Bool,
-                     manualISO: Float, bias: Float) -> IdleExposureContract {
-        IdleExposureContract(durationSeconds: frameRate.filmShutterDuration.seconds,
+                     manualISO: Float, bias: Float, heldDuration: Double? = nil) -> IdleExposureContract {
+        IdleExposureContract(durationSeconds: heldDuration,
                              lockedISO: isManualExposure ? manualISO : nil,
                              exposureBias: bias)
     }

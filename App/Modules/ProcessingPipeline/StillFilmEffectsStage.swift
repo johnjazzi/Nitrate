@@ -52,9 +52,13 @@ final class StillFilmEffectsStage {
     /// `seed` selects a stable volume plane/offset; retries with the same seed
     /// and inputs are deterministic. Output remains RGBA16Float for later
     /// gamma-2.4 → sRGB conversion and JPEG encoding by the photo renderer.
+    /// An explicit gain supports controlled still A/B without changing video or
+    /// the shipping default. Zero is NOT grain-off: kernel dither remains.
     func applyGrain(graded: MTLTexture, commandQueue: MTLCommandQueue,
-                    config: FilmStockConfig, gauge: PrintGauge, seed: UInt32) -> MTLTexture? {
-        guard graded.pixelFormat == .rgba16Float,
+                    config: FilmStockConfig, gauge: PrintGauge, seed: UInt32,
+                    stillPresenceGain: Float? = nil) -> MTLTexture? {
+        let gain = stillPresenceGain ?? GrainModel.stillPresenceGain
+        guard gain.isFinite, gain >= 0, graded.pixelFormat == .rgba16Float,
               let output = makeOutput(width: graded.width, height: graded.height),
               let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else { return nil }
@@ -62,7 +66,7 @@ final class StillFilmEffectsStage {
                                      grainSize: GrainModel.effectiveSize(stockGrainSize: config.grainSize,
                                                                          gauge: gauge),
                                      edgeBoostMultiplier: config.effectiveRecipe.edgeBoostMultiplier,
-                                     gaugeAmplitude: gauge.amplitudeMultiplier * GrainModel.stillPresenceGain,
+                                     gaugeAmplitude: gauge.amplitudeMultiplier * gain,
                                      chromaAmount: GrainModel.stillChromaAmount)
         encoder.setComputePipelineState(grainPipeline)
         encoder.setTexture(graded, index: 0)

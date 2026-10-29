@@ -1,6 +1,30 @@
 import XCTest
 
 final class CameraInteractionUITests: XCTestCase {
+    /// Exercise the real scene lifecycle, then prove capture rather than merely
+    /// finding a still-visible preview after activation.
+    @MainActor func testPhotoCaptureRecoversAcrossBackgroundRoundTrips() throws {
+        continueAfterFailure = false
+        let app = launchReadyCamera(hideDiagnosticButtons: true)
+        selectPhoto(in: app)
+        for cycle in 1...3 {
+            XCUIDevice.shared.press(.home)
+            XCTAssertTrue(app.wait(for: .runningBackground, timeout: 10),
+                          "The app must actually background before testing recovery")
+            app.activate()
+            XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+            waitUntilReady(app.buttons["cameraMode.video"], in: app,
+                           named: "foreground-mode-ready-\(cycle)", timeout: 25)
+            selectVideo(in: app)
+            selectPhoto(in: app)
+            let shutter = app.buttons["photo.shutter"]
+            waitUntilReady(shutter, in: app, named: "foreground-photo-ready-\(cycle)")
+            shutter.tap()
+            waitForPhotoSaved(in: app)
+            attachEvidence(app, named: "foreground-photo-saved-\(cycle)")
+        }
+    }
+
     @MainActor func testPreviewAppearanceAcrossVideoPhotoVideo() throws {
         continueAfterFailure = false
         let app = launchReadyCamera()

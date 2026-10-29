@@ -24,6 +24,18 @@ import Foundation
             catch { print("RAW probe failed: \(error)"); exit(1) }
             return
         }
+        if arguments.first == "--photo-noise-probe", arguments.count >= 2 {
+            do { try PhotoPipelineProbe.noiseProbe(inputs: arguments.dropFirst().map { URL(fileURLWithPath: $0) }) }
+            catch { print("Noise probe failed: \(error)"); exit(1) }
+            return
+        }
+        if arguments.first == "--photo-grain-comparison", arguments.count == 4 {
+            do {
+                try PhotoGrainComparison.run(input: URL(fileURLWithPath: arguments[1]), stock: arguments[2],
+                    directory: URL(fileURLWithPath: arguments[3], isDirectory: true))
+            } catch { print("Grain comparison failed: \(error)"); exit(1) }
+            return
+        }
         if arguments.first == "--photo-probe", arguments.count == 4 {
             do {
                 try PhotoPipelineProbe.run(input: URL(fileURLWithPath: arguments[1]), stock: arguments[2],

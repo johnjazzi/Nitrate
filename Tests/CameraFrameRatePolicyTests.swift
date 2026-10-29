@@ -131,22 +131,26 @@ struct DaylightCapturePolicyLedgerTests {
         #expect(ledger.policies.isEmpty)
     }
 
-    @Test func leavingPhotoHandsTheIdleGraphTheFrameRateShutter() {
-        let at24 = VideoExposureContract.idle(frameRate: .standard24, isManualExposure: false,
-                                              manualISO: 400, bias: -1.2)
-        #expect(abs(at24.durationSeconds - 1.0 / 48.0) < 1e-9)
-        #expect(at24.lockedISO == nil, "Video meters ISO unless the operator holds one")
-        #expect(at24.exposureBias == -1.2)
-
-        let at60 = VideoExposureContract.idle(frameRate: .daylight60, isManualExposure: false,
-                                              manualISO: 400, bias: 0)
-        #expect(abs(at60.durationSeconds - 1.0 / 120.0) < 1e-9)
+    @Test func sharedIdlePreservesOnlyExplicitExposureHolds() {
+        let isoHolds: [Float?] = [nil, 800]
+        let shutterHolds: [Double?] = [nil, 1.0 / 250.0]
+        for rate in CameraFrameRate.allCases {
+            for iso in isoHolds {
+                for duration in shutterHolds {
+                    let idle = VideoExposureContract.idle(frameRate: rate, isManualExposure: iso != nil,
+                        manualISO: iso ?? 400, bias: -1.2, heldDuration: duration)
+                    #expect(idle.durationSeconds == duration)
+                    #expect(idle.lockedISO == iso)
+                    #expect(idle.exposureBias == -1.2)
+                }
+            }
+        }
     }
 
-    @Test func aHeldManualISOComesBackWithTheContract() {
+    @Test func heldISODoesNotAlsoAcquireARecordingShutter() {
         let manual = VideoExposureContract.idle(frameRate: .standard24, isManualExposure: true,
                                                 manualISO: 800, bias: 0)
         #expect(manual.lockedISO == 800)
-        #expect(abs(manual.durationSeconds - 1.0 / 48.0) < 1e-9)
+        #expect(manual.durationSeconds == nil)
     }
 }

@@ -29,6 +29,16 @@ struct PhotoExposureIntentPresentationTests {
         #expect(state.measuredDuration == 0.499901)
     }
 
+    @Test func writerNoOpQuantizationAcknowledgesPendingShutter() {
+        var state = PhotoExposureIntentPresentation(snapshot: snapshot(duration: 0.000997, locked: true))
+        state.select(duration: 0.001)
+        #expect(!PhotoExposureCadence.needsWrite(iso: 100, duration: 0.001,
+                                               actualISO: 100, actualDuration: 0.000997))
+        state.reconcile(snapshot(duration: 0.000997, locked: true))
+        #expect(state.pendingDuration == nil)
+        #expect(state.measuredDuration == 0.000997)
+    }
+
     @Test func selectingDurationLocksAndUnlockCancelsPendingAndFloats() {
         var state = PhotoExposureIntentPresentation(snapshot: snapshot())
         state.select(duration: 1)

@@ -428,6 +428,8 @@ def verify() -> bool:
         return False
     if not run("verify-workflow-tests", [sys.executable, str(ROOT / "scripts" / "test_verify_workflow.py")], kind="test"):
         return False
+    if not run("photo-field-wiring-tests", [sys.executable, str(ROOT / "scripts" / "test_photo_field_wiring.py")], kind="test"):
+        return False
     if not generate_project():
         return False
     project = str(PROJECT_FILE)

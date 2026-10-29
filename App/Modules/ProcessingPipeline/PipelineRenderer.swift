@@ -517,8 +517,9 @@ final class PipelineRenderer: @unchecked Sendable {
         }
     }
 
-    /// One rendered debug frame: the graded, grained image as a drawable BGRA8
-    /// texture plus the backing pixel buffer the debug sheet (and tests) read back.
+    /// One rendered debug frame: numeric Rec.709-primary / gamma-2.4 BGRA8
+    /// film output, NOT directly drawable sRGB. The sheet explicitly converts it
+    /// through FilmOutputDisplayConverter; numeric/effect tests read it unchanged.
     struct DebugFrameRender {
         let texture: MTLTexture
         let pixelBuffer: CVPixelBuffer
@@ -531,9 +532,9 @@ final class PipelineRenderer: @unchecked Sendable {
     /// touches `render(...)` or the recorder: the debug sheet calls this once per
     /// (debounced) slider change and draws the result.
     ///
-    /// `pixelBuffer` must be the RGBA-half layout the offline decoder produces;
-    /// the debug capture converts the live camera frame into that layout. Returns
-    /// nil if the LUT or any GPU stage fails.
+    /// `pixelBuffer` must contain Apple Wide Gamut / Apple Log 2 CODE values in
+    /// RGBA-half storage. The debug source adapter decodes SDR idle into that
+    /// domain; storage alone does not establish it. Returns nil on stage failure.
     func renderDebugFrame(
         pixelBuffer: CVPixelBuffer,
         config: FilmStockConfig,

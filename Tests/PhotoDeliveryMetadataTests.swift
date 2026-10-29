@@ -8,6 +8,27 @@ import UniformTypeIdentifiers
 /// A delivered still must carry the same Nitrate tags as a delivered movie, in
 /// the fields photo apps actually read.
 struct PhotoDeliveryMetadataTests {
+    private final class BundleToken {}
+
+    @Test(arguments: PrintGauge.allCases)
+    func constructedStillResourcesCarryRequestedGaugeIntoJPEG(gauge: PrintGauge) throws {
+        // Start with the catalog, not an already-overridden test config: the
+        // construction seam previously rendered one gauge but tagged 35mm.
+        let film = try StillFilmRenderResources(stockID: "kodak5219", gauge: gauge, seed: 42,
+            bundle: Bundle(for: BundleToken.self))
+        #expect(film.gauge == gauge)
+        #expect(film.config.effectivePrintGauge == gauge)
+        let properties = try writtenProperties(film.config, capture: .init())
+        let recipe = try payload(properties)
+        #expect(recipe["print-gauge"] == gauge.rawValue)
+        let effectiveSize = try #require(recipe["grain-size-effective"].flatMap(Float.init))
+        #expect(abs(effectiveSize - GrainModel.effectiveSize(
+            stockGrainSize: film.config.grainSize, gauge: gauge)) < 0.001)
+        let iptc = try #require(properties[kCGImagePropertyIPTCDictionary] as? [CFString: Any])
+        #expect(iptc[kCGImagePropertyIPTCCaptionAbstract] as? String
+            == "nitrate: \(film.config.displayName) | \(gauge.rawValue)")
+    }
+
     private func config(gauge: PrintGauge?) throws -> FilmStockConfig {
         let stock = FilmStockConfig(stockId: "test", displayName: "Kodak 5219", category: .video,
             lutName: "test.cube", halationStrength: 0, glowStrength: 0, grainSize: 1, defaultISO: 600)
