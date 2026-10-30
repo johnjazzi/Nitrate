@@ -303,6 +303,8 @@ struct ContentView: View {
 
                 // A canvas sibling, not a child painted beyond the shooting bar:
                 // visibility never resizes the preview and the whole button is hittable.
+                // Photo and Develop keep the rescue hidden: neither has a scene the
+                // daylight control can act on, so it must not take their space.
                 if !isDevelopMode, !isPhotoMode, shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
                    let rect = DaylightExposureRescueGeometry.buttonRect(
                     above: exposure, in: geometry.size, rotationDegrees: statusRotationDegrees,
@@ -730,7 +732,8 @@ struct ContentView: View {
         }
     }
 
-    /// Reserve the visible manual surface so the rescue button stays clear.
+    /// Reserve the visible manual surface, not the full camera canvas, so the
+    /// contextual rescue button can stay clear without resizing either surface.
     private func daylightRescueExclusion(in geometry: GeometryProxy) -> CGRect? {
         if legacyManualControlsEnabled {
             guard showManualControls,
