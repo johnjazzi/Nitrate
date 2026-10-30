@@ -47,6 +47,12 @@ final class CameraViewModel {
             } else {
                 self.zoomSnapshot = snapshot
             }
+            // Pinch, lens picker and profile changes all land here, so this is
+            // where the system slider's value and range follow them.
+            self.pushCameraHardwareControls()
+        }
+        session.observeHardwareControlValues { [weak self] adjustment, value, revision in
+            self?.applyCameraHardwareControlValue(adjustment, value, revision: revision)
         }
     }
 
@@ -89,7 +95,7 @@ final class CameraViewModel {
     private(set) var supportsDaylight60 = false
     /// True while an arm/disarm is in flight. Record, lens and exposure actions
     /// are held until the transition settles, mirroring the stabilizer gate.
-    private(set) var isChangingFrameRate = false
+    private(set) var isChangingFrameRate = false { didSet { pushCameraHardwareControls() } }
     /// Guards frame-rate callbacks against lifecycle/generation changes, so a
     /// transition that was in flight when the app backgrounded can never restore
     /// 60 fps on the following foreground session.
@@ -112,14 +118,14 @@ final class CameraViewModel {
         capability: .unavailable, activeRawValue: nil, cameraRevision: 0, changesAllowed: false)
     private(set) var activeLens: CameraLens
     private(set) var zoomSnapshot: CameraZoomSnapshot?
-    private(set) var isSwitchingCameraLens = false
+    private(set) var isSwitchingCameraLens = false { didSet { pushCameraHardwareControls() } }
     var isManualExposure = false
     var manualISO: Float = 400
     /// Capture intent, never a proxy for the device's currently committed graph.
     private(set) var isDevelopmentPhotoMode = false
     /// Observable renderer selection (this model uses @Observable, not Combine).
     private(set) var isVideoCaptureProfileActive = false
-    private(set) var isChangingCaptureProfile = false
+    private(set) var isChangingCaptureProfile = false { didSet { pushCameraHardwareControls() } }
     private var captureProfileWatchdog: Task<Void, Never>?
     var usesSharedIdlePreview: Bool {
 #if DEBUG
@@ -134,7 +140,7 @@ final class CameraViewModel {
     /// the operator's ISO survives the device snapshots that acknowledge it
     /// asynchronously (see `PhotoExposureIntentPresentation`).
     private var photoExposureIntent: PhotoExposureIntentPresentation?
-    private(set) var isPhotoCaptureBusy = false
+    private(set) var isPhotoCaptureBusy = false { didSet { pushCameraHardwareControls() } }
     private(set) var photoCaptureStatus: String?
     /// The banner this mode's shutter raised for a refused tap, so a later
     /// successful capture clears only its own message. Readable by the photo
@@ -161,7 +167,9 @@ final class CameraViewModel {
     /// anyone who has never moved the control) and every user change is saved, so
     /// it survives camera sessions and app launches. It is deliberately NOT reset
     /// at the foreground-session boundary.
-    var liveExposureBias: Float = CameraExposureBiasPreference.load()
+    var liveExposureBias: Float = CameraExposureBiasPreference.load() {
+        didSet { pushCameraHardwareControls() }
+    }
     /// Live metered exposure offset from the device target, in EV (positive =
     /// over). Drives the under/over indicator. `hasExposureMeter` is false until
     /// the device is configured, so the indicator can fall back cleanly.
@@ -193,10 +201,10 @@ final class CameraViewModel {
     /// True from the record tap until the session reports the take started (or
     /// the start fails). Drives the button's immediate pressed affordance, so
     /// the control does not look dead while capture spins up.
-    private(set) var isStartingRecording = false
+    private(set) var isStartingRecording = false { didSet { pushCameraHardwareControls() } }
     /// True from the stop tap until the recorder finishes finalising. Stopping a
     /// take is not instant, so the control has to acknowledge the press itself.
-    private(set) var isStoppingRecording = false
+    private(set) var isStoppingRecording = false { didSet { pushCameraHardwareControls() } }
     /// When the counter counts from, and when stop was requested. The origin is
     /// set at the tap plus the modelled capture delay, so the display is
     /// continuous from the press and matches the file, instead of appearing only
@@ -233,7 +241,7 @@ final class CameraViewModel {
     private let captureJournal = CaptureJournal()
     private var lifecycleGate = CameraLifecycleGate()
     private var configurationInFlight = false
-    private var cameraConfigured = false
+    private var cameraConfigured = false { didSet { pushCameraHardwareControls() } }
 #if DEBUG
     private var didStartDebugSmokeCapture = false
     private var debugPhotoExperimentInFlight = false
@@ -272,6 +280,9 @@ final class CameraViewModel {
     func onSceneActive() {
         trace("scene-active-enter")
         activateCameraIfNeeded()
+        // A background boundary uninstalls the system slider; restore the
+        // operator's selection as soon as the screen is eligible again.
+        pushCameraHardwareControls()
     }
 
     func onSceneInactive() {
@@ -1702,6 +1713,67 @@ final class CameraViewModel {
         // survives the session and the next launch.
         CameraExposureBiasPreference.save(clamped)
         session.setExposureBiasEV(clamped)
+    }
+
+    // MARK: - System Camera Control (hardware slider)
+
+    /// Adjustment the operator selected for the Camera Control button's slider.
+    /// Seeded from the persisted settings value so the slider matches Settings
+    /// even before the screen pushes its first eligibility update.
+    private(set) var hardwareControlAdjustment = CameraControlAdjustment(
+        persistedValue: UserDefaults.standard.string(forKey: CameraControlAdjustment.preferenceKey))
+    /// The screen's own eligibility (foreground, mode, sheet, fault). The view
+    /// model ANDs it with the runtime transitions below; it never writes device
+    /// state on its own.
+    private var areHardwareControlsRequested = false
+
+    /// Parent API: called from `ContentView` whenever the Settings preference or
+    /// the screen's eligibility changes. `enabled == false` keeps the selected
+    /// slider installed but non-interactive, so it reappears without a rebuild.
+    func updateCameraHardwareControls(adjustment: CameraControlAdjustment, enabled: Bool) {
+        hardwareControlAdjustment = adjustment
+        areHardwareControlsRequested = enabled
+        pushCameraHardwareControls()
+    }
+
+    /// Slider interaction is refused while any capture transition owns the
+    /// device. Recording itself is not a transition: zoom stays live because
+    /// `setDisplayZoom` permits it mid-take. An exposure slide would be a dead
+    /// control mid-take (`setExposureBiasEV` deliberately drops device writes
+    /// while recording), so exposure is only offered when nothing is rolling.
+    private var areHardwareControlsEligible: Bool {
+        guard areHardwareControlsRequested, cameraConfigured, lifecycleGate.isActive,
+              !isSwitchingCameraLens, !isChangingFrameRate, !isChangingCaptureProfile,
+              !isPhotoCaptureBusy, !isStartingRecording, !isStoppingRecording,
+              !usesNativeIdlePreview else { return false }
+        switch hardwareControlAdjustment {
+        case .zoom: return true
+        case .exposure: return !isRecording
+        case .off: return false
+        }
+    }
+
+    private func pushCameraHardwareControls() {
+        session.updateHardwareControls(CameraHardwareControlRequest(
+            adjustment: hardwareControlAdjustment,
+            isEnabled: areHardwareControlsEligible,
+            displayZoom: zoomSnapshot?.displayFactor ?? 1,
+            exposureBias: liveExposureBias))
+    }
+
+    /// A slider value re-enters the same setters the touch controls use, so
+    /// shutter priority, photo development and persistence keep their single
+    /// owner. Values produced for an older camera revision are dropped: the
+    /// lens they were measured against is gone.
+    private func applyCameraHardwareControlValue(_ adjustment: CameraControlAdjustment,
+                                                _ value: Float, revision: UInt64) {
+        guard areHardwareControlsEligible else { return }
+        if let snapshot = zoomSnapshot, snapshot.cameraRevision != revision { return }
+        switch adjustment {
+        case .zoom: setDisplayZoom(Double(value))
+        case .exposure: setExposureBias(value)
+        case .off: break
+        }
     }
 
     func toggleManualExposure() {

@@ -212,6 +212,27 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// A session-boundary reset waiting for the active take to drain.
     private var pendingFrameRateReset = false
 
+    // MARK: - Hardware Camera Control slider
+
+    /// The system Camera Control slider. Queue-confined to `sessionQueue`; the
+    /// session keeps the only strong reference because `AVCaptureSession` holds
+    /// its controls delegate weakly.
+    private let hardwareControls: CameraHardwareControls
+    /// Latest request from the UI. Re-applied on every zoom publish so the
+    /// slider's revision, range and value follow lens, format and profile
+    /// changes without the UI having to push again. Queue-confined.
+    private var hardwareControlRequest: CameraHardwareControlRequest?
+    private var hardwareControlObserver: (@MainActor @Sendable (CameraControlAdjustment, Float, UInt64) -> Void)?
+
+    override init() {
+        hardwareControls = CameraHardwareControls(session: session, queue: sessionQueue)
+        super.init()
+        hardwareControls.onValueChange = { [weak self] adjustment, value, revision in
+            guard let self, let observer = self.hardwareControlObserver else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { observer(adjustment, value, revision) } }
+        }
+    }
+
     /// Head offset for the take that most recently started.
     func recordingHeadOffset() -> TimeInterval {
         recordingStateLock.lock()
@@ -1693,6 +1714,56 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
     }
 
+    // MARK: - Hardware Camera Control slider
+
+    /// Installs, updates or removes the single system Camera Control slider.
+    /// Callable from any thread: the session resolves the device ranges and the
+    /// camera revision on its own queue, so a range captured on the main actor
+    /// can never be presented against a newer lens. Rejects the request only
+    /// through the contained controller (unsupported session, `.off`, or an
+    /// unusable range leaves no slider).
+    func updateHardwareControls(_ request: CameraHardwareControlRequest) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.hardwareControlRequest = request
+            self.hardwareControls.apply(self.hardwareControlConfiguration(request))
+        }
+    }
+
+    /// Receives slider values on the main actor together with the camera
+    /// revision the slider was resolved for, so the view model can drop a value
+    /// produced before a lens switch committed.
+    func observeHardwareControlValues(
+        _ observer: @escaping @MainActor @Sendable (CameraControlAdjustment, Float, UInt64) -> Void) {
+        sessionQueue.async { [weak self] in
+            self?.hardwareControlObserver = observer
+        }
+    }
+
+    /// Queue-confined. Device truth wins over the request: bounds, EV range and
+    /// revision are read live, and the requested value is clamped into them.
+    private func hardwareControlConfiguration(_ request: CameraHardwareControlRequest)
+        -> CameraHardwareControlConfiguration {
+        var zoomRange: ClosedRange<Float> = 1...1
+        var zoomValue: Float = 1
+        if let device = activeDevice, let bounds = zoomBounds(for: device),
+           bounds.minimumDisplay.isFinite, bounds.maximumDisplay.isFinite,
+           bounds.minimumDisplay <= bounds.maximumDisplay {
+            let minimum = Float(bounds.minimumDisplay)
+            let maximum = Float(bounds.maximumDisplay)
+            zoomRange = minimum...maximum
+            let requested = request.displayZoom.isFinite ? Float(request.displayZoom) : minimum
+            zoomValue = min(max(requested, minimum), maximum)
+        }
+        let exposure = exposureBiasRange
+        let exposureValue = min(max(request.exposureBias, exposure.lowerBound), exposure.upperBound)
+        return CameraHardwareControlConfiguration(
+            adjustment: request.adjustment, isEnabled: request.isEnabled,
+            zoomRange: zoomRange, zoomValue: zoomValue,
+            exposureRange: exposure, exposureValue: exposureValue,
+            cameraRevision: zoomLifecycle.cameraRevision)
+    }
+
     private func publishZoom() {
         let snapshot: CameraZoomSnapshot?
         if let device = activeDevice, let bounds = zoomBounds(for: device) {
@@ -1708,6 +1779,12 @@ final class CameraSession: NSObject, @unchecked Sendable {
                                           }(),
                                           displayMultiplier: bounds.multiplier)
         } else { snapshot = nil }
+        // Keep the system slider's revision, range and value aligned with the
+        // device after every lens, format and profile change, and after every
+        // zoom the touch UI drives.
+        if let request = hardwareControlRequest {
+            hardwareControls.apply(hardwareControlConfiguration(request))
+        }
         if let zoomObserver {
             DispatchQueue.main.async { MainActor.assumeIsolated { zoomObserver(snapshot) } }
         }
@@ -4509,6 +4586,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
     func stop() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            // The system control must not outlive the graph it drives.
+            self.hardwareControls.uninstall()
             self.desiredSessionRunning = false
 #if DEBUG
             if self.sharedIdleEnabled {
