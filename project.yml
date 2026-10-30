@@ -363,6 +363,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraFocalZoomPolicy.swift
       - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
       - path: App/Modules/CameraCapture/CameraFrameRatePolicy.swift
+      - path: App/Modules/CameraCapture/CameraAutofocusPolicy.swift
       - path: App/Modules/CameraCapture/StockSelectorHintPolicy.swift
       - path: App/Modules/CameraCapture/PhotoCapturePolicy.swift
       - path: App/Modules/CameraCapture/PhotoExposureSnapshot.swift

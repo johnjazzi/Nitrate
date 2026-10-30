@@ -1966,19 +1966,49 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
     /// The one place points of interest are written, shared by tap-to-focus and
     /// the switch reset so the visible box and the device cannot drift apart.
-    /// Autofocus is re-armed only when the manual-focus contract allows it; the
-    /// exposure point always follows the point, which moves the metering area
-    /// without changing a locked exposure's ISO or duration.
+    /// The mode is continuous wherever the device supports it, so the selected
+    /// circle keeps refocusing as the scene distance changes instead of focusing
+    /// once per tap; a device without continuous autofocus keeps the one-shot
+    /// fallback. Autofocus is re-armed only when the manual-focus contract
+    /// allows it; the exposure point always follows the point, which moves the
+    /// metering area without changing a locked exposure's ISO or duration.
     private func writeFocusAndExposurePoint(_ point: CGPoint, on device: AVCaptureDevice) {
         if device.isFocusPointOfInterestSupported,
-           device.isFocusModeSupported(.autoFocus),
+           let mode = Self.autofocusMode(for: device),
            CameraManualFocusPolicy.allowsAutofocusOnTap(
                committedLensPosition: committedManualFocusLensPosition) {
             device.focusPointOfInterest = point
-            device.focusMode = .autoFocus
+            device.focusMode = mode
         }
         if device.isExposurePointOfInterestSupported {
             device.exposurePointOfInterest = point
+        }
+#if DEBUG
+        if CommandLine.arguments.contains("--trace-camera-control") {
+            // One line per request: which mode this format actually offers, what
+            // the request installed, whether a committed manual focus held the
+            // lens, and whether the active format could track the subject. The
+            // tracking property is read only — enabling it is a separate change.
+            let requested = Self.autofocusMode(for: device).map { String($0.rawValue) } ?? "none"
+            print("[CameraControl] af point=(\(String(format: "%.3f", point.x)),"
+                + "\(String(format: "%.3f", point.y))) requested=\(requested)"
+                + " active=\(device.focusMode.rawValue)"
+                + " manualHeld=\(committedManualFocusLensPosition != nil)"
+                + " trackingSupported=\(device.activeFormat.isContinuousAutoFocusTrackingSupported)"
+                + " trackingEnabled=\(device.isContinuousAutoFocusTrackingEnabled)")
+        }
+#endif
+    }
+
+    /// Map the point-of-interest mode decision onto the device's own modes.
+    /// MUST be called on `sessionQueue`.
+    private static func autofocusMode(for device: AVCaptureDevice) -> AVCaptureDevice.FocusMode? {
+        switch CameraAutofocusPolicy.mode(
+            supportsContinuous: device.isFocusModeSupported(.continuousAutoFocus),
+            supportsSingle: device.isFocusModeSupported(.autoFocus)) {
+        case .continuous: return .continuousAutoFocus
+        case .single: return .autoFocus
+        case nil: return nil
         }
     }
 
@@ -2024,17 +2054,18 @@ final class CameraSession: NSObject, @unchecked Sendable {
         } catch { reportCameraError(error) }
     }
 
-    /// Return the lens to continuous auto-focus and drop the committed MF state.
+    /// Return the lens to continuous auto-focus (or the single-shot mode the
+    /// device supports) and drop the committed MF state.
     func resetAutoFocus() {
         sessionQueue.async { [weak self] in
             guard let self, !self.sharedDeviceTransitionInFlight else { return }
             self.committedManualFocusLensPosition = nil
             guard let device = self.activeDevice,
-                  device.isFocusModeSupported(.continuousAutoFocus) else { return }
+                  let mode = Self.autofocusMode(for: device) else { return }
             do {
                 try device.lockForConfiguration()
                 defer { device.unlockForConfiguration() }
-                device.focusMode = .continuousAutoFocus
+                device.focusMode = mode
             } catch { self.reportCameraError(error) }
         }
     }
