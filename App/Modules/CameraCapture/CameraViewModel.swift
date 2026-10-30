@@ -177,7 +177,7 @@ final class CameraViewModel {
     /// Normalised (0–1) preview point where exposure is metered: the frame
     /// centre by default, the tapped point after a tap-to-focus. Anchors the
     /// exposure box on the preview.
-    var meteringPoint = CGPoint(x: 0.5, y: 0.5)
+    var meteringPoint = CameraSession.focusPointCenter
 
     // AD-8: Max clip duration
     static let maxClipDuration: TimeInterval = 300 // 5 minutes
@@ -1027,6 +1027,15 @@ final class CameraViewModel {
         meteringPoint = CGPoint(x: min(max(point.x, 0), 1), y: min(max(point.y, 0), 1))
     }
 
+    /// Return the focus area to the frame centre after a committed camera or
+    /// shooting-mode change. The visible box and the device's points of interest
+    /// move together; held exposure, manual focus and white balance are left as
+    /// the operator set them.
+    func resetFocusAreaToCenter() {
+        setMeteringPoint(CameraSession.focusPointCenter)
+        session.recenterFocusAndExposurePoint()
+    }
+
     /// Switch the active lens and refresh tap-to-focus for the new device.
     /// Completion runs on the main queue; `nil` error means the swap succeeded.
     func selectLens(_ lens: CameraLens, preservingFocalZoom: Bool = false, completion: @escaping (Error?) -> Void) {
@@ -1057,6 +1066,7 @@ final class CameraViewModel {
         clearStaleApertureError()
         invalidateApertureUIState()
         invalidateStabilizationUIState()
+        let previousLens = activeLens
         session.selectCamera(lens) { [weak self] error in
             guard let self else { return }
             if error == nil {
@@ -1065,6 +1075,13 @@ final class CameraViewModel {
                 // subsequent failure leaves the UI on the actual camera.
                 self.activeLens = lens
                 self.photoCropZoom = 1
+                // A committed switch starts metering at the centre of the new
+                // lens, whether it came from the lens picker or a pinch. A
+                // rejected switch keeps the operator's chosen area, and a
+                // same-lens success is not a switch at all.
+                if previousLens != lens {
+                    self.resetFocusAreaToCenter()
+                }
             }
             self.pendingLensSwitchCount = max(0, self.pendingLensSwitchCount - 1)
             self.isSwitchingCameraLens = self.pendingLensSwitchCount > 0
@@ -1266,6 +1283,10 @@ final class CameraViewModel {
         else {
             restoreVideoExposurePresentation()
         }
+        // The photo graph and the video graph meter on the same device, so a
+        // committed mode change carries the previous tap's point of interest
+        // across. Start the new mode at the centre.
+        resetFocusAreaToCenter()
         completion(.success(()))
     }
 

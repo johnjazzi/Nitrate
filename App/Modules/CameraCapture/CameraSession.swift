@@ -77,6 +77,9 @@ private struct CameraOrientationSessionReference: @unchecked Sendable {
 /// after a write. `let` dependencies (queues, capture objects) are immutable
 /// after `init`.
 final class CameraSession: NSObject, @unchecked Sendable {
+    /// Normalised frame centre, the focus/metering point every switch returns to.
+    static let focusPointCenter = CGPoint(x: 0.5, y: 0.5)
+
     let session = AVCaptureSession()
     fileprivate let sessionQueue = DispatchQueue(label: "camera.session")
     private let sampleBufferQueue = DispatchQueue(label: "camera.sample-buffer-writer")
@@ -1763,16 +1766,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             do {
                 try device.lockForConfiguration()
                 defer { device.unlockForConfiguration() }
-                if device.isFocusPointOfInterestSupported,
-                   device.isFocusModeSupported(.autoFocus),
-                   CameraManualFocusPolicy.allowsAutofocusOnTap(
-                       committedLensPosition: self.committedManualFocusLensPosition) {
-                    device.focusPointOfInterest = point
-                    device.focusMode = .autoFocus
-                }
-                if device.isExposurePointOfInterestSupported {
-                    device.exposurePointOfInterest = point
-                }
+                self.writeFocusAndExposurePoint(point, on: device)
             } catch { self.reportCameraError(error) }
             // A new metering point means the held exposure is no longer the one
             // the user asked for: drop the pin and re-meter for the new area.
@@ -1782,6 +1776,46 @@ final class CameraSession: NSObject, @unchecked Sendable {
             if self.isShutterPriority, !self.isRecordingOrPending {
                 self.pinShutterToFilm()
             }
+        }
+    }
+
+    /// Return the focus and exposure point of interest to the centre of the
+    /// frame after a committed camera or shooting-mode change.
+    ///
+    /// The tap path's metering consequences are deliberately absent: a switch
+    /// must not drop the held exposure pin, re-pin the film shutter, or re-arm
+    /// autofocus over a committed manual-focus lock. White balance is untouched.
+    ///
+    /// Unlike a tap, this does not wait for the shared graph to settle: the
+    /// write is the state the new graph should have anyway, and skipping it
+    /// while the switch drains would leave the fresh device metering wherever
+    /// the previous one was last tapped.
+    func recenterFocusAndExposurePoint() {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.activeDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                self.writeFocusAndExposurePoint(CameraSession.focusPointCenter, on: device)
+            } catch { self.reportCameraError(error) }
+        }
+    }
+
+    /// The one place points of interest are written, shared by tap-to-focus and
+    /// the switch reset so the visible box and the device cannot drift apart.
+    /// Autofocus is re-armed only when the manual-focus contract allows it; the
+    /// exposure point always follows the point, which moves the metering area
+    /// without changing a locked exposure's ISO or duration.
+    private func writeFocusAndExposurePoint(_ point: CGPoint, on device: AVCaptureDevice) {
+        if device.isFocusPointOfInterestSupported,
+           device.isFocusModeSupported(.autoFocus),
+           CameraManualFocusPolicy.allowsAutofocusOnTap(
+               committedLensPosition: committedManualFocusLensPosition) {
+            device.focusPointOfInterest = point
+            device.focusMode = .autoFocus
+        }
+        if device.isExposurePointOfInterestSupported {
+            device.exposurePointOfInterest = point
         }
     }
 

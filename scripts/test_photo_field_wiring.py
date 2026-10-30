@@ -6,6 +6,16 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def section(text, start, end=None):
+    """The source slice after `start`, so a missing seam fails as an assertion."""
+    assert start in text, f'missing source seam: {start}'
+    body = text.split(start, 1)[1]
+    if end is not None:
+        assert end in body, f'missing source seam: {end}'
+        body = body.split(end, 1)[0]
+    return body
+
+
 class PhotoFieldWiringTests(unittest.TestCase):
     def setUp(self):
         self.content = (ROOT / 'App/ContentView.swift').read_text()
@@ -58,6 +68,63 @@ class PhotoFieldWiringTests(unittest.TestCase):
         controller = (ROOT / 'App/Modules/CameraCapture/DevelopmentPhotoController.swift').read_text()
         self.assertGreaterEqual(controller.count('rotationAngle: pending.rotationAngle'), 3)
         self.assertIn('rotationAngle: rotationAngle', controller)
+
+    def test_focus_area_reset_moves_indicator_and_device_together(self):
+        view_model = (ROOT / 'App/Modules/CameraCapture/CameraViewModel.swift').read_text()
+        body = section(view_model, 'func resetFocusAreaToCenter()', '\n    }')
+        self.assertIn('setMeteringPoint(', body)
+        self.assertIn('session.recenterFocusAndExposurePoint()', body)
+
+    def test_focus_points_of_interest_written_in_one_place(self):
+        # The tap path and the switch reset must share the device write; a second
+        # copy of the point assignments is how the box and the sensor drift apart.
+        session = (ROOT / 'App/Modules/CameraCapture/CameraSession.swift').read_text()
+        self.assertEqual(session.count('device.focusPointOfInterest = point'), 1)
+        self.assertEqual(session.count('device.exposurePointOfInterest = point'), 1)
+        self.assertEqual(session.count('.focusPointOfInterest = '), 1)
+        self.assertEqual(session.count('.exposurePointOfInterest = '), 1)
+        recenter = section(session, 'func recenterFocusAndExposurePoint()', '\n    }')
+        self.assertIn('writeFocusAndExposurePoint(', recenter)
+
+    def test_focus_area_reset_keeps_manual_locks_and_white_balance(self):
+        session = (ROOT / 'App/Modules/CameraCapture/CameraSession.swift').read_text()
+        recenter = section(session, 'func recenterFocusAndExposurePoint()', '\n    }')
+        # A switch reset must not drop a held exposure pin or re-pin the film
+        # shutter; it moves the metering area only.
+        self.assertNotIn('invalidateMetering()', recenter)
+        self.assertNotIn('pinShutterToFilm()', recenter)
+        self.assertNotIn('applyWhiteBalanceLock', recenter)
+        helper = section(session, 'private func writeFocusAndExposurePoint(', '\n    }')
+        self.assertIn('CameraManualFocusPolicy.allowsAutofocusOnTap(', helper)
+        self.assertNotIn('exposureMode =', helper)
+        self.assertNotIn('focusMode = .locked', helper)
+
+    def test_lens_switch_resets_only_after_a_successful_real_switch(self):
+        view_model = (ROOT / 'App/Modules/CameraCapture/CameraViewModel.swift').read_text()
+        body = section(view_model, 'func selectLens(_ lens: CameraLens',
+                       'private func restoreExposureAfterLensSwitch')
+        self.assertEqual(body.count('resetFocusAreaToCenter()'), 1)
+        reset_at = body.index('resetFocusAreaToCenter()')
+        self.assertGreater(reset_at, body.index('if error == nil {'))
+        self.assertGreater(reset_at, body.index('previousLens != lens'))
+        self.assertGreater(reset_at, body.index('session.selectCamera(lens)'))
+
+    def test_photo_mode_change_resets_only_after_the_switch_commits(self):
+        view_model = (ROOT / 'App/Modules/CameraCapture/CameraViewModel.swift').read_text()
+        body = section(view_model, 'func setDevelopmentPhotoMode(_ enabled: Bool',
+                       'private func presentPhotoExposure')
+        self.assertEqual(body.count('resetFocusAreaToCenter()'), 1)
+        self.assertGreater(body.index('resetFocusAreaToCenter()'),
+                           body.index('isDevelopmentPhotoMode = enabled'))
+        self.assertGreater(body.index('resetFocusAreaToCenter()'),
+                           body.index('guard enabled != isDevelopmentPhotoMode'))
+
+    def test_content_view_resets_on_a_committed_non_photo_mode_change(self):
+        body = section(self.content, 'private func selectCameraMode(_ mode: CameraMode)',
+                       'private func controlBarHorizontalInset')
+        self.assertIn('cameraViewModel.resetFocusAreaToCenter()', body)
+        reset_at = body.rindex('cameraViewModel.resetFocusAreaToCenter()')
+        self.assertGreater(reset_at, body.index('cameraMode.select(mode, enabled: true'))
 
     def test_debug_snapshots_selected_gauge(self):
         body = self.content.split('private func openDebugFrame()', 1)[1].split('\n    }', 1)[0]

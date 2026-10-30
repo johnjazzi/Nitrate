@@ -1202,6 +1202,9 @@ struct ContentView: View {
             return
         }
         guard cameraMode.select(mode, enabled: true, photoAvailable: photoModeAvailable) else { return }
+        // Develop shares the video graph, so its commits land here; the photo
+        // transitions reset from the camera model once their graph commits.
+        cameraViewModel.resetFocusAreaToCenter()
         if mode == .video {
             developModel.leaveDevelop()
         } else {
