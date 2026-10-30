@@ -252,90 +252,16 @@ final class CameraSession: NSObject, @unchecked Sendable {
         defer { recordingStateLock.unlock() }
         return recordedStartHeadOffset
     }
-#if DEBUG
-    private var debugSmokeURL: URL?
-    private var debugSmokeTimedOut = false
-    /// References and mutations are confined to sessionQueue.
-    private final class DebugPhotoRun: @unchecked Sendable {
-        let device: AVCaptureDevice
-        let format: AVCaptureDevice.Format
-        let color: AVCaptureColorSpace
-        let minimumFrame: CMTime
-        let maximumFrame: CMTime
-        let maximumExposure: CMTime
-        let exposureMode: AVCaptureDevice.ExposureMode
-        let iso: Float
-        let duration: CMTime
-        let bias: Float
-        let whiteBalanceMode: AVCaptureDevice.WhiteBalanceMode
-        let gains: AVCaptureDevice.WhiteBalanceGains
-        let zoom: CGFloat
-        let inputs: [AVCaptureInput]
-        let outputs: [AVCaptureOutput]
-        let preset: AVCaptureSession.Preset
-        let videoSettings: [String: Any]
-        let shutterPriority: Bool
-        let directory: URL
-        let completion: @MainActor @Sendable (Result<URL, Error>) -> Void
-        var shouldRestart: Bool
-        var interrupted = false
-        var graphChanged = false
-        var evidence: [String: String]
-        var restorationBarrier: PhotoCompletionBarrier
-        var restorationStarted = false
-        var restorationFailure: String?
-        var captureFailure: String?
 
-        init(owner: CameraSession, device: AVCaptureDevice, directory: URL,
-             completion: @escaping @MainActor @Sendable (Result<URL, Error>) -> Void) {
-            self.device = device
-            format = device.activeFormat
-            color = device.activeColorSpace
-            minimumFrame = device.activeVideoMinFrameDuration
-            maximumFrame = device.activeVideoMaxFrameDuration
-            maximumExposure = device.activeMaxExposureDuration
-            exposureMode = device.exposureMode
-            iso = device.iso
-            duration = device.exposureDuration
-            bias = device.exposureTargetBias
-            whiteBalanceMode = device.whiteBalanceMode
-            gains = device.deviceWhiteBalanceGains
-            zoom = device.videoZoomFactor
-            inputs = owner.session.inputs
-            outputs = owner.session.outputs
-            preset = owner.session.sessionPreset
-            videoSettings = owner.videoOutput.videoSettings
-            shutterPriority = owner.isShutterPriority
-            shouldRestart = owner.session.isRunning
-            self.directory = directory
-            self.completion = completion
-            var required: Set<PhotoCompletionStep> = [.graphConfigured, .biasApplied]
-            if exposureMode == .custom || exposureMode == .locked { required.insert(.exposureApplied) }
-            if whiteBalanceMode == .locked { required.insert(.whiteBalanceApplied) }
-            restorationBarrier = PhotoCompletionBarrier(waitingFor: required)
-            evidence = ["status": "prepared", "lens": owner.activeLens.rawValue,
-                        "deviceType": device.deviceType.rawValue,
-                        "videoFormat": CameraSession.captureFormatSubtypeDescription(device.activeFormat),
-                        "videoColorSpace": String(device.activeColorSpace.rawValue),
-                        "videoMinFrameSeconds": String(device.activeVideoMinFrameDuration.seconds),
-                        "videoMaxFrameSeconds": String(device.activeVideoMaxFrameDuration.seconds),
-                        "videoMaxExposureSeconds": String(device.activeMaxExposureDuration.seconds),
-                        "videoExposureMode": String(device.exposureMode.rawValue),
-                        "videoISO": String(device.iso), "videoExposureSeconds": String(device.exposureDuration.seconds),
-                        "videoBias": String(device.exposureTargetBias),
-                        "videoWBMode": String(device.whiteBalanceMode.rawValue),
-                        "videoWBGains": "\(gains.redGain),\(gains.greenGain),\(gains.blueGain)",
-                        "videoZoom": String(Double(device.videoZoomFactor)), "videoPreset": owner.session.sessionPreset.rawValue,
-                        "inputTypes": inputs.map { String(describing: type(of: $0)) }.joined(separator: ","),
-                        "outputTypes": outputs.map { String(describing: type(of: $0)) }.joined(separator: ","),
-                        "os": ProcessInfo.processInfo.operatingSystemVersionString,
-                        "videoAudioProof": "notRun"]
-        }
-    }
-    private var debugPhotoRun: DebugPhotoRun?
-    private var debugPhotoCapture: CameraPhotoCapture?
+    // MARK: - Photo runtime and the shared idle graph
+
+    /// Photo's controller over the shared idle device. Present while the still
+    /// profile owns the graph; nil in Video.
     private var developmentPhotoController: DevelopmentPhotoController?
-    private var developmentPhotoSnapshot: DebugPhotoRun?
+    /// Directory the current Photo session writes stills into. Held here rather
+    /// than only in the controller so a lens switch can rebuild the controller
+    /// against the same session folder. Also the proof that Photo owns the graph.
+    private var developmentPhotoDirectory: URL?
     private var developmentPhotoExitCompletion: (@MainActor @Sendable (Result<Void, Error>) -> Void)?
     private var developmentPhotoExitWaiters: [@MainActor @Sendable (Result<Void, Error>) -> Void] = []
     private var developmentPhotoUpdate: (@MainActor @Sendable (PhotoExposureSnapshot) -> Void)?
@@ -358,13 +284,31 @@ final class CameraSession: NSObject, @unchecked Sendable {
     private var sharedVideoRequest: SharedVideoRequest?
     private var sharedLaunchScheduledEpoch: UInt64?
 
+    /// Whether this build is Debug. Availability is decided by
+    /// `DevelopmentPhotoFeature` from a real build flag — never asserted here.
+#if DEBUG
+    private static let isDebugBuild = true
+#else
+    private static let isDebugBuild = false
+#endif
+
+    /// True while Photo's still profile owns the graph: the Debug smoke run is
+    /// installed, or a Photo controller holds a still directory.
+    private var isPhotoCaptureGraphInstalled: Bool {
+#if DEBUG
+        developmentPhotoSnapshot != nil || developmentPhotoDirectory != nil
+#else
+        developmentPhotoDirectory != nil
+#endif
+    }
+
     /// Enabled only for the development Photo feature. Production Video retains
     /// its original Log2 lifecycle when the feature is unavailable.
     func enableSharedIdlePreview(
         onUpdate: @escaping @MainActor @Sendable (CameraSessionDeliveryContext, PhotoExposureSnapshot) -> Void,
         onProfile: @escaping @MainActor @Sendable (CameraSessionDeliveryContext, Bool, Bool, Bool) -> Void) {
         sessionQueue.async {
-            guard DevelopmentPhotoFeature.isAvailable(isDebugBuild: true,
+            guard DevelopmentPhotoFeature.isAvailable(isDebugBuild: Self.isDebugBuild,
                 bundleIdentifier: Bundle.main.bundleIdentifier ?? "") else { return }
             self.sharedIdleEnabled = true
             self.sharedSnapshotObserver = onUpdate
@@ -479,7 +423,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
     private func finishFailedSharedGraphTransition(_ lease: SharedCameraGraphOwnership.Lease, error: Error) {
         guard sharedGraph.owns(lease) else { return }
         developmentPhotoController = nil
+        developmentPhotoDirectory = nil
+#if DEBUG
         developmentPhotoSnapshot = nil
+#endif
         isConfigured = false
         sharedGraph.finish(lease, actual: .stopped)
         if sharedGraph.desired == lease.target {
@@ -509,9 +456,15 @@ final class CameraSession: NSObject, @unchecked Sendable {
             output = retained
             try configureNativePhotoDevice(device)
         } else {
+#if DEBUG
+            // The Debug smoke path keeps its evidence-carrying graph install so
+            // its restored-video proof still has the saved run to compare with.
             let run = DebugPhotoRun(owner: self, device: device, directory: directory) { _ in }
             developmentPhotoSnapshot = run
             output = try configureDebugPhotoGraph(run)
+#else
+            output = try installNativePhotoGraph(device)
+#endif
             retainedPhotoOutput = output
         }
         selectedLensAperture = sharedPhotoIntent?.aperture
@@ -557,7 +510,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
         guard session.isRunning else { throw CameraError.noCameraAvailable }
         isConfigured = true
         suspendPreview(false)
+#if DEBUG
         developmentPhotoSnapshot = nil
+#endif
+        developmentPhotoDirectory = nil
         publishZoom()
     }
 
@@ -675,6 +631,93 @@ final class CameraSession: NSObject, @unchecked Sendable {
         driveSharedGraph()
     }
 
+#if DEBUG
+    private var debugSmokeURL: URL?
+    private var debugSmokeTimedOut = false
+
+    /// References and mutations are confined to sessionQueue.
+    private final class DebugPhotoRun: @unchecked Sendable {
+        let device: AVCaptureDevice
+        let format: AVCaptureDevice.Format
+        let color: AVCaptureColorSpace
+        let minimumFrame: CMTime
+        let maximumFrame: CMTime
+        let maximumExposure: CMTime
+        let exposureMode: AVCaptureDevice.ExposureMode
+        let iso: Float
+        let duration: CMTime
+        let bias: Float
+        let whiteBalanceMode: AVCaptureDevice.WhiteBalanceMode
+        let gains: AVCaptureDevice.WhiteBalanceGains
+        let zoom: CGFloat
+        let inputs: [AVCaptureInput]
+        let outputs: [AVCaptureOutput]
+        let preset: AVCaptureSession.Preset
+        let videoSettings: [String: Any]
+        let shutterPriority: Bool
+        let directory: URL
+        let completion: @MainActor @Sendable (Result<URL, Error>) -> Void
+        var shouldRestart: Bool
+        var interrupted = false
+        var graphChanged = false
+        var evidence: [String: String]
+        var restorationBarrier: PhotoCompletionBarrier
+        var restorationStarted = false
+        var restorationFailure: String?
+        var captureFailure: String?
+
+        init(owner: CameraSession, device: AVCaptureDevice, directory: URL,
+             completion: @escaping @MainActor @Sendable (Result<URL, Error>) -> Void) {
+            self.device = device
+            format = device.activeFormat
+            color = device.activeColorSpace
+            minimumFrame = device.activeVideoMinFrameDuration
+            maximumFrame = device.activeVideoMaxFrameDuration
+            maximumExposure = device.activeMaxExposureDuration
+            exposureMode = device.exposureMode
+            iso = device.iso
+            duration = device.exposureDuration
+            bias = device.exposureTargetBias
+            whiteBalanceMode = device.whiteBalanceMode
+            gains = device.deviceWhiteBalanceGains
+            zoom = device.videoZoomFactor
+            inputs = owner.session.inputs
+            outputs = owner.session.outputs
+            preset = owner.session.sessionPreset
+            videoSettings = owner.videoOutput.videoSettings
+            shutterPriority = owner.isShutterPriority
+            shouldRestart = owner.session.isRunning
+            self.directory = directory
+            self.completion = completion
+            var required: Set<PhotoCompletionStep> = [.graphConfigured, .biasApplied]
+            if exposureMode == .custom || exposureMode == .locked { required.insert(.exposureApplied) }
+            if whiteBalanceMode == .locked { required.insert(.whiteBalanceApplied) }
+            restorationBarrier = PhotoCompletionBarrier(waitingFor: required)
+            evidence = ["status": "prepared", "lens": owner.activeLens.rawValue,
+                        "deviceType": device.deviceType.rawValue,
+                        "videoFormat": CameraSession.captureFormatSubtypeDescription(device.activeFormat),
+                        "videoColorSpace": String(device.activeColorSpace.rawValue),
+                        "videoMinFrameSeconds": String(device.activeVideoMinFrameDuration.seconds),
+                        "videoMaxFrameSeconds": String(device.activeVideoMaxFrameDuration.seconds),
+                        "videoMaxExposureSeconds": String(device.activeMaxExposureDuration.seconds),
+                        "videoExposureMode": String(device.exposureMode.rawValue),
+                        "videoISO": String(device.iso), "videoExposureSeconds": String(device.exposureDuration.seconds),
+                        "videoBias": String(device.exposureTargetBias),
+                        "videoWBMode": String(device.whiteBalanceMode.rawValue),
+                        "videoWBGains": "\(gains.redGain),\(gains.greenGain),\(gains.blueGain)",
+                        "videoZoom": String(Double(device.videoZoomFactor)), "videoPreset": owner.session.sessionPreset.rawValue,
+                        "inputTypes": inputs.map { String(describing: type(of: $0)) }.joined(separator: ","),
+                        "outputTypes": outputs.map { String(describing: type(of: $0)) }.joined(separator: ","),
+                        "os": ProcessInfo.processInfo.operatingSystemVersionString,
+                        "videoAudioProof": "notRun"]
+        }
+    }
+    private var debugPhotoRun: DebugPhotoRun?
+    private var debugPhotoCapture: CameraPhotoCapture?
+    private var developmentPhotoSnapshot: DebugPhotoRun?
+#endif
+
+#if DEBUG
     /// Phase timestamps for the current start request, so the request-to-running
     /// latency can be attributed to a specific stage instead of guessed at.
     private struct StartPhases {
@@ -725,9 +768,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             self.previewTap.setEnabled(false)
             self.previewOwner = owner
             self.previewTap.set(owner: owner, tap: tap)
-#if DEBUG
-            guard self.developmentPhotoSnapshot == nil else { return }
-#endif
+            guard !self.isPhotoCaptureGraphInstalled else { return }
             self.session.beginConfiguration()
             self.attachPreviewOutput()
             self.session.commitConfiguration()
@@ -801,30 +842,19 @@ final class CameraSession: NSObject, @unchecked Sendable {
     }
 
     private var sharedDeviceTransitionInFlight: Bool {
-#if DEBUG
         sharedIdleEnabled && (sharedGraph.isBusy || photoLensOwnership.isPending || sharedGraph.actual != sharedGraph.desired)
-#else
-        false
-#endif
     }
 
     /// Whether the experimental shared idle graph owns the session. The graph and
-    /// its Photo controller are Debug-only; Release always runs Video's original
-    /// single graph, so nothing there can detach the recording connection.
+    /// its Photo controller are runtime state in both configurations: enabling the
+    /// feature detaches the recording connection, so every Video writer routes
+    /// through the lease-aware gates above instead of writing the device directly.
     private var sharedIdleLeaseActive: Bool {
-#if DEBUG
         sharedIdleEnabled
-#else
-        false
-#endif
     }
 
     private var defersVideoDeviceWrites: Bool {
-#if DEBUG
-        return sharedIdleEnabled && (sharedGraph.actual != .video || sharedGraph.desired != .video || sharedGraph.isBusy)
-#else
-        return false
-#endif
+        sharedIdleEnabled && (sharedGraph.actual != .video || sharedGraph.desired != .video || sharedGraph.isBusy)
     }
 
     /// Whether the shared idle profile's *exposure* writes must be handed to
@@ -839,12 +869,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// and EV controls moved the readout and left the device untouched. Video ISO
     /// did nothing at all in exactly that state.
     private var defersVideoExposureWrites: Bool {
-#if DEBUG
         if sharedDeviceTransitionInFlight { return true }
         return developmentPhotoController != nil
-#else
-        return false
-#endif
     }
 
     /// Opt-in exposure trace (`--trace-photo-exposure`), sharing the photo trace
@@ -1563,7 +1589,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
     func selectCamera(_ lens: CameraLens, completion: @escaping @MainActor @Sendable (Error?) -> Void) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-#if DEBUG
             if self.sharedIdleEnabled, !self.sharedGraph.acceptsIdleControls {
                 DispatchQueue.main.async { completion(CameraError.frameRateTransitionInProgress) }; return
             }
@@ -1578,7 +1603,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 }
                 return
             }
-#endif
             if self.activeLens == lens, self.isConfigured {
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(nil) } }
                 return
@@ -1838,11 +1862,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             guard let self, self.zoomLifecycle.cameraRevision == revision,
                   let device = self.activeDevice, let bounds = self.zoomBounds(for: device),
                   let requestedTarget = bounds.target(factor) else { return }
-#if DEBUG
-            let target = self.developmentPhotoSnapshot != nil ? 1.0 : requestedTarget
-#else
-            let target = requestedTarget
-#endif
+            let target = self.isPhotoCaptureGraphInstalled ? 1.0 : requestedTarget
             self.cancelZoomOnQueue()
             do {
                 try device.lockForConfiguration()
@@ -1858,9 +1878,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             guard let self, self.zoomLifecycle.cameraRevision == revision,
                   let device = self.activeDevice, let bounds = self.zoomBounds(for: device) else { return }
             self.cancelZoomOnQueue()
-            #if DEBUG
-            guard self.developmentPhotoSnapshot == nil else { self.publishZoom(); return }
-#endif
+            guard !self.isPhotoCaptureGraphInstalled else { self.publishZoom(); return }
             let endpoint = direction == .in ? bounds.maximumDevice : bounds.minimumDevice
             guard abs(Double(device.videoZoomFactor) - endpoint) > 0.001 else { self.publishZoom(); return }
             do {
@@ -2360,7 +2378,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             var operationError: Error?
-#if DEBUG
             if let controller = self.developmentPhotoController {
                 do {
                     try controller.setAperture(aperture)
@@ -2370,7 +2387,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 DispatchQueue.main.async { completion(result) }
                 return
             }
-#endif
             if self.isRecordingOrPending {
                 operationError = CameraError.exposureChangeDuringRecording
             } else if #available(iOS 27.0, *), let device = self.activeDevice {
@@ -2425,7 +2441,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
             // Log 2 take cannot reach must not be offered or pinned.
             let band = self.videoISORange
             let iso = min(max(iso, band.lowerBound), band.upperBound)
-#if DEBUG
             // The shared mirror is Video's manual ISO for the take that follows,
             // whether or not Photo's controller applied it to the device now.
             if self.sharedIdleEnabled { self.sharedVideoManualISO = iso }
@@ -2436,7 +2451,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 return
             }
             self.traceVideoExposure("iso-direct")
-#endif
             if self.isRecordingOrPending {
                 operationError = CameraError.exposureChangeDuringRecording
             } else if let device = self.activeDevice {
@@ -2461,7 +2475,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.invalidateMetering()
-#if DEBUG
             if self.sharedIdleEnabled { self.sharedVideoManualISO = nil }
             if self.defersVideoExposureWrites {
                 self.traceVideoExposure("auto-deferred-to-photo")
@@ -2469,7 +2482,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 if let completion { DispatchQueue.main.async { completion(nil) } }
                 return
             }
-#endif
             var operationError: Error?
             if self.isRecordingOrPending {
                 operationError = CameraError.exposureChangeDuringRecording
@@ -2493,7 +2505,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
     func lockCurrentExposure(completion: (@MainActor @Sendable (Error?) -> Void)? = nil) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-#if DEBUG
             if self.sharedIdleEnabled { self.sharedVideoManualISO = self.activeDevice?.iso }
             if self.defersVideoExposureWrites {
                 self.traceVideoExposure("ae-lock-deferred-to-photo")
@@ -2501,7 +2512,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 if let completion { DispatchQueue.main.async { completion(nil) } }
                 return
             }
-#endif
             var operationError: Error?
             if self.isRecordingOrPending {
                 operationError = CameraError.exposureChangeDuringRecording
@@ -2548,12 +2558,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
             guard let self else { return }
             guard self.exposureBiasEV != clamped else { return }
             self.exposureBiasEV = clamped
-#if DEBUG
             if self.defersVideoExposureWrites {
                 self.mirrorSharedExposureIntent(iso: self.sharedVideoManualISO)
                 return
             }
-#endif
             guard !self.isRecordingOrPending else { return }
             if self.isShutterPriority, self.pinnedExposure != nil {
                 // Retarget a held pin without reopening auto exposure. If initial
@@ -2592,9 +2600,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
     func enableShutterPriority() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-#if DEBUG
             if self.defersVideoDeviceWrites { self.sharedVideoManualISO = nil; return }
-#endif
             guard !self.isRecordingOrPending else { return }
             self.isShutterPriority = true
             self.invalidateMetering()
@@ -3032,7 +3038,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
     // MARK: - Recording
 
     func startRecording(to url: URL, completion: @escaping @MainActor @Sendable (Error?) -> Void) {
-#if DEBUG
         sessionQueue.async { [weak self] in
             guard let self else { return }
             if self.sharedIdleEnabled {
@@ -3050,12 +3055,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 }
             }
         }
-#else
-        let reference = CameraOrientationSessionReference(session: self)
-        Self.withPhysicalOrientation { orientation in
-            reference.session?.startRecording(to: url, deliveryOrientation: orientation, completion: completion)
-        }
-#endif
     }
 
     private func startRecording(to url: URL,
@@ -3072,7 +3071,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
 #endif
         sessionQueue.async { [weak self] in
             guard let self else { return }
-#if DEBUG
             if let sharedRequestEpoch, !self.sharedGraph.acceptsVideoRequest(sharedRequestEpoch) {
                 DispatchQueue.main.async { completion(CameraSampleBufferRecorderError.cancelled) }; return
             }
@@ -3084,7 +3082,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
                     self.returnToSharedIdleIfNeeded()
                 }
             }
-#endif
             self.invalidateMetering()
             guard !self.isRecordingOrPending else {
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.recordingInProgress) } }
@@ -3140,11 +3137,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             startPhases.captureClockAtRequest = self.session.synchronizationClock.map { CMClockGetTime($0) }
 #endif
             do {
-#if DEBUG
                 let requestedISO = self.sharedIdleEnabled ? self.sharedRecordingISO(for: device) : device.iso
-#else
-                let requestedISO = device.iso
-#endif
                 let iso = min(max(requestedISO, device.activeFormat.minISO), device.activeFormat.maxISO)
                 let shutter = min(max(filmShutterDuration, device.activeFormat.minExposureDuration),
                                   device.activeFormat.maxExposureDuration)
@@ -3368,15 +3361,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 completion = .failure(error)
             }
         }
-#if DEBUG
         returnToSharedIdleIfNeeded()
-#endif
         if sessionRecoveryPending {
-#if DEBUG
             if !sharedIdleEnabled { resetVideoSessionAtSafeBoundary() }
-#else
-            resetVideoSessionAtSafeBoundary()
-#endif
         }
         let handler = onRecordingFinished
 #if DEBUG
@@ -3417,9 +3404,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         if let completion {
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
         }
-#if DEBUG
         returnToSharedIdleIfNeeded()
-#endif
     }
 
     /// Recording pins the measured iris when the user's choice is Auto, then
@@ -3427,10 +3412,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
     private func restoreAutomaticApertureAfterRecording() {
         guard let pin = recordingAperturePin else { return }
         recordingAperturePin = nil
-#if DEBUG
         // Shared idle restores iris via Photo intent, not an ignored Video ACK.
         if sharedIdleEnabled { return }
-#endif
         guard CameraAperturePolicy.selectedApertureAfterRecording(pin: pin) == nil else { return }
         guard #available(iOS 27.0, *), let device = activeDevice,
               Self.apertureCapability(for: device).isVariable else { return }
@@ -3501,15 +3484,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.invalidateMetering()
-#if DEBUG
             if self.sharedIdleEnabled {
                 self.sharedGraph.request(.idle)
                 let request = self.sharedVideoRequest
                 self.sharedVideoRequest = nil
                 if let request { DispatchQueue.main.async { request.completion(CameraSampleBufferRecorderError.cancelled) } }
-                defer { self.driveSharedGraph() }
+                // At the end of this scope a `defer` would only run now anyway.
+                self.driveSharedGraph()
             }
-#endif
             if self.recordingStartPending {
                 self.recordingStartPending = false
                 self.recordingGeneration &+= 1
@@ -3527,6 +3509,338 @@ final class CameraSession: NSObject, @unchecked Sendable {
             }
         }
     }
+
+    // MARK: - Photo runtime
+
+    @MainActor private func selectDevelopmentPhotoCamera(_ lens: CameraLens, previous: CameraLens,
+        update: @escaping @MainActor @Sendable (PhotoExposureSnapshot) -> Void,
+        completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            if self.activeLens == lens, !self.photoLensOwnership.isPending {
+                DispatchQueue.main.async { completion(nil) }; return
+            }
+            guard let controller = self.developmentPhotoController,
+                  let directory = self.developmentPhotoDirectory,
+                  !self.sharedGraph.isBusy,
+                  (!self.sharedIdleEnabled || self.sharedGraph.acceptsIdleControls),
+                  self.developmentPhotoExitCompletion == nil,
+                  let epoch = self.photoLensOwnership.begin() else {
+                DispatchQueue.main.async { completion(CameraError.frameRateTransitionInProgress) }
+                return
+            }
+            guard let candidate = AVCaptureDevice.default(lens.deviceType, for: .video, position: lens.position),
+                  let priorDevice = self.activeDevice else {
+                _ = self.photoLensOwnership.finish(epoch)
+                DispatchQueue.main.async { completion(CameraError.noCameraAvailable) }; return
+            }
+            self.developmentPhotoLensSwitchPending = true
+            self.sharedPhotoIntent = controller.intentSnapshot
+            controller.stop { [weak self] in
+                guard let self, self.photoLensOwnership.owns(epoch) else { return }
+                self.developmentPhotoController = nil
+                if self.sharedIdleEnabled, self.sharedGraph.desired != .idle {
+                    _ = self.photoLensOwnership.finish(epoch)
+                    self.developmentPhotoLensSwitchPending = false
+                    DispatchQueue.main.async { completion(CameraSampleBufferRecorderError.cancelled) }
+                    self.driveSharedGraph()
+                    return
+                }
+                var failure: Error?
+                do {
+                    try self.installDevelopmentPhotoCamera(candidate, lens: lens, directory: directory, update: update)
+                } catch {
+                    failure = error
+                    do {
+                        try self.installDevelopmentPhotoCamera(priorDevice, lens: previous, directory: directory, update: update)
+                    } catch {
+                        self.isConfigured = false
+                        failure = CameraError.lensRollbackFailed(original: failure!, rollback: error)
+                    }
+                }
+                let disposition = self.photoLensOwnership.finish(epoch)
+                self.developmentPhotoLensSwitchPending = false
+                let outcome = failure
+                DispatchQueue.main.async { completion(outcome) }
+                if self.sharedIdleEnabled {
+                    self.driveSharedGraph()
+                } else if disposition == .exitRequested {
+                    let waiters = self.developmentPhotoExitWaiters
+                    self.developmentPhotoExitWaiters.removeAll()
+                    self.exitDevelopmentPhotoOnQueue { result in waiters.forEach { $0(result) } }
+                }
+            }
+        }
+    }
+
+    /// Retain the attached Photo output and running session. One input transaction
+    /// replaces the selected physical sensor; no intermediate Log graph is built.
+    private func installDevelopmentPhotoCamera(_ device: AVCaptureDevice, lens: CameraLens, directory: URL,
+        update: @escaping @MainActor @Sendable (PhotoExposureSnapshot) -> Void) throws {
+        guard let output = retainedPhotoOutput,
+              session.outputs.contains(where: { $0 === output }) else { throw CameraError.cannotAddOutput }
+        let input = try AVCaptureDeviceInput(device: device)
+        session.beginConfiguration()
+        let previousInputs = session.inputs.filter { $0.ports.contains(where: { $0.mediaType == .video }) }
+        for old in previousInputs { session.removeInput(old) }
+        guard session.canAddInput(input) else {
+            for old in previousInputs where session.canAddInput(old) { session.addInput(old) }
+            session.commitConfiguration()
+            throw CameraError.cannotAddInput
+        }
+        session.addInput(input)
+        videoDeviceInput = input
+        session.commitConfiguration()
+        try configureNativePhotoDevice(device)
+        try startDevelopmentPhotoController(device: device, output: output, directory: directory, update: update)
+        activeDevice = device
+        activeLens = lens
+        apertureCameraRevision &+= 1
+        selectedLensAperture = sharedPhotoIntent?.aperture
+        configureCaptureRotation(for: device)
+        zoomLifecycle.cameraChanged()
+        publishZoom()
+    }
+
+    private func startDevelopmentPhotoController(device: AVCaptureDevice, output: AVCapturePhotoOutput,
+        directory: URL, update: @escaping @MainActor @Sendable (PhotoExposureSnapshot) -> Void) throws {
+        let formats = output.availableRawPhotoPixelFormatTypes.filter(AVCapturePhotoOutput.isBayerRAWPixelFormat)
+        guard let pixelFormat = formats.first,
+              let dimensions = PhotoCapturePolicy.selectDimensions(candidates:
+                device.activeFormat.supportedMaxPhotoDimensions.map { .init(width: Int($0.width), height: Int($0.height)) },
+                bayerPixelFormats: formats, pixelFormat: pixelFormat) else {
+            throw CameraError.writerUnavailable("This camera does not support native Bayer RAW within the Photo resolution budget")
+        }
+        let size = CMVideoDimensions(width: Int32(dimensions.width), height: Int32(dimensions.height))
+        if output.maxPhotoDimensions.width != size.width || output.maxPhotoDimensions.height != size.height {
+            output.maxPhotoDimensions = size
+        }
+        if output.maxPhotoQualityPrioritization != .speed { output.maxPhotoQualityPrioritization = .speed }
+        if let connection = output.connection(with: .video), connection.videoScaleAndCropFactor != 1 {
+            connection.videoScaleAndCropFactor = 1
+        }
+        controllerEpoch &+= 1
+        let context = CameraSessionDeliveryContext(lifecycle: lifecycleEpoch, controller: controllerEpoch)
+        let observer = sharedSnapshotObserver
+        let delivery: @MainActor @Sendable (PhotoExposureSnapshot) -> Void
+        if sharedIdleEnabled { delivery = { snapshot in observer?(context, snapshot) } }
+        else { delivery = update }
+        let controller = DevelopmentPhotoController(device: device, output: output,
+            pixelFormat: pixelFormat, dimensions: size, directory: directory,
+            queue: sessionQueue, onUpdate: delivery) { [weak self] message in
+                self?.reportDevelopmentPhotoError(CameraError.writerUnavailable(message))
+            }
+        developmentPhotoController = controller
+        try controller.start()
+        developmentPhotoDirectory = directory
+        if let sharedPhotoIntent { try controller.restoreIntent(sharedPhotoIntent) }
+        // First entry in a session: the shared exposure controls (a held ISO, the
+        // EV compensation) come over from Video, the shutter does not — Photo's
+        // idle exposure is the device's own auto exposure with that compensation
+        // applied, which is what `mirrorSharedExposureIntent` writes.
+        else { mirrorSharedExposureIntent(iso: sharedVideoManualISO) }
+    }
+
+    /// Attach the still profile to the shared idle session: the `.photo` preset
+    /// with the retained `AVCapturePhotoOutput` as its only output, metering on
+    /// the selected device. This is the graph Photo really runs; the Debug smoke
+    /// path keeps its own evidence-carrying variant.
+    private func installNativePhotoGraph(_ device: AVCaptureDevice) throws -> AVCapturePhotoOutput {
+        if session.isRunning { session.stopRunning() }
+        let output = retainedPhotoOutput ?? AVCapturePhotoOutput()
+        retainedPhotoOutput = output
+        suspendPreview(true)
+        session.beginConfiguration()
+        do {
+            defer { session.commitConfiguration() }
+            for old in session.outputs { session.removeOutput(old) }
+            guard session.canSetSessionPreset(.photo) else { throw CameraError.cannotAddOutput }
+            session.sessionPreset = .photo
+            guard session.canAddOutput(output) else { throw CameraError.cannotAddOutput }
+            session.addOutput(output)
+        }
+        try configureNativePhotoDevice(device)
+        return output
+    }
+
+    private func configureNativePhotoDevice(_ device: AVCaptureDevice) throws {
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        guard device.isExposureModeSupported(.continuousAutoExposure),
+              Self.photoExposureDurationSupported(device.activeFormat.maxExposureDuration, device: device) else {
+            throw CameraError.writerUnavailable("Photo RAW P0: unsupported photo auto-exposure range")
+        }
+        // The shared idle profile is always SDR, even when entered from Log2.
+        if device.activeFormat.supportedColorSpaces.contains(.sRGB) {
+            device.activeColorSpace = .sRGB
+        } else if device.activeFormat.supportedColorSpaces.contains(.P3_D65) {
+            device.activeColorSpace = .P3_D65
+        } else {
+            throw CameraError.writerUnavailable("Photo RAW P0: no neutral photo color space")
+        }
+        device.videoZoomFactor = 1
+        device.exposureMode = .continuousAutoExposure
+        device.activeMaxExposureDuration = device.activeFormat.maxExposureDuration
+        applyWhiteBalanceLock(device)
+    }
+
+    /// A usable AE ceiling: finite, positive, and inside the format's own range.
+    private static func photoExposureDurationSupported(_ value: CMTime, device: AVCaptureDevice) -> Bool {
+        value.isNumeric && value.seconds.isFinite && value.seconds > 0
+            && CMTimeCompare(value, device.activeFormat.minExposureDuration) >= 0
+            && CMTimeCompare(value, device.activeFormat.maxExposureDuration) <= 0
+    }
+
+    func setDevelopmentPhotoMode(_ enabled: Bool,
+        onUpdate: @escaping @MainActor @Sendable (PhotoExposureSnapshot) -> Void,
+        completion: @escaping @MainActor @Sendable (Result<Void, Error>) -> Void) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            if !enabled {
+#if DEBUG
+                self.exitDevelopmentPhotoOnQueue(completion: completion)
+#else
+                // The shared idle graph keeps its still profile installed between
+                // modes: leaving Photo changes what the operator is shown, not the
+                // graph, so the controller stays resident for the next entry.
+                if self.sharedIdleEnabled {
+                    DispatchQueue.main.async { completion(.success(())) }
+                } else {
+                    self.exitDevelopmentPhotoOnQueue(completion: completion)
+                }
+#endif
+                return
+            }
+#if DEBUG
+            self.startDevelopmentPhotoModeOnDebugGraph(onUpdate: onUpdate, completion: completion)
+#else
+            // No debug graph swap: Photo is the shared idle graph's own still
+            // profile, installed by `installSharedIdleOnQueue`.
+            guard self.sharedIdleEnabled, self.developmentPhotoController != nil else {
+                DispatchQueue.main.async {
+                    completion(.failure(CameraError.writerUnavailable("Photo camera is busy or unavailable")))
+                }
+                return
+            }
+            self.developmentPhotoUpdate = onUpdate
+            DispatchQueue.main.async { completion(.success(())) }
+#endif
+        }
+    }
+
+    private func exitDevelopmentPhotoOnQueue(
+        completion: @escaping @MainActor @Sendable (Result<Void, Error>) -> Void) {
+        if photoLensOwnership.requestExit() {
+            developmentPhotoExitWaiters.append(completion)
+            return
+        }
+        guard developmentPhotoExitCompletion == nil else {
+            developmentPhotoExitWaiters.append(completion)
+            return
+        }
+        guard let controller = developmentPhotoController else {
+            DispatchQueue.main.async { completion(.success(())) }
+            return
+        }
+        developmentPhotoExitCompletion = completion
+        controller.stop { [weak self] in
+            guard let self else { return }
+            self.developmentPhotoController = nil
+            self.developmentPhotoDirectory = nil
+#if DEBUG
+            if let run = self.developmentPhotoSnapshot {
+                self.debugPhotoRun = run
+                self.completeDebugPhotoRun(run, captureFailure: nil)
+                return
+            }
+#endif
+            self.finishDevelopmentPhotoExit(.success(()))
+        }
+    }
+
+    /// Drain a framed exit now that the controller has released the device.
+    private func finishDevelopmentPhotoExit(_ result: Result<Void, Error>) {
+        let completion = developmentPhotoExitCompletion
+        developmentPhotoExitCompletion = nil
+        let waiters = developmentPhotoExitWaiters
+        developmentPhotoExitWaiters.removeAll()
+        DispatchQueue.main.async {
+            completion?(result)
+            for waiter in waiters { waiter(result) }
+        }
+    }
+
+    private func reportDevelopmentPhotoError(_ error: Error) {
+        let handler = onCameraError
+        let lens = activeLens
+        DispatchQueue.main.async { handler?(error, lens) }
+    }
+
+    private func updateDevelopmentPhoto(_ action: @escaping @Sendable (DevelopmentPhotoController) throws -> Void) {
+        sessionQueue.async { [weak self] in
+            guard let self, let controller = self.developmentPhotoController,
+                  self.developmentPhotoExitCompletion == nil,
+                  !self.sharedDeviceTransitionInFlight else { return }
+            do { try action(controller) }
+            catch { self.reportDevelopmentPhotoError(error) }
+        }
+    }
+
+    func setDevelopmentPhotoISO(_ value: Float) {
+        updateDevelopmentPhoto { try $0.setISO(value) }
+    }
+
+    func setDevelopmentPhotoDuration(_ seconds: Double) {
+        updateDevelopmentPhoto { try $0.setDuration(seconds) }
+    }
+
+    func setDevelopmentPhotoISOLocked(_ locked: Bool) {
+        updateDevelopmentPhoto { try $0.setISOLocked(locked) }
+    }
+
+    func setDevelopmentPhotoShutterLocked(_ locked: Bool) {
+        updateDevelopmentPhoto { try $0.setShutterLocked(locked) }
+    }
+
+    func setDevelopmentPhotoEV(_ value: Float) {
+        updateDevelopmentPhoto { try $0.setEV(value) }
+    }
+
+    /// Replace the whole exposure intent in one transition. Used when a shooting
+    /// mode hands the shared idle graph back: composing the single-value setters
+    /// would submit (and acknowledge) one hardware write per property.
+    func applyDevelopmentPhotoIntent(iso: Float?, duration: Double?, ev: Float) {
+        updateDevelopmentPhoto {
+            try $0.restoreIntent(.init(iso: iso, duration: duration, ev: ev, aperture: nil))
+        }
+    }
+
+    /// `frozenOrientation` is the physical hold read at the shutter tap. It is
+    /// resolved here, on the session queue, through the same coordinator angle the
+    /// video and debug paths use, so an exposure-settling wait or a turn after the
+    /// tap cannot re-orient the still. `nil` keeps the session's last stable hold
+    /// (the `.unknown` mapping never invents a new one).
+    func captureDevelopmentPhoto(
+        frozenOrientation: CameraSampleValidationPolicy.DeliveryOrientation? = nil,
+        completion: @escaping @MainActor @Sendable (Result<URL, Error>) -> Void
+    ) {
+        sessionQueue.async { [weak self] in
+            guard let self, let controller = self.developmentPhotoController,
+                  self.developmentPhotoExitCompletion == nil,
+                  !self.sharedDeviceTransitionInFlight else {
+                DispatchQueue.main.async { completion(.failure(CameraError.writerUnavailable("Photo camera is not ready"))) }
+                return
+            }
+            if let device = self.activeDevice, self.rotationCoordinator?.device !== device {
+                self.configureCaptureRotation(for: device)
+            }
+            let rotationAngle = self.captureRotationAngle(for: frozenOrientation ?? .unknown)
+            do { try controller.capture(rotationAngle: rotationAngle, completion: completion) }
+            catch { DispatchQueue.main.async { completion(.failure(error)) } }
+        }
+    }
+
+    // MARK: - Debug smoke, fault and diagnostic entrypoints
 
 #if DEBUG
     /// Debug-only: grab a single frame from the live camera as a `CVPixelBuffer`
@@ -3648,224 +3962,69 @@ final class CameraSession: NSObject, @unchecked Sendable {
         return true
     }
 
-    @MainActor private func selectDevelopmentPhotoCamera(_ lens: CameraLens, previous: CameraLens,
-        update: @escaping @MainActor @Sendable (PhotoExposureSnapshot) -> Void,
-        completion: @escaping @MainActor @Sendable (Error?) -> Void) {
-        sessionQueue.async { [weak self] in
-            guard let self else { return }
-            if self.activeLens == lens, !self.photoLensOwnership.isPending {
-                DispatchQueue.main.async { completion(nil) }; return
-            }
-            guard let controller = self.developmentPhotoController,
-                  let saved = self.developmentPhotoSnapshot,
-                  !self.sharedGraph.isBusy,
-                  (!self.sharedIdleEnabled || self.sharedGraph.acceptsIdleControls),
-                  self.developmentPhotoExitCompletion == nil,
-                  let epoch = self.photoLensOwnership.begin() else {
-                DispatchQueue.main.async { completion(CameraError.frameRateTransitionInProgress) }
-                return
-            }
-            guard let candidate = AVCaptureDevice.default(lens.deviceType, for: .video, position: lens.position),
-                  let priorDevice = self.activeDevice else {
-                _ = self.photoLensOwnership.finish(epoch)
-                DispatchQueue.main.async { completion(CameraError.noCameraAvailable) }; return
-            }
-            self.developmentPhotoLensSwitchPending = true
-            self.sharedPhotoIntent = controller.intentSnapshot
-            controller.stop { [weak self] in
-                guard let self, self.photoLensOwnership.owns(epoch) else { return }
-                self.developmentPhotoController = nil
-                if self.sharedIdleEnabled, self.sharedGraph.desired != .idle {
-                    _ = self.photoLensOwnership.finish(epoch)
-                    self.developmentPhotoLensSwitchPending = false
-                    DispatchQueue.main.async { completion(CameraSampleBufferRecorderError.cancelled) }
-                    self.driveSharedGraph()
-                    return
-                }
-                var failure: Error?
-                do {
-                    try self.installDevelopmentPhotoCamera(candidate, lens: lens, directory: saved.directory, update: update)
-                } catch {
-                    failure = error
-                    do {
-                        try self.installDevelopmentPhotoCamera(priorDevice, lens: previous, directory: saved.directory, update: update)
-                    } catch {
-                        self.isConfigured = false
-                        failure = CameraError.lensRollbackFailed(original: failure!, rollback: error)
-                    }
-                }
-                let disposition = self.photoLensOwnership.finish(epoch)
-                self.developmentPhotoLensSwitchPending = false
-                let outcome = failure
-                DispatchQueue.main.async { completion(outcome) }
-                if self.sharedIdleEnabled {
-                    self.driveSharedGraph()
-                } else if disposition == .exitRequested {
-                    let waiters = self.developmentPhotoExitWaiters
-                    self.developmentPhotoExitWaiters.removeAll()
-                    self.exitDevelopmentPhotoOnQueue { result in waiters.forEach { $0(result) } }
-                }
-            }
-        }
-    }
-
-    /// Retain the attached Photo output and running session. One input transaction
-    /// replaces the selected physical sensor; no intermediate Log graph is built.
-    private func installDevelopmentPhotoCamera(_ device: AVCaptureDevice, lens: CameraLens, directory: URL,
-        update: @escaping @MainActor @Sendable (PhotoExposureSnapshot) -> Void) throws {
-        guard let output = retainedPhotoOutput,
-              session.outputs.contains(where: { $0 === output }) else { throw CameraError.cannotAddOutput }
-        let input = try AVCaptureDeviceInput(device: device)
-        session.beginConfiguration()
-        let previousInputs = session.inputs.filter { $0.ports.contains(where: { $0.mediaType == .video }) }
-        for old in previousInputs { session.removeInput(old) }
-        guard session.canAddInput(input) else {
-            for old in previousInputs where session.canAddInput(old) { session.addInput(old) }
-            session.commitConfiguration()
-            throw CameraError.cannotAddInput
-        }
-        session.addInput(input)
-        videoDeviceInput = input
-        session.commitConfiguration()
-        try configureNativePhotoDevice(device)
-        try startDevelopmentPhotoController(device: device, output: output, directory: directory, update: update)
-        activeDevice = device
-        activeLens = lens
-        apertureCameraRevision &+= 1
-        selectedLensAperture = sharedPhotoIntent?.aperture
-        configureCaptureRotation(for: device)
-        zoomLifecycle.cameraChanged()
-        publishZoom()
-    }
-
-    private func startDevelopmentPhotoController(device: AVCaptureDevice, output: AVCapturePhotoOutput,
-        directory: URL, update: @escaping @MainActor @Sendable (PhotoExposureSnapshot) -> Void) throws {
-        let formats = output.availableRawPhotoPixelFormatTypes.filter(AVCapturePhotoOutput.isBayerRAWPixelFormat)
-        guard let pixelFormat = formats.first,
-              let dimensions = PhotoCapturePolicy.selectDimensions(candidates:
-                device.activeFormat.supportedMaxPhotoDimensions.map { .init(width: Int($0.width), height: Int($0.height)) },
-                bayerPixelFormats: formats, pixelFormat: pixelFormat) else {
-            throw CameraError.writerUnavailable("This camera does not support native Bayer RAW within the Photo resolution budget")
-        }
-        let size = CMVideoDimensions(width: Int32(dimensions.width), height: Int32(dimensions.height))
-        if output.maxPhotoDimensions.width != size.width || output.maxPhotoDimensions.height != size.height {
-            output.maxPhotoDimensions = size
-        }
-        if output.maxPhotoQualityPrioritization != .speed { output.maxPhotoQualityPrioritization = .speed }
-        if let connection = output.connection(with: .video), connection.videoScaleAndCropFactor != 1 {
-            connection.videoScaleAndCropFactor = 1
-        }
-        controllerEpoch &+= 1
-        let context = CameraSessionDeliveryContext(lifecycle: lifecycleEpoch, controller: controllerEpoch)
-        let observer = sharedSnapshotObserver
-        let delivery: @MainActor @Sendable (PhotoExposureSnapshot) -> Void
-        if sharedIdleEnabled { delivery = { snapshot in observer?(context, snapshot) } }
-        else { delivery = update }
-        let controller = DevelopmentPhotoController(device: device, output: output,
-            pixelFormat: pixelFormat, dimensions: size, directory: directory,
-            queue: sessionQueue, onUpdate: delivery) { [weak self] message in
-                self?.reportDevelopmentPhotoError(CameraError.writerUnavailable(message))
-            }
-        developmentPhotoController = controller
-        try controller.start()
-        if let sharedPhotoIntent { try controller.restoreIntent(sharedPhotoIntent) }
-        // First entry in a session: the shared exposure controls (a held ISO, the
-        // EV compensation) come over from Video, the shutter does not — Photo's
-        // idle exposure is the device's own auto exposure with that compensation
-        // applied, which is what `mirrorSharedExposureIntent` writes.
-        else { mirrorSharedExposureIntent(iso: sharedVideoManualISO) }
-    }
-
-    func setDevelopmentPhotoMode(_ enabled: Bool,
+    /// Debug-only: install the evidence-carrying Photo graph the smoke runs use,
+    /// retaining the pre-Photo video state for the restored-graph proof.
+    private func startDevelopmentPhotoModeOnDebugGraph(
         onUpdate: @escaping @MainActor @Sendable (PhotoExposureSnapshot) -> Void,
         completion: @escaping @MainActor @Sendable (Result<Void, Error>) -> Void) {
-        sessionQueue.async { [weak self] in
-            guard let self else { return }
-            if !enabled {
-                self.exitDevelopmentPhotoOnQueue(completion: completion)
-                return
+        guard DevelopmentPhotoFeature.isAvailable(isDebugBuild: Self.isDebugBuild,
+                bundleIdentifier: Bundle.main.bundleIdentifier ?? ""), self.isConfigured,
+              self.session.isRunning, !self.isRecordingOrPending,
+              !self.frameRateTransitionPending, self.developmentPhotoController == nil,
+              let device = self.activeDevice else {
+            DispatchQueue.main.async { completion(.failure(CameraError.writerUnavailable("Photo camera is busy or unavailable"))) }
+            return
+        }
+        // RAW availability is checked on the selected camera after the Photo graph commits.
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("DevelopmentPhotos", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let run = DebugPhotoRun(owner: self, device: device, directory: directory) { [weak self] result in
+            self?.finishDevelopmentPhotoRestoration(result)
+        }
+        self.developmentPhotoSnapshot = run
+        self.developmentPhotoDirectory = directory
+        self.debugPhotoRun = run
+        self.cancelZoomOnQueue()
+        // Photo framing is a software crop (`photoCropZoom`); the shared idle
+        // device stays at its native magnification. A zoom left installed by an
+        // earlier take would both change the sensor area the still is cropped
+        // from and fail the capture's native-magnification check, which reads to
+        // the operator as a shutter that has stopped working.
+        self.resetSharedIdleDeviceZoom(device)
+        self.invalidateMetering()
+        self.isShutterPriority = false
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let output = try self.configureDebugPhotoGraph(run)
+            let formats = output.availableRawPhotoPixelFormatTypes.filter(AVCapturePhotoOutput.isBayerRAWPixelFormat)
+            guard let pixelFormat = formats.first,
+                  let dimensions = PhotoCapturePolicy.selectDimensions(candidates:
+                    device.activeFormat.supportedMaxPhotoDimensions.map {
+                        .init(width: Int($0.width), height: Int($0.height))
+                    }, bayerPixelFormats: formats, pixelFormat: pixelFormat) else {
+                throw CameraError.writerUnavailable("No native 12MP-class Bayer format is available")
             }
-            guard DevelopmentPhotoFeature.isAvailable(isDebugBuild: true,
-                    bundleIdentifier: Bundle.main.bundleIdentifier ?? ""), self.isConfigured,
-                  self.session.isRunning, !self.isRecordingOrPending,
-                  !self.frameRateTransitionPending, self.developmentPhotoController == nil,
-                  let device = self.activeDevice else {
-                DispatchQueue.main.async { completion(.failure(CameraError.writerUnavailable("Photo camera is busy or unavailable"))) }
-                return
-            }
-            // RAW availability is checked on the selected camera after the Photo graph commits.
-            let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("DevelopmentPhotos", isDirectory: true)
-                .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            let run = DebugPhotoRun(owner: self, device: device, directory: directory) { [weak self] result in
-                self?.finishDevelopmentPhotoRestoration(result)
-            }
-            self.developmentPhotoSnapshot = run
-            self.debugPhotoRun = run
-            self.cancelZoomOnQueue()
-            // Photo framing is a software crop (`photoCropZoom`); the shared idle
-            // device stays at its native magnification. A zoom left installed by an
-            // earlier take would both change the sensor area the still is cropped
-            // from and fail the capture's native-magnification check, which reads to
-            // the operator as a shutter that has stopped working.
-            self.resetSharedIdleDeviceZoom(device)
-            self.invalidateMetering()
-            self.isShutterPriority = false
-            do {
-                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                let output = try self.configureDebugPhotoGraph(run)
-                let formats = output.availableRawPhotoPixelFormatTypes.filter(AVCapturePhotoOutput.isBayerRAWPixelFormat)
-                guard let pixelFormat = formats.first,
-                      let dimensions = PhotoCapturePolicy.selectDimensions(candidates:
-                        device.activeFormat.supportedMaxPhotoDimensions.map {
-                            .init(width: Int($0.width), height: Int($0.height))
-                        }, bayerPixelFormats: formats, pixelFormat: pixelFormat) else {
-                    throw CameraError.writerUnavailable("No native 12MP-class Bayer format is available")
+            let size = CMVideoDimensions(width: Int32(dimensions.width), height: Int32(dimensions.height))
+            output.maxPhotoDimensions = size
+            output.maxPhotoQualityPrioritization = .speed
+            self.session.startRunning()
+            guard self.session.isRunning else { throw CameraError.writerUnavailable("Photo session did not start") }
+            let controller = DevelopmentPhotoController(device: device, output: output,
+                pixelFormat: pixelFormat, dimensions: size, directory: directory,
+                queue: self.sessionQueue, onUpdate: onUpdate) { [weak self] message in
+                    self?.reportDevelopmentPhotoError(CameraError.writerUnavailable(message))
                 }
-                let size = CMVideoDimensions(width: Int32(dimensions.width), height: Int32(dimensions.height))
-                output.maxPhotoDimensions = size
-                output.maxPhotoQualityPrioritization = .speed
-                self.session.startRunning()
-                guard self.session.isRunning else { throw CameraError.writerUnavailable("Photo session did not start") }
-                let controller = DevelopmentPhotoController(device: device, output: output,
-                    pixelFormat: pixelFormat, dimensions: size, directory: directory,
-                    queue: self.sessionQueue, onUpdate: onUpdate) { [weak self] message in
-                        self?.reportDevelopmentPhotoError(CameraError.writerUnavailable(message))
-                    }
-                self.developmentPhotoController = controller
-                self.developmentPhotoUpdate = onUpdate
-                try controller.start()
-                self.debugPhotoRun = nil
-                DispatchQueue.main.async { completion(.success(())) }
-            } catch {
-                self.developmentPhotoExitCompletion = completion
-                self.developmentPhotoController?.stop { }
-                self.developmentPhotoController = nil
-                self.completeDebugPhotoRun(run, captureFailure: error.localizedDescription)
-            }
-        }
-    }
-
-    private func exitDevelopmentPhotoOnQueue(
-        completion: @escaping @MainActor @Sendable (Result<Void, Error>) -> Void) {
-        if photoLensOwnership.requestExit() {
-            developmentPhotoExitWaiters.append(completion)
-            return
-        }
-        guard developmentPhotoExitCompletion == nil else {
-            developmentPhotoExitWaiters.append(completion)
-            return
-        }
-        guard let run = developmentPhotoSnapshot, let controller = developmentPhotoController else {
+            self.developmentPhotoController = controller
+            self.developmentPhotoUpdate = onUpdate
+            try controller.start()
+            self.debugPhotoRun = nil
             DispatchQueue.main.async { completion(.success(())) }
-            return
-        }
-        developmentPhotoExitCompletion = completion
-        controller.stop { [weak self, run] in
-            guard let self, self.developmentPhotoSnapshot === run else { return }
+        } catch {
+            self.developmentPhotoExitCompletion = completion
+            self.developmentPhotoController?.stop { }
             self.developmentPhotoController = nil
-            self.debugPhotoRun = run
-            self.completeDebugPhotoRun(run, captureFailure: nil)
+            self.completeDebugPhotoRun(run, captureFailure: error.localizedDescription)
         }
     }
 
@@ -3894,76 +4053,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 completion?(outcome)
                 for waiter in waiters { waiter(outcome) }
             }
-        }
-    }
-
-    private func reportDevelopmentPhotoError(_ error: Error) {
-        let handler = onCameraError
-        let lens = activeLens
-        DispatchQueue.main.async { handler?(error, lens) }
-    }
-
-    private func updateDevelopmentPhoto(_ action: @escaping @Sendable (DevelopmentPhotoController) throws -> Void) {
-        sessionQueue.async { [weak self] in
-            guard let self, let controller = self.developmentPhotoController,
-                  self.developmentPhotoExitCompletion == nil,
-                  !self.sharedDeviceTransitionInFlight else { return }
-            do { try action(controller) }
-            catch { self.reportDevelopmentPhotoError(error) }
-        }
-    }
-
-    func setDevelopmentPhotoISO(_ value: Float) {
-        updateDevelopmentPhoto { try $0.setISO(value) }
-    }
-
-    func setDevelopmentPhotoDuration(_ seconds: Double) {
-        updateDevelopmentPhoto { try $0.setDuration(seconds) }
-    }
-
-    func setDevelopmentPhotoISOLocked(_ locked: Bool) {
-        updateDevelopmentPhoto { try $0.setISOLocked(locked) }
-    }
-
-    func setDevelopmentPhotoShutterLocked(_ locked: Bool) {
-        updateDevelopmentPhoto { try $0.setShutterLocked(locked) }
-    }
-
-    func setDevelopmentPhotoEV(_ value: Float) {
-        updateDevelopmentPhoto { try $0.setEV(value) }
-    }
-
-    /// Replace the whole exposure intent in one transition. Used when a shooting
-    /// mode hands the shared idle graph back: composing the single-value setters
-    /// would submit (and acknowledge) one hardware write per property.
-    func applyDevelopmentPhotoIntent(iso: Float?, duration: Double?, ev: Float) {
-        updateDevelopmentPhoto {
-            try $0.restoreIntent(.init(iso: iso, duration: duration, ev: ev, aperture: nil))
-        }
-    }
-
-    /// `frozenOrientation` is the physical hold read at the shutter tap. It is
-    /// resolved here, on the session queue, through the same coordinator angle the
-    /// video and debug paths use, so an exposure-settling wait or a turn after the
-    /// tap cannot re-orient the still. `nil` keeps the session's last stable hold
-    /// (the `.unknown` mapping never invents a new one).
-    func captureDevelopmentPhoto(
-        frozenOrientation: CameraSampleValidationPolicy.DeliveryOrientation? = nil,
-        completion: @escaping @MainActor @Sendable (Result<URL, Error>) -> Void
-    ) {
-        sessionQueue.async { [weak self] in
-            guard let self, let controller = self.developmentPhotoController,
-                  self.developmentPhotoExitCompletion == nil,
-                  !self.sharedDeviceTransitionInFlight else {
-                DispatchQueue.main.async { completion(.failure(CameraError.writerUnavailable("Photo camera is not ready"))) }
-                return
-            }
-            if let device = self.activeDevice, self.rotationCoordinator?.device !== device {
-                self.configureCaptureRotation(for: device)
-            }
-            let rotationAngle = self.captureRotationAngle(for: frozenOrientation ?? .unknown)
-            do { try controller.capture(rotationAngle: rotationAngle, completion: completion) }
-            catch { DispatchQueue.main.async { completion(.failure(error)) } }
         }
     }
 
@@ -4049,33 +4138,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
         return output
     }
 
-    private func configureNativePhotoDevice(_ device: AVCaptureDevice) throws {
-        try device.lockForConfiguration()
-        defer { device.unlockForConfiguration() }
-        guard device.isExposureModeSupported(.continuousAutoExposure),
-              Self.debugPhotoDurationSupported(device.activeFormat.maxExposureDuration, device: device) else {
-            throw CameraError.writerUnavailable("Photo RAW P0: unsupported photo auto-exposure range")
-        }
-        // The shared idle profile is always SDR, even when entered from Log2.
-        if device.activeFormat.supportedColorSpaces.contains(.sRGB) {
-            device.activeColorSpace = .sRGB
-        } else if device.activeFormat.supportedColorSpaces.contains(.P3_D65) {
-            device.activeColorSpace = .P3_D65
-        } else {
-            throw CameraError.writerUnavailable("Photo RAW P0: no neutral photo color space")
-        }
-        device.videoZoomFactor = 1
-        device.exposureMode = .continuousAutoExposure
-        device.activeMaxExposureDuration = device.activeFormat.maxExposureDuration
-        applyWhiteBalanceLock(device)
-    }
-
-    private static func debugPhotoDurationSupported(_ value: CMTime, device: AVCaptureDevice) -> Bool {
-        value.isNumeric && value.seconds.isFinite && value.seconds > 0
-            && CMTimeCompare(value, device.activeFormat.minExposureDuration) >= 0
-            && CMTimeCompare(value, device.activeFormat.maxExposureDuration) <= 0
-    }
-
     private func restoreDebugPhotoGraph(_ run: DebugPhotoRun) throws {
         guard run.graphChanged else { return }
         if session.isRunning { session.stopRunning() }
@@ -4140,7 +4202,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             device.activeVideoMinFrameDuration = run.minimumFrame
         }
         if run.maximumExposure.isValid {
-            guard Self.debugPhotoDurationSupported(run.maximumExposure, device: device) else {
+            guard Self.photoExposureDurationSupported(run.maximumExposure, device: device) else {
                 throw CameraError.writerUnavailable("Photo RAW P0: invalid original AE ceiling")
             }
             device.activeMaxExposureDuration = run.maximumExposure
@@ -4168,7 +4230,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             }
         }
         if run.exposureMode == .custom || run.exposureMode == .locked {
-            guard device.isExposureModeSupported(.custom), Self.debugPhotoDurationSupported(run.duration, device: device),
+            guard device.isExposureModeSupported(.custom), Self.photoExposureDurationSupported(run.duration, device: device),
                   run.iso.isFinite, run.iso >= device.activeFormat.minISO, run.iso <= device.activeFormat.maxISO else {
                 throw CameraError.writerUnavailable("Photo RAW P0: invalid original custom exposure")
             }
@@ -4397,8 +4459,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
     private var isRecordingOrPending: Bool {
 #if DEBUG
-        if debugPhotoRun != nil || developmentPhotoController?.isCapturing == true { return true }
+        if debugPhotoRun != nil { return true }
 #endif
+        if developmentPhotoController?.isCapturing == true { return true }
         return recordingActive || recordingFinishing || recordingStartPending
     }
 
@@ -4422,13 +4485,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
         sessionQueue.async {
             guard self.desiredSessionRunning else { return }
             self.traceStartupOwner("reconcile")
-#if DEBUG
             if self.sharedIdleEnabled {
                 self.driveSharedGraph()
                 self.publishSharedProfile()
                 return
             }
-#endif
             guard !self.sessionInterrupted else { return }
             if self.sessionRecoveryPending { self.resetVideoSessionAtSafeBoundary() }
             else if self.isConfigured, !self.session.isRunning {
@@ -4460,7 +4521,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
                     // interruption also reconciles even if the UI stayed active.
                     self.sessionRecoveryPending = true
                     self.cancelVideoStartupForRecovery()
-#if DEBUG
                     if self.sharedIdleEnabled {
                         if self.sharedGraph.desired == .video {
                             self.sharedGraph.request(self.desiredSessionRunning ? .idle : .stopped)
@@ -4469,7 +4529,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
                         self.driveSharedGraph()
                         return
                     }
-#endif
                     if !self.sessionInterrupted { self.resetVideoSessionAtSafeBoundary() }
                 }
             }
@@ -4497,7 +4556,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
             self.sessionRecoveryPending = true
             self.traceStartupOwner("setter-expired token=\(token.epoch)")
             self.cancelVideoStartupForRecovery()
-#if DEBUG
             if self.sharedIdleEnabled {
                 if self.sharedGraph.desired == .video {
                     self.sharedGraph.request(self.desiredSessionRunning ? .idle : .stopped)
@@ -4506,7 +4564,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 self.publishSharedProfile()
                 return
             }
-#endif
             self.resetVideoSessionAtSafeBoundary()
         }
     }
@@ -4514,13 +4571,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// An ACK may be the last owner blocking an already-requested recovery.
     /// Consume its token first, then reconcile in both shared-idle and Video builds.
     private func settleVideoStartupOnQueue() {
-#if DEBUG
         if sharedIdleEnabled {
             driveSharedGraph()
             publishSharedProfile()
             return
         }
-#endif
         if sessionRecoveryPending { resetVideoSessionAtSafeBoundary() }
     }
 
@@ -4528,12 +4583,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// RAW capture ownership are deliberately not manufactured by this path.
     private func cancelVideoStartupForRecovery() {
         if !recordingActive { recordingGeneration &+= 1 }
-#if DEBUG
         let request = sharedVideoRequest
         sharedVideoRequest = nil
         sharedLaunchScheduledEpoch = nil
         if let request { DispatchQueue.main.async { request.completion(CameraError.captureRecoveryRequired("video startup interrupted")) } }
-#endif
         let completion = pendingStartCompletion
         pendingStartCompletion = nil
         recordingStartPending = false
@@ -4549,7 +4602,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
     }
 
-#if DEBUG
     /// Entry requires every real recorder/RAW/lens owner to have drained. Setter
     /// expiry is only permission to enter this explicit stop/reconfigure boundary.
     private func resetSharedSessionAtSafeBoundary() {
@@ -4578,7 +4630,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
         videoStartup.didResetStoppedSession()
         sessionRecoveryPending = false
         retainedPhotoOutput = nil
+        developmentPhotoDirectory = nil
+#if DEBUG
         developmentPhotoSnapshot = nil
+#endif
         sharedGraph.finish(lease, actual: .stopped)
         if let error = rebuildStoppedSession() {
             sharedGraph.request(.stopped)
@@ -4590,7 +4645,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
         driveSharedGraph()
         publishSharedProfile()
     }
-#endif
 
     private func rebuildStoppedSession() -> Error? {
         guard !session.isRunning, recorderCompletionBridge.activeEpoch == nil else {
@@ -4634,7 +4688,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
             guard let self else { return }
             self.desiredSessionRunning = true
             self.installSessionObserversIfNeeded()
-#if DEBUG
             if self.sharedIdleEnabled {
                 self.stopSessionAfterRecording = false
                 self.beginDeviceOrientationNotificationsIfNeeded()
@@ -4642,6 +4695,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 self.driveSharedGraph()
                 return
             }
+#if DEBUG
             if self.developmentPhotoController != nil {
                 if !self.session.isRunning { self.session.startRunning() }
                 self.refreshHardwareControlsAfterStartOnQueue()
@@ -4674,7 +4728,6 @@ final class CameraSession: NSObject, @unchecked Sendable {
             self.hardwareControlRequest = nil
             self.hardwareControls.uninstall()
             self.desiredSessionRunning = false
-#if DEBUG
             if self.sharedIdleEnabled {
                 self.sharedGraph.request(.stopped)
                 let request = self.sharedVideoRequest
@@ -4689,6 +4742,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
                     return
                 }
             }
+#if DEBUG
             if !self.sharedIdleEnabled, let run = self.developmentPhotoSnapshot, self.developmentPhotoController != nil {
                 run.shouldRestart = false
                 run.interrupted = true
@@ -4732,9 +4786,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 self.sampleBufferRecorder.stop()
                 return
             }
-#if DEBUG
             if self.sharedIdleEnabled { self.driveSharedGraph(); return }
-#endif
             guard self.session.isRunning else { return }
             self.session.stopRunning()
         }

@@ -1,4 +1,3 @@
-#if DEBUG
 import AVFoundation
 import CoreMedia
 import Foundation
@@ -512,4 +511,3 @@ final class DevelopmentPhotoController: @unchecked Sendable {
     private enum Error: Swift.Error { case stopped, invalidDeviceRange, invalidValue, unsupportedMode, notReady }
     private struct CaptureFailure: LocalizedError { let message: String; init(_ message: String) { self.message = message }; var errorDescription: String? { message } }
 }
-#endif
