@@ -51,6 +51,9 @@ struct RulerSlider: View {
 
     enum Orientation { case vertical, horizontal }
     var orientation: Orientation = .vertical
+    /// Mirrors the drag sense so the tick strip travels with the finger, as a
+    /// camera dial turns. Defaults off, preserving every existing ruler.
+    var reversesDrag: Bool = false
 
     @State private var drag = RulerDragState()
     @State private var feedbackTrigger = 0
@@ -101,10 +104,16 @@ struct RulerSlider: View {
         DragGesture(minimumDistance: 0)
             .onChanged { gesture in
                 // Dragging up (negative height) raises the position, and a
-                // higher position is a higher value.
+                // higher position is a higher value. Horizontal rulers mirror
+                // that unless the caller asks for the dial sense.
+                let travel = RulerDragDirection(
+                    horizontal: orientation == .horizontal,
+                    reversed: reversesDrag
+                ).travel(width: Double(gesture.translation.width),
+                         height: Double(gesture.translation.height))
                 let position = drag.update(
                     valuePosition: effectiveScale.toPosition(value),
-                    translation: Double(orientation == .horizontal ? -gesture.translation.width : gesture.translation.height),
+                    translation: travel,
                     bounds: effectiveScale.toPosition(range.lowerBound)...effectiveScale.toPosition(range.upperBound)
                 )
                 setPosition(position)

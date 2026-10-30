@@ -29,6 +29,9 @@ struct PhotoShutterControl: View {
                 .cameraUpright()
 #endif
                 .frame(width: 52, height: 44)
+                // The face prints only the denominator; the ruler below speaks
+                // the full photographic value, so this copy would repeat it.
+                .accessibilityHidden(true)
             if durations.count > 1 {
                 RulerSlider(value: Binding(get: { displayDuration }, set: { value in
                     intent.select(duration: value)
@@ -39,10 +42,10 @@ struct PhotoShutterControl: View {
                     tickLabel: { PhotoShutterPresentation.label(for: $0) },
                     scale: .logarithmic(pointsPerStop: RulerScale.detentTravel * 3),
                     ladder: durations, tint: .orange, length: max(44, width - 120), width: 44,
-                    orientation: .horizontal)
+                    orientation: .horizontal, reversesDrag: true)
                     .accessibilityIdentifier("photo.shutterDuration")
                     .accessibilityLabel("Photo shutter duration")
-                    .accessibilityValue(PhotoShutterPresentation.label(for: displayDuration))
+                    .accessibilityValue(PhotoShutterPresentation.spokenLabel(for: displayDuration))
             }
             Button {
                 let next = !intent.shutterLocked
@@ -72,7 +75,13 @@ struct PhotoShutterControl: View {
         .onTapGesture { } // Consume gaps so preview focus cannot receive rail taps.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("photo.shutterRail")
-        .modifier(CameraInsetSurface())
+        // The same dark translucent rail the manual focus and zoom rulers
+        // draw, so the shutter reads as one more manual ruler rather than a
+        // raised control plate.
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.black.opacity(0.45))
+        }
         .onChange(of: snapshot) { _, value in intent.reconcile(value) }
     }
 }
