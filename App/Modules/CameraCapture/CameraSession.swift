@@ -149,6 +149,12 @@ final class CameraSession: NSObject, @unchecked Sendable {
     // fulfill it; only the recording connection falls back to Off.
     private var preferredStabilization = CameraStabilizationMode(
         persistedValue: UserDefaults.standard.string(forKey: CameraStabilizationPolicy.preferenceKey))
+    /// The real video data output connection's own stabilization answer, kept
+    /// from the last time the recording graph was attached. The shared idle lease
+    /// detaches that output while Photo's still profile owns the session, and a
+    /// detached connection cannot be asked, so idle capability is the recording
+    /// format's per-mode support plus this observed answer — never an assumption.
+    private var videoConnectionSupportsStabilization = false
 
     /// Currently selected lens (rear wide/ultrawide/tele, or front).
     private(set) var activeLens: CameraLens = {
@@ -1163,21 +1169,41 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
     }
 
-    private func stabilizationCapability() -> CameraStabilizationPolicy.Capability {
-        guard let device = activeDevice, let connection = videoOutput.connection(with: .video) else {
+    private func stabilizationCapability(videoIntent: Bool) -> CameraStabilizationPolicy.Capability {
+        guard let device = activeDevice else { return .unavailable }
+        if let connection = videoOutput.connection(with: .video) {
+            return .init(connectionSupported: connection.isVideoStabilizationSupported,
+                         formatModes: Self.stabilizationModes(supportedBy: device.activeFormat))
+        }
+        // The shared idle lease detaches the recording output while Photo's still
+        // profile owns the session. Video's own intent still reports the modes its
+        // recording format supports; Photo has no still stabilization and must
+        // never inherit them. A connection never observed as stabilizing keeps
+        // the snapshot unavailable rather than advertising an unasked capability.
+        guard sharedIdleEnabled, videoIntent,
+              let format = Self.appleLog2CaptureFormat(in: device.formats, mode: frameRate) else {
             return .unavailable
         }
-        let modes = Set(CameraStabilizationMode.allCases.filter {
-            $0 != .off && device.activeFormat.isVideoStabilizationModeSupported(Self.avStabilizationMode($0))
+        return CameraStabilizationPolicy.idleCapability(
+            videoConnectionSupportsStabilization: videoConnectionSupportsStabilization,
+            recordingFormatModes: Self.stabilizationModes(supportedBy: format))
+    }
+
+    private static func stabilizationModes(supportedBy format: AVCaptureDevice.Format)
+        -> Set<CameraStabilizationMode> {
+        Set(CameraStabilizationMode.allCases.filter {
+            $0 != .off && format.isVideoStabilizationModeSupported(Self.avStabilizationMode($0))
         })
-        return .init(connectionSupported: connection.isVideoStabilizationSupported, formatModes: modes)
     }
 
     /// Only sessionQueue may write the data-output connection. No capture-format,
     /// exposure, white-balance, metadata or preview-layer changes are made here.
     private func applyRecordingStabilization() {
         guard let connection = videoOutput.connection(with: .video) else { return }
-        let mode = stabilizationCapability().effectiveMode(for: preferredStabilization)
+        // The one honest observation of the connection's own support; the idle
+        // snapshot can only ever reuse it, never infer it.
+        videoConnectionSupportsStabilization = connection.isVideoStabilizationSupported
+        let mode = stabilizationCapability(videoIntent: true).effectiveMode(for: preferredStabilization)
 #if DEBUG
         // Cinematic and extended-cinematic keep the pipeline ~0.7-1.0 s behind
         // the capture clock, so the first frames of a take are already stale.
@@ -1188,29 +1214,34 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
     }
 
-    private func stabilizationSnapshot() -> CameraStabilizationSnapshot {
+    private func stabilizationSnapshot(videoIntent: Bool) -> CameraStabilizationSnapshot {
         let ready = isConfigured && session.isRunning
         return CameraStabilizationSnapshot(
             preferred: preferredStabilization,
-            capability: ready ? stabilizationCapability() : .unavailable,
+            capability: ready ? stabilizationCapability(videoIntent: videoIntent) : .unavailable,
             activeRawValue: ready ? videoOutput.connection(with: .video)?.activeVideoStabilizationMode.rawValue : nil,
             cameraRevision: apertureCameraRevision,
             changesAllowed: ready && CameraStabilizationPolicy.canChange(
                 recording: recordingActive, starting: recordingStartPending, finishing: recordingFinishing))
     }
 
+    /// `videoIntent` says whether Video (not Photo) owns the shooting intent. It
+    /// only matters while the shared idle lease hides the recording connection;
+    /// Photo must never be offered video stabilization for a still.
     func readStabilizationSnapshot(
+        videoIntent: Bool,
         completion: @escaping @MainActor @Sendable (CameraStabilizationSnapshot) -> Void
     ) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            let snapshot = self.stabilizationSnapshot()
+            let snapshot = self.stabilizationSnapshot(videoIntent: videoIntent)
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(snapshot) } }
         }
     }
 
     func setRecordingStabilization(
         _ mode: CameraStabilizationMode,
+        videoIntent: Bool,
         completion: @escaping @MainActor @Sendable (CameraStabilizationSnapshot) -> Void
     ) {
         sessionQueue.async { [weak self] in
@@ -1220,9 +1251,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 starting: self.recordingStartPending, finishing: self.recordingFinishing) {
                 self.preferredStabilization = mode
                 UserDefaults.standard.set(mode.rawValue, forKey: CameraStabilizationPolicy.preferenceKey)
+                // A detached recording output has nothing to write yet; the
+                // preference is applied when the take installs that graph.
                 self.applyRecordingStabilization()
             }
-            let snapshot = self.stabilizationSnapshot()
+            let snapshot = self.stabilizationSnapshot(videoIntent: videoIntent)
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(snapshot) } }
         }
     }

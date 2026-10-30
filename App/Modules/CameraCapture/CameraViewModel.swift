@@ -1287,6 +1287,9 @@ final class CameraViewModel {
         // committed mode change carries the previous tap's point of interest
         // across. Start the new mode at the centre.
         resetFocusAreaToCenter()
+        // A mode change changes which intent may read stabilization capability:
+        // Photo must not keep Video's idle snapshot.
+        invalidateStabilizationUIState()
         completion(.success(()))
     }
 
@@ -1626,7 +1629,8 @@ final class CameraViewModel {
         stabilizationSnapshotRequestGeneration &+= 1
         let requestGeneration = stabilizationSnapshotRequestGeneration
         let switchGeneration = cameraLensSwitchGeneration
-        session.setRecordingStabilization(mode) { [weak self] snapshot in
+        let videoIntent = !isDevelopmentPhotoMode
+        session.setRecordingStabilization(mode, videoIntent: videoIntent) { [weak self] snapshot in
             guard let self, self.lifecycleGate.isActive, self.cameraConfigured,
                   !self.isSwitchingCameraLens, self.cameraLensSwitchGeneration == switchGeneration,
                   self.stabilizationSnapshotRequestGeneration == requestGeneration,
@@ -1640,7 +1644,10 @@ final class CameraViewModel {
         stabilizationSnapshotRequestGeneration &+= 1
         let requestGeneration = stabilizationSnapshotRequestGeneration
         let switchGeneration = cameraLensSwitchGeneration
-        session.readStabilizationSnapshot { [weak self] snapshot in
+        // Photo has no still stabilization: only Video's intent may read the
+        // shared idle graph's recording-format capability.
+        let videoIntent = !isDevelopmentPhotoMode
+        session.readStabilizationSnapshot(videoIntent: videoIntent) { [weak self] snapshot in
             guard let self, self.lifecycleGate.isActive, self.cameraConfigured,
                   !self.isSwitchingCameraLens, self.cameraLensSwitchGeneration == switchGeneration,
                   self.stabilizationSnapshotRequestGeneration == requestGeneration,
