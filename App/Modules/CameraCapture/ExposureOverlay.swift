@@ -8,6 +8,7 @@ struct ExposureIndicatorView: View {
     let targetEV: Float
     let isManual: Bool
     let isAvailable: Bool
+    var trackHeight: CGFloat = 120
 
     private var hasReading: Bool {
         isAvailable && meteredEV.isFinite && targetEV.isFinite
@@ -40,7 +41,7 @@ struct ExposureIndicatorView: View {
             // footprint is unchanged and the meter stays aligned with the ruler.
             // Direction and status survive only in the VoiceOver label below.
             track
-                .frame(height: 120)
+                .frame(height: trackHeight)
         }
         .frame(width: 28)
         .allowsHitTesting(false)

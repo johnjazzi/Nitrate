@@ -17,8 +17,8 @@ struct PurchaseView: View {
     @State private var pricingExpanded = false
     @State private var legalExpanded = false
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
-    @AppStorage(CameraPreviewMode.preferenceKey) private var previewMode = CameraPreviewMode.neutral.rawValue
     @AppStorage(DeliverySettings.saveOriginalLogKey) private var saveOriginalLog = false
+    @AppStorage(DeliverySettings.saveOriginalRAWToPhotosKey) private var saveOriginalRAWToPhotos = false
     @AppStorage(DeliverySettings.renderQualityKey) private var renderQuality = RenderExportQuality.high.rawValue
     @AppStorage(RecordButtonAppearance.preferenceKey) private var recordButtonAppearance = RecordButtonAppearance.classic.rawValue
     @AppStorage(MeteringIndicatorPreferences.showsIndicatorKey) private var showsMeteringIndicator = MeteringIndicatorPreferences.defaultShowsIndicator
@@ -284,22 +284,9 @@ struct PurchaseView: View {
             Text("Preview")
                 .font(NitrateTypography.font(.headline))
 
-            SettingsControlRow(icon: "camera.filters",
-                               title: "Preview Color",
-                               accessibilityTitle: "Preview color",
-                               help: "Recording uses Apple Log 2. Film effects are applied after recording. "
-                                   + "An unavailable preview look shows a warning and falls back to Log.") {
-                SettingsSelectionRow(title: "Preview Color",
-                                     valueText: previewModeTitle(CameraPreviewMode.resolved(previewMode))) {
-                    Picker("Preview Color", selection: Binding(
-                        get: { CameraPreviewMode.resolved(previewMode) },
-                        set: { previewMode = $0.rawValue })) {
-                        Text("Neutral").tag(CameraPreviewMode.neutral)
-                        Text("Stock LUT").tag(CameraPreviewMode.stock)
-                        Text("Log").tag(CameraPreviewMode.log)
-                    }
-                }
-            }
+            Text("Native camera preview. Film processing is applied only to saved output.")
+                .font(NitrateTypography.font(.caption))
+                .foregroundStyle(.secondary)
 
             SettingsControlRow(icon: "record.circle",
                                title: "Recording Indicator",
@@ -383,6 +370,12 @@ struct PurchaseView: View {
                               accessibilityTitle: "Save Original Log",
                               help: "Saves an additional, ungraded Apple Log 2 recording to Photos and uses more storage.",
                               isOn: $saveOriginalLog)
+            SettingsToggleRow(icon: "camera.raw",
+                              title: "Save Original RAW to Photos",
+                              accessibilityTitle: "Save Original RAW",
+                              help: "Saves each photo's unprocessed DNG to Photos as a second item next to the developed JPEG "
+                                  + "and uses more storage. Your choice applies to photos added to the queue afterward.",
+                              isOn: $saveOriginalRAWToPhotos)
             SettingsControlRow(icon: "arrow.up.arrow.down.circle",
                                title: "Rendered File Size",
                                accessibilityTitle: "Rendered file size",

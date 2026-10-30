@@ -456,7 +456,7 @@ struct ManualFocusRulerTests {
         #expect(screen.contains("apertureStops: cameraViewModel.apertureStops"))
         #expect(screen.contains("stabilization: cameraViewModel.recordingStabilization"))
         #expect(screen.contains("canChangeStabilization: cameraViewModel.canSetRecordingStabilization"))
-        #expect(screen.contains("selectStabilization: { cameraViewModel.setRecordingStabilization($0) })"))
+        #expect(screen.contains("selectStabilization: { cameraViewModel.setRecordingStabilization($0) }"))
     }
 
     @Test func settingsSwitchesRevealTheMasterAndTheRailIsInset() throws {

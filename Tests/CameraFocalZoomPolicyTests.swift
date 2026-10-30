@@ -393,7 +393,44 @@ struct CameraFocalZoomPolicyTests {
         #expect(engine.request(targetMM: 94.9, available: allTiers) == .switchLens(to: .wide, targetMM: 94.9))
     }
 
+    @Test func physicalUITestScalesCrossBothSidesOfTheWideBoundary() throws {
+        // Match the production gesture's absolute baseline and response curve.
+        // This is policy coverage, not proof that XCTest delivered either finger.
+        let inward = try #require(CameraFocalZoomPolicy.clampedTarget(24 * pow(0.25, 0.65)))
+        #expect(inward == 13)
+        var engine = CameraFocalZoomEngine(activeTier: .wide)
+        #expect(engine.request(targetMM: inward, available: allTiers)
+                == .switchLens(to: .ultraWide, targetMM: inward))
+        _ = engine.switchCommitted(to: .ultraWide, available: allTiers)
+
+        // 2.2 only requests 21.70 mm from the 13 mm floor: it stays ultrawide.
+        let insufficient = 13 * pow(2.2, 0.65)
+        #expect(engine.request(targetMM: insufficient, available: allTiers)
+                == .adjust(tier: .ultraWide, targetMM: insufficient))
+        let outward = 13 * pow(3.0, 0.65)
+        #expect(outward > 25)
+        #expect(engine.request(targetMM: outward, available: allTiers)
+                == .switchLens(to: .wide, targetMM: outward))
+    }
+
     // MARK: - Source wiring: raw intent to the engine, clamped readout
+
+    @Test func idlePhotoAndVideoRetainOneSharedSwiftUIPinchHandler() throws {
+        let screen = try source("App/ContentView.swift")
+        let gesture = try source("App/Modules/CameraCapture/FocalPinchZoom.swift")
+        let cameraView = try source("App/Modules/CameraCapture/CameraView.swift")
+        #expect(screen.components(separatedBy: ".modifier(FocalPinchZoom(").count - 1 == 1,
+                "Mode selection must not install competing pinch handlers.")
+        #expect(gesture.contains(".simultaneousGesture("))
+        #expect(gesture.contains("MagnificationGesture()"))
+        #expect(gesture.contains("baseline * pow(value, 0.65)"))
+        #expect(!gesture.contains("isDevelopmentPhotoMode"),
+                "Photo selection alone must not suppress the shared idle gesture.")
+        #expect(gesture.contains("camera.isStartingRecording || camera.isRecording || camera.isStoppingRecording"),
+                "The shared gesture must still reject every recording phase.")
+        #expect(!cameraView.contains("UIPinchGestureRecognizer"),
+                "Do not bypass the normal SwiftUI gesture with a native test probe.")
+    }
 
     @Test func pinchFeedsRawIntentToTheEngineAndKeepsTheReadoutHonest() throws {
         let gesture = try source("App/Modules/CameraCapture/FocalPinchZoom.swift")

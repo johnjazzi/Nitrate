@@ -75,10 +75,10 @@ struct CameraExposureBiasPreferenceTests {
         #expect(camera.contains("var liveExposureBias: Float = CameraExposureBiasPreference.load()"))
         #expect(camera.contains("CameraExposureBiasPreference.save(clamped)"),
                 "A user change is persisted after device clamping.")
-        #expect(camera.contains("session.setExposureBiasEV(liveExposureBias)"),
+        #expect(camera.contains("session.setExposureBiasEV(videoExposureBeforePhoto?.2 ?? liveExposureBias)"),
                 "The persisted value must be pushed onto the configured session.")
 
-        let apply = try #require(camera.range(of: "session.setExposureBiasEV(liveExposureBias)"))
+        let apply = try #require(camera.range(of: "session.setExposureBiasEV(videoExposureBeforePhoto?.2 ?? liveExposureBias)"))
         let pin = try #require(camera.range(of: "session.enableShutterPriority()"))
         #expect(apply.lowerBound < pin.lowerBound,
                 "It must be applied before shutter priority pins the first metered frame.")

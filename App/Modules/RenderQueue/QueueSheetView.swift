@@ -90,7 +90,7 @@ struct QueueSheetView: View {
                         ContentUnavailableView(
                             "No Render Jobs",
                             systemImage: "tray",
-                            description: Text("Record a video and select a film stock to start rendering.")
+                            description: Text("Capture a photo, record a video, or use Develop to choose a clip.")
                         )
                     }
                 } else {
@@ -161,13 +161,17 @@ struct QueueSheetView: View {
                 }
             }
             .sheet(item: $shareTarget) { job in
-                if let url = job.retainedOutputURL {
+                if job.isImportedVideo != true, let url = job.retainedOutputURL {
                     ShareSheet(items: [url])
                 }
             }
             .sheet(item: $playbackJob) { job in
-                if let url = job.retainedOutputURL {
-                    VideoPreviewSheet(url: url, title: job.receiptTitle, iso: job.iso)
+                if job.isImportedVideo != true, let url = job.retainedOutputURL {
+                    if job.isPhoto == true {
+                        PhotoPreviewSheet(url: url, title: job.receiptTitle)
+                    } else {
+                        VideoPreviewSheet(url: url, title: job.receiptTitle, iso: job.iso)
+                    }
                 }
             }
             .sheet(item: $metadataJob) { job in
@@ -219,9 +223,10 @@ struct QueueSheetView: View {
         QueueReceiptCard(job: job, prominent: prominent, openPhotos: openPhotos,
                          showMetadata: { metadataJob = job },
                          playLocal: {
-                             guard job.retainedOutputURL != nil else { return }
+                             guard job.isImportedVideo != true, job.retainedOutputURL != nil else { return }
                              playbackJob = job
-                         }, shareLocal: { shareVideo(job) })
+                         }, shareLocal: { shareVideo(job) },
+                         redevelop: job.isPhoto == true ? { viewModel.redevelopPhoto(jobId: job.id) } : nil)
     }
 
     private func openPhotos() {
@@ -231,7 +236,7 @@ struct QueueSheetView: View {
     }
 
     private func shareVideo(_ job: RenderJob) {
-        guard job.retainedOutputURL != nil else { return }
+        guard job.isImportedVideo != true, job.retainedOutputURL != nil else { return }
         shareTarget = job
     }
 }
@@ -375,4 +380,33 @@ private struct ShareSheet: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+
+/// Local developed JPEG, never a RAW placeholder or a request to read Photos.
+private struct PhotoPreviewSheet: View {
+    let url: URL
+    let title: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let image = UIImage(contentsOfFile: url.path) {
+                    Image(uiImage: image).resizable().scaledToFit()
+                        .accessibilityLabel("Rendered photo preview")
+                        .accessibilityIdentifier("queue.photoFullPreview")
+                } else {
+                    ContentUnavailableView("Photo unavailable", systemImage: "photo",
+                        description: Text("The local rendered image could not be read."))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+            }
+        }
+    }
 }

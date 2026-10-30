@@ -4,6 +4,7 @@ import Observation
 import SwiftUI
 import CoreVideo
 import CoreGraphics
+import CoreImage
 
 /// A readback copy of one debug frame, safe to hand across actor boundaries.
 struct DebugFrameBitmap: Sendable {
@@ -29,19 +30,16 @@ struct DebugFrameBitmap: Sendable {
                                                 count: bytesPerRow * height))
     }
 
-    /// The BGRA8 buffer the renderer produces is directly drawable.
+    /// Pass2 emits gamma-2.4 code values, not directly drawable sRGB bytes.
     func makeCGImage() -> CGImage? {
         if let orientedImage { return orientedImage }
-        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
-        let bitmapInfo = CGBitmapInfo(
-            rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-        )
-        return CGImage(
-            width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
-            bytesPerRow: bytesPerRow, space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: bitmapInfo, provider: provider, decode: nil,
-            shouldInterpolate: false, intent: .defaultIntent
-        )
+        guard let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else { return nil }
+        // The linear tag deliberately preserves the encoded numeric channels
+        // until the shared output helper performs the one intended gamma decode.
+        let encoded = CIImage(bitmapData: Data(pixels), bytesPerRow: bytesPerRow,
+                              size: CGSize(width: width, height: height), format: .BGRA8,
+                              colorSpace: space)
+        return try? FilmOutputDisplayConverter.makeSRGBImage(fromGamma24: encoded)
     }
 }
 
@@ -84,8 +82,9 @@ final class DebugFrameViewModel: Identifiable {
         scheduleRender()
     }
 
-    /// Grade the frozen frame with a different stock. Every dial is re-seeded
-    /// from the new stock so the sheet lands on that stock's shipping look.
+    /// Grade the processed snapshot with a different stock's video defaults.
+    /// Acquisition white balance/ISP processing remain frozen; this is not a
+    /// RAW redevelopment or a promise of that stock's delivered Photo appearance.
     func selectStock(_ stock: FilmStockConfig) {
         guard stock.stockId != config.stockId else { return }
         config = stock
@@ -201,6 +200,12 @@ struct DebugFrameSheet: View {
                         .padding(.bottom, 12)
                     ScrollView {
                         VStack(alignment: .leading, spacing: 4) {
+                            Text("Frozen processed-camera frame · video diagnostics, not a delivered RAW Photo replay.")
+                                .font(NitrateTypography.font(.caption2))
+                                .foregroundStyle(.secondary)
+                            Text("White balance and ISP processing are frozen. Stock changes use video defaults; display is sRGB.")
+                                .font(NitrateTypography.font(.caption2))
+                                .foregroundStyle(.secondary)
                             stockSection
                             grainSection
                             halationSection
@@ -217,7 +222,7 @@ struct DebugFrameSheet: View {
                 }
             }
             .onChange(of: previewAspect) { _, _ in resetZoom() }
-            .navigationTitle("Debug · Single Frame")
+            .navigationTitle("Debug · Processed Frame")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }

@@ -294,10 +294,16 @@ enum RenderDiagnostics {
 
 /// Portable export evidence; selected render ISO is not a measurement of capture ISO.
 enum RenderMovieMetadata {
-    static func make(config: FilmStockConfig, bitrate: Int = RenderEncodingContract.averageBitRate,
-                     sourceColorProvenance: RenderInputColorProvenance? = nil,
-                     orientation: RenderDeliveryOrientation? = nil,
-                     capturePolicy: RenderCapturePolicy? = nil) throws -> [AVMetadataItem] {
+    /// The `com.filmemulation.*` payload for one recipe. Shared by the movie
+    /// writer and the still writer, so a photo and a movie from the same stock
+    /// carry the same tags rather than two drifting copies.
+    static func recipeValues(config: FilmStockConfig, bitrate: Int = RenderEncodingContract.averageBitRate,
+                             sourceColorProvenance: RenderInputColorProvenance? = nil,
+                             capturePolicy: RenderCapturePolicy? = nil,
+                             isImportedSource: Bool = false,
+                             sourceNominalFrameRate: Double? = nil,
+                             overrides: [String: String] = [:],
+                             omitting: Set<String> = []) throws -> [String: String] {
         try config.validate()
         let snapshot = RenderDiagnosticsManifest.RecipeSnapshot(config: config,
             averageBitRate: bitrate, codec: RenderEncodingContract.codec,
@@ -305,7 +311,7 @@ enum RenderMovieMetadata {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let json = String(decoding: try encoder.encode(snapshot), as: UTF8.self)
-        let values: [String: String] = [
+        var metadataValues: [String: String] = [
             "film-stock": config.stockId, "stock-name": config.displayName, "lut": config.lutName,
             "light-type": config.lightType,
             "iso": String(Int(config.defaultISO)), "iso-role": "selected-render-exposure-index",
@@ -326,8 +332,15 @@ enum RenderMovieMetadata {
             "color-contract-verified": String(config.effectiveRecipe.colorContractVerified),
             "render-settings-schema": "1", "render-settings": json
         ]
-        var metadataValues = values
-        if let capturePolicy {
+        if isImportedSource {
+            metadataValues["source-origin"] = "photos-import"
+            metadataValues["shutter-speed"] = "unknown-or-not-recorded"
+            metadataValues["shutter-angle"] = "unknown-or-not-recorded"
+            metadataValues["capture-frame-rate"] = "unknown-or-not-recorded"
+            if let sourceNominalFrameRate, sourceNominalFrameRate.isFinite, sourceNominalFrameRate > 0 {
+                metadataValues["source-nominal-frame-rate"] = String(sourceNominalFrameRate)
+            }
+        } else if let capturePolicy {
             // Provenance only: the mode's integer frame rate travels with the
             // render. Legacy jobs (nil policy) emit no such key and stay
             // byte-for-byte as before.
@@ -340,6 +353,24 @@ enum RenderMovieMetadata {
             metadataValues["capture-color-space"] = sourceColorProvenance.captureColorSpace ?? "unknown-or-not-recorded"
             metadataValues["source-color-test-bypass"] = String(sourceColorProvenance.syntheticTestBypass)
         }
+
+        // A still is not a movie: the encoder keys and the nominal shutter angle
+        // describe a take, so a JPEG caller omits them and overrides the codec
+        // rather than inheriting movie-only claims.
+        for key in omitting { metadataValues.removeValue(forKey: key) }
+        for (key, value) in overrides { metadataValues[key] = value }
+        return metadataValues
+    }
+
+    static func make(config: FilmStockConfig, bitrate: Int = RenderEncodingContract.averageBitRate,
+                     sourceColorProvenance: RenderInputColorProvenance? = nil,
+                     orientation: RenderDeliveryOrientation? = nil,
+                     capturePolicy: RenderCapturePolicy? = nil,
+                     isImportedSource: Bool = false,
+                     sourceNominalFrameRate: Double? = nil) throws -> [AVMetadataItem] {
+        let metadataValues = try recipeValues(config: config, bitrate: bitrate,
+            sourceColorProvenance: sourceColorProvenance, capturePolicy: capturePolicy,
+            isImportedSource: isImportedSource, sourceNominalFrameRate: sourceNominalFrameRate)
         var items: [AVMutableMetadataItem] = metadataValues.sorted { $0.key < $1.key }.map { key, value in
             let item = AVMutableMetadataItem()
             item.keySpace = .quickTimeMetadata

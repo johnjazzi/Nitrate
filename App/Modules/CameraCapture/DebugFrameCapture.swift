@@ -69,40 +69,24 @@ final class CameraDebugFrameRequest: @unchecked Sendable {
     }
 }
 
-/// Converts a live Apple Log 2 camera frame into the RGBA-half layout the
-/// offline renderer decodes from a recorded clip, so the debug single-frame
-/// render feeds pass1 the format it already expects.
-///
-/// This is a debug convenience, not a calibrated color transform: color
-/// management is disabled so the matrix conversion keeps the Apple Log code
-/// values (no tone mapping), matching the decoder's behaviour. It is not
-/// exercised on the simulator, where no camera exists.
+/// Convert a processed camera snapshot to the video renderer's Apple Wide
+/// Gamut / Apple Log 2 input, using the capture owner's active color-space
+/// snapshot. SDR idle is intentional; it must be decoded, not relabeled Log.
+/// This adapter does not turn processed camera pixels into a captured RAW Photo.
 enum DebugFrameConverter {
-    private static let context = CIContext(options: [
-        .workingColorSpace: NSNull(),
-        .outputColorSpace: NSNull()
-    ])
-
-    static func rgbaHalfBuffer(from pixelBuffer: CVPixelBuffer) -> CVPixelBuffer? {
-        if CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_64RGBAHalf {
-            return pixelBuffer
+    @available(iOS 26.0, *)
+    static func rgbaHalfBuffer(from pixelBuffer: CVPixelBuffer,
+                               sourceColorSpace: AVCaptureColorSpace = .appleLog2) -> CVPixelBuffer? {
+        let source: DebugFrameSourceAdapter.SourceColorSpace
+        switch sourceColorSpace {
+        case .appleLog2: source = .appleLog2
+        case .sRGB: source = .sRGB
+        case .P3_D65: source = .displayP3
+        // Apple Log 1, HLG, and future spaces need their own explicit adapter.
+        // Never infer transfer/primaries from 8-bit, 10-bit, or half storage.
+        default: return nil
         }
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
-        guard width > 0, height > 0 else { return nil }
-
-        let attributes: [String: Any] = [
-            kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-        ]
-        var output: CVPixelBuffer?
-        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height,
-                                  kCVPixelFormatType_64RGBAHalf, attributes as CFDictionary,
-                                  &output) == kCVReturnSuccess, let output else { return nil }
-
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
-        context.render(image, to: output, bounds: image.extent, colorSpace: nil)
-        return output
+        return DebugFrameSourceAdapter.rgbaHalfBuffer(from: pixelBuffer, sourceColorSpace: source)
     }
 }
 #endif

@@ -34,6 +34,27 @@ enum CameraFrameRate: Int, Codable, Equatable, Sendable, CaseIterable, Identifia
     }
 }
 
+/// The exposure a shooting mode's idle camera graph holds while the operator is
+/// not overriding it. The value type exists so the contract is decided once, in
+/// one place, instead of being re-derived by every caller.
+struct IdleExposureContract: Equatable, Sendable {
+    let durationSeconds: Double?
+    /// Nil leaves ISO metering automatically; a value pins the operator's ISO.
+    let lockedISO: Float?
+    let exposureBias: Float
+}
+
+/// Shared idle retains explicit operator holds only. The recording start path
+/// separately owns its 180° shutter; changing UI modes never installs it.
+enum VideoExposureContract {
+    static func idle(frameRate: CameraFrameRate, isManualExposure: Bool,
+                     manualISO: Float, bias: Float, heldDuration: Double? = nil) -> IdleExposureContract {
+        IdleExposureContract(durationSeconds: heldDuration,
+                             lockedISO: isManualExposure ? manualISO : nil,
+                             exposureBias: bias)
+    }
+}
+
 /// Mirrors `CameraStabilizationPolicy.canChange`: a frame-rate change is only
 /// allowed while no take is pending, active or draining.
 enum CameraFrameRatePolicy {

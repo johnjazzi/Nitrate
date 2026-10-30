@@ -59,6 +59,33 @@ struct RenderConsumerMetadataTests {
         #expect(items.first { ($0.key as? String) == "com.filmemulation.halation-level" }?.value as? String == "0.0")
     }
 
+    @Test func importedVideoMetadataNeverInventsCaptureSettings() throws {
+        let items = try RenderMovieMetadata.make(config: config(gauge: nil),
+                                                 isImportedSource: true,
+                                                 sourceNominalFrameRate: 29.97)
+        func value(_ name: String) -> String? {
+            items.first { ($0.key as? String) == "com.filmemulation.\(name)" }?.value as? String
+        }
+        #expect(value("source-origin") == "photos-import")
+        #expect(value("shutter-speed") == "unknown-or-not-recorded")
+        #expect(value("shutter-angle") == "unknown-or-not-recorded")
+        #expect(value("capture-frame-rate") == "unknown-or-not-recorded")
+        #expect(value("source-nominal-frame-rate") == "29.97")
+        #expect(value("film-stock") == "test")
+        #expect(value("render-settings") != nil)
+    }
+
+    @Test func ordinaryCaptureMetadataKeepsItsExistingContract() throws {
+        let items = try RenderMovieMetadata.make(config: config(gauge: nil))
+        func value(_ name: String) -> String? {
+            items.first { ($0.key as? String) == "com.filmemulation.\(name)" }?.value as? String
+        }
+        #expect(value("shutter-speed") == "1/48")
+        #expect(value("shutter-angle") == "180")
+        #expect(value("source-origin") == nil)
+        #expect(value("source-nominal-frame-rate") == nil)
+    }
+
     @Test func deliveredMovieRoundTripsTheConsumerTag() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

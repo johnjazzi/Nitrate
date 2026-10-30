@@ -94,15 +94,24 @@ final class PipelineRenderer: @unchecked Sendable {
     /// `capturePolicy` is the job's persisted enqueue-time policy. It selects the
     /// grain temporal cadence and the shutter metadata; `nil` is the legacy path
     /// (per-frame grain, `1/48`). It is never read from live UI.
+    /// `progress`, when supplied, is called with a monotonic, clamped fraction
+    /// (`0...<1`) as frames are appended, then with `1` once the writer has
+    /// finished. The callback is `@Sendable` and is invoked from the render
+    /// task, not the main actor; the caller owns any hop and throttling is
+    /// already applied here.
     func render(
         sourceURL: URL,
         config: FilmStockConfig,
         trimRange: CMTimeRange? = nil,
         bitrate: Int = RenderEncodingContract.averageBitRate,
-        capturePolicy: RenderCapturePolicy? = nil
+        capturePolicy: RenderCapturePolicy? = nil,
+        isImportedSource: Bool = false,
+        progress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> URL {
         (try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange,
-                                    bitrate: bitrate, capturePolicy: capturePolicy)).outputURL
+                                    bitrate: bitrate, capturePolicy: capturePolicy,
+                                    isImportedSource: isImportedSource,
+                                    progress: progress)).outputURL
     }
 
     private static func captureColorSpace(from asset: AVAsset) async throws -> String? {
@@ -120,7 +129,9 @@ final class PipelineRenderer: @unchecked Sendable {
         trimRange: CMTimeRange? = nil,
         bitrate: Int = RenderEncodingContract.averageBitRate,
         capturePolicy: RenderCapturePolicy? = nil,
-        collectDecodedBufferEvidence: Bool = false
+        isImportedSource: Bool = false,
+        collectDecodedBufferEvidence: Bool = false,
+        progress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> (outputURL: URL, counters: RenderDiagnosticsManifest.Counters,
                        sourceColorProvenance: RenderInputColorProvenance,
                        firstDecodedBuffer: RenderDiagnosticsManifest.DecodedBufferEvidence?) {
@@ -163,6 +174,11 @@ final class PipelineRenderer: @unchecked Sendable {
         let nominalFrameRate = try await videoTrack.load(.nominalFrameRate)
         let preferredTransform = try await videoTrack.load(.preferredTransform)
         try Task.checkCancellation()
+
+        // The source range this render actually reads. Frame presentation
+        // times are on the source timeline, so progress maps them onto this
+        // range.
+        let renderRange = trimRange ?? CMTimeRange(start: .zero, duration: duration)
 
         let renderWidth = naturalSize.width
         let renderHeight = naturalSize.height
@@ -272,7 +288,8 @@ final class PipelineRenderer: @unchecked Sendable {
         )
         writer.metadata = try RenderMovieMetadata.make(
             config: config, bitrate: bitrate, sourceColorProvenance: sourceColorProvenance,
-            orientation: deliveryOrientation, capturePolicy: capturePolicy
+            orientation: deliveryOrientation, capturePolicy: capturePolicy,
+            isImportedSource: isImportedSource, sourceNominalFrameRate: Double(nominalFrameRate)
         )
 
         // Audio passthrough writer input
@@ -295,7 +312,7 @@ final class PipelineRenderer: @unchecked Sendable {
             }
             // Reader sample timestamps remain on the source timeline. Starting the
             // writer session at the trim origin maps the selected range to output 0.
-            let sessionStart = (trimRange ?? CMTimeRange(start: .zero, duration: duration)).start
+            let sessionStart = renderRange.start
             writer.startSession(atSourceTime: sessionStart)
 
             do {
@@ -319,7 +336,9 @@ final class PipelineRenderer: @unchecked Sendable {
                 audioReceiver: audioReceiver,
                 cancellationHandle: cancellationHandle,
                 grainPairing: capturePolicy?.grainPairing ?? .perFrame,
-                captureFirstBufferEvidence: collectDecodedBufferEvidence
+                captureFirstBufferEvidence: collectDecodedBufferEvidence,
+                progress: progress,
+                progressRange: renderRange
             )
             try Task.checkCancellation()
             guard frameResult.counters.processed > 0 else {
@@ -341,6 +360,8 @@ final class PipelineRenderer: @unchecked Sendable {
             if audioReader != nil, cancellationHandle.audioReaderStatus != .completed {
                 throw RenderError.readerFailed(cancellationHandle.audioReaderError)
             }
+            // The movie is fully written; only now report completion.
+            progress?(RenderProgressAccumulator.finishFraction)
             renderSucceeded = true
             return (outputURL, frameResult.counters, sourceColorProvenance, frameResult.firstBufferEvidence)
         } catch {
@@ -496,8 +517,9 @@ final class PipelineRenderer: @unchecked Sendable {
         }
     }
 
-    /// One rendered debug frame: the graded, grained image as a drawable BGRA8
-    /// texture plus the backing pixel buffer the debug sheet (and tests) read back.
+    /// One rendered debug frame: numeric Rec.709-primary / gamma-2.4 BGRA8
+    /// film output, NOT directly drawable sRGB. The sheet explicitly converts it
+    /// through FilmOutputDisplayConverter; numeric/effect tests read it unchanged.
     struct DebugFrameRender {
         let texture: MTLTexture
         let pixelBuffer: CVPixelBuffer
@@ -510,9 +532,9 @@ final class PipelineRenderer: @unchecked Sendable {
     /// touches `render(...)` or the recorder: the debug sheet calls this once per
     /// (debounced) slider change and draws the result.
     ///
-    /// `pixelBuffer` must be the RGBA-half layout the offline decoder produces;
-    /// the debug capture converts the live camera frame into that layout. Returns
-    /// nil if the LUT or any GPU stage fails.
+    /// `pixelBuffer` must contain Apple Wide Gamut / Apple Log 2 CODE values in
+    /// RGBA-half storage. The debug source adapter decodes SDR idle into that
+    /// domain; storage alone does not establish it. Returns nil on stage failure.
     func renderDebugFrame(
         pixelBuffer: CVPixelBuffer,
         config: FilmStockConfig,
@@ -629,44 +651,7 @@ final class PipelineRenderer: @unchecked Sendable {
 
     /// Parse .cube format. Returns (size, rgbaValues).
     private func parseCubeLUT(_ content: String) throws -> (Int, [Float]) {
-        var size = 0
-        var values: [Float] = []
-        var headerParsed = false
-
-        let lines = content.components(separatedBy: .newlines)
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
-
-            if trimmed.uppercased().hasPrefix("LUT_3D_SIZE") {
-                let parts = trimmed.components(separatedBy: .whitespaces)
-                guard parts.count >= 2, let parsedSize = Int(parts[1]) else {
-                    throw RenderError.invalidLUTData
-                }
-                size = parsedSize
-                headerParsed = true
-                continue
-            }
-
-            if headerParsed, trimmed.uppercased() == "DOMAIN_MIN" || trimmed.uppercased() == "DOMAIN_MAX" {
-                continue
-            }
-
-            if headerParsed {
-                // Parse RGB triplet
-                let parts = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-                let numericParts = parts.compactMap { Float($0) }
-                if numericParts.count == 3 {
-                    values.append(contentsOf: numericParts + [1.0]) // Add alpha = 1.0
-                }
-            }
-        }
-
-        guard size > 0, values.count == size * size * size * 4 else {
-            throw RenderError.invalidLUTData
-        }
-
-        return (size, values)
+        try PhotoCubeLUT.parse(content)
     }
 
     /// Upload Resolve .cube RGB triplets to a 3D Metal texture (RGBA).
@@ -716,7 +701,9 @@ final class PipelineRenderer: @unchecked Sendable {
         audioReceiver: sending AVAssetWriterInput.SampleBufferReceiver?,
         cancellationHandle: RenderCancellationHandle,
         grainPairing: GrainPairing,
-        captureFirstBufferEvidence: Bool
+        captureFirstBufferEvidence: Bool,
+        progress: (@Sendable (Double) -> Void)?,
+        progressRange: CMTimeRange
     ) async throws -> (counters: RenderDiagnosticsManifest.Counters,
                        firstBufferEvidence: RenderDiagnosticsManifest.DecodedBufferEvidence?) {
         guard let lut = renderQueue.sync(execute: { lutTexture }) else {
@@ -754,6 +741,12 @@ final class PipelineRenderer: @unchecked Sendable {
             // read task without requiring an unsafe transfer of the provider
             // itself. The provider is only read by one task at a time.
             let videoProviderBox = ReadProviderBox(videoProvider)
+
+            // Progress is derived from frame presentation times mapped onto the
+            // selected range. The accumulator clamps, keeps the fraction
+            // monotonic and throttles to whole percent steps, so the callback
+            // never fires once per frame.
+            var progressAccumulator = progress.map { _ in RenderProgressAccumulator(range: progressRange) }
 
             while true {
                 if let audioFailure = audioResult.getFailure {
@@ -831,6 +824,10 @@ final class PipelineRenderer: @unchecked Sendable {
 
                 counters.processed += 1
                 counters.appended += 1
+                if let progress,
+                   let fraction = progressAccumulator?.fraction(forAppendedSeconds: sample.presentationTimeStamp.seconds) {
+                    progress(fraction)
+                }
                 frameIndex += 1
             }
 
@@ -1442,12 +1439,57 @@ final class PipelineRenderer: @unchecked Sendable {
 
 // MARK: - Supporting Types
 
+/// Pure, timestamp-driven fraction for a single render.
+///
+/// The fraction is derived from the presentation time of frames actually
+/// appended to the writer, mapped onto the selected source/trim range — never
+/// from a timer. It is clamped to `0...<1` and never decreases. Emissions are
+/// throttled to whole percent steps so the progress callback is not driven once
+/// per frame. The terminal `1` is reported separately by `finishFraction` only
+/// once the writer has finished, so a short final frame time cannot look
+/// complete before the file is written.
+struct RenderProgressAccumulator: Sendable {
+    /// Minimum change between reported fractions (one percent).
+    static let step = 0.01
+    /// The fraction reported once the writer has finished writing.
+    static let finishFraction = 1.0
+
+    private let startSeconds: Double
+    private let durationSeconds: Double
+    private var lastReported: Double = 0
+
+    init(startSeconds: Double, durationSeconds: Double) {
+        self.startSeconds = startSeconds.isFinite ? startSeconds : 0
+        self.durationSeconds = durationSeconds.isFinite && durationSeconds > 0 ? durationSeconds : 0
+    }
+
+    init(range: CMTimeRange) {
+        self.init(startSeconds: range.start.seconds, durationSeconds: range.duration.seconds)
+    }
+
+    /// The fraction to report for a frame appended at `seconds` on the source
+    /// timeline, or `nil` when the frame does not advance a whole percent step.
+    mutating func fraction(forAppendedSeconds seconds: Double) -> Double? {
+        guard durationSeconds > 0, seconds.isFinite else { return nil }
+        let raw = (seconds - startSeconds) / durationSeconds
+        // Keep frame-derived fractions strictly below 1: completion is
+        // signalled only by `finishFraction`, once the writer has finished.
+        let bounded = min(max(raw, 0), 1 - Self.step)
+        guard bounded >= lastReported + Self.step - 1e-9 else { return nil }
+        lastReported = bounded
+        return bounded
+    }
+}
+
 struct GrainUniforms {
     var frameIndex: UInt32
     var iso: Float
     var grainSize: Float
     var edgeBoostMultiplier: Float = 0
     var gaugeAmplitude: Float = 1.0
+    /// Dye-cloud chroma strength; see `GrainModel.videoChromaAmount`. The video
+    /// path takes the default, the still path overrides it.
+    var chromaAmount: Float = GrainModel.videoChromaAmount
 }
 
 /// Everything one frame needs to be graded and appended, bundled so the frame

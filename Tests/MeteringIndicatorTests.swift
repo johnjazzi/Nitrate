@@ -61,7 +61,7 @@ struct MeteringIndicatorTests {
         let handler = try #require(camera.range(of: ".onTapGesture { location in"))
         let nextModifier = try #require(camera.range(of: ".onAppear", range: handler.upperBound..<camera.endIndex))
         let tap = String(camera[handler.lowerBound..<nextModifier.lowerBound])
-        #expect(tap.contains("viewModel.handleFocusTap(at: location, in: layer)"))
+        #expect(tap.contains("viewModel.handleFocusTap(at: visiblePoint, in: layer)"))
         #expect(tap.contains("viewModel.setMeteringPoint("))
         #expect(!tap.contains("showsMeteringIndicator"),
                 "hiding the cue must not gate tap-to-focus or exposure metering")

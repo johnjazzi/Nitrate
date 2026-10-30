@@ -96,6 +96,15 @@ exit 2
         self.assertIn("checksum", (result.stdout + result.stderr).lower())
         self.assertFalse((self.root / "bootstrap-invocation.txt").exists())
 
+    def test_checkout_does_not_track_a_machine_local_build_link(self):
+        # A build/ symlink to the developer's machine makes Cloud's first mkdir
+        # fail before tool download or test execution. Check the index, not the
+        # local filesystem, so an ignored local cache link remains permitted.
+        result = subprocess.run(
+            ["git", "ls-files", "--stage", "--", "build"], cwd=ROOT,
+            text=True, capture_output=True, check=True)
+        self.assertEqual(result.stdout, "", "Build outputs or cache links must never be tracked")
+
     def test_generated_build_phase_can_find_bootstrapped_swiftlint(self):
         spec = (ROOT / "project.yml").read_text()
         self.assertIn('$SRCROOT/build/ci-tools/swiftlint-0.65.1', spec,

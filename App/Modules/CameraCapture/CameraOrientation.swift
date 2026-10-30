@@ -41,6 +41,19 @@ final class CameraOrientationObserver {
     }
 }
 
+extension CameraOrientationObserver {
+    /// The physical hold frozen for a still taken now.
+    ///
+    /// The observer already retains the last stable four-way hold, so laying the
+    /// phone flat at the tap cannot invent a new delivery orientation. Reading it
+    /// here — at the shutter tap — is what keeps a later turn from re-orienting a
+    /// capture that waits on an exposure write.
+    var deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation {
+        CameraSampleValidationPolicy.DeliveryOrientation(
+            deviceOrientationRawValue: deviceOrientation.rawValue)
+    }
+}
+
 private struct CameraDeviceOrientationKey: EnvironmentKey {
     static let defaultValue: UIDeviceOrientation = .portrait
 }

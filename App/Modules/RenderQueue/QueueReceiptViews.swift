@@ -2,19 +2,13 @@ import SwiftUI
 import UIKit
 
 extension RenderJob {
-    var retainedOutputURL: URL? {
-        guard let outputURL, outputURL.isFileURL,
-              let values = try? outputURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
-              values.isRegularFile == true, (values.fileSize ?? 0) > 0 else { return nil }
-        return outputURL
-    }
-
     var receiptActions: QueueReceiptPresentation.Actions {
         .init(savedToPhotos: outputSavedToPhotos == true || sourceSavedToPhotos == true,
-              retainedOutput: retainedOutputURL != nil)
+              retainedOutput: permitsLocalMedia && retainedOutputURL != nil)
     }
 
     var receiptTitle: String {
+        if isPhoto == true { return "Rendered photo" }
         if originalOnly == true { return "Original recording" }
         let name = QueueReceiptPresentation.metadata(receipt?.metadata ?? [:], "stock-name")
         if name != QueueReceiptPresentation.unavailable { return name }
@@ -30,11 +24,20 @@ struct QueueReceiptCard: View {
     let showMetadata: () -> Void
     let playLocal: () -> Void
     let shareLocal: () -> Void
+    /// Photo-only: re-develop from the retained original. Absent for video jobs.
+    var redevelop: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 12) {
-                if job.receiptActions.openPhotos {
+                if !job.permitsLocalMedia {
+                    Image(systemName: "film").foregroundStyle(.secondary)
+                } else if job.isPhoto == true, job.retainedOutputURL != nil {
+                    Button(action: playLocal) { poster }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Preview rendered photo")
+                        .accessibilityIdentifier("queue.photoPreview")
+                } else if job.receiptActions.openPhotos {
                     Button(action: openPhotos) { poster }
                         .buttonStyle(.borderless)
                         .accessibilityLabel("Open Photos for saved recording")
@@ -80,12 +83,12 @@ struct QueueReceiptCard: View {
     private var subtitle: String {
         if job.originalOnly == true { return "Original · no rendered look" }
         if job.status == .failed { return "Failed · retry available" }
-        return "Rendered video"
+        return job.isPhoto == true ? "Rendered photo" : "Rendered video"
     }
 
     private var poster: some View {
         Group {
-            if let data = job.receipt?.thumbnailJPEG, let image = UIImage(data: data) {
+            if job.permitsLocalMedia, let data = job.receipt?.thumbnailJPEG, let image = UIImage(data: data) {
                 Image(uiImage: image).resizable().scaledToFit()
             } else {
                 VStack(spacing: 4) {
@@ -122,13 +125,20 @@ struct QueueReceiptCard: View {
     @ViewBuilder private var localActions: some View {
         if job.receiptActions.playLocal {
             Button(action: playLocal) {
-                Label("Play local copy", systemImage: "play.circle").frame(minHeight: 44)
+                Label(job.isPhoto == true ? "Preview photo" : "Play local copy", systemImage: job.isPhoto == true ? "photo" : "play.circle").frame(minHeight: 44)
             }.buttonStyle(.borderless)
         }
         if job.receiptActions.shareLocal {
             Button(action: shareLocal) {
                 Label("Share local copy", systemImage: "square.and.arrow.up").frame(minHeight: 44)
             }.buttonStyle(.borderless)
+        }
+        if job.hasRedevelopableOriginal, let redevelop {
+            Button(action: redevelop) {
+                Label("Re-render photo", systemImage: "arrow.clockwise").frame(minHeight: 44)
+            }.buttonStyle(.borderless)
+            .accessibilityHint("Develops the photo again from the saved original.")
+            .accessibilityIdentifier("queue.redevelopPhoto")
         }
     }
 }

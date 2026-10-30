@@ -46,6 +46,18 @@ class VerifyCommandTests(unittest.TestCase):
         env_patch.start()
         self.addCleanup(env_patch.stop)
 
+    def test_xcodebuild_bounds_compiler_concurrency(self):
+        with mock.patch.dict(os.environ, {"NITRATE_VERIFY_JOBS": "2"}):
+            command = verify.xcodebuild("build")
+        self.assertEqual(command[command.index("-jobs") + 1], "2")
+        self.assertIn("SWIFT_MAXIMUM_CONCURRENT_COMPILE_TASKS=2", command)
+
+    def test_xcodebuild_rejects_invalid_job_limit(self):
+        for value in ["0", "-1", "unlimited"]:
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"NITRATE_VERIFY_JOBS": value}):
+                with self.assertRaises(SystemExit):
+                    verify.xcodebuild("build")
+
     def logs(self) -> list[Path]:
         return sorted(self.verify_dir.glob("*.log"))
 

@@ -369,7 +369,18 @@ def xcodebuild(*args: str) -> list[str]:
     if not executable:
         print("xcodebuild was not found on PATH.", file=sys.stderr)
         raise SystemExit(127)
-    command = [executable, *args, "-derivedDataPath", str(DERIVED_DATA)]
+    # Keep local verification bounded; workers must not start their own builds.
+    raw_jobs = os.environ.get("NITRATE_VERIFY_JOBS", "2")
+    try:
+        jobs = int(raw_jobs)
+        if jobs < 1:
+            raise ValueError
+    except ValueError:
+        print("NITRATE_VERIFY_JOBS must be a positive integer.", file=sys.stderr)
+        raise SystemExit(2)
+    command = [executable, *args, "-jobs", str(jobs),
+               f"SWIFT_MAXIMUM_CONCURRENT_COMPILE_TASKS={jobs}",
+               "-derivedDataPath", str(DERIVED_DATA)]
     if not diagnostics_enabled():
         command.append("-quiet")
     command.append("COMPILER_INDEX_STORE_ENABLE=YES")
@@ -416,6 +427,8 @@ def verify() -> bool:
     if not run("ci-policy-tests", [sys.executable, str(ROOT / "scripts" / "test_ci_policy.py")], kind="test"):
         return False
     if not run("verify-workflow-tests", [sys.executable, str(ROOT / "scripts" / "test_verify_workflow.py")], kind="test"):
+        return False
+    if not run("photo-field-wiring-tests", [sys.executable, str(ROOT / "scripts" / "test_photo_field_wiring.py")], kind="test"):
         return False
     if not generate_project():
         return False

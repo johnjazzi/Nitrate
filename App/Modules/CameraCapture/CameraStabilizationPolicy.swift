@@ -45,6 +45,19 @@ enum CameraStabilizationPolicy {
     static func canChange(recording: Bool, starting: Bool, finishing: Bool) -> Bool {
         !recording && !starting && !finishing
     }
+
+    /// Capability while the shared idle lease owns the session.
+    ///
+    /// Photo's still profile detaches the recording video output, so there is no
+    /// live connection to ask. The format the take will be recorded on still
+    /// answers per-mode support, and connection support is the answer the real
+    /// video data output connection gave the last time it was attached — never
+    /// assumed, so an unobserved connection advertises nothing.
+    static func idleCapability(videoConnectionSupportsStabilization: Bool,
+                               recordingFormatModes: Set<CameraStabilizationMode>) -> Capability {
+        guard videoConnectionSupportsStabilization else { return .unavailable }
+        return Capability(connectionSupported: true, formatModes: recordingFormatModes)
+    }
 }
 
 /// One immutable, queue-read snapshot. No AVFoundation objects cross to UI.

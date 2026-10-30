@@ -130,4 +130,27 @@ struct DaylightCapturePolicyLedgerTests {
         #expect(ledger.policy(for: url("a")) == nil)
         #expect(ledger.policies.isEmpty)
     }
+
+    @Test func sharedIdlePreservesOnlyExplicitExposureHolds() {
+        let isoHolds: [Float?] = [nil, 800]
+        let shutterHolds: [Double?] = [nil, 1.0 / 250.0]
+        for rate in CameraFrameRate.allCases {
+            for iso in isoHolds {
+                for duration in shutterHolds {
+                    let idle = VideoExposureContract.idle(frameRate: rate, isManualExposure: iso != nil,
+                        manualISO: iso ?? 400, bias: -1.2, heldDuration: duration)
+                    #expect(idle.durationSeconds == duration)
+                    #expect(idle.lockedISO == iso)
+                    #expect(idle.exposureBias == -1.2)
+                }
+            }
+        }
+    }
+
+    @Test func heldISODoesNotAlsoAcquireARecordingShutter() {
+        let manual = VideoExposureContract.idle(frameRate: .standard24, isManualExposure: true,
+                                                manualISO: 800, bias: 0)
+        #expect(manual.lockedISO == 800)
+        #expect(manual.durationSeconds == nil)
+    }
 }
