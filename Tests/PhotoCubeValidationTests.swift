@@ -3,8 +3,7 @@ import Testing
 
 struct PhotoCubeValidationTests {
     private func cube(_ filename: String) throws -> ([SIMD3<Double>], Int) {
-        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("App/Resources/LUTs/\(filename)")
+        let url = TestRepository.root.appendingPathComponent("Resources/LUTs/\(filename)")
         let text = try String(contentsOf: url, encoding: .utf8)
         var size: Int?
         var values: [SIMD3<Double>] = []
