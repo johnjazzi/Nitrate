@@ -1323,6 +1323,11 @@ final class CameraViewModel {
     func setPhotoShutterLocked(_ locked: Bool) {
 #if DEBUG
         guard isDevelopmentPhotoMode, !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile else { return }
+        // The shutter rail lives inside the ISO control group. Locking a shutter
+        // that has no control on screen pins custom exposure with nothing to
+        // release it, which is why unlocking the ISO could leave the camera stuck
+        // in custom mode for the rest of the session.
+        guard !locked || photoExposureSnapshot?.isoLocked == true else { return }
         session.setDevelopmentPhotoShutterLocked(locked)
 #endif
     }
@@ -1652,6 +1657,9 @@ final class CameraViewModel {
         if isDevelopmentPhotoMode {
             guard !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile else { return }
             session.setDevelopmentPhotoEV(bias)
+            // Photo writes the same persisted preference Video does; without this
+            // the value only ever existed for the current launch.
+            CameraExposureBiasPreference.save(bias)
             return
         }
 #endif

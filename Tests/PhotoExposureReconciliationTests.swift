@@ -25,21 +25,6 @@ struct PhotoExposureReconciliationTests {
         #expect(next.command(for: applied) == nil)
     }
 
-    @Test(arguments: [Float(6), -12])
-    func limitedShutterCommandIsInstalledOnceThenSuppressesIdenticalWrites(_ ev: Float) throws {
-        let before = snapshot(isoLocked: true, shutterLocked: false)
-        let decision = try PhotoExposurePolicy.decide(snapshot: before,
-            request: .init(ev: ev, measuredEV: 0, maxCorrectionEV: 12))
-        #expect(decision.targetLimited)
-        let command = try #require(decision.command(for: before))
-        #expect(abs(command.durationSeconds - (ev > 0 ? 1.0 / 16 : 1.0 / 8000)) < 0.00000001)
-        #expect(command.iso == before.iso)
-        let applied = snapshot(duration: command.durationSeconds, isoLocked: true, shutterLocked: false)
-        let next = try PhotoExposurePolicy.decide(snapshot: applied,
-            request: .init(ev: ev, measuredEV: 0, maxCorrectionEV: 12))
-        #expect(next.command(for: applied) == nil)
-    }
-
     @Test func limitedTargetCanReturnInsideRange() throws {
         let state = snapshot(iso: 800)
         let decision = try PhotoExposurePolicy.decide(snapshot: state,

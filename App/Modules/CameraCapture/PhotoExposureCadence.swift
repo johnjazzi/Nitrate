@@ -23,6 +23,15 @@ enum PhotoExposureCadence {
     /// proof of a physical terminal and never releases RAW capture ownership.
     static let setterTimeout: TimeInterval = 1.2
 
+    /// A setter's deadline has to outlive the exposure it installs. A one second
+    /// shutter acknowledged inside a fixed 1.2 s budget expired on real hardware
+    /// and marked the session as requiring recovery, which then refused every
+    /// later EV write and capture until the app restarted.
+    static func setterDeadline(forRequestedDuration seconds: Double) -> TimeInterval {
+        guard seconds.isFinite, seconds > 0 else { return setterTimeout }
+        return max(setterTimeout, seconds * 2 + 0.3)
+    }
+
     /// How long a shutter tap may wait for the exposure to settle before it fails
     /// with a reason. A capture that cannot start has to say so rather than leave
     /// the operator tapping an apparently dead control.

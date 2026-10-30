@@ -24,7 +24,8 @@ struct PhotoExposureOperationOwnershipTests {
         let owner = Owner()
         let first = try require(owner.value.begin(.bias, now: 0))
         check(owner.value.expire(first, now: PhotoExposureCadence.setterTimeout))
-        check(owner.value.requiresRecovery)
+        // Expiry retires the lease; it does not fence the camera.
+        check(owner.value.biasPendingCount == 0)
         let second = try require(owner.value.begin(.bias, now: 2))
         check(!owner.value.acknowledge(first, now: 2.1))
         check(owner.value.biasPendingCount == 1)
@@ -59,7 +60,6 @@ struct PhotoExposureOperationOwnershipTests {
         check(!owner.value.canDrain(capturing: false))
         check(!owner.value.expire(token, now: 5.1))
         check(owner.value.expire(token, now: 5 + PhotoExposureCadence.setterTimeout))
-        check(owner.value.requiresRecovery)
         check(owner.value.canDrain(capturing: false))
         check(!owner.value.acknowledge(token, now: 10))
         check(owner.value.canDrain(capturing: false))
@@ -85,13 +85,14 @@ struct PhotoExposureOperationOwnershipTests {
         check(owner.value.meteringReady(now: 1.31, duration: 0.01))
     }
 
-    @Test func expiredSetterCannotResumeMeteringEvenAfterTheFreshnessWindow() throws {
+    @Test func anExpiredSetterFreesItsLeaseForTheNextWrite() throws {
         let owner = Owner()
         let token = try require(owner.value.begin(.custom, now: 0))
         check(owner.value.expire(token, now: 2))
-        check(!owner.value.acknowledge(token, now: 3))
-        check(owner.value.requiresRecovery)
-        check(!owner.value.meteringReady(now: 100, duration: 0.01))
+        check(!owner.value.acknowledge(token, now: 3), "a late ACK after expiry is ignored")
+        // The next tick writes the desired value again instead of refusing.
+        check(owner.value.begin(.custom, now: 3) != nil)
+        check(owner.value.meteringReady(now: 100, duration: 0.01) == false, "a live lease still owns the device")
     }
 
     @Test func unacknowledgedSetterCannotProvideFreshMetering() throws {

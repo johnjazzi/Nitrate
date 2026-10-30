@@ -2300,7 +2300,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// mode and Apple resets that bias to 0, so reading it back made the control
     /// appear to revert. Compensation is applied by scaling the metered ISO
     /// instead, which survives the shutter-priority re-meter.
-    private(set) var exposureBiasEV: Float = 0
+    private(set) var exposureBiasEV: Float = CameraExposureBiasPreference.load()
 
     /// Supported EV compensation range, bounded to a film-useful ±3 EV span
     /// (fallback ±3 EV before the device is ready).

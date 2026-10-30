@@ -13,7 +13,6 @@ struct PhotoExposureOperationOwnership {
     private var nextID: UInt64 = 0
     private var deadlines: [Token: TimeInterval] = [:]
     private var stopped = false
-    private(set) var requiresRecovery = false
     private var lastAppliedAt: TimeInterval?
     private var lastMeteringReadAt: TimeInterval?
 
@@ -44,11 +43,11 @@ struct PhotoExposureOperationOwnership {
     @discardableResult
     mutating func expire(_ token: Token, now: TimeInterval) -> Bool {
         guard let deadline = deadlines[token], now >= deadline else { return false }
+        // An acknowledgement that never arrived retires only this lease. The
+        // controller re-asserts the desired value on its next tick, which is
+        // idempotent: the camera settles on the value regardless of which
+        // callback was lost. Nothing is fenced and nothing needs recovering.
         deadlines.removeValue(forKey: token)
-        // A readable installed value is NOT proof that an unacknowledged setter
-        // cannot mutate hardware later. The controller must stop issuing writes
-        // and ask its session owner for an explicit stop/reconfigure boundary.
-        requiresRecovery = true
         noteApplied(now: now)
         return true
     }
@@ -56,8 +55,7 @@ struct PhotoExposureOperationOwnership {
     mutating func stop() { stopped = true }
 
     func canDrain(capturing: Bool) -> Bool {
-        // Logical setters may expire, but an entered RAW owner never does. The
-        // session must inspect requiresRecovery before it reuses the device.
+        // Logical setters may expire, but an entered RAW owner never does.
         stopped && deadlines.isEmpty && !capturing
     }
 
@@ -70,7 +68,7 @@ struct PhotoExposureOperationOwnership {
     }
 
     func meteringReady(now: TimeInterval, duration: Double) -> Bool {
-        guard !requiresRecovery, deadlines.isEmpty else { return false }
+        guard deadlines.isEmpty else { return false }
         let interval = PhotoExposureCadence.measurementInterval(duration: duration)
         if let lastAppliedAt, now < lastAppliedAt + interval { return false }
         if let lastMeteringReadAt, now < lastMeteringReadAt + interval { return false }

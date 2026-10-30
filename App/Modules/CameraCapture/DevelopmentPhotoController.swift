@@ -12,7 +12,6 @@ final class DevelopmentPhotoController: @unchecked Sendable {
     private let queue: DispatchQueue
     private let onUpdate: @MainActor @Sendable (PhotoExposureSnapshot) -> Void
     private let onFailure: @Sendable (String) -> Void
-    private let onRecoveryRequired: (@Sendable () -> Void)?
 
     private var started = false
     private var stopped = false
@@ -62,22 +61,13 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         return capturing
     }
 
-    /// Setter deadlines are a logical drain, not a physical terminal. A session
-    /// receiving this flag must stop/reconfigure before reusing the device.
-    var requiresSessionRecovery: Bool {
-        dispatchPrecondition(condition: .onQueue(queue))
-        return operations.requiresRecovery
-    }
-
     init(device: AVCaptureDevice, output: AVCapturePhotoOutput, pixelFormat: OSType,
          dimensions: CMVideoDimensions, directory: URL, queue: DispatchQueue,
          onUpdate: @escaping @MainActor @Sendable (PhotoExposureSnapshot) -> Void,
-         onRecoveryRequired: (@Sendable () -> Void)? = nil,
          onFailure: @escaping @Sendable (String) -> Void) {
         self.device = device; self.output = output; self.pixelFormat = pixelFormat
         self.dimensions = dimensions; self.directory = directory; self.queue = queue
         self.onUpdate = onUpdate; self.onFailure = onFailure
-        self.onRecoveryRequired = onRecoveryRequired
     }
 
     func start() throws {
@@ -115,8 +105,11 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue)); try ensureMutable()
         isoLocked = intent.iso != nil
         pinnedISO = intent.iso.map { min(max($0, isoRange.lowerBound), isoRange.upperBound) }
-        shutterLocked = intent.duration != nil
-        pinnedDuration = intent.duration.map {
+        // A duration is only honoured alongside a held ISO: the shutter control is
+        // part of that control group, and a lone duration pins custom exposure with
+        // no way back to auto.
+        shutterLocked = intent.iso != nil && intent.duration != nil
+        pinnedDuration = (intent.iso != nil ? intent.duration : nil).map {
             CMTime(seconds: min(max($0, shutterRange.lowerBound), shutterRange.upperBound), preferredTimescale: 1_000_000_000)
         }
         ev = min(max(intent.ev, exposureBiasRange.lowerBound), exposureBiasRange.upperBound)
@@ -150,6 +143,11 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue)); try ensureMutable()
         isoLocked = locked
         pinnedISO = locked ? device.iso : nil
+        // Releasing the ISO releases the shutter with it. The shutter control is
+        // only on screen while the ISO is held, so a shutter lock that outlives
+        // the ISO hold leaves custom exposure installed with no control to undo it
+        // and the camera never returns to metering.
+        if !locked { shutterLocked = false; pinnedDuration = nil }
         try submitCurrentIntent()
     }
 
@@ -191,7 +189,6 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue))
         trace("capture-request")
         guard started, !stopped else { trace("capture-refused not-running"); throw Error.notReady }
-        guard !operations.requiresRecovery else { throw Error.notReady }
         guard !capturing, pendingCapture == nil else {
             trace("capture-refused busy capturing=\(capturing) pending=\(pendingCapture != nil)")
             throw Error.notReady
@@ -254,13 +251,19 @@ final class DevelopmentPhotoController: @unchecked Sendable {
 
     private func ensureMutable() throws {
         guard started, !stopped else { throw Error.stopped }
-        guard !operations.requiresRecovery else { throw Error.notReady }
         guard !capturing else { throw Error.notReady }
     }
 
     private var validRanges: Bool { isoRange.lowerBound > 0 && isoRange.upperBound >= isoRange.lowerBound && shutterRange.lowerBound > 0 && shutterRange.upperBound >= shutterRange.lowerBound }
     private var isoRange: ClosedRange<Float> { device.activeFormat.minISO...device.activeFormat.maxISO }
-    var shutterRange: ClosedRange<Double> { device.activeFormat.minExposureDuration.seconds...device.activeFormat.maxExposureDuration.seconds }
+    /// The device's own range, capped at the slowest exposure the hardware still
+    /// acknowledges. Offering 1/2s and slower produced an exposure write that never
+    /// returned, which read as EV and shutter controls failing outright.
+    var shutterRange: ClosedRange<Double> {
+        let lower = device.activeFormat.minExposureDuration.seconds
+        let upper = min(device.activeFormat.maxExposureDuration.seconds, PhotoShutterFloatPolicy.floorSeconds)
+        return lower...max(lower, upper)
+    }
     private var exposureBiasRange: ClosedRange<Float> { max(device.minExposureTargetBias, -3)...min(device.maxExposureTargetBias, 3) }
 
     private var usesNativeAutoExposure: Bool {
@@ -292,7 +295,6 @@ final class DevelopmentPhotoController: @unchecked Sendable {
 
     private func applyIntent(iso: Float, duration: CMTime) throws {
         guard !stopped else { throw Error.stopped }
-        guard !operations.requiresRecovery else { throw Error.notReady }
         guard iso.isFinite, duration.seconds.isFinite, isoRange.contains(iso), shutterRange.contains(duration.seconds) else { throw Error.invalidValue }
         if !apertureDirty, !usesNativeAutoExposure, device.exposureMode == .custom,
            !PhotoExposureCadence.needsWrite(iso: iso, duration: duration.seconds,
@@ -320,6 +322,7 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         }
         guard let token = operations.begin(.custom, now: ProcessInfo.processInfo.systemUptime) else { throw Error.notReady }
         setBias(0)
+        lastRequested = (iso, duration.seconds)
         armSetterWatchdog(token)
         trace("setter-start token=\(token.id) requestedISO=\(iso) requestedDuration=\(duration.seconds)")
         let completion: @Sendable (CMTime) -> Void = { [weak self] _ in
@@ -359,22 +362,22 @@ final class DevelopmentPhotoController: @unchecked Sendable {
     /// A deadline survives stop and fences only its own callback. It fails closed
     /// until the session enters a real stop/reconfigure boundary. This never
     /// invents a RAW terminal or changes `capturing`.
+    /// What the in-flight custom setter asked the device for. A lost ACK is not
+    /// evidence the write was rejected: at slow shutters the setter legitimately
+    /// outlives any fixed deadline, so expiry first reconciles this against the
+    /// device before it may declare recovery.
+    private var lastRequested: (iso: Float, duration: Double)?
+
     private func armSetterWatchdog(_ token: PhotoExposureOperationOwnership.Token) {
-        queue.asyncAfter(deadline: .now() + PhotoExposureCadence.setterTimeout) { [weak self] in
+        let deadline = PhotoExposureCadence.setterDeadline(forRequestedDuration: lastRequested?.duration ?? 0)
+        queue.asyncAfter(deadline: .now() + deadline) { [weak self] in
             guard let self else { return }
-            let wasRecovering = self.operations.requiresRecovery
             guard self.operations.expire(token, now: ProcessInfo.processInfo.systemUptime) else { return }
-            self.trace("setter-watchdog token=\(token.id) kind=\(token.kind) recovery-required")
-            self.intentNeedsApply = false
-            if let completion = self.pendingCapture {
-                self.pendingCapture = nil
-                self.captureToken &+= 1
-                DispatchQueue.main.async { completion(.failure(CaptureFailure("Camera exposure recovery is required. Please try again after the camera restarts."))) }
-            }
-            if !wasRecovering {
-                self.onFailure("Photo exposure acknowledgement timed out; camera session recovery is required.")
-                self.onRecoveryRequired?()
-            }
+            // The acknowledgement was lost. That is not a broken camera: forget the
+            // lease and ask for the desired value again on the next tick. The write
+            // is idempotent, so a value already installed costs one no-op.
+            self.trace("setter-watchdog token=\(token.id) reasserting")
+            self.intentNeedsApply = true
             self.publish()
             self.scheduleAdjustment()
             self.finishStopIfNeeded()
@@ -420,17 +423,19 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         }
     }
 
+    /// One write per operator intent, then a read-only tick that refreshes the
+    /// readout. There is no autonomous correction: holding the ISO pins the
+    /// sensitivity and the shutter with it, and the device keeps metering while
+    /// nothing is held, so a loop here only fought the hardware at the limits and
+    /// refused work it could not finish.
     private func scheduleAdjustment() {
-        guard started, !stopped, !capturing, !operations.requiresRecovery else { return }
+        guard started, !stopped, !capturing else { return }
         wake?.cancel(); wake = nil
         guard !setterInFlight, biasSettersInFlight == 0 else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        // Intent waits only for its debounce and live leases, never for sensor
-        // freshness. Autonomous corrections separately wait from applied ACKs.
-        let due = intentNeedsApply ? intentDeadline
-                                   : now + PhotoExposureCadence.commandInterval
+        let due = intentNeedsApply ? intentDeadline : now + PhotoExposureCadence.commandInterval
         let item = DispatchWorkItem { [weak self] in
-            guard let self, !self.stopped, !self.capturing, !self.operations.requiresRecovery else { return }
+            guard let self, !self.stopped, !self.capturing else { return }
             self.wake = nil
             if !self.setterInFlight && self.biasSettersInFlight == 0 {
                 do {
@@ -442,20 +447,6 @@ final class DevelopmentPhotoController: @unchecked Sendable {
                         self.captureToken &+= 1
                         try self.capture(completion: completion)
                         return
-                    } else if self.pendingCapture == nil,
-                              !self.usesNativeAutoExposure && !(self.isoLocked && self.shutterLocked),
-                              self.operations.meteringReady(now: ProcessInfo.processInfo.systemUptime,
-                                  duration: self.device.exposureDuration.seconds) {
-                        self.operations.noteMeteringRead(now: ProcessInfo.processInfo.systemUptime)
-                        let measured = self.snapshot()
-                        let decision = try PhotoExposurePolicy.decide(snapshot: measured,
-                            request: .init(ev: self.ev, measuredEV: measured.meteringOffset, maxCorrectionEV: 0.25),
-                            apertureHeld: self.apertureIntent != nil)
-                        self.targetLimited = decision.targetLimited
-                        if let command = decision.command(for: measured) {
-                            try self.applyIntent(iso: command.iso,
-                                duration: CMTime(seconds: command.durationSeconds, preferredTimescale: 1_000_000_000))
-                        }
                     }
                 } catch { self.onFailure("Photo exposure update failed: \(error)") }
             }
@@ -471,7 +462,7 @@ final class DevelopmentPhotoController: @unchecked Sendable {
             isoRange: isoRange, shutterRange: shutterRange, isoLocked: isoLocked,
             shutterLocked: shutterLocked, ev: ev, meteringOffset: neutralMeteringOffset,
             isSettling: (settling && !targetLimited) || setterInFlight,
-            canCapture: PhotoExposurePolicy.captureAvailable(started: started, stopped: stopped || operations.requiresRecovery,
+            canCapture: PhotoExposurePolicy.captureAvailable(started: started, stopped: stopped,
                                                             capturing: capturing || pendingCapture != nil),
             targetLimited: targetLimited, photoWidth: Int(dimensions.width), photoHeight: Int(dimensions.height),
             sourceID: sourceID)
