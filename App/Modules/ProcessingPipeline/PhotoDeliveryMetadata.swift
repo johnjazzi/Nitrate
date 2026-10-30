@@ -17,6 +17,9 @@ enum PhotoDeliveryMetadata {
     struct StillCapture: Equatable, Sendable {
         var exposureSeconds: Double?
         var iso: Int?
+        /// EXIF orientation of the stored DNG. RAW capture ignores the output
+        /// connection's rotation, so the still is rotated into delivery instead.
+        var orientation: Int = 1
 
         /// `1/500` from 0.002 s. Nil for a missing or non-finite value.
         var shutterDenominator: Int? {
@@ -40,7 +43,8 @@ enum PhotoDeliveryMetadata {
         }
         let exposure = (exif[kCGImagePropertyExifExposureTime] as? NSNumber)?.doubleValue
         let iso = (exif[kCGImagePropertyExifISOSpeedRatings] as? [NSNumber])?.first?.intValue
-        return StillCapture(exposureSeconds: exposure, iso: iso)
+        let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        return StillCapture(exposureSeconds: exposure, iso: iso, orientation: orientation)
     }
 
     /// ImageIO properties for the delivered JPEG, merged over the encoder's own

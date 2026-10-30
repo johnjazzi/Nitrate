@@ -1245,26 +1245,14 @@ struct ContentView: View {
                         .padding(.bottom, 140)
                 }
             }
-            // Photo state belongs in the mode, not on the shutter button: the
-            // button carries no text any more, so a refusal, a wait or a delayed
-            // delivery has to be readable somewhere the operator is already
-            // looking. A refusal outranks the delivery status while it lasts.
-            if isPhotoMode, let status = cameraViewModel.photoShutterNotice ?? photoDeliveryStatus {
-                VStack {
-                    Spacer()
-                    photoStatusStrip(status)
-                        .padding(.bottom, 140)
-                }
-            }
+            // Photo keeps nothing floating over the shutter. A refusal or a
+            // delayed delivery is reported through `errorMessage`, which the camera
+            // already shows, so the frame above the button stays clear.
             if showsRecordingFailure {
                 RecordingFailureOverlay(detail: failureDetail)
                     .transition(.opacity)
             }
         }
-    }
-
-    private func photoStatusStrip(_ status: String) -> some View {
-        statusCapsule(status, identifier: "photo.statusStrip")
     }
 
     /// The mode row's own status face, the same capsule the photo strip uses.

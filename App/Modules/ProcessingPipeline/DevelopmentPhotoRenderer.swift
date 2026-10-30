@@ -21,10 +21,17 @@ enum DevelopmentPhotoRenderer {
             options: [.colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!]) else {
             throw RenderError.decode("RAW texture unavailable")
         }
-        guard let crop = PhotoZoomGeometry.centeredCrop(in: decoded.extent, zoom: cropZoom) else {
+        // RAW capture bypasses the output connection's rotation, so a landscape
+        // frame arrives sensor-oriented. Honour the DNG's own EXIF orientation
+        // before cropping, or every landscape shot is delivered on its side.
+        let capture = PhotoDeliveryMetadata.capture(fromDNG: originalDNG)
+        let orientedDecode = capture.orientation == 1
+            ? decoded
+            : decoded.oriented(forExifOrientation: Int32(capture.orientation))
+        guard let crop = PhotoZoomGeometry.centeredCrop(in: orientedDecode.extent, zoom: cropZoom) else {
             throw RenderError.decode("Invalid Photo zoom or RAW extent")
         }
-        let oriented = decoded.cropped(to: crop).transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
+        let oriented = orientedDecode.cropped(to: crop).transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
         let inputSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
         let finished = try develop(linearImage: oriented, film: film, resourcesURL: resourcesURL)
         // LUT output is Rec.709 gamma 2.4. Decode it before the final sRGB encoding.
@@ -40,7 +47,6 @@ enum DevelopmentPhotoRenderer {
         }
         // Deliver the same Nitrate tags a movie carries; the shared payload is
         // built from the same recipe the movie writer uses.
-        let capture = PhotoDeliveryMetadata.capture(fromDNG: originalDNG)
         var properties: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.94]
         for (key, value) in try PhotoDeliveryMetadata.properties(
             config: film.config, capture: capture,
