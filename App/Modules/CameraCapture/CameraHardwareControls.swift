@@ -237,6 +237,9 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
     /// Bumped on every install/remove so a queued action from a slider that has
     /// already been retired is rejected instead of applied to its successor.
     private var generation: UInt64 = 0
+#if DEBUG
+    private var lastDiagnosticState = ""
+#endif
     private var interaction = CameraHardwareControlInteraction()
     /// Whether a finger currently owns the slider. Read-only for tests and
     /// diagnostics; the delegate is the only writer.
@@ -261,6 +264,17 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
             configuration.adjustment,
             supportsControls: session.supportsControls && session.isRunning,
             range: range)
+#if DEBUG
+        if CommandLine.arguments.contains("--trace-camera-control") {
+            let state = "running=\(session.isRunning) supports=\(session.supportsControls) "
+                + "enabled=\(configuration.isEnabled) selected=\(String(describing: selected)) "
+                + "revision=\(configuration.cameraRevision)"
+            if state != lastDiagnosticState {
+                lastDiagnosticState = state
+                print("[CameraControl] apply \(state)")
+            }
+        }
+#endif
         installedRevision = configuration.cameraRevision
         if CameraHardwareControlPolicy.needsRebuild(
             installed: installedAdjustment, installedRange: installedRange,

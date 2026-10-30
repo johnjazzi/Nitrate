@@ -86,6 +86,12 @@ struct CameraControlBar: View {
 
         }
         .onCameraCaptureEvent(isEnabled: hardwareCaptureEnabled) { event in
+#if DEBUG
+            if CommandLine.arguments.contains("--trace-camera-control") {
+                print("[CameraControl] event phase=\(event.phase) viewEnabled=\(hardwareCaptureEnabled) "
+                    + "runtimeEnabled=\(cameraViewModel.canAcceptHardwareCapture)")
+            }
+#endif
             let phase: CameraHardwareCapturePress.Phase
             switch event.phase {
             case .began: phase = .began
@@ -93,9 +99,15 @@ struct CameraControlBar: View {
             case .cancelled: phase = .cancelled
             @unknown default: phase = .cancelled
             }
-            guard hardwarePress.receive(phase, isEnabled: hardwareCaptureEnabled),
-                  !isDevelopMode, cameraViewModel.canAcceptHardwareCapture else { return }
-            if isPhotoMode { performPhotoCapture() }
+            // AVKit may retain the initially installed action. Read the model,
+            // not this view value's launch-time enabled flag or shooting mode.
+            guard hardwarePress.receive(phase, isEnabled: cameraViewModel.canAcceptHardwareCapture) else { return }
+#if DEBUG
+            if CommandLine.arguments.contains("--trace-camera-control") {
+                print("[CameraControl] accepted photo=\(cameraViewModel.isDevelopmentPhotoMode)")
+            }
+#endif
+            if cameraViewModel.isDevelopmentPhotoMode { performPhotoCapture() }
             else { performVideoCapture() }
         }
         .onChange(of: hardwareCaptureEnabled) { _, enabled in

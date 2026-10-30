@@ -365,7 +365,8 @@ struct ContentView: View {
             PurchaseView(viewModel: purchaseViewModel, showFramedPreview: $showFramedPreview,
                          manualFocusEnabled: manualFocusBinding,
                          zoomControlsEnabled: zoomControlsSetting,
-                         legacyManualControlsEnabled: legacyManualControlsSetting)
+                         legacyManualControlsEnabled: legacyManualControlsSetting,
+                         cameraControlSupported: cameraViewModel.supportsCameraControl)
         }
         .onChange(of: cameraViewModel.lastRecordedURL) { _, newURL in
             guard let url = newURL else { return }
@@ -1143,7 +1144,7 @@ struct ContentView: View {
 
     /// Hardware must not consume capture events behind a sheet or in Develop.
     private var cameraHardwareControlsVisible: Bool {
-        guard scenePhase == .active, !isDevelopMode,
+        guard cameraViewModel.supportsCameraControl, scenePhase == .active, !isDevelopMode,
               !showSettings, !showQueueSheet, !showStockSheet,
               !showDaylightRescue, !showManualControls else { return false }
 #if DEBUG
@@ -1161,6 +1162,14 @@ struct ContentView: View {
     }
 
     private func updateCameraHardwareControls() {
+#if DEBUG
+        if CommandLine.arguments.contains("--trace-camera-control") {
+            print("[CameraControl] visibility visible=\(cameraHardwareControlsVisible) "
+                + "captureEnabled=\(hardwareCaptureEnabled) scene=\(scenePhase) "
+                + "runtimeEnabled=\(cameraViewModel.canAcceptHardwareCapture) "
+                + "profileChanging=\(cameraViewModel.isChangingCaptureProfile)")
+        }
+#endif
         cameraViewModel.updateCameraHardwareControls(
             adjustment: CameraControlAdjustment(persistedValue: cameraControlAdjustment),
             enabled: cameraHardwareControlsVisible)

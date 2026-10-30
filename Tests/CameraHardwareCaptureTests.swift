@@ -65,6 +65,8 @@ struct CameraHardwareCaptureTests {
         #expect(bar.contains(".onCameraCaptureEvent(isEnabled: hardwareCaptureEnabled)"))
         let hasFreshHardwareGate = bar.contains("cameraViewModel.canAcceptHardwareCapture")
         #expect(hasFreshHardwareGate)
+        let armsFromLiveState = bar.contains("hardwarePress.receive(phase, isEnabled: cameraViewModel.canAcceptHardwareCapture)")
+        #expect(armsFromLiveState)
         #expect(bar.contains("performPhotoCapture()"))
         #expect(bar.contains("performVideoCapture()"))
         #expect(bar.components(separatedBy: "cameraViewModel.startRecording()").count == 2)
