@@ -21,6 +21,10 @@ struct PurchaseView: View {
     @AppStorage(DeliverySettings.saveOriginalRAWToPhotosKey) private var saveOriginalRAWToPhotos = false
     @AppStorage(DeliverySettings.renderQualityKey) private var renderQuality = RenderExportQuality.high.rawValue
     @AppStorage(RecordButtonAppearance.preferenceKey) private var recordButtonAppearance = RecordButtonAppearance.classic.rawValue
+    /// The Camera Control slide target. Stored as its raw string so the camera
+    /// screen reads the same value this picker writes; an absent or unrecognised
+    /// value resolves to Zoom, exactly like the camera screen's own resolution.
+    @AppStorage(CameraControlAdjustment.preferenceKey) private var cameraControlAdjustment = CameraControlAdjustment.defaultValue.rawValue
     @AppStorage(MeteringIndicatorPreferences.showsIndicatorKey) private var showsMeteringIndicator = MeteringIndicatorPreferences.defaultShowsIndicator
 #if DEBUG
     @AppStorage(DebugControlPreferences.showsDebugButtonKey) private var showsDebugButton = true
@@ -339,6 +343,22 @@ struct PurchaseView: View {
                               help: "Keeps the focal length ruler on screen and adds hold arrows for a controlled zoom.",
                               isOn: zoomControlsEnabled)
 
+            SettingsControlRow(icon: "hand.tap",
+                               title: "Camera Control",
+                               accessibilityTitle: "Camera control",
+                               help: "A full press captures a photo, or starts and stops a recording. "
+                                   + "On supported iPhones a light press and slide adjusts the selected control. "
+                                   + "Off turns off that slide adjustment only — a full press still captures.") {
+                SettingsSelectionRow(title: "Camera Control",
+                                     valueText: cameraControlBinding.wrappedValue.title) {
+                    Picker("Camera Control", selection: cameraControlBinding) {
+                        ForEach(CameraControlAdjustment.allCases) { adjustment in
+                            Text(adjustment.title).tag(adjustment)
+                        }
+                    }
+                }
+            }
+
             SettingsToggleRow(icon: "circle.dashed",
                               title: "Metering Indicator",
                               accessibilityTitle: "Metering indicator",
@@ -401,6 +421,13 @@ struct PurchaseView: View {
     private var exportQualityBinding: Binding<RenderExportQuality> {
         Binding(get: { RenderExportQuality(rawValue: renderQuality) ?? .high },
                 set: { renderQuality = $0.rawValue })
+    }
+
+    /// The Camera Control row edits the stored raw string through the enum, so an
+    /// absent or unrecognised value shows (and keeps) Zoom instead of an empty chip.
+    private var cameraControlBinding: Binding<CameraControlAdjustment> {
+        Binding(get: { CameraControlAdjustment(persistedValue: cameraControlAdjustment) },
+                set: { cameraControlAdjustment = $0.rawValue })
     }
 
     private var purchasedBanner: some View {
