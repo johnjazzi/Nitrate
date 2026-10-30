@@ -24,6 +24,12 @@ class PhotoFieldWiringTests(unittest.TestCase):
         renderer = (ROOT / 'App/Modules/ProcessingPipeline/DevelopmentPhotoRenderer.swift').read_text()
         self.assertIn('FilmOutputDisplayConverter.linearImage(fromGamma24: finished)', renderer)
 
+    def test_still_renderer_does_not_apply_orientation_twice(self):
+        # Measured: CIRAWFilter returns an already-oriented image, so a second
+        # rotation delivers every frame 90 degrees out.
+        renderer = (ROOT / 'App/Modules/ProcessingPipeline/DevelopmentPhotoRenderer.swift').read_text()
+        self.assertNotIn('oriented(forExifOrientation:', renderer)
+
     def test_debug_snapshots_selected_gauge(self):
         body = self.content.split('private func openDebugFrame()', 1)[1].split('\n    }', 1)[0]
         self.assertIn('library.lastGauge(for:', body)

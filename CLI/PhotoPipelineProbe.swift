@@ -85,6 +85,30 @@ enum PhotoPipelineProbe {
         }
     }
 
+    // MARK: - Orientation probe
+
+    /// Prints what the decoder actually returns for a capture and what each EXIF
+    /// rotation would do to it, so the still path can follow the pixels instead of
+    /// trusting the tag twice.
+    static func orientationProbe(inputs: [URL]) throws {
+        for input in inputs {
+            let capture = PhotoDeliveryMetadata.capture(fromDNG: input)
+            guard let raw = CIRAWFilter(imageURL: input) else { print("ORIENT unreadable \(input.lastPathComponent)"); continue }
+            raw.decoderVersion = CIRAWDecoderVersion(rawValue: "8.dng")
+            raw.scaleFactor = 1
+            guard let image = raw.outputImage else { print("ORIENT no image"); continue }
+            func extent(_ i: CIImage) -> String {
+                "\(Int(i.extent.width))x\(Int(i.extent.height))"
+            }
+            let six = image.oriented(forExifOrientation: 6)
+            let eight = image.oriented(forExifOrientation: 8)
+            let three = image.oriented(forExifOrientation: 3)
+            print("ORIENT \(input.lastPathComponent) exif=\(capture.orientation) decoded=\(extent(image)) " +
+                  "rot6=\(extent(six)) rot8=\(extent(eight)) rot3=\(extent(three)) " +
+                  "native=\(Int(raw.nativeSize.width))x\(Int(raw.nativeSize.height))")
+        }
+    }
+
     // MARK: - Noise probe
 
     /// Noise and detail of one decoded image in the log domain the still chain

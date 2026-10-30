@@ -29,6 +29,11 @@ import Foundation
             catch { print("Noise probe failed: \(error)"); exit(1) }
             return
         }
+        if arguments.first == "--photo-orientation-probe", arguments.count >= 2 {
+            do { try PhotoPipelineProbe.orientationProbe(inputs: arguments.dropFirst().map { URL(fileURLWithPath: $0) }) }
+            catch { print("Orientation probe failed: \(error)"); exit(1) }
+            return
+        }
         if arguments.first == "--photo-grain-comparison", arguments.count == 4 {
             do {
                 try PhotoGrainComparison.run(input: URL(fileURLWithPath: arguments[1]), stock: arguments[2],
