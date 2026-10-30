@@ -14,6 +14,11 @@ struct PurchaseView: View {
     /// build resolves that flag false whatever this holds, so the constant
     /// default keeps previews and shipping builds inert.
     var legacyManualControlsEnabled: Binding<Bool> = .constant(false)
+    /// Whether this phone has a physical Camera Control button. Defaults false so
+    /// a preview or a constructor that omits it never offers a setting the
+    /// hardware cannot honour; the camera screen passes
+    /// `cameraViewModel.supportsCameraControl`.
+    var cameraControlSupported = false
     @State private var pricingExpanded = false
     @State private var legalExpanded = false
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
@@ -343,17 +348,21 @@ struct PurchaseView: View {
                               help: "Keeps the focal length ruler on screen and adds hold arrows for a controlled zoom.",
                               isOn: zoomControlsEnabled)
 
-            SettingsControlRow(icon: "hand.tap",
-                               title: "Camera Control",
-                               accessibilityTitle: "Camera control",
-                               help: "A full press captures a photo, or starts and stops a recording. "
-                                   + "On supported iPhones a light press and slide adjusts the selected control. "
-                                   + "Off turns off that slide adjustment only — a full press still captures.") {
-                SettingsSelectionRow(title: "Camera Control",
-                                     valueText: cameraControlBinding.wrappedValue.title) {
-                    Picker("Camera Control", selection: cameraControlBinding) {
-                        ForEach(CameraControlAdjustment.allCases) { adjustment in
-                            Text(adjustment.title).tag(adjustment)
+            // The whole feature — Settings row, slide and full press — exists
+            // only on a phone with a physical Camera Control button.
+            if cameraControlSupported {
+                SettingsControlRow(icon: "hand.tap",
+                                   title: "Camera Control",
+                                   accessibilityTitle: "Camera control",
+                                   help: "A full press captures a photo, or starts and stops a recording. "
+                                       + "On supported iPhones a light press and slide adjusts the selected control. "
+                                       + "Off turns off that slide adjustment only — a full press still captures.") {
+                    SettingsSelectionRow(title: "Camera Control",
+                                         valueText: cameraControlBinding.wrappedValue.title) {
+                        Picker("Camera Control", selection: cameraControlBinding) {
+                            ForEach(CameraControlAdjustment.allCases) { adjustment in
+                                Text(adjustment.title).tag(adjustment)
+                            }
                         }
                     }
                 }

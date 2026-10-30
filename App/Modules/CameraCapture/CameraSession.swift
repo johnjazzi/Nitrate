@@ -224,9 +224,22 @@ final class CameraSession: NSObject, @unchecked Sendable {
     private var hardwareControlRequest: CameraHardwareControlRequest?
     private var hardwareControlObserver: (@MainActor @Sendable (CameraControlAdjustment, Float, UInt64) -> Void)?
 
+    /// Hardware platform truth: whether this phone has a physical Camera Control
+    /// button, read once from `AVCaptureSession.supportsControls`. It is
+    /// deliberately not combined with `isRunning` or `canAddControl`: those
+    /// describe the graph's transient state, while the button is a property of
+    /// the hardware — a stopped graph must not hide a feature the phone has, and
+    /// a running one must not offer it on a phone that has no button. Set once in
+    /// `init` and never written again, read on the main actor like the other
+    /// word-sized snapshot properties.
+    private(set) var supportsCameraControl = false
+
     override init() {
         hardwareControls = CameraHardwareControls(session: session, queue: sessionQueue)
         super.init()
+        // Cached here so every gate below reads one immutable value instead of
+        // re-querying AVFoundation per press or per settings render.
+        supportsCameraControl = session.supportsControls
         hardwareControls.onValueChange = { [weak self] adjustment, value, revision in
             guard let self, let observer = self.hardwareControlObserver else { return }
             DispatchQueue.main.async { MainActor.assumeIsolated { observer(adjustment, value, revision) } }
@@ -1772,7 +1785,12 @@ final class CameraSession: NSObject, @unchecked Sendable {
         let exposure = exposureBiasRange
         let exposureValue = min(max(request.exposureBias, exposure.lowerBound), exposure.upperBound)
         return CameraHardwareControlConfiguration(
-            adjustment: request.adjustment, isEnabled: request.isEnabled,
+            adjustment: request.adjustment,
+            // An unsupported phone presents no control at all, whatever the UI
+            // asked for. Every apply — the first request and each start, lens
+            // and profile re-apply — is resolved here, so this one gate is the
+            // whole session-side refusal.
+            isEnabled: request.isEnabled && supportsCameraControl,
             zoomRange: zoomRange, zoomValue: zoomValue,
             exposureRange: exposure, exposureValue: exposureValue,
             cameraRevision: zoomLifecycle.cameraRevision)

@@ -1731,6 +1731,12 @@ final class CameraViewModel {
     /// even before the screen pushes its first eligibility update.
     private(set) var hardwareControlAdjustment = CameraControlAdjustment(
         persistedValue: UserDefaults.standard.string(forKey: CameraControlAdjustment.preferenceKey))
+    /// Hardware capability, published so the settings screen shows the Camera
+    /// Control row only on a phone that has the button, and so every gate below
+    /// fails closed on the same value. Passed through from the session, which
+    /// caches `AVCaptureSession.supportsControls` once at construction.
+    var supportsCameraControl: Bool { session.supportsCameraControl }
+
     /// The screen's own eligibility (foreground, mode, sheet, fault). The view
     /// model ANDs it with the runtime transitions below; it never writes device
     /// state on its own.
@@ -1751,7 +1757,8 @@ final class CameraViewModel {
     /// control mid-take (`setExposureBiasEV` deliberately drops device writes
     /// while recording), so exposure is only offered when nothing is rolling.
     private var areHardwareControlsEligible: Bool {
-        guard areHardwareControlsRequested, cameraConfigured, lifecycleGate.isActive,
+        guard supportsCameraControl,
+              areHardwareControlsRequested, cameraConfigured, lifecycleGate.isActive,
               !isSwitchingCameraLens, !isChangingFrameRate, !isChangingCaptureProfile,
               !isPhotoCaptureBusy, !isStartingRecording, !isStoppingRecording else { return false }
         switch hardwareControlAdjustment {
@@ -1789,7 +1796,10 @@ final class CameraViewModel {
     /// starting take is deliberately *not* excluded: that press is the stop (or
     /// startup-cancel) request the recording policy resolves.
     var canAcceptHardwareCapture: Bool {
-        guard cameraConfigured, lifecycleGate.isActive, areHardwareControlsRequested else { return false }
+        // The full press is part of the same feature: a phone without the button
+        // must not consume a capture event at all.
+        guard supportsCameraControl, cameraConfigured, lifecycleGate.isActive,
+              areHardwareControlsRequested else { return false }
         if isRecording || isStartingRecording { return true }
         return !isPhotoCaptureBusy && !isChangingFrameRate && !isChangingCaptureProfile
             && !isSwitchingCameraLens
