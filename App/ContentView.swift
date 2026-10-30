@@ -31,6 +31,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("showFramedPreview") private var showFramedPreview = false
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
+    @AppStorage(CameraControlAdjustment.preferenceKey) private var cameraControlAdjustment = CameraControlAdjustment.defaultValue.rawValue
     @State private var controlBounds: [String: CGRect] = [:]
     @State private var currentSourceURL: URL?
     /// The durable awaiting-stock entry created for the current take, if any.
@@ -1129,8 +1130,40 @@ struct ContentView: View {
             onPhotoISO: { cameraViewModel.setManualISO($0) },
             onPhotoISOLock: { cameraViewModel.toggleISOLock(currentISO: cameraViewModel.liveISO) },
             onPhotoDuration: cameraViewModel.setPhotoShutterDuration,
+            hardwareCaptureEnabled: hardwareCaptureEnabled,
             onPhotoShutterLock: cameraViewModel.togglePhotoShutterLock
         )
+        .onChange(of: cameraHardwareControlsVisible, initial: true) { _, _ in updateCameraHardwareControls() }
+        .onChange(of: cameraControlAdjustment) { _, _ in updateCameraHardwareControls() }
+        .onDisappear {
+            cameraViewModel.updateCameraHardwareControls(
+                adjustment: CameraControlAdjustment(persistedValue: cameraControlAdjustment), enabled: false)
+        }
+    }
+
+    /// Hardware must not consume capture events behind a sheet or in Develop.
+    private var cameraHardwareControlsVisible: Bool {
+        guard scenePhase == .active, !isDevelopMode,
+              !showSettings, !showQueueSheet, !showStockSheet,
+              !showDaylightRescue, !showManualControls else { return false }
+#if DEBUG
+        if debugFrameViewModel != nil || pendingDebugTest != nil { return false }
+#endif
+        return true
+    }
+
+    private var hardwareCaptureEnabled: Bool {
+        guard cameraHardwareControlsVisible else { return false }
+        // A second full press must still stop a take or cancel its startup.
+        if cameraViewModel.isRecording || cameraViewModel.isStartingRecording { return true }
+        return cameraViewModel.canChangeShootingMode && !showsRecordingFailure
+            && cameraViewModel.errorMessage == nil && !cameraViewModel.isSpaceCritical
+    }
+
+    private func updateCameraHardwareControls() {
+        cameraViewModel.updateCameraHardwareControls(
+            adjustment: CameraControlAdjustment(persistedValue: cameraControlAdjustment),
+            enabled: cameraHardwareControlsVisible)
     }
 
     private var canChangeCameraMode: Bool {

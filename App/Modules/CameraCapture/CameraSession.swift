@@ -505,10 +505,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
         try startDevelopmentPhotoController(device: device, output: output, directory: directory, update: update)
         apertureCameraRevision &+= 1
         zoomLifecycle.cameraChanged()
-        publishZoom()
         if !session.isRunning { session.startRunning() }
         guard session.isRunning else { throw CameraError.noCameraAvailable }
         isConfigured = true
+        // After the real start, so the retained request can present its slider.
+        refreshHardwareControlsAfterStartOnQueue()
     }
 
     private func installSharedVideoOnQueue() throws {
@@ -1740,6 +1741,19 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Queue-confined. A slider is only presented while its session runs, so a
+    /// request that arrives before the graph starts (cold launch) or that was
+    /// retired with the previous graph (foreground, recovery, lens/profile
+    /// rebuild) leaves the button with no slider until something re-applies it.
+    /// Every path that really starts the session ends here, and `publishZoom()`
+    /// is that single refresh: it republishes the zoom snapshot, re-resolves the
+    /// live device ranges and re-applies the retained request. No second
+    /// framework path is created.
+    private func refreshHardwareControlsAfterStartOnQueue() {
+        guard session.isRunning else { return }
+        publishZoom()
+    }
+
     /// Queue-confined. Device truth wins over the request: bounds, EV range and
     /// revision are read live, and the requested value is clamped into them.
     private func hardwareControlConfiguration(_ request: CameraHardwareControlRequest)
@@ -1749,8 +1763,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
         if let device = activeDevice, let bounds = zoomBounds(for: device),
            bounds.minimumDisplay.isFinite, bounds.maximumDisplay.isFinite,
            bounds.minimumDisplay <= bounds.maximumDisplay {
-            let minimum = Float(bounds.minimumDisplay)
-            let maximum = Float(bounds.maximumDisplay)
+            let minimum = Float(request.usesNativeIdlePreview ? bounds.multiplier : bounds.minimumDisplay)
+            let maximum = Float(request.usesNativeIdlePreview ? bounds.multiplier * 4 : bounds.maximumDisplay)
             zoomRange = minimum...maximum
             let requested = request.displayZoom.isFinite ? Float(request.displayZoom) : minimum
             zoomValue = min(max(requested, minimum), maximum)
@@ -1782,7 +1796,17 @@ final class CameraSession: NSObject, @unchecked Sendable {
         // Keep the system slider's revision, range and value aligned with the
         // device after every lens, format and profile change, and after every
         // zoom the touch UI drives.
-        if let request = hardwareControlRequest {
+        if var request = hardwareControlRequest {
+            // The stored request carries the magnification the main actor last
+            // published, which is one snapshot stale. Re-applying that value
+            // would write the previous zoom back into the slider, so refresh it
+            // from the snapshot just built. Photo's native idle graph is the
+            // exception: its magnification is the software crop, which the
+            // device reading cannot express.
+            if !request.usesNativeIdlePreview, let snapshot {
+                request.displayZoom = snapshot.displayFactor
+                hardwareControlRequest = request
+            }
             hardwareControls.apply(hardwareControlConfiguration(request))
         }
         if let zoomObserver {
@@ -4143,6 +4167,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             updatePreviewConnection()
             session.startRunning()
             guard session.isRunning else { throw CameraError.writerUnavailable("Restored video session did not start") }
+            refreshHardwareControlsAfterStartOnQueue()
             try applyDebugPhotoRestoredControls(run)
             run.evidence["restoration"] = "awaitingDeviceAcknowledgments"
             try writeDebugPhotoEvidence(run)
@@ -4357,7 +4382,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
 #endif
             guard !self.sessionInterrupted else { return }
             if self.sessionRecoveryPending { self.resetVideoSessionAtSafeBoundary() }
-            else if self.isConfigured, !self.session.isRunning { self.session.startRunning() }
+            else if self.isConfigured, !self.session.isRunning {
+                self.session.startRunning()
+                self.refreshHardwareControlsAfterStartOnQueue()
+            }
         }
     }
 
@@ -4540,7 +4568,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
             let observer = onCameraError
             let lens = activeLens
             DispatchQueue.main.async { observer?(error, lens) }
-        } else if desiredSessionRunning { session.startRunning(); suspendPreview(false) }
+        } else if desiredSessionRunning {
+            session.startRunning(); suspendPreview(false)
+            refreshHardwareControlsAfterStartOnQueue()
+        }
     }
 
     deinit {
@@ -4564,6 +4595,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             }
             if self.developmentPhotoController != nil {
                 if !self.session.isRunning { self.session.startRunning() }
+                self.refreshHardwareControlsAfterStartOnQueue()
                 return
             }
             if let run = self.debugPhotoRun { run.shouldRestart = true; return }
@@ -4577,6 +4609,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
             if !self.session.isRunning {
                 self.session.startRunning()
             }
+            // Cold launch and foreground both land here with the UI's request
+            // already retained; a stopped graph never showed its slider.
+            self.refreshHardwareControlsAfterStartOnQueue()
             self.suspendPreview(false)
             if !self.isRecordingOrPending { self.applyRecordingStabilization() }
         }
@@ -4587,6 +4622,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             // The system control must not outlive the graph it drives.
+            self.hardwareControlRequest = nil
             self.hardwareControls.uninstall()
             self.desiredSessionRunning = false
 #if DEBUG

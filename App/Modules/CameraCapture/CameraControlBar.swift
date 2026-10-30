@@ -1,4 +1,5 @@
 import SwiftUI
+import AVKit
 
 /// Compact stock/status column, screen-centred REC, and persistent exposure controls.
 ///
@@ -63,6 +64,8 @@ struct CameraControlBar: View {
     var onPhotoISO: (Float) -> Void = { _ in }
     var onPhotoISOLock: () -> Void = {}
     var onPhotoDuration: (Double) -> Void = { _ in }
+    var hardwareCaptureEnabled = false
+    @State private var hardwarePress = CameraHardwareCapturePress()
     var onPhotoShutterLock: () -> Void = {}
 
     var body: some View {
@@ -82,6 +85,23 @@ struct CameraControlBar: View {
             .padding(.horizontal, horizontalInset)
 
         }
+        .onCameraCaptureEvent(isEnabled: hardwareCaptureEnabled) { event in
+            let phase: CameraHardwareCapturePress.Phase
+            switch event.phase {
+            case .began: phase = .began
+            case .ended: phase = .ended
+            case .cancelled: phase = .cancelled
+            @unknown default: phase = .cancelled
+            }
+            guard hardwarePress.receive(phase, isEnabled: hardwareCaptureEnabled),
+                  !isDevelopMode, cameraViewModel.canAcceptHardwareCapture else { return }
+            if isPhotoMode { performPhotoCapture() }
+            else { performVideoCapture() }
+        }
+        .onChange(of: hardwareCaptureEnabled) { _, enabled in
+            if !enabled { hardwarePress.reset() }
+        }
+        .onChange(of: isPhotoMode) { _, _ in hardwarePress.reset() }
     }
 
     // MARK: - Left selector row
@@ -396,9 +416,7 @@ struct CameraControlBar: View {
     private var recordButton: some View {
         if isPhotoMode {
             Button {
-                recordFeedback = .start
-                recordFeedbackTrigger &+= 1
-                onPhotoCapture()
+                performPhotoCapture()
             } label: {
                 ZStack {
                     // Donut face inside the unchanged camera ring: light grey with
@@ -431,21 +449,18 @@ struct CameraControlBar: View {
         }
     }
 
+    private func performPhotoCapture() {
+        recordFeedback = .start
+        recordFeedbackTrigger &+= 1
+        onPhotoCapture()
+    }
+
     /// The Video REC control, unchanged: it keeps the classic/modern face
     /// preference, the immediate haptic and the capture state machine.
     private var videoRecordButton: some View {
         let presentation = recordPresentation
-        let action = RecordButtonPresentationPolicy.action(for: presentation)
         return Button {
-            guard action != .none else { return }
-            recordFeedback = action == .start ? .start : .stop
-            recordFeedbackTrigger &+= 1
-            animateUnclick()
-            if action == .start {
-                cameraViewModel.startRecording()
-            } else {
-                cameraViewModel.stopRecording()
-            }
+            performVideoCapture()
         } label: {
             recordFace(presentation)
         }
@@ -454,6 +469,19 @@ struct CameraControlBar: View {
                                                            presentation: presentation))
         .sensoryFeedback(trigger: recordFeedbackTrigger) { _, _ in recordFeedback.sensory }
         .accessibilityLabel(RecordButtonPresentationPolicy.accessibilityLabel(for: presentation))
+    }
+
+    private func performVideoCapture() {
+        let presentation = recordPresentation
+        let action = RecordButtonPresentationPolicy.action(for: presentation)
+        guard action != .none,
+              RecordButtonPresentationPolicy.isEnabled(isSpaceCritical: cameraViewModel.isSpaceCritical,
+                                                       presentation: presentation) else { return }
+        recordFeedback = action == .start ? .start : .stop
+        recordFeedbackTrigger &+= 1
+        animateUnclick()
+        if action == .start { cameraViewModel.startRecording() }
+        else { cameraViewModel.stopRecording() }
     }
 
     /// The chosen face. Both share the 84pt footprint, the press feedback and

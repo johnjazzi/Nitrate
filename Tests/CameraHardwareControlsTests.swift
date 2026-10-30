@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 
@@ -119,6 +120,88 @@ struct CameraHardwareControlsTests {
             .exposure, supportsControls: true, range: nil) == nil)
     }
 
+    // MARK: Interaction state
+
+    /// A user's finger owns the slider while the controls are active: the
+    /// controller must not write a value underneath it. The moment the
+    /// preference is switched off, that ownership is gone, so the state must
+    /// reset or every later sync would be suppressed forever.
+    @Test func disablingTheControlResetsInteraction() {
+        var interaction = CameraHardwareControlInteraction()
+        interaction.becameActive()
+        #expect(interaction.isUserInteracting)
+        #expect(!interaction.allowsProgrammaticWrite)
+
+        let reset = interaction.applyConfiguration(isEnabled: false, hasInstalledControl: true)
+        #expect(reset)
+        #expect(!interaction.isUserInteracting)
+        #expect(interaction.allowsProgrammaticWrite)
+    }
+
+    /// Removing or uninstalling the slider also ends the interaction, even if
+    /// the system never sends `didBecomeInactive` (for example on session
+    /// teardown or a lens rebuild that retires the control).
+    @Test func removingTheControlResetsInteraction() {
+        var interaction = CameraHardwareControlInteraction()
+        interaction.becameActive()
+        let reset = interaction.applyConfiguration(isEnabled: true, hasInstalledControl: false)
+        #expect(reset)
+        #expect(!interaction.isUserInteracting)
+        #expect(interaction.allowsProgrammaticWrite)
+
+        interaction.becameActive()
+        interaction.reset()
+        #expect(!interaction.isUserInteracting)
+    }
+
+    /// An enabled configuration that still has its control must preserve the
+    /// active interaction; a routine zoom publish must not release the finger.
+    @Test func enabledConfigurationKeepsAnActiveInteraction() {
+        var interaction = CameraHardwareControlInteraction()
+        interaction.becameActive()
+        let reset = interaction.applyConfiguration(isEnabled: true, hasInstalledControl: true)
+        #expect(!reset)
+        #expect(interaction.isUserInteracting)
+        #expect(!interaction.allowsProgrammaticWrite)
+    }
+
+    /// Leaving fullscreen restores app chrome but must not claim the controls
+    /// are inactive: the system sends `didBecomeInactive` afterwards, and a
+    /// value write while the finger is still down would fight it.
+    @Test func leavingFullscreenDoesNotEndTheActiveInteraction() {
+        let queue = DispatchQueue(label: "test.hardwareControls.fullscreen")
+        let controls = CameraHardwareControls(session: AVCaptureSession(), queue: queue)
+        let reported = BoolRecorder()
+        controls.onInteractionChange = { reported.append($0) }
+        let session = AVCaptureSession()
+
+        controls.sessionControlsDidBecomeActive(session)
+        controls.sessionControlsWillExitFullscreenAppearance(session)
+
+        #expect(controls.isUserInteracting)
+        #expect(reported.values == [true, false])
+    }
+
+    /// Switching the preference off (or tearing the session down) must clear
+    /// the finger-owned state even when the system never sends
+    /// `didBecomeInactive`, or every later sync stays suppressed.
+    @Test func disablingOrUninstallingEndsTheInteraction() {
+        let queue = DispatchQueue(label: "test.hardwareControls.reset")
+        let controls = CameraHardwareControls(session: AVCaptureSession(), queue: queue)
+        let reported = BoolRecorder()
+        controls.onInteractionChange = { reported.append($0) }
+
+        controls.sessionControlsDidBecomeActive(AVCaptureSession())
+        queue.sync { controls.apply(.inactive) }
+        #expect(!controls.isUserInteracting)
+        #expect(reported.values == [true, false])
+
+        controls.sessionControlsDidBecomeActive(AVCaptureSession())
+        queue.sync { controls.uninstall() }
+        #expect(!controls.isUserInteracting)
+        #expect(reported.values == [true, false, true, false])
+    }
+
     @Test func reconciliationInstallsReplacesRemovesOrLeavesAlone() {
         #expect(CameraHardwareControlPolicy.step(installed: nil, selected: nil) == .none)
         #expect(CameraHardwareControlPolicy.step(installed: nil, selected: .zoom) == .install(.zoom))
@@ -154,4 +237,13 @@ struct CameraHardwareControlsTests {
         #expect(CameraHardwareControlRequest.inactive.adjustment == .off)
         #expect(!CameraHardwareControlRequest.inactive.isEnabled)
     }
+}
+
+/// Synchronous recorder for the controller's interaction callback. The callback
+/// is invoked on the queue that drives the controller, which the tests call
+/// synchronously, so no locking is needed.
+private final class BoolRecorder: @unchecked Sendable {
+    private(set) var values: [Bool] = []
+
+    func append(_ value: Bool) { values.append(value) }
 }

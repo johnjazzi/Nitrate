@@ -58,7 +58,7 @@ final class CameraViewModel {
 
     // MARK: - Observable State
 
-    var isRecording = false
+    var isRecording = false { didSet { pushCameraHardwareControls() } }
     var recordingDuration: TimeInterval = 0
     var freeSpaceBytes: Int64 = 0
     var totalSpaceBytes: Int64 = 0
@@ -119,7 +119,7 @@ final class CameraViewModel {
     private(set) var activeLens: CameraLens
     private(set) var zoomSnapshot: CameraZoomSnapshot?
     private(set) var isSwitchingCameraLens = false { didSet { pushCameraHardwareControls() } }
-    var isManualExposure = false
+    var isManualExposure = false { didSet { pushCameraHardwareControls() } }
     var manualISO: Float = 400
     /// Capture intent, never a proxy for the device's currently committed graph.
     private(set) var isDevelopmentPhotoMode = false
@@ -135,7 +135,16 @@ final class CameraViewModel {
 #endif
     }
     var usesNativeIdlePreview: Bool { usesSharedIdlePreview && !isVideoCaptureProfileActive }
-    private(set) var photoExposureSnapshot: PhotoExposureSnapshot?
+    private(set) var photoExposureSnapshot: PhotoExposureSnapshot? {
+        didSet {
+            // Photo's ISO/shutter holds decide whether its EV control is live, so
+            // a hold change must re-push eligibility without waiting for another
+            // transition to happen first.
+            guard oldValue?.isoLocked != photoExposureSnapshot?.isoLocked
+                || oldValue?.shutterLocked != photoExposureSnapshot?.shutterLocked else { return }
+            pushCameraHardwareControls()
+        }
+    }
     /// The exposure control's own presentation state while Photo owns the graph:
     /// the operator's ISO survives the device snapshots that acknowledge it
     /// asynchronously (see `PhotoExposureIntentPresentation`).
@@ -153,7 +162,7 @@ final class CameraViewModel {
     @ObservationIgnored private var photoCaptureWatchdog: Task<Void, Never>?
     var developmentPhotoStockID: String = "kodak5207"
     var developmentPhotoGauge: PrintGauge = .neutral
-    var photoCropZoom: Double = 1
+    var photoCropZoom: Double = 1 { didSet { pushCameraHardwareControls() } }
     private var photoGeneration: UInt64 = 0
     private var videoExposureBeforePhoto: (Bool, Float, Float)?
     private var photoPreviousIdleTimerDisabled: Bool?
@@ -1744,21 +1753,56 @@ final class CameraViewModel {
     private var areHardwareControlsEligible: Bool {
         guard areHardwareControlsRequested, cameraConfigured, lifecycleGate.isActive,
               !isSwitchingCameraLens, !isChangingFrameRate, !isChangingCaptureProfile,
-              !isPhotoCaptureBusy, !isStartingRecording, !isStoppingRecording,
-              !usesNativeIdlePreview else { return false }
+              !isPhotoCaptureBusy, !isStartingRecording, !isStoppingRecording else { return false }
         switch hardwareControlAdjustment {
         case .zoom: return true
-        case .exposure: return !isRecording
+        case .exposure: return !isRecording && canAdjustEVThroughCurrentPath && hasUsableExposureBiasRange
         case .off: return false
         }
+    }
+
+    /// EV is only a live control while the path that owns exposure can take it.
+    /// Shutter priority and full auto both apply a bias change, but a held manual
+    /// ISO owns the device in custom exposure mode, where the device bias is
+    /// inert — offering the slide there was a dead control. Photo's development
+    /// controller applies its own EV on top of a held ISO and only stops taking
+    /// it when ISO *and* shutter are both pinned, so Photo's still policy decides.
+    private var canAdjustEVThroughCurrentPath: Bool {
+        if isDevelopmentPhotoMode {
+            guard let snapshot = photoExposureSnapshot else { return true }
+            return !(snapshot.isoLocked && snapshot.shutterLocked)
+        }
+        return !isManualExposure
+    }
+
+    /// A single-position EV range is not a control. The session's slider policy
+    /// refuses such a range as well; eligibility says the same thing up front so
+    /// the button is not claimed for a slide that can never move.
+    private var hasUsableExposureBiasRange: Bool {
+        let range = session.exposureBiasRange
+        return range.upperBound - range.lowerBound >= CameraHardwareControlPolicy.minimumRangeSpan
+    }
+
+    /// The single runtime gate the screen calls at the instant the Camera
+    /// Control button fires. It mirrors what the hardware path itself needs, so
+    /// no press is consumed for a graph that cannot take it. An active or
+    /// starting take is deliberately *not* excluded: that press is the stop (or
+    /// startup-cancel) request the recording policy resolves.
+    var canAcceptHardwareCapture: Bool {
+        guard cameraConfigured, lifecycleGate.isActive, areHardwareControlsRequested else { return false }
+        if isRecording || isStartingRecording { return true }
+        return !isPhotoCaptureBusy && !isChangingFrameRate && !isChangingCaptureProfile
+            && !isSwitchingCameraLens
     }
 
     private func pushCameraHardwareControls() {
         session.updateHardwareControls(CameraHardwareControlRequest(
             adjustment: hardwareControlAdjustment,
             isEnabled: areHardwareControlsEligible,
-            displayZoom: zoomSnapshot?.displayFactor ?? 1,
-            exposureBias: liveExposureBias))
+            displayZoom: usesNativeIdlePreview
+                ? photoCropZoom * (zoomSnapshot?.displayMultiplier ?? 1)
+                : zoomSnapshot?.displayFactor ?? 1,
+            exposureBias: liveExposureBias, usesNativeIdlePreview: usesNativeIdlePreview))
     }
 
     /// A slider value re-enters the same setters the touch controls use, so
@@ -1767,8 +1811,8 @@ final class CameraViewModel {
     /// lens they were measured against is gone.
     private func applyCameraHardwareControlValue(_ adjustment: CameraControlAdjustment,
                                                 _ value: Float, revision: UInt64) {
-        guard areHardwareControlsEligible else { return }
-        if let snapshot = zoomSnapshot, snapshot.cameraRevision != revision { return }
+        guard areHardwareControlsEligible, adjustment == hardwareControlAdjustment,
+              let snapshot = zoomSnapshot, snapshot.cameraRevision == revision else { return }
         switch adjustment {
         case .zoom: setDisplayZoom(Double(value))
         case .exposure: setExposureBias(value)

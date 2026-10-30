@@ -24,6 +24,7 @@ struct CameraHardwareControlRequest: Equatable, Sendable {
     /// Displayed magnification (`CameraZoomSnapshot.displayFactor`).
     var displayZoom: Double
     var exposureBias: Float
+    var usesNativeIdlePreview = false
 
     static let inactive = CameraHardwareControlRequest(
         adjustment: .off, isEnabled: false, displayZoom: 1, exposureBias: 0)
@@ -176,6 +177,40 @@ enum CameraHardwareControlPolicy {
     }
 }
 
+// MARK: - Interaction
+
+/// Whether the system controls currently own the slider because a finger is on
+/// it. While active, programmatic writes are suppressed so the parent's zoom
+/// publish cannot yank the value out from under the user.
+///
+/// Reset is not optional: the system may disable the control, tear the session
+/// down, or retire the slider on a lens rebuild without ever sending
+/// `sessionControlsDidBecomeInactive:`. Leaving the flag set would silently
+/// freeze every later sync, so every path that removes the control clears it.
+struct CameraHardwareControlInteraction: Equatable, Sendable {
+    private(set) var isUserInteracting = false
+
+    var allowsProgrammaticWrite: Bool { !isUserInteracting }
+
+    mutating func becameActive() { isUserInteracting = true }
+
+    mutating func becameInactive() { isUserInteracting = false }
+
+    mutating func reset() { isUserInteracting = false }
+
+    /// A configuration that disables the control, or that no longer presents
+    /// one, ends any interaction that the system did not explicitly end.
+    /// Returns true when an active interaction was reset, so the caller can
+    /// tell the parent UI to restore its chrome.
+    @discardableResult
+    mutating func applyConfiguration(isEnabled: Bool, hasInstalledControl: Bool) -> Bool {
+        guard !isEnabled || !hasInstalledControl else { return false }
+        let wasInteracting = isUserInteracting
+        isUserInteracting = false
+        return wasInteracting
+    }
+}
+
 // MARK: - Controller
 
 /// Owns the single `AVCaptureSlider` added to the capture session and is the
@@ -202,7 +237,10 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
     /// Bumped on every install/remove so a queued action from a slider that has
     /// already been retired is rejected instead of applied to its successor.
     private var generation: UInt64 = 0
-    private(set) var isUserInteracting = false
+    private var interaction = CameraHardwareControlInteraction()
+    /// Whether a finger currently owns the slider. Read-only for tests and
+    /// diagnostics; the delegate is the only writer.
+    var isUserInteracting: Bool { interaction.isUserInteracting }
 
     init(session: AVCaptureSession, queue: DispatchQueue) {
         self.session = session
@@ -247,14 +285,24 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
             }
         }
 
+        // A disabled or absent control cannot still be under a finger: the
+        // system is not guaranteed to send `didBecomeInactive` for it.
+        if interaction.applyConfiguration(
+            isEnabled: configuration.isEnabled,
+            hasInstalledControl: installedAdjustment != nil) {
+            onInteractionChange?(false)
+        }
+
         guard let slider, let installedRange else { return }
-        if let value = CameraHardwareControlPolicy.sliderValue(
-            for: configuration.adjustment, zoomValue: configuration.zoomValue,
-            exposureValue: configuration.exposureValue,
-            zoomRange: configuration.zoomRange,
-            exposureRange: configuration.exposureRange),
+        if interaction.allowsProgrammaticWrite,
+           let value = CameraHardwareControlPolicy.sliderValue(
+                for: configuration.adjustment, zoomValue: configuration.zoomValue,
+                exposureValue: configuration.exposureValue,
+                zoomRange: configuration.zoomRange,
+                exposureRange: configuration.exposureRange),
            CameraHardwareControlPolicy.needsWrite(current: slider.value, desired: value) {
-            slider.value = min(max(value, installedRange.lowerBound), installedRange.upperBound)
+            let clamped = min(max(value, installedRange.lowerBound), installedRange.upperBound)
+            slider.value = clamped
         }
         slider.isEnabled = configuration.isEnabled && selected != nil
     }
@@ -268,7 +316,6 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
             session.setControlsDelegate(nil, queue: nil)
             isDelegateAttached = false
         }
-        isUserInteracting = false
     }
 
     // MARK: Slider lifecycle
@@ -282,10 +329,11 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
         let slider = AVCaptureSlider(spec.title, symbolName: spec.symbolName, in: range)
         slider.accessibilityIdentifier = spec.accessibilityIdentifier
         slider.localizedValueFormat = spec.valueFormat
-        slider.value = min(max(value, range.lowerBound), range.upperBound)
         // The action queue must share the session's exclusive execution
         // context, or the value it routes back would race device writes.
-        // It must be set before `canAddControl`/`addControl`.
+        // It must be set before `canAddControl`/`addControl`, and `value` may
+        // only be changed on that queue, so the initial value is assigned only
+        // once the queue is configured.
         slider.setActionQueue(queue) { [weak self] newValue in
             self?.handleActionValue(newValue, adjustment: adjustment, generation: generation)
         }
@@ -294,6 +342,8 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
             // slider rather than a silently dead one.
             return
         }
+        let clamped = min(max(value, range.lowerBound), range.upperBound)
+        slider.value = clamped
         attachDelegateIfNeeded()
         session.addControl(slider)
         self.slider = slider
@@ -303,6 +353,7 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
 
     private func removeSlider() {
         generation &+= 1
+        endInteraction()
         guard let slider else {
             installedAdjustment = nil
             installedRange = nil
@@ -332,10 +383,20 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
         onValueChange?(adjustment, clamped, installedRevision)
     }
 
+    /// Clears the finger-owned state and tells the parent UI to restore its
+    /// chrome, but only when the interaction was actually active.
+    private func endInteraction() {
+        let wasInteracting = interaction.isUserInteracting
+        interaction.reset()
+        if wasInteracting {
+            onInteractionChange?(false)
+        }
+    }
+
     // MARK: AVCaptureSessionControlsDelegate
 
     func sessionControlsDidBecomeActive(_ session: AVCaptureSession) {
-        isUserInteracting = true
+        interaction.becameActive()
         onInteractionChange?(true)
     }
 
@@ -344,11 +405,11 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
     }
 
     func sessionControlsWillExitFullscreenAppearance(_ session: AVCaptureSession) {
-        onInteractionChange?(true)
+        onInteractionChange?(false)
     }
 
     func sessionControlsDidBecomeInactive(_ session: AVCaptureSession) {
-        isUserInteracting = false
+        interaction.becameInactive()
         onInteractionChange?(false)
     }
 }
