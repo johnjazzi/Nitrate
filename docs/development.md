@@ -146,9 +146,11 @@ Cloud by `ci_scripts/ci_post_xcodebuild.sh`. Apple runs a test action in two
 phases: it builds test products with `xcodebuild build-for-testing` (source code
 available), then runs them with `xcodebuild test-without-building` (source code
 unavailable). The hook runs only in the `build-for-testing` phase
-(`CI_XCODEBUILD_ACTION`), where it lints and compiles the iOS app without signing
-through `python3 scripts/verify.py check`. The RenderCLI TEST action alone only
-compiles for macOS; the hook keeps the iOS compile in the required check.
+(`CI_XCODEBUILD_ACTION`), where it lints and compiles both Debug and Release iOS
+configurations without signing through `python3 scripts/verify.py check`.
+Local `verify` uses the same two-configuration compile path. The RenderCLI TEST
+action alone only compiles for macOS; a Debug-only iOS check cannot catch
+references to DEBUG-only camera state that break the distribution archive.
 
 The portable Ubuntu policy checks live in `.github/workflows/policy.yml`, the
 release-version gate stays in `.github/workflows/release-version.yml`, and the

@@ -773,6 +773,17 @@ final class CameraSession: NSObject, @unchecked Sendable {
 #endif
     }
 
+    /// Whether the experimental shared idle graph owns the session. The graph and
+    /// its Photo controller are Debug-only; Release always runs Video's original
+    /// single graph, so nothing there can detach the recording connection.
+    private var sharedIdleLeaseActive: Bool {
+#if DEBUG
+        sharedIdleEnabled
+#else
+        false
+#endif
+    }
+
     private var defersVideoDeviceWrites: Bool {
 #if DEBUG
         return sharedIdleEnabled && (sharedGraph.actual != .video || sharedGraph.desired != .video || sharedGraph.isBusy)
@@ -1180,7 +1191,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         // recording format supports; Photo has no still stabilization and must
         // never inherit them. A connection never observed as stabilizing keeps
         // the snapshot unavailable rather than advertising an unasked capability.
-        guard sharedIdleEnabled, videoIntent,
+        guard sharedIdleLeaseActive, videoIntent,
               let format = Self.appleLog2CaptureFormat(in: device.formats, mode: frameRate) else {
             return .unavailable
         }
@@ -2387,10 +2398,12 @@ final class CameraSession: NSObject, @unchecked Sendable {
             guard let self else { return }
             guard self.exposureBiasEV != clamped else { return }
             self.exposureBiasEV = clamped
+#if DEBUG
             if self.defersVideoExposureWrites {
                 self.mirrorSharedExposureIntent(iso: self.sharedVideoManualISO)
                 return
             }
+#endif
             guard !self.isRecordingOrPending else { return }
             if self.isShutterPriority, self.pinnedExposure != nil {
                 // Retarget a held pin without reopening auto exposure. If initial

@@ -408,9 +408,20 @@ def check() -> bool:
 def compile_check() -> bool:
     if not generate_project():
         return False
-    return run("check", xcodebuild("-project", str(PROJECT_FILE),
+    return compile_ios_configurations("check")
+
+
+def compile_ios_configurations(label: str) -> bool:
+    # DEBUG-only camera state must not hide a broken distribution build. The
+    # Cloud test hook uses check(), so both configurations are pre-merge gates.
+    for configuration in ("Debug", "Release"):
+        stage = label if configuration == "Debug" else label + "-release"
+        if not run(stage, xcodebuild("-project", str(PROJECT_FILE),
                                     "-scheme", PROJECT_NAME, "-destination", "generic/platform=iOS",
-                                    "build", "CODE_SIGNING_ALLOWED=NO"))
+                                    "-configuration", configuration,
+                                    "build", "CODE_SIGNING_ALLOWED=NO")):
+            return False
+    return True
 
 
 def verify() -> bool:
@@ -437,9 +448,7 @@ def verify() -> bool:
                                     "-destination", "platform=macOS", "test",
                                     "CODE_SIGN_IDENTITY=-", "DEVELOPMENT_TEAM="), kind="test"):
         return False
-    if not run("verify-build", xcodebuild("-project", project, "-scheme", PROJECT_NAME,
-                                           "-destination", "generic/platform=iOS", "build",
-                                           "CODE_SIGNING_ALLOWED=NO")):
+    if not compile_ios_configurations("verify-build"):
         return False
     return run("diff-check", ["git", "diff", "--check"])
 

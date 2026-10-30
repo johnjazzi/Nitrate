@@ -237,6 +237,39 @@ class VerifyCommandTests(unittest.TestCase):
             self.assertEqual(verify.resolve_timeout("test", None), 600)
 
 
+class IOSConfigurationCoverageTests(unittest.TestCase):
+    def commands(self, operation, outcomes=None):
+        with mock.patch.object(verify, "generate_project", return_value=True), \
+             mock.patch.object(verify, "xcodebuild", side_effect=lambda *args: list(args)), \
+             mock.patch.object(verify, "run", side_effect=outcomes, return_value=True) as run:
+            result = operation()
+        commands = [call.args[1] for call in run.call_args_list
+                    if "generic/platform=iOS" in call.args[1]]
+        return result, commands
+
+    def assert_configurations(self, commands):
+        self.assertEqual(len(commands), 2, "Both Debug and Release must compile")
+        self.assertEqual([command[command.index("-configuration") + 1] for command in commands],
+                         ["Debug", "Release"])
+        for command in commands:
+            self.assertIn("CODE_SIGNING_ALLOWED=NO", command)
+
+    def test_incremental_check_compiles_both_ios_configurations(self):
+        result, commands = self.commands(verify.compile_check)
+        self.assertTrue(result)
+        self.assert_configurations(commands)
+
+    def test_full_verify_compiles_both_ios_configurations(self):
+        result, commands = self.commands(verify.verify)
+        self.assertTrue(result)
+        self.assert_configurations(commands)
+
+    def test_release_failure_fails_the_compile_check(self):
+        result, commands = self.commands(verify.compile_check, outcomes=[True, False])
+        self.assertFalse(result, "A passing Debug build must not hide a Release failure")
+        self.assert_configurations(commands)
+
+
 class CloudBuildCoverageTests(unittest.TestCase):
     """The retired native job's lint + iOS build now live inside the Cloud action.
 
