@@ -11,6 +11,13 @@
 | DevRelease | `com.nitrate.app.dev` | Nitrate Dev | Local release-optimized testing, without DEBUG features |
 | Release | `com.nitrate.app` | Nitrate | Cloud/TestFlight/App Store distribution |
 
+Photo mode and the shared idle camera graph are runtime features in all three
+configurations for the registered production and development bundle identifiers.
+They do not require `DEBUG`. Diagnostic frame tools, smoke-test launch arguments,
+fault injection and camera-range dumps remain Debug-only. Release verification
+must cover both the Photo controls and their capture implementation, not only
+whether the mode selector is visible.
+
 The local app and production app have separate containers, queues, preferences,
 and permissions. Existing production footage does not migrate into Nitrate Dev.
 Do not uninstall either app to switch between them. A local install can still

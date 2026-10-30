@@ -456,15 +456,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             output = retained
             try configureNativePhotoDevice(device)
         } else {
-#if DEBUG
-            // The Debug smoke path keeps its evidence-carrying graph install so
-            // its restored-video proof still has the saved run to compare with.
-            let run = DebugPhotoRun(owner: self, device: device, directory: directory) { _ in }
-            developmentPhotoSnapshot = run
-            output = try configureDebugPhotoGraph(run)
-#else
             output = try installNativePhotoGraph(device)
-#endif
             retainedPhotoOutput = output
         }
         selectedLensAperture = sharedPhotoIntent?.aperture
@@ -4120,22 +4112,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
     }
 
     private func configureDebugPhotoGraph(_ run: DebugPhotoRun) throws -> AVCapturePhotoOutput {
-        if session.isRunning { session.stopRunning() }
-        let output = retainedPhotoOutput ?? AVCapturePhotoOutput()
-        retainedPhotoOutput = output
-        suspendPreview(true)
-        session.beginConfiguration()
         run.graphChanged = true
-        do {
-            defer { session.commitConfiguration() }
-            for old in session.outputs { session.removeOutput(old) }
-            guard session.canSetSessionPreset(.photo) else { throw CameraError.cannotAddOutput }
-            session.sessionPreset = .photo
-            guard session.canAddOutput(output) else { throw CameraError.cannotAddOutput }
-            session.addOutput(output)
-        }
-        try configureNativePhotoDevice(run.device)
-        return output
+        return try installNativePhotoGraph(run.device)
     }
 
     private func restoreDebugPhotoGraph(_ run: DebugPhotoRun) throws {
