@@ -2,15 +2,39 @@ import Foundation
 import Testing
 
 struct DevelopmentPhotoFeatureTests {
-    @Test func onlyDebugDevelopmentBundleCanExposePhoto() {
+    /// Both registered identities expose Photo in every configuration: the
+    /// TestFlight/App Store Release build carries `com.nitrate.app` and a local
+    /// build carries `com.nitrate.app.dev`, so optimisation must not decide.
+    @Test func registeredIdentitiesExposePhotoInEveryBuildConfiguration() {
+        for isDebugBuild in [true, false] {
+            #expect(DevelopmentPhotoFeature.isAvailable(
+                isDebugBuild: isDebugBuild, bundleIdentifier: "com.nitrate.app"))
+            #expect(DevelopmentPhotoFeature.isAvailable(
+                isDebugBuild: isDebugBuild, bundleIdentifier: "com.nitrate.app.dev"))
+        }
+    }
+
+    /// Regression: Release used to compile Photo out and return false for the
+    /// production identity. A release build must now expose it.
+    @Test func releaseBuildExposesPhotoForTheProductionIdentity() {
         #expect(DevelopmentPhotoFeature.isAvailable(
-            isDebugBuild: true, bundleIdentifier: "com.nitrate.app.dev"))
-        #expect(!DevelopmentPhotoFeature.isAvailable(
-            isDebugBuild: false, bundleIdentifier: "com.nitrate.app.dev"))
-        #expect(!DevelopmentPhotoFeature.isAvailable(
-            isDebugBuild: true, bundleIdentifier: "com.nitrate.app"))
-        #expect(!DevelopmentPhotoFeature.isAvailable(
-            isDebugBuild: true, bundleIdentifier: "com.nitrate.app.dev.test"))
+            isDebugBuild: false, bundleIdentifier: "com.nitrate.app"))
+    }
+
+    /// Anything else — an interaction-test host, a fixture, a missing bundle id
+    /// — stays unavailable, so the gate still means something.
+    @Test func unknownIdentitiesStayUnavailable() {
+        for isDebugBuild in [true, false] {
+            #expect(!DevelopmentPhotoFeature.isAvailable(
+                isDebugBuild: isDebugBuild, bundleIdentifier: "com.nitrate.app.dev.test"))
+            #expect(!DevelopmentPhotoFeature.isAvailable(
+                isDebugBuild: isDebugBuild,
+                bundleIdentifier: "com.nitrate.app.dev.interaction-tests"))
+            #expect(!DevelopmentPhotoFeature.isAvailable(
+                isDebugBuild: isDebugBuild, bundleIdentifier: ""))
+            #expect(!DevelopmentPhotoFeature.isAvailable(
+                isDebugBuild: isDebugBuild, bundleIdentifier: "com.example.other"))
+        }
     }
 }
 
