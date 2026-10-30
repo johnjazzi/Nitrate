@@ -7,7 +7,7 @@ import SwiftUI
 enum PhotoShutterRailStyle {
     static let labelFontSize: CGFloat = 14
     static let majorTickLength: CGFloat = 9
-    static let minorTickLength: CGFloat = 5
+    static let minorTickLength: CGFloat = 4.5
 }
 
 /// Photo shutter ruler using the shared relative-drag interaction.

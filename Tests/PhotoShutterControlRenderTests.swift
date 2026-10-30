@@ -68,7 +68,7 @@ struct PhotoShutterControlRenderTests {
         )
         #expect(metrics.labelFontSize == 14)
         #expect(metrics.majorLength == 9)
-        #expect(metrics.minorLength == 5)
+        #expect(metrics.minorLength == 4.5)
         // Shorter than the 18.5pt major tick the default 44pt ruler draws.
         #expect(metrics.majorLength < 0.42 * 44)
         #expect(metrics.minorLength <= 0.22 * 44 / 2)
