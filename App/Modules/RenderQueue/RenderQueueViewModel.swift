@@ -221,9 +221,12 @@ final class RenderQueueViewModel {
     }
 
     /// Returns an ID only after persistence; the same serial worker owns Photos delivery.
+    /// The delivery preferences (including the RAW original switch) are snapshotted
+    /// here, so changing the setting later never alters a queued photo.
     @discardableResult
     func enqueuePhoto(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge,
-                      cropZoom: Double, seed: UInt32) -> UUID? {
+                      cropZoom: Double, seed: UInt32,
+                      preferences: RenderDeliveryPreferences? = nil) -> UUID? {
         guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
         guard Self.isUsableFile(sourceURL), sourceURL.pathExtension.lowercased() == "dng",
               iso.isFinite, iso > 0, cropZoom.isFinite, cropZoom >= 1 else {
@@ -234,7 +237,8 @@ final class RenderQueueViewModel {
             return existing.isPhoto == true ? existing.id : nil
         }
         var photo = RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso,
-                              printGauge: gauge, sessionId: sessionId)
+                              printGauge: gauge, sessionId: sessionId,
+                              deliveryPreferences: preferences ?? DeliverySettings.renderPreferences())
         photo.isPhoto = true
         photo.photoCropZoom = cropZoom
         photo.photoGrainSeed = seed
@@ -742,23 +746,40 @@ final class RenderQueueViewModel {
             }
         }
         if initial.shouldSaveOriginal, job(jobId)?.sourceSavedToPhotos != true {
+            let isPhoto = initial.isPhoto == true
             do {
                 // Deliver the capture file unchanged, including its Log encoding,
                 // audio, orientation and custom metadata; cleanup follows full delivery.
-                try await saveOperation(initial.sourceURL)
+                // A Photo job's DNG is a separate Photos image resource, routed
+                // through the photo saver's durable duplicate prevention.
+                try await saveOriginalSource(initial.sourceURL, isPhoto: isPhoto)
                 update(jobId) { $0.sourceSavedToPhotos = true }
                 guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
             } catch {
                 let sourceDetail = Self.isUsableFile(initial.sourceURL)
-                    ? "Original remains in the app."
-                    : "Original source is no longer available in the app."
-                let outputDetail = job(jobId)?.outputURL.map(Self.isUsableFile) == true
-                    ? "Rendered movie is retained in the app."
-                    : "Rendered movie is no longer available in the app."
+                    ? (isPhoto ? "Original DNG remains in the app." : "Original remains in the app.")
+                    : (isPhoto ? "Original DNG is no longer available in the app."
+                               : "Original source is no longer available in the app.")
+                let outputDetail: String
+                if isPhoto {
+                    outputDetail = job(jobId)?.outputURL.map(Self.isUsableFile) == true
+                        ? "Developed photo is retained in the app."
+                        : "Developed photo is no longer available in the app."
+                } else {
+                    outputDetail = job(jobId)?.outputURL.map(Self.isUsableFile) == true
+                        ? "Rendered movie is retained in the app."
+                        : "Rendered movie is no longer available in the app."
+                }
+                let delivery = isPhoto
+                    ? "Developed photo saved to Photos, but original DNG could not be saved"
+                    : "Rendered movie saved to Photos, but original Apple Log could not be saved"
+                let retryHint = isPhoto
+                    ? "Retry saves only the original DNG; the developed photo is not saved again."
+                    : "Retry saves only the original."
                 update(jobId) {
                     $0.status = .failed
                     $0.sourceSavedToPhotos = false
-                    $0.errorMessage = "Rendered movie saved to Photos, but original Apple Log could not be saved: \(error.localizedDescription). \(sourceDetail) \(outputDetail) Retry saves only the original."
+                    $0.errorMessage = "\(delivery): \(error.localizedDescription). \(sourceDetail) \(outputDetail) \(retryHint)"
                 }
                 recordFailureState()
                 return
@@ -980,6 +1001,19 @@ final class RenderQueueViewModel {
             }
         }
         try await saveOperation(url)
+    }
+
+    /// Deliver the captured original. A Photo job's DNG is a separate Photos
+    /// image resource with durable duplicate prevention, so it uses the photo
+    /// saver rather than the movie save operation.
+    private func saveOriginalSource(_ url: URL, isPhoto: Bool) async throws {
+        guard isPhoto else { try await saveOperation(url); return }
+        if hasInjectedSave { try await saveOperation(url); return }
+        switch await DevelopmentPhotoLibrarySaver.shared.save(originalDNG: url) {
+        case .success: return
+        case .failure(.alreadySaved): return // Already delivered; do not duplicate.
+        case .failure(let error): throw error
+        }
     }
 
     private nonisolated static func saveToPhotoLibrary(_ url: URL) async throws {

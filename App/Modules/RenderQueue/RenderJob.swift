@@ -44,7 +44,13 @@ struct RenderJob: Codable, Identifiable, Equatable {
     var discardImportedMedia: Bool? = nil
     var isDiscardingImport: Bool { isImportedVideo == true && discardImportedMedia == true }
     var permitsLocalMedia: Bool { isImportedVideo != true }
-    var shouldSaveOriginal: Bool { isPhoto != true && isImportedVideo != true && deliveryPreferences?.saveOriginalLog == true }
+    /// Media-aware original delivery: a Photo job honours the independent RAW
+    /// switch, a video honours `saveOriginalLog`. Imported video never exports.
+    var shouldSaveOriginal: Bool {
+        guard isImportedVideo != true else { return false }
+        if isPhoto == true { return deliveryPreferences?.saveOriginalRAWToPhotos == true }
+        return deliveryPreferences?.saveOriginalLog == true
+    }
     let trimStartSeconds: Double?
     let trimEndSeconds: Double?
     let createdAt: Date

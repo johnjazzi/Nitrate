@@ -272,21 +272,29 @@ enum RenderExportQuality: String, Codable, CaseIterable, Identifiable, Sendable 
 
 /// Value snapshot of export preferences, suitable for persisting with a queued render.
 struct RenderDeliveryPreferences: Codable, Equatable, Sendable {
+    /// Video switch: deliver the ungraded original recording alongside the render.
     var saveOriginalLog: Bool
+    /// Photo switch, independent of `saveOriginalLog`: deliver the captured DNG
+    /// as a second Photos resource next to the developed JPEG.
+    var saveOriginalRAWToPhotos: Bool
     var quality: RenderExportQuality
 
-    init(saveOriginalLog: Bool = false, quality: RenderExportQuality = .high) {
+    init(saveOriginalLog: Bool = false, saveOriginalRAWToPhotos: Bool = false,
+         quality: RenderExportQuality = .high) {
         self.saveOriginalLog = saveOriginalLog
+        self.saveOriginalRAWToPhotos = saveOriginalRAWToPhotos
         self.quality = quality
     }
 
     private enum CodingKeys: String, CodingKey {
-        case saveOriginalLog, quality
+        case saveOriginalLog, saveOriginalRAWToPhotos, quality
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         saveOriginalLog = try values.decodeIfPresent(Bool.self, forKey: .saveOriginalLog) ?? false
+        // Queues written before the photo switch existed deliver JPEG only.
+        saveOriginalRAWToPhotos = try values.decodeIfPresent(Bool.self, forKey: .saveOriginalRAWToPhotos) ?? false
         // Newer queues may carry a quality this version does not recognize.
         let rawQuality = try? values.decodeIfPresent(String.self, forKey: .quality)
         quality = rawQuality.flatMap(RenderExportQuality.init(rawValue:)) ?? .high
@@ -302,6 +310,8 @@ enum DeliverySettings {
     static let aacAverageBitRate = 192_000
     private static let bitrateKey = "delivery.averageBitRate"
     static let saveOriginalLogKey = "delivery.saveOriginalLog"
+    /// Photo-only switch; independent of the video original switch above.
+    static let saveOriginalRAWToPhotosKey = "delivery.saveOriginalRAWToPhotos"
     static let renderQualityKey = "delivery.renderQuality"
 
     static func renderPreferences(defaults: UserDefaults = .standard) -> RenderDeliveryPreferences {
@@ -309,6 +319,7 @@ enum DeliverySettings {
             .flatMap(RenderExportQuality.init(rawValue:)) ?? .high
         return RenderDeliveryPreferences(
             saveOriginalLog: defaults.bool(forKey: saveOriginalLogKey),
+            saveOriginalRAWToPhotos: defaults.bool(forKey: saveOriginalRAWToPhotosKey),
             quality: quality
         )
     }

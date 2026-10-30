@@ -347,3 +347,172 @@ struct PhotoDevelopmentPipelineTests {
         #expect(persisted.first?.photoGrainSeed == 73)
     }
 }
+
+/// Delivering a developed photo's original DNG as a separate Photos resource.
+/// The injected save stands in for the Photos writer; the queue ownership rules
+/// (ordering, retry, reload) are the real system under test.
+@Suite(.serialized)
+struct PhotoOriginalDeliveryTests {
+    private struct Files {
+        let directory: URL
+        var source: URL { directory.appendingPathComponent("capture.dng") }
+        var output: URL { directory.appendingPathComponent("developed.jpg") }
+        var persistence: URL { directory.appendingPathComponent("queue.json") }
+    }
+
+    private enum Failure: Error { case save, render }
+
+    private func scratch() throws -> Files {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let files = Files(directory: directory)
+        try Data([1, 2, 3]).write(to: files.source)
+        let image = CIImage(color: CIColor(red: 0.3, green: 0.4, blue: 0.2))
+            .cropped(to: CGRect(x: 0, y: 0, width: 32, height: 24))
+        try CIContext().writeJPEGRepresentation(of: image, to: files.output,
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+        return files
+    }
+
+    @MainActor
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<400 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        Issue.record("Timed out waiting for queue state")
+    }
+
+    @Test func originalSelectionIsMediaAwareAndIndependentOfSaveOriginalLog() {
+        func photo(raw: Bool, log: Bool) -> RenderJob {
+            var job = RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/a.dng"), stockId: "kodak5219",
+                                iso: 400, deliveryPreferences: RenderDeliveryPreferences(
+                                    saveOriginalLog: log, saveOriginalRAWToPhotos: raw))
+            job.isPhoto = true
+            return job
+        }
+        func video(log: Bool, raw: Bool) -> RenderJob {
+            RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/a.mov"), stockId: "kodak5219",
+                      iso: 400, deliveryPreferences: RenderDeliveryPreferences(
+                          saveOriginalLog: log, saveOriginalRAWToPhotos: raw))
+        }
+
+        #expect(photo(raw: true, log: false).shouldSaveOriginal)
+        #expect(!photo(raw: false, log: true).shouldSaveOriginal)
+        #expect(video(log: true, raw: false).shouldSaveOriginal)
+        #expect(!video(log: false, raw: true).shouldSaveOriginal)
+        // Imported video never exports its original, whatever the photo switch says.
+        var imported = video(log: true, raw: true)
+        imported.isImportedVideo = true
+        #expect(!imported.shouldSaveOriginal)
+    }
+
+    @Test @MainActor func enqueuePhotoSnapshotsThePreferenceAtEnqueue() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in files.output },
+                                         save: { _ in }, postDelivery: { _, _ in })
+        let requested = RenderDeliveryPreferences(saveOriginalRAWToPhotos: true)
+        let id = try #require(model.enqueuePhoto(sourceURL: files.source, stockId: "kodak5219",
+            iso: 400, gauge: .sixteenMillimetre, cropZoom: 1, seed: 7, preferences: requested))
+        let job = try #require(model.jobs.first(where: { $0.id == id }))
+        #expect(job.deliveryPreferences == requested)
+        try await waitUntil { model.jobs.first?.status == .completed }
+        let persisted = try #require(try QueuePersister(storageURL: files.persistence).load().first)
+        #expect(persisted.deliveryPreferences == requested)
+        #expect(persisted.deliveryPreferences?.saveOriginalRAWToPhotos == true)
+    }
+
+    @Test(arguments: [false, true])
+    @MainActor func photoDeliverySavesDevelopedJPEGAndOptionallyTheOriginalDNG(saveOriginal: Bool) async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        var saves: [URL] = []
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in files.output },
+                                         save: { saves.append($0) }, postDelivery: { _, _ in })
+        let preferences = RenderDeliveryPreferences(saveOriginalLog: false,
+                                                    saveOriginalRAWToPhotos: saveOriginal)
+        let id = try #require(model.enqueuePhoto(sourceURL: files.source, stockId: "kodak5219",
+            iso: 400, gauge: .sixteenMillimetre, cropZoom: 1, seed: 11, preferences: preferences))
+        try await waitUntil { model.jobs.first?.status == .completed }
+        let job = try #require(model.jobs.first(where: { $0.id == id }))
+        #expect(job.status == .completed)
+        #expect(job.outputSavedToPhotos == true)
+        #expect(job.sourceSavedToPhotos == (saveOriginal ? true : nil))
+        #expect(saves == (saveOriginal ? [files.output, files.source] : [files.output]))
+        // The local DNG survives delivery so the photo can be developed again.
+        #expect(FileManager.default.fileExists(atPath: files.source.path))
+        #expect(job.hasRedevelopableOriginal)
+    }
+
+    @Test @MainActor func failedOriginalDNGKeepsTheJPEGAndRetrySavesOnlyTheOriginal() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        var renders = 0
+        var saves: [URL] = []
+        var failOriginal = true
+        let model = RenderQueueViewModel(persistenceURL: files.persistence, render: { _ in
+            renders += 1
+            return files.output
+        }, save: { url in
+            saves.append(url)
+            if url == files.source, failOriginal { throw Failure.save }
+        }, postDelivery: { _, _ in })
+        let preferences = RenderDeliveryPreferences(saveOriginalRAWToPhotos: true)
+        let id = try #require(model.enqueuePhoto(sourceURL: files.source, stockId: "kodak5219",
+            iso: 400, gauge: .sixteenMillimetre, cropZoom: 1, seed: 13, preferences: preferences))
+        try await waitUntil { !model.isProcessing && model.jobs.first?.status == .failed }
+        let failed = try #require(model.jobs.first(where: { $0.id == id }))
+        #expect(failed.outputSavedToPhotos == true)
+        #expect(failed.sourceSavedToPhotos == false)
+        #expect(failed.outputURL == files.output)
+        #expect(failed.status == .failed)
+        let message = try #require(failed.errorMessage)
+        #expect(message.contains("Developed photo saved to Photos"))
+        #expect(message.contains("original DNG could not be saved"))
+        #expect(message.contains("Retry saves only the original"))
+        #expect(!message.contains("Apple Log"))
+
+        failOriginal = false
+        model.retry(jobId: failed.id)
+        try await waitUntil { !model.isProcessing && model.jobs.first?.status == .completed }
+        #expect(model.jobs.first?.sourceSavedToPhotos == true)
+        #expect(model.jobs.first?.outputSavedToPhotos == true)
+        #expect(model.jobs.first?.deliveryPreferences == preferences)
+        #expect(renders == 1, "Retry must not develop the photo again")
+        #expect(saves == [files.output, files.source, files.source],
+                "Retry saves only the original; the JPEG is not saved twice")
+    }
+
+    @Test @MainActor func reloadedQueueKeepsThePreferenceAndSavesOnlyTheOriginal() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let preferences = RenderDeliveryPreferences(saveOriginalRAWToPhotos: true)
+        var interrupted = RenderJob(sourceURL: files.source, stockId: "kodak5219", iso: 400,
+                                    printGauge: .sixteenMillimetre,
+                                    deliveryPreferences: preferences)
+        interrupted.isPhoto = true
+        interrupted.photoCropZoom = 1
+        interrupted.photoGrainSeed = 17
+        interrupted.status = .processing
+        interrupted.outputURL = files.output
+        interrupted.outputSavedToPhotos = true
+        try QueuePersister(storageURL: files.persistence).save([interrupted])
+
+        var renders = 0
+        var saves: [URL] = []
+        let restored = RenderQueueViewModel(persistenceURL: files.persistence, render: { _ in
+            renders += 1
+            throw Failure.render
+        }, save: { saves.append($0) }, postDelivery: { _, _ in })
+        restored.onAppear()
+        try await waitUntil { !restored.isProcessing && restored.jobs.first?.status == .completed }
+        #expect(restored.jobs.first?.deliveryPreferences == preferences)
+        #expect(restored.jobs.first?.sourceSavedToPhotos == true)
+        #expect(restored.jobs.first?.outputSavedToPhotos == true)
+        #expect(renders == 0, "A reloaded photo with a delivered JPEG only needs its original")
+        #expect(saves == [files.source])
+    }
+}

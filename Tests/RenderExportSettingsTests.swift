@@ -108,4 +108,37 @@ struct RenderExportSettingsTests {
 
         #expect(restored == RenderDeliveryPreferences(saveOriginalLog: true, quality: .high))
     }
+
+    @Test func rawOriginalPreferenceDefaultsFalseAndIsIndependentOfSaveOriginalLog() throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        #expect(RenderDeliveryPreferences().saveOriginalRAWToPhotos == false)
+        #expect(DeliverySettings.saveOriginalRAWToPhotosKey == "delivery.saveOriginalRAWToPhotos")
+        defaults.set(true, forKey: DeliverySettings.saveOriginalLogKey)
+        let legacyVideoOnly = DeliverySettings.renderPreferences(defaults: defaults)
+        #expect(legacyVideoOnly.saveOriginalLog == true)
+        #expect(legacyVideoOnly.saveOriginalRAWToPhotos == false)
+
+        defaults.set(false, forKey: DeliverySettings.saveOriginalLogKey)
+        defaults.set(true, forKey: DeliverySettings.saveOriginalRAWToPhotosKey)
+        let rawOnly = DeliverySettings.renderPreferences(defaults: defaults)
+        #expect(rawOnly.saveOriginalLog == false)
+        #expect(rawOnly.saveOriginalRAWToPhotos == true)
+    }
+
+    @Test func rawOriginalPreferenceRoundTripsAndLegacyPayloadDefaultsFalse() throws {
+        let preferences = RenderDeliveryPreferences(saveOriginalLog: false, saveOriginalRAWToPhotos: true)
+        let data = try JSONEncoder().encode(preferences)
+        let restored = try JSONDecoder().decode(RenderDeliveryPreferences.self, from: data)
+        #expect(restored == preferences)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["saveOriginalRAWToPhotos"] as? Bool == true)
+
+        // A queue written before this switch existed must decode as disabled.
+        let legacy = try JSONDecoder().decode(RenderDeliveryPreferences.self,
+            from: Data("{\"saveOriginalLog\":true,\"quality\":\"high\"}".utf8))
+        #expect(legacy.saveOriginalLog == true)
+        #expect(legacy.saveOriginalRAWToPhotos == false)
+    }
 }
