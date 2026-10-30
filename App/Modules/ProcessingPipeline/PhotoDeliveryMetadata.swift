@@ -17,8 +17,10 @@ enum PhotoDeliveryMetadata {
     struct StillCapture: Equatable, Sendable {
         var exposureSeconds: Double?
         var iso: Int?
-        /// EXIF orientation of the stored DNG. RAW capture ignores the output
-        /// connection's rotation, so the still is rotated into delivery instead.
+        /// EXIF orientation of the stored DNG. The photo connection's rotation
+        /// angle is installed immediately before the capture, so this is the
+        /// orientation the DNG itself reports; `CIRAWFilter` uprights it on
+        /// decode and the renderer must not rotate again.
         var orientation: Int = 1
 
         /// `1/500` from 0.002 s. Nil for a missing or non-finite value.

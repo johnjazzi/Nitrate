@@ -17,7 +17,7 @@ final class DevelopmentPhotoController: @unchecked Sendable {
     private var stopped = false
     private var capturing = false
     private var captureHelper: CameraPhotoCapture?
-    private var pendingCapture: (@MainActor @Sendable (Result<URL, Swift.Error>) -> Void)?
+    private var pendingCapture: PendingPhotoCaptureRequest?
     /// Identifies the deferred capture a watchdog was armed for, so a consumed
     /// or superseded capture cannot be failed by a stale deadline.
     private var captureToken: UInt64 = 0
@@ -176,15 +176,19 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         try submitCurrentIntent()
     }
 
-    func capture(completion: @escaping @MainActor @Sendable (Result<URL, Swift.Error>) -> Void) throws {
-        try capture(completion: completion, force: false)
+    /// `rotationAngle` is the quarter-turn frozen at the shutter tap. It is held
+    /// with a waiting tap and handed to the photo request unchanged.
+    func capture(rotationAngle: CGFloat? = nil,
+                 completion: @escaping @MainActor @Sendable (Result<URL, Swift.Error>) -> Void) throws {
+        try capture(rotationAngle: rotationAngle, completion: completion, force: false)
     }
 
     /// `force` takes the photo under whatever the device has installed right now,
     /// skipping the wait for the operator's unwritten intent. Used once that wait
     /// has already been spent (`armCaptureImpatience`), so the exposure loop can
     /// never push a tap behind another correction.
-    private func capture(completion: @escaping @MainActor @Sendable (Result<URL, Swift.Error>) -> Void,
+    private func capture(rotationAngle: CGFloat?,
+                         completion: @escaping @MainActor @Sendable (Result<URL, Swift.Error>) -> Void,
                          force: Bool) throws {
         dispatchPrecondition(condition: .onQueue(queue))
         trace("capture-request")
@@ -198,7 +202,7 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         // never allowed to hold a capture: the photo is taken under the exposure
         // that is installed, which is the exposure the operator was looking at.
         if !force, setterInFlight || biasSettersInFlight > 0 || intentNeedsApply {
-            pendingCapture = completion
+            pendingCapture = PendingPhotoCaptureRequest(rotationAngle: rotationAngle, completion: completion)
             captureToken &+= 1
             armCaptureDeadline(captureToken)
             armCaptureImpatience(captureToken)
@@ -215,7 +219,8 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         let folder = directory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         do {
             let helper = try CameraPhotoCapture(output: output, pixelFormat: pixelFormat,
-                dimensions: dimensions, directory: folder, queue: queue) { [weak self] result in
+                dimensions: dimensions, directory: folder, queue: queue,
+                rotationAngle: rotationAngle) { [weak self] result in
                     guard let self else { return }
                     self.trace("capture-terminal \(result.failure ?? "success")")
                     self.captureHelper = nil; self.capturing = false
@@ -240,9 +245,9 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         stopped = true; adjustmentGeneration &+= 1; generation &+= 1
         operations.stop()
         wake?.cancel(); wake = nil
-        if let completion = pendingCapture {
+        if let pending = pendingCapture {
             pendingCapture = nil
-            DispatchQueue.main.async { completion(.failure(CaptureFailure("Photo capture interrupted"))) }
+            DispatchQueue.main.async { pending.completion(.failure(CaptureFailure("Photo capture interrupted"))) }
         }
         trace("stop-request")
         stopWaiters.append(whenSettled)
@@ -335,12 +340,12 @@ final class DevelopmentPhotoController: @unchecked Sendable {
                 self.trace("setter-completed token=\(token.id)")
                 // A waiting capture outranks autonomous corrections, but its RAW
                 // terminal remains owned independently of these setter leases.
-                if let completion = self.pendingCapture, !self.stopped, self.biasSettersInFlight == 0 {
+                if let pending = self.pendingCapture, !self.stopped, self.biasSettersInFlight == 0 {
                     self.pendingCapture = nil
                     self.captureToken &+= 1
                     self.intentNeedsApply = false
-                    do { try self.capture(completion: completion) }
-                    catch { DispatchQueue.main.async { completion(.failure(error)) } }
+                    do { try self.capture(rotationAngle: pending.rotationAngle, completion: pending.completion) }
+                    catch { DispatchQueue.main.async { pending.completion(.failure(error)) } }
                     return
                 }
                 self.publish()
@@ -388,14 +393,15 @@ final class DevelopmentPhotoController: @unchecked Sendable {
     /// the shutter is usable again instead of waiting on the exposure forever.
     private func armCaptureDeadline(_ token: UInt64) {
         queue.asyncAfter(deadline: .now() + PhotoExposureCadence.captureTimeout) { [weak self] in
-            guard let self, self.captureToken == token, let completion = self.pendingCapture else { return }
+            guard let self, self.captureToken == token, let pending = self.pendingCapture else { return }
             self.trace("capture-timeout")
             self.pendingCapture = nil
             self.captureToken &+= 1
             self.publish()
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    completion(.failure(CaptureFailure("The camera did not settle in time. Tap the shutter to try again.")))
+                    pending.completion(.failure(
+                        CaptureFailure("The camera did not settle in time. Tap the shutter to try again.")))
                 }
             }
             self.scheduleAdjustment()
@@ -410,7 +416,7 @@ final class DevelopmentPhotoController: @unchecked Sendable {
     /// reached the device in time, the photo they asked for still gets taken.
     private func armCaptureImpatience(_ token: UInt64) {
         queue.asyncAfter(deadline: .now() + PhotoExposureCadence.captureImpatience) { [weak self] in
-            guard let self, self.captureToken == token, let completion = self.pendingCapture,
+            guard let self, self.captureToken == token, let pending = self.pendingCapture,
                   !self.stopped, !self.capturing else { return }
             self.trace("capture-impatient setter=\(self.setterInFlight) intent=\(self.intentNeedsApply)")
             self.pendingCapture = nil
@@ -418,8 +424,9 @@ final class DevelopmentPhotoController: @unchecked Sendable {
             // The requested value lost the race with the tap. Drop it so the loop
             // cannot re-arm it behind this capture.
             self.intentNeedsApply = false
-            do { try self.capture(completion: completion, force: true) }
-            catch { DispatchQueue.main.async { completion(.failure(error)) } }
+            do { try self.capture(rotationAngle: pending.rotationAngle,
+                                  completion: pending.completion, force: true) }
+            catch { DispatchQueue.main.async { pending.completion(.failure(error)) } }
         }
     }
 
@@ -442,10 +449,10 @@ final class DevelopmentPhotoController: @unchecked Sendable {
                     if self.intentNeedsApply {
                         self.intentNeedsApply = false
                         try self.applyCurrentIntent()
-                    } else if let completion = self.pendingCapture {
+                    } else if let pending = self.pendingCapture {
                         self.pendingCapture = nil
                         self.captureToken &+= 1
-                        try self.capture(completion: completion)
+                        try self.capture(rotationAngle: pending.rotationAngle, completion: pending.completion)
                         return
                     }
                 } catch { self.onFailure("Photo exposure update failed: \(error)") }

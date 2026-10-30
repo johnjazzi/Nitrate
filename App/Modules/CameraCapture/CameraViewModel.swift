@@ -1399,7 +1399,10 @@ final class CameraViewModel {
         let cropZoom = photoCropZoom
 
         photoCaptureStatus = "Capturing RAW…"
-        session.captureDevelopmentPhoto { [weak self] result in
+        // Freeze the physical hold at the tap. The capture can queue behind an
+        // exposure write, and a turn during that wait must not re-orient the still.
+        let frozenOrientation = CameraOrientationObserver.shared.deliveryOrientation
+        session.captureDevelopmentPhoto(frozenOrientation: frozenOrientation) { [weak self] result in
             guard let self else { return }
             guard self.photoGeneration == generation, self.photoResults.finish(captureToken) else {
                 self.trace("photo-capture-completion stale token=\(captureToken)")

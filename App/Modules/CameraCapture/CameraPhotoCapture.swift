@@ -19,6 +19,10 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
     private let requestedDimensions: CMVideoDimensions
     private let directory: URL
     private let queue: DispatchQueue
+    /// Quarter-turn frozen at the shutter tap. Applied to the photo connection
+    /// immediately before the request, because that is what the DNG's EXIF
+    /// orientation — and therefore the decoded still — follows.
+    private let rotationAngle: CGFloat?
     private let onTerminal: @Sendable (CameraPhotoCaptureResult) -> Void
     private let timeoutInterval: TimeInterval
     private var settings: AVCapturePhotoSettings?
@@ -35,6 +39,7 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
 
     init(output: AVCapturePhotoOutput, pixelFormat: OSType,
          dimensions: CMVideoDimensions, directory: URL, queue: DispatchQueue,
+         rotationAngle: CGFloat? = nil,
          timeoutInterval: TimeInterval = PhotoExposureCadence.captureTransactionTimeout,
          onTerminal: @escaping @Sendable (CameraPhotoCaptureResult) -> Void) throws {
         guard timeoutInterval.isFinite, timeoutInterval > 0 else { throw CaptureError.invalidSettings }
@@ -44,6 +49,7 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
         self.requestedDimensions = dimensions
         self.directory = directory
         self.queue = queue
+        self.rotationAngle = rotationAngle
         self.onTerminal = onTerminal
         super.init()
 
@@ -104,7 +110,38 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
             case .alreadyFailed, .terminal: break
             }
         }
+        applyCaptureRotation()
+        recordManifest()
         output.capturePhoto(with: settings, delegate: self)
+    }
+
+    /// Install the frozen quarter-turn on the photo connection, then record what
+    /// was asked for, what is actually installed, and whether it is supported.
+    ///
+    /// This must run immediately before the request: `AVCapturePhotoOutput` bakes
+    /// the connection angle into the DNG's EXIF orientation, so a value applied
+    /// at any other moment describes a different hold.
+    private func applyCaptureRotation() {
+        let requested = PhotoCaptureRotationPolicy.connectionAngle(rotationAngle)
+        guard let requested, let connection = output.connection(with: .video) else {
+            evidence.merge(PhotoCaptureRotationPolicy.evidence(
+                requested: requested, applied: nil, supported: nil)) { _, new in new }
+            return
+        }
+        guard #available(iOS 17.0, *) else {
+            evidence.merge(PhotoCaptureRotationPolicy.evidence(
+                requested: requested, applied: nil, supported: nil)) { _, new in new }
+            return
+        }
+        let supported = connection.isVideoRotationAngleSupported(requested)
+        if supported { connection.videoRotationAngle = requested }
+        evidence.merge(PhotoCaptureRotationPolicy.evidence(
+            requested: requested, applied: connection.videoRotationAngle,
+            supported: supported)) { _, new in new }
+#if DEBUG
+        print("Camera photo orientation: requested=\(requested)°, " +
+              "supported=\(supported), applied=\(connection.videoRotationAngle)°")
+#endif
     }
 
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto,
@@ -287,7 +324,9 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
                            "transactionID", "timedOut", "terminalReceived", "dng", "exposure", "iso",
                            "whiteBalance", "orientation", "rawType", "fileType", "rawWidth", "rawHeight",
                            "pixelBufferWidth", "pixelBufferHeight", "dngBytes", "dngReadable",
-                           "resolvedRawWidth", "resolvedRawHeight", "actualFileType", "actualRawPixelFormat", "asShotNeutral", "activeArea"])
+                           "resolvedRawWidth", "resolvedRawHeight", "actualFileType", "actualRawPixelFormat",
+                           "asShotNeutral", "activeArea", "rotationAngleRequested", "rotationAngleApplied",
+                           "rotationAngleSupported"])
         var manifest = evidence.filter { allowed.contains($0.key) }
         if let failure { manifest["failure"] = String(failure.prefix(240)) }
         if manifest["dng"] == nil { manifest["dng"] = dngURL == nil ? "missing" : "capture.dng" }

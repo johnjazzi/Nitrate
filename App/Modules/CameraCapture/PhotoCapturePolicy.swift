@@ -102,6 +102,51 @@ enum PhotoCapturePolicy {
     }
 }
 
+/// Stills take their orientation from the shutter tap, not from the render path.
+///
+/// `AVCapturePhotoOutput` writes the photo connection's `videoRotationAngle` into
+/// the DNG's own EXIF orientation, and `CIRAWFilter` uprights that on decode. The
+/// rotation is therefore a capture-time decision: the renderer must never apply
+/// it a second time.
+enum PhotoCaptureRotationPolicy {
+    /// Only `0`, `90`, `180`, and `270` are valid connection angles. The rotation
+    /// coordinator reports those, but a value that arrives a hair off (or
+    /// negative) is snapped to the nearest quarter turn rather than written back
+    /// and refused by the framework.
+    static func connectionAngle(_ angle: CGFloat?) -> CGFloat? {
+        guard let angle, angle.isFinite else { return nil }
+        let remainder = angle.truncatingRemainder(dividingBy: 360)
+        let positive = remainder < 0 ? remainder + 360 : remainder
+        let turns = (Int((positive / 90).rounded()) % 4 + 4) % 4
+        return CGFloat(turns * 90)
+    }
+
+    /// Requested, applied, and support results for the capture manifest. A nil
+    /// `supported` means the connection could not state support at all, which is
+    /// not the same as a supported request that never landed.
+    static func evidence(requested: CGFloat?, applied: CGFloat?, supported: Bool?) -> [String: String] {
+        func degrees(_ angle: CGFloat?) -> String {
+            guard let angle, angle.isFinite else { return "none" }
+            return String(Int(angle.rounded()))
+        }
+        return [
+            "rotationAngleRequested": degrees(requested),
+            "rotationAngleApplied": degrees(applied),
+            "rotationAngleSupported": supported.map { $0 ? "true" : "false" } ?? "unavailable"
+        ]
+    }
+}
+
+/// A still capture waiting on the operator's exposure write.
+///
+/// The physical hold is frozen at the tap, so the wait — and the impatient forced
+/// capture that can end it — still takes the photo at the orientation the
+/// operator saw, instead of re-reading the device after the phone has moved.
+struct PendingPhotoCaptureRequest: Sendable {
+    let rotationAngle: CGFloat?
+    let completion: @MainActor @Sendable (Result<URL, Swift.Error>) -> Void
+}
+
 enum PhotoCompletionStep: Hashable, Sendable {
     case rawProcessed, captureTerminated, graphConfigured, exposureApplied, whiteBalanceApplied, biasApplied
 }

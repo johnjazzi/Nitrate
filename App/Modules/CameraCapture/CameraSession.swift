@@ -3712,7 +3712,15 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
     }
 
-    func captureDevelopmentPhoto(completion: @escaping @MainActor @Sendable (Result<URL, Error>) -> Void) {
+    /// `frozenOrientation` is the physical hold read at the shutter tap. It is
+    /// resolved here, on the session queue, through the same coordinator angle the
+    /// video and debug paths use, so an exposure-settling wait or a turn after the
+    /// tap cannot re-orient the still. `nil` keeps the session's last stable hold
+    /// (the `.unknown` mapping never invents a new one).
+    func captureDevelopmentPhoto(
+        frozenOrientation: CameraSampleValidationPolicy.DeliveryOrientation? = nil,
+        completion: @escaping @MainActor @Sendable (Result<URL, Error>) -> Void
+    ) {
         sessionQueue.async { [weak self] in
             guard let self, let controller = self.developmentPhotoController,
                   self.developmentPhotoExitCompletion == nil,
@@ -3720,7 +3728,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 DispatchQueue.main.async { completion(.failure(CameraError.writerUnavailable("Photo camera is not ready"))) }
                 return
             }
-            do { try controller.capture(completion: completion) }
+            if let device = self.activeDevice, self.rotationCoordinator?.device !== device {
+                self.configureCaptureRotation(for: device)
+            }
+            let rotationAngle = self.captureRotationAngle(for: frozenOrientation ?? .unknown)
+            do { try controller.capture(rotationAngle: rotationAngle, completion: completion) }
             catch { DispatchQueue.main.async { completion(.failure(error)) } }
         }
     }
