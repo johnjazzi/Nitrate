@@ -18,6 +18,12 @@ fault injection and camera-range dumps remain Debug-only. Release verification
 must cover both the Photo controls and their capture implementation, not only
 whether the mode selector is visible.
 
+Photo needs a Bayer RAW format from the active camera. When a lens has none, the
+shared idle graph falls back to its Video profile instead of stopping the camera:
+Video preview and recording keep working, Photo refuses with a clear reason, and
+selecting a lens that has RAW restores Photo without restarting the app. Verify
+this on a front camera and on any non-RAW rear lens.
+
 The local app and production app have separate containers, queues, preferences,
 and permissions. Existing production footage does not migrate into Nitrate Dev.
 Do not uninstall either app to switch between them. A local install can still

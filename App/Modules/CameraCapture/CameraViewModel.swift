@@ -29,10 +29,11 @@ final class CameraViewModel {
                 self.photoExposureSnapshot = snapshot
                 if self.isDevelopmentPhotoMode { self.presentPhotoExposure(snapshot) }
                 self.refreshPhotoAperture()
-            }, onProfile: { [weak self] context, video, busy, configured in
+            }, onProfile: { [weak self] context, video, busy, configured, photoAvailable in
                 guard let self, self.sessionDelivery.accepts(context) else { return }
                 self.isVideoCaptureProfileActive = video
                 self.isChangingCaptureProfile = busy
+                self.isPhotoCaptureAvailable = photoAvailable
                 if busy { self.armCaptureProfileWatchdog() } else { self.captureProfileWatchdog?.cancel(); self.captureProfileWatchdog = nil }
                 if !busy {
                     self.cameraConfigured = configured
@@ -127,6 +128,10 @@ final class CameraViewModel {
     /// Observable renderer selection (this model uses @Observable, not Combine).
     private(set) var isVideoCaptureProfileActive = false
     private(set) var isChangingCaptureProfile = false { didSet { pushCameraHardwareControls() } }
+    /// False when the active camera offers no Bayer RAW for Photo's still
+    /// profile. The shared idle graph keeps running its Video profile instead,
+    /// so Video stays usable and Photo refuses with a clear reason.
+    private(set) var isPhotoCaptureAvailable = true
     private var captureProfileWatchdog: Task<Void, Never>?
     /// Photo mode owns the shared idle camera, so this is true wherever the
     /// policy admits the app — Debug, TestFlight and App Store alike.
@@ -1091,7 +1096,7 @@ final class CameraViewModel {
         invalidateApertureUIState()
         invalidateStabilizationUIState()
         let previousLens = activeLens
-        session.selectCamera(lens) { [weak self] error in
+        session.selectCamera(lens, photoIntent: isDevelopmentPhotoMode) { [weak self] error in
             guard let self else { return }
             if error == nil {
                 // Session switches are serialized. Record each successful
@@ -1282,6 +1287,14 @@ final class CameraViewModel {
 
     func setDevelopmentPhotoMode(_ enabled: Bool,
         completion: @escaping @MainActor @Sendable (Result<Void, Error>) -> Void) {
+        // A RAW-less lens has already been replaced by the shared Video graph;
+        // say why Photo cannot start rather than reporting a camera that is
+        // merely "not ready".
+        if enabled, usesSharedIdlePreview, !isPhotoCaptureAvailable {
+            completion(.failure(CameraError.photoCapabilityUnavailable(
+                "this camera offers no native Bayer RAW. Choose another lens to shoot Photo")))
+            return
+        }
         guard usesSharedIdlePreview, canChangeShootingMode, photoExposureSnapshot != nil else {
             trace("photo-mode-refused enabled=\(enabled) canChange=\(canChangeShootingMode) snapshot=\(photoExposureSnapshot != nil)")
             completion(.failure(CameraError.writerUnavailable("Shared idle camera is not ready")))
@@ -1300,7 +1313,7 @@ final class CameraViewModel {
             session.setDevelopmentPhotoDuration(1)
         }
 #endif
-        photoCaptureStatus = enabled ? "Ready · experimental photo color" : nil
+        photoCaptureStatus = enabled ? "Ready" : nil
         if enabled, let photoExposureSnapshot { presentPhotoExposure(photoExposureSnapshot) }
         else {
             restoreVideoExposurePresentation()

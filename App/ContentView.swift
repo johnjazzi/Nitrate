@@ -1228,7 +1228,12 @@ struct ContentView: View {
         if mode == .photo {
             cameraViewModel.setDevelopmentPhotoMode(true) { result in
                 guard case .success = result else {
-                    showModeRefusal("Photo needs the shared camera, which is not ready")
+                    if case .failure(let error) = result,
+                       (error as? CameraError)?.isPhotoCapabilityRefusal == true {
+                        showModeRefusal("Photo isn't available on this camera")
+                    } else {
+                        showModeRefusal("Photo needs the shared camera, which is not ready")
+                    }
                     return
                 }
                 _ = cameraMode.select(.photo, enabled: true, photoAvailable: photoModeAvailable)

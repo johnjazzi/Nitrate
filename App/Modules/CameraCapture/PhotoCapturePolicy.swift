@@ -40,6 +40,48 @@ struct SharedCameraGraphOwnership: Sendable {
     }
 }
 
+extension SharedCameraGraphOwnership {
+    /// No lease, and the installed profile is the requested one. Lens changes
+    /// and Record start take the device only from here — whichever profile that
+    /// is, so a Video fallback is just as settled as the still profile.
+    var isSettled: Bool { !isBusy && desired == actual }
+    /// The settled recording graph, ready for a take without a profile change.
+    var isSettledVideo: Bool { desired == .video && actual == .video && !isBusy }
+}
+
+/// What the shared idle graph does when the still profile cannot run on the
+/// active sensor.
+///
+/// Photo's still profile needs a Bayer RAW format, and
+/// `AVCapturePhotoOutput.availableRawPhotoPixelFormatTypes` is only meaningful
+/// once the output is attached to a session that holds a video source. So
+/// capability is learned by attempting the install, never by a detached
+/// preflight, and one refusal is remembered per device. The fallback is the
+/// Video graph the app already builds: preview and Record keep working on that
+/// lens, Photo refuses with a capability message, and the arbiter's destination
+/// becomes `.video` so the refused idle request is not re-entered by
+/// `driveSharedGraph`.
+enum SharedIdleCapabilityFallback {
+    /// The profile that stands in for a refused idle request, or nil when the
+    /// failure is not a capability refusal and must keep the fatal path.
+    static func substituteProfile(
+        for target: SharedCameraGraphOwnership.Profile
+    ) -> SharedCameraGraphOwnership.Profile? {
+        target == .idle ? .video : nil
+    }
+
+    /// In Video a lens change may downgrade the shared graph so the lens stays
+    /// selectable. In Photo the same refusal must keep the current lens and say
+    /// that Photo cannot run there.
+    static func admitsLensDowngrade(photoIntent: Bool) -> Bool { !photoIntent }
+
+    /// One attempt per sensor: a remembered refusal is not retried, which is
+    /// what keeps idle -> video -> idle from looping.
+    static func attemptsStillProfile(deviceID: String, refusals: Set<String>) -> Bool {
+        !refusals.contains(deviceID)
+    }
+}
+
 /// Queue-confined ownership of the controller drain used by a warm input swap.
 struct PhotoLensSwitchOwnership: Sendable {
     enum Completion: Equatable { case completed, exitRequested }

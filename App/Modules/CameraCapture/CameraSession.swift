@@ -269,8 +269,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
     private var photoLensOwnership = PhotoLensSwitchOwnership()
     private var retainedPhotoOutput: AVCapturePhotoOutput?
     private var sharedIdleEnabled = false
+    /// Sensors whose still profile could not be installed because they offer no
+    /// Bayer RAW format. `availableRawPhotoPixelFormatTypes` is only valid once
+    /// the Photo output is attached to a session with a video source, so this is
+    /// learned by attempting the install; remembering it keeps a refused idle
+    /// request from being retried on the same sensor.
+    private var photoUnsupportedDeviceIDs: Set<String> = []
     private var sharedGraph = SharedCameraGraphOwnership()
-    private var sharedProfileObserver: (@MainActor @Sendable (CameraSessionDeliveryContext, Bool, Bool, Bool) -> Void)?
+    private var sharedProfileObserver: (@MainActor @Sendable (CameraSessionDeliveryContext, Bool, Bool, Bool, Bool) -> Void)?
     private var sharedSnapshotObserver: (@MainActor @Sendable (CameraSessionDeliveryContext, PhotoExposureSnapshot) -> Void)?
     private var sharedPhotoIntent: DevelopmentPhotoController.Intent?
     private var sharedVideoManualISO: Float?
@@ -306,7 +312,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// its original Log2 lifecycle when the feature is unavailable.
     func enableSharedIdlePreview(
         onUpdate: @escaping @MainActor @Sendable (CameraSessionDeliveryContext, PhotoExposureSnapshot) -> Void,
-        onProfile: @escaping @MainActor @Sendable (CameraSessionDeliveryContext, Bool, Bool, Bool) -> Void) {
+        onProfile: @escaping @MainActor @Sendable (CameraSessionDeliveryContext, Bool, Bool, Bool, Bool) -> Void) {
         sessionQueue.async {
             guard DevelopmentPhotoFeature.isAvailable(isDebugBuild: Self.isDebugBuild,
                 bundleIdentifier: Bundle.main.bundleIdentifier ?? "") else { return }
@@ -325,6 +331,21 @@ final class CameraSession: NSObject, @unchecked Sendable {
         sessionQueue.async { self.sharedVideoAperture = aperture }
     }
 
+    /// A sensor that refused the still profile needs no retry: Photo's graph is
+    /// replaced by the Video graph it can run, and Photo reports itself
+    /// unavailable until the operator chooses a lens that has RAW.
+    private func photoCapabilityUnavailable(on device: AVCaptureDevice?) -> Bool {
+        guard let device else { return false }
+        return !SharedIdleCapabilityFallback.attemptsStillProfile(
+            deviceID: device.uniqueID, refusals: photoUnsupportedDeviceIDs)
+    }
+
+    /// Whether an error is the raw-unavailable refusal rather than a fatal
+    /// configuration failure.
+    private func isPhotoCapabilityFailure(_ error: Error) -> Bool {
+        (error as? CameraError)?.isPhotoCapabilityRefusal == true
+    }
+
     private func publishSharedProfile() {
         let video = sharedGraph.actual == .video && session.isRunning
         let busy = sharedGraph.isBusy || sharedGraph.actual != sharedGraph.desired
@@ -335,9 +356,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
         // believing the camera was ready, so the foreground path skipped
         // configure/start and never reinstalled the idle graph.
         let configured = isConfigured && session.isRunning && sharedGraph.actual != .stopped
+        // Photo itself (not the shared idle graph) is what a RAW-less sensor
+        // cannot run. The controller is present exactly while the still profile
+        // owns the device, so its absence on a refused sensor is the truth.
+        let photoAvailable = !sharedIdleEnabled || developmentPhotoController != nil
+            || !photoCapabilityUnavailable(on: activeDevice)
         let context = CameraSessionDeliveryContext(lifecycle: lifecycleEpoch, controller: controllerEpoch)
-        traceVideoExposure("profile desired=\(sharedGraph.desired) actual=\(sharedGraph.actual) lease=\(String(describing: sharedGraph.lease)) busy=\(busy)")
-        DispatchQueue.main.async { observer?(context, video, busy, configured) }
+        traceVideoExposure("profile desired=\(sharedGraph.desired) actual=\(sharedGraph.actual) lease=\(String(describing: sharedGraph.lease)) busy=\(busy) photoAvailable=\(photoAvailable)")
+        DispatchQueue.main.async { observer?(context, video, busy, configured, photoAvailable) }
     }
 
     /// Only this queue advances profile ownership. Cancellation/background change
@@ -359,6 +385,15 @@ final class CameraSession: NSObject, @unchecked Sendable {
         if sharedGraph.desired == .idle, sharedGraph.actual == .idle,
            isConfigured, developmentPhotoController != nil {
             if !session.isRunning { session.startRunning() }
+            publishSharedProfile()
+            return
+        }
+        // The still profile was refused on this sensor and the Video graph is
+        // already standing in for it. Make Video the destination rather than
+        // entering another lease, so no idle request is left to retry.
+        if sharedGraph.desired == .idle, sharedGraph.actual == .video,
+           isConfigured, session.isRunning, photoCapabilityUnavailable(on: activeDevice) {
+            sharedGraph.request(.video)
             publishSharedProfile()
             return
         }
@@ -395,21 +430,56 @@ final class CameraSession: NSObject, @unchecked Sendable {
             return
         }
         do {
+            var installed = lease.target
             switch lease.target {
             case .stopped:
                 suspendPreview(true)
                 if session.isRunning { session.stopRunning() }
+                // The still profile is gone. Leaving its marker set made
+                // `isPhotoCaptureGraphInstalled` claim a stopped graph.
+                developmentPhotoDirectory = nil
             case .idle:
-                try installSharedIdleOnQueue()
+                if photoCapabilityUnavailable(on: activeDevice),
+                   let substitute = SharedIdleCapabilityFallback.substituteProfile(for: .idle) {
+                    // Refused once already: reuse the Video graph instead of
+                    // rebuilding outputs or retrying the still profile.
+                    try adoptSharedVideoGraph()
+                    installed = substitute
+                } else {
+                    try installSharedIdleOnQueue()
+                }
             case .video:
                 try installSharedVideoOnQueue()
             }
-            sharedGraph.finish(lease, actual: lease.target)
+            sharedGraph.finish(lease, actual: installed)
             // The video renderer can attach only to the committed Log graph.
-            if lease.target == .video { suspendPreview(false) }
+            if installed == .video { suspendPreview(false) }
+            // A capability fallback is the destination, not a stop-gap: asking
+            // for Video leaves no idle request for `driveSharedGraph` to
+            // re-enter, which is what keeps idle -> video -> idle from looping.
+            if installed != lease.target { sharedGraph.request(installed) }
             publishSharedProfile()
-            if lease.target == .video { launchSharedVideoRequest() }
+            if installed == .video { launchSharedVideoRequest() }
         } catch {
+            // A sensor without Bayer RAW cannot run the still profile. Keep the
+            // camera usable by installing the Video graph it already supports;
+            // only the arbitrary configuration failures take the fatal path.
+            if let substitute = SharedIdleCapabilityFallback.substituteProfile(for: lease.target),
+               isPhotoCapabilityFailure(error), let device = activeDevice {
+                photoUnsupportedDeviceIDs.insert(device.uniqueID)
+                do {
+                    try adoptSharedVideoGraph()
+                    sharedGraph.finish(lease, actual: substitute)
+                    sharedGraph.request(substitute)
+                    publishSharedProfile()
+#if DEBUG
+                    print("Photo still profile unavailable on \(device.uniqueID); shared graph stays on \(substitute)")
+#endif
+                    return
+                } catch {
+                    // Video cannot run on this sensor either: keep the fatal path.
+                }
+            }
             // start()/restoreIntent() can throw after entering a device setter.
             // Keep the graph lease and running session until its ACK drains.
             if let controller = developmentPhotoController {
@@ -418,6 +488,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 }
             } else { finishFailedSharedGraphTransition(lease, error: error) }
         }
+    }
+
+    /// Commit the Video graph as the stand-in for a refused still profile.
+    /// A live Video graph is reused so a take boundary does not rebuild it; the
+    /// preset and outputs are exactly what Record expects.
+    private func adoptSharedVideoGraph() throws {
+        if sharedGraph.actual == .video, session.isRunning, isConfigured { return }
+        try installSharedVideoOnQueue()
     }
 
     private func finishFailedSharedGraphTransition(_ lease: SharedCameraGraphOwnership.Lease, error: Error) {
@@ -470,8 +548,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
         refreshHardwareControlsAfterStartOnQueue()
     }
 
-    private func installSharedVideoOnQueue() throws {
-        guard let device = activeDevice else { throw CameraError.noCameraAvailable }
+    /// Install the existing Video graph. `device` overrides the active device
+    /// when a lens switch has already committed its input but not yet adopted
+    /// it (the Photo fallback path), so the Log graph is built for the new lens.
+    private func installSharedVideoOnQueue(device explicit: AVCaptureDevice? = nil) throws {
+        guard let device = explicit ?? activeDevice else { throw CameraError.noCameraAvailable }
         suspendPreview(true)
         if session.isRunning { session.stopRunning() }
         session.beginConfiguration()
@@ -1578,10 +1659,16 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// Async for the same reason as `configure(completion:)`: swapping the video
     /// input reconfigures capture hardware and must not block the main thread.
     /// `completion` runs on the main queue with `nil` on success.
-    func selectCamera(_ lens: CameraLens, completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+    func selectCamera(_ lens: CameraLens, photoIntent: Bool = false,
+                      completion: @escaping @MainActor @Sendable (Error?) -> Void) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            if self.sharedIdleEnabled, !self.sharedGraph.acceptsIdleControls {
+            // Any settled profile accepts a lens change: the still profile, or
+            // the Video graph a RAW-less sensor fell back to. A pending take
+            // still owns the device, though.
+            if self.sharedIdleEnabled,
+               !self.sharedGraph.isSettled || self.sharedVideoRequest != nil
+                   || self.videoStartup.active != nil {
                 DispatchQueue.main.async { completion(CameraError.frameRateTransitionInProgress) }; return
             }
             if self.developmentPhotoController != nil || self.developmentPhotoExitCompletion != nil {
@@ -1591,7 +1678,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 }
                 let previous = self.activeLens
                 DispatchQueue.main.async {
-                    self.selectDevelopmentPhotoCamera(lens, previous: previous, update: update, completion: completion)
+                    self.selectDevelopmentPhotoCamera(lens, previous: previous, photoIntent: photoIntent,
+                                                      update: update, completion: completion)
                 }
                 return
             }
@@ -1707,6 +1795,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
             }
 
             self.publishZoom()
+            // A Video fallback is re-examined whenever the operator changes
+            // lens: a sensor that can run the still profile restores Photo
+            // without a restart. The remembered refusal keeps this one attempt.
+            if self.sharedIdleEnabled, switchError == nil, !self.isRecordingOrPending,
+               self.sharedGraph.isSettledVideo, !self.photoCapabilityUnavailable(on: device) {
+                self.sharedGraph.request(.idle)
+                self.driveSharedGraph()
+            }
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(switchError) } }
         }
     }
@@ -3033,7 +3129,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             if self.sharedIdleEnabled {
-                guard self.sharedGraph.acceptsIdleControls, !self.photoLensOwnership.isPending,
+                // Either settled profile can start a take: the still graph
+                // transitions to Video first, and a RAW-less sensor's Video
+                // fallback already is the Log graph.
+                guard self.sharedGraph.acceptsIdleControls || self.sharedGraph.isSettledVideo,
+                      !self.photoLensOwnership.isPending,
                       !self.isRecordingOrPending else {
                     DispatchQueue.main.async { completion(CameraError.recordingInProgress) }; return
                 }
@@ -3505,6 +3605,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
     // MARK: - Photo runtime
 
     @MainActor private func selectDevelopmentPhotoCamera(_ lens: CameraLens, previous: CameraLens,
+        photoIntent: Bool,
         update: @escaping @MainActor @Sendable (PhotoExposureSnapshot) -> Void,
         completion: @escaping @MainActor @Sendable (Error?) -> Void) {
         sessionQueue.async { [weak self] in
@@ -3526,6 +3627,19 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 _ = self.photoLensOwnership.finish(epoch)
                 DispatchQueue.main.async { completion(CameraError.noCameraAvailable) }; return
             }
+            // Video's own format rule runs first: a lens the Log graph cannot
+            // run must be refused before the still graph is torn down, so the
+            // Video fallback below never has to build a graph that cannot start.
+            guard #available(iOS 26.0, *),
+                  Self.captureFormatAvailable(for: candidate, mode: self.frameRate) else {
+                _ = self.photoLensOwnership.finish(epoch)
+                DispatchQueue.main.async {
+                    completion(self.frameRate == .daylight60
+                        ? CameraError.daylight60Unsupported(CameraError.daylight60Reason)
+                        : CameraError.appleLog2NotSupported)
+                }
+                return
+            }
             self.developmentPhotoLensSwitchPending = true
             self.sharedPhotoIntent = controller.intentSnapshot
             controller.stop { [weak self] in
@@ -3539,15 +3653,27 @@ final class CameraSession: NSObject, @unchecked Sendable {
                     return
                 }
                 var failure: Error?
-                do {
-                    try self.installDevelopmentPhotoCamera(candidate, lens: lens, directory: directory, update: update)
-                } catch {
-                    failure = error
+                if !photoIntent, self.sharedIdleEnabled,
+                   self.photoCapabilityUnavailable(on: candidate) {
+                    // Already-known RAW-less sensor: skip the doomed still
+                    // profile install and keep the lens on the Video graph.
+                    failure = self.installSharedVideoLensFallback(candidate, lens: lens)
+                } else {
                     do {
-                        try self.installDevelopmentPhotoCamera(priorDevice, lens: previous, directory: directory, update: update)
+                        try self.installDevelopmentPhotoCamera(candidate, lens: lens, directory: directory, update: update)
                     } catch {
-                        self.isConfigured = false
-                        failure = CameraError.lensRollbackFailed(original: failure!, rollback: error)
+                        if self.sharedIdleEnabled, self.isPhotoCapabilityFailure(error),
+                           SharedIdleCapabilityFallback.admitsLensDowngrade(photoIntent: photoIntent) {
+                            failure = self.installSharedVideoLensFallback(candidate, lens: lens)
+                        } else {
+                            failure = error
+                            do {
+                                try self.installDevelopmentPhotoCamera(priorDevice, lens: previous, directory: directory, update: update)
+                            } catch {
+                                self.isConfigured = false
+                                failure = CameraError.lensRollbackFailed(original: failure!, rollback: error)
+                            }
+                        }
                     }
                 }
                 let disposition = self.photoLensOwnership.finish(epoch)
@@ -3562,6 +3688,30 @@ final class CameraSession: NSObject, @unchecked Sendable {
                     self.exitDevelopmentPhotoOnQueue { result in waiters.forEach { $0(result) } }
                 }
             }
+        }
+    }
+
+    /// Replace Photo's still profile with the existing Video graph for a lens
+    /// that cannot run RAW, so the lens stays selectable in Video. Returns nil
+    /// on success, or the error that kept the camera on Video.
+    private func installSharedVideoLensFallback(_ candidate: AVCaptureDevice, lens: CameraLens) -> Error? {
+        photoUnsupportedDeviceIDs.insert(candidate.uniqueID)
+        do {
+            try installSharedVideoOnQueue(device: candidate)
+            activeLens = lens
+            apertureCameraRevision &+= 1
+            configureCaptureRotation(for: candidate)
+            guard let graphLease = sharedGraph.begin(.video) else {
+                isConfigured = false
+                return CameraError.captureRecoveryRequired("the camera graph is still busy")
+            }
+            sharedGraph.request(.video)
+            sharedGraph.finish(graphLease, actual: .video)
+            publishSharedProfile()
+            return nil
+        } catch {
+            isConfigured = false
+            return error
         }
     }
 
@@ -3601,7 +3751,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
               let dimensions = PhotoCapturePolicy.selectDimensions(candidates:
                 device.activeFormat.supportedMaxPhotoDimensions.map { .init(width: Int($0.width), height: Int($0.height)) },
                 bayerPixelFormats: formats, pixelFormat: pixelFormat) else {
-            throw CameraError.writerUnavailable("This camera does not support native Bayer RAW within the Photo resolution budget")
+            // Only knowable once the output is attached to a session with a
+            // video source; a capability refusal, not a broken configuration.
+            throw CameraError.photoCapabilityUnavailable(
+                "this camera offers no native Bayer RAW within the Photo resolution budget")
         }
         let size = CMVideoDimensions(width: Int32(dimensions.width), height: Int32(dimensions.height))
         if output.maxPhotoDimensions.width != size.width || output.maxPhotoDimensions.height != size.height {
@@ -3709,8 +3862,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
             // No debug graph swap: Photo is the shared idle graph's own still
             // profile, installed by `installSharedIdleOnQueue`.
             guard self.sharedIdleEnabled, self.developmentPhotoController != nil else {
+                let refusal: CameraError = self.photoCapabilityUnavailable(on: self.activeDevice)
+                    ? .photoCapabilityUnavailable("this camera offers no native Bayer RAW")
+                    : .writerUnavailable("Photo camera is busy or unavailable")
                 DispatchQueue.main.async {
-                    completion(.failure(CameraError.writerUnavailable("Photo camera is busy or unavailable")))
+                    completion(.failure(refusal))
                 }
                 return
             }
@@ -4016,6 +4172,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
             self.developmentPhotoExitCompletion = completion
             self.developmentPhotoController?.stop { }
             self.developmentPhotoController = nil
+            // The still profile never committed; do not leave its directory as
+            // proof that Photo owns the graph.
+            self.developmentPhotoDirectory = nil
             self.completeDebugPhotoRun(run, captureFailure: error.localizedDescription)
         }
     }
@@ -4848,10 +5007,21 @@ enum CameraError: LocalizedError {
     case frameRateTransitionInProgress
     case frameRateTransitionSuperseded
     case captureRecoveryRequired(String)
+    /// The selected camera has no Bayer RAW format for Photo's still profile.
+    /// Distinct from a fatal configuration failure: the shared idle graph falls
+    /// back to its Video graph instead of stopping the camera.
+    case photoCapabilityUnavailable(String)
 
     /// Plain-words reason carried by `.daylight60Unsupported`.
     static let daylight60Reason =
         "no 4K Apple Log 2 10-bit format supports 60 fps on this device"
+
+    /// A camera that cannot run Photo at all, as opposed to a transient busy or
+    /// broken configuration. UI uses this to explain the refusal accurately.
+    var isPhotoCapabilityRefusal: Bool {
+        if case .photoCapabilityUnavailable = self { return true }
+        return false
+    }
 
     var errorDescription: String? {
         switch self {
@@ -4891,6 +5061,8 @@ enum CameraError: LocalizedError {
             return "The frame-rate change was superseded by the end of the camera session."
         case .captureRecoveryRequired(let detail):
             return "Camera configuration needs recovery: \(detail). Try recording again after the camera reconnects."
+        case .photoCapabilityUnavailable(let detail):
+            return "Photo is unavailable on this camera: \(detail)."
         }
     }
 }

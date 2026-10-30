@@ -107,7 +107,7 @@ class PhotoFieldWiringTests(unittest.TestCase):
         reset_at = body.index('resetFocusAreaToCenter()')
         self.assertGreater(reset_at, body.index('if error == nil {'))
         self.assertGreater(reset_at, body.index('previousLens != lens'))
-        self.assertGreater(reset_at, body.index('session.selectCamera(lens)'))
+        self.assertGreater(reset_at, body.index('session.selectCamera(lens, photoIntent: isDevelopmentPhotoMode)'))
 
     def test_photo_mode_change_resets_only_after_the_switch_commits(self):
         view_model = (ROOT / 'App/Modules/CameraCapture/CameraViewModel.swift').read_text()
