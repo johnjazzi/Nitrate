@@ -1,5 +1,15 @@
 import SwiftUI
 
+/// The shutter dial leads with its denominations rather than its detents:
+/// larger numbers over shorter ticks than the shared ruler draws by default.
+/// Everything else — the 44pt rail, its length, the reversed dial gesture —
+/// stays as the shared ruler lays it out.
+enum PhotoShutterRailStyle {
+    static let labelFontSize: CGFloat = 14
+    static let majorTickLength: CGFloat = 9
+    static let minorTickLength: CGFloat = 5
+}
+
 /// Photo shutter ruler using the shared relative-drag interaction.
 struct PhotoShutterControl: View {
     let snapshot: PhotoExposureSnapshot
@@ -41,7 +51,11 @@ struct PhotoShutterControl: View {
                     majorValues: Set(durations),
                     tickLabel: { PhotoShutterPresentation.label(for: $0) },
                     scale: .logarithmic(pointsPerStop: RulerScale.detentTravel * 3),
-                    ladder: durations, tint: .orange, length: max(44, width - 120), width: 44,
+                    ladder: durations, tint: .orange,
+                    labelFontSize: PhotoShutterRailStyle.labelFontSize,
+                    majorTickLength: PhotoShutterRailStyle.majorTickLength,
+                    minorTickLength: PhotoShutterRailStyle.minorTickLength,
+                    length: max(44, width - 120), width: 44,
                     orientation: .horizontal, reversesDrag: true)
                     .accessibilityIdentifier("photo.shutterDuration")
                     .accessibilityLabel("Photo shutter duration")

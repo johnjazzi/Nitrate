@@ -57,6 +57,49 @@ struct PhotoShutterControlRenderTests {
         #expect(!control.contains("CameraInsetSurface()"))
     }
 
+    /// The shutter rail leads with its denominations: larger numbers over
+    /// shorter ticks than the shared ruler draws by default.
+    @Test func shutterRailNumbersOutgrowItsShorterTicks() {
+        let metrics = RulerSlider.tickMetrics(
+            crossAxis: 44,
+            majorTickLength: PhotoShutterRailStyle.majorTickLength,
+            minorTickLength: PhotoShutterRailStyle.minorTickLength,
+            labelFontSize: PhotoShutterRailStyle.labelFontSize
+        )
+        #expect(metrics.labelFontSize == 14)
+        #expect(metrics.majorLength == 9)
+        #expect(metrics.minorLength == 5)
+        // Shorter than the 18.5pt major tick the default 44pt ruler draws.
+        #expect(metrics.majorLength < 0.42 * 44)
+        #expect(metrics.minorLength <= 0.22 * 44 / 2)
+    }
+
+    /// Every other ruler keeps the fraction-of-width marks and 8pt labels it
+    /// had before the shutter override existed.
+    @Test func sharedRulerKeepsItsDefaultTickMetrics() {
+        let defaults = RulerSlider.tickMetrics(crossAxis: 44,
+                                               majorTickLength: nil,
+                                               minorTickLength: nil,
+                                               labelFontSize: 8)
+        #expect(abs(defaults.majorLength - 44 * 0.42) < 1e-9)
+        #expect(abs(defaults.minorLength - 44 * 0.22) < 1e-9)
+        #expect(defaults.labelFontSize == 8)
+    }
+
+    /// The control itself must ask for that style, and must keep the ruler's
+    /// outward geometry and dial gesture unchanged.
+    @Test func shutterControlAppliesTheLargerNumberStyle() throws {
+        let control = try String(contentsOf: TestRepository.root
+            .appendingPathComponent("App/Modules/CameraCapture/PhotoShutterControl.swift"), encoding: .utf8)
+        #expect(control.contains("labelFontSize: PhotoShutterRailStyle.labelFontSize"))
+        #expect(control.contains("majorTickLength: PhotoShutterRailStyle.majorTickLength"))
+        #expect(control.contains("minorTickLength: PhotoShutterRailStyle.minorTickLength"))
+        #expect(control.contains("length: max(44, width - 120)"))
+        #expect(control.contains("width: 44"))
+        #expect(control.contains("orientation: .horizontal"))
+        #expect(control.contains("reversesDrag: true"))
+    }
+
     @Test @MainActor func horizontalRailFitsItsDeclaredBounds() throws {
         let state = PhotoExposureSnapshot(iso: 400, durationSeconds: 1.0 / 30,
             isoRange: 55...12320, shutterRange: 0.000014...1,

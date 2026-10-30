@@ -45,9 +45,42 @@ struct RulerSlider: View {
     /// reachable value, matching the EV ruler.
     var ladderSubdivisions: Int = 1
     var tint: Color = .white
+    /// Point size of a labelled major tick's number. The 8pt default is what
+    /// every existing ruler draws; the Photo shutter raises it so its
+    /// denominations read ahead of its marks.
+    var labelFontSize: CGFloat = 8
+    /// Fixed tick lengths, in points. `nil` keeps the shared
+    /// fraction-of-width marks (42% major, 22% minor) that the EV, ISO and
+    /// zoom rulers rely on.
+    var majorTickLength: CGFloat? = nil
+    var minorTickLength: CGFloat? = nil
     /// On-screen height of the ruler window.
     var length: CGFloat = 96
     var width: CGFloat = 56
+
+    /// Resolved mark sizes for a ruler whose cross axis is `crossAxis` points.
+    /// Drawing and the geometry tests read the same arithmetic, so a style
+    /// override cannot drift from what is rendered.
+    struct RulerTickMetrics: Equatable {
+        let majorLength: CGFloat
+        let minorLength: CGFloat
+        let labelFontSize: CGFloat
+    }
+
+    nonisolated static func tickMetrics(crossAxis: CGFloat, majorTickLength: CGFloat?,
+                                        minorTickLength: CGFloat?,
+                                        labelFontSize: CGFloat) -> RulerTickMetrics {
+        RulerTickMetrics(
+            majorLength: majorTickLength ?? crossAxis * 0.42,
+            minorLength: minorTickLength ?? crossAxis * 0.22,
+            labelFontSize: labelFontSize
+        )
+    }
+
+    private func tickMetrics(crossAxis: CGFloat) -> RulerTickMetrics {
+        Self.tickMetrics(crossAxis: crossAxis, majorTickLength: majorTickLength,
+                         minorTickLength: minorTickLength, labelFontSize: labelFontSize)
+    }
 
     enum Orientation { case vertical, horizontal }
     var orientation: Orientation = .vertical
@@ -163,12 +196,13 @@ struct RulerSlider: View {
         }
         let centerY = size.height / 2
         let centerPosition = selectedPosition
+        let metrics = tickMetrics(crossAxis: size.width)
 
         for tick in visibleTicks(halfHeight: Double(size.height / 2)) {
             let tickY = centerY - CGFloat(tick.position - centerPosition)
             guard tickY >= -2, tickY <= size.height + 2 else { continue }
 
-            let tickLength = tick.isMajor ? size.width * 0.42 : size.width * 0.22
+            let tickLength = tick.isMajor ? metrics.majorLength : metrics.minorLength
             var path = Path()
             path.move(to: CGPoint(x: size.width - tickLength, y: tickY))
             path.addLine(to: CGPoint(x: size.width, y: tickY))
@@ -180,7 +214,7 @@ struct RulerSlider: View {
 
             if tick.isMajor {
                 let label = Text(tickLabel(tick.value))
-                    .font(NitrateTypography.font(size: 8))
+                    .font(NitrateTypography.font(size: metrics.labelFontSize))
                     .foregroundStyle(.white.opacity(0.7))
                 drawLabel(label, in: context, tickY: tickY)
             }
@@ -194,10 +228,14 @@ struct RulerSlider: View {
     }
 
     private func drawHorizontal(in context: inout GraphicsContext, size: CGSize) {
+        let metrics = tickMetrics(crossAxis: size.height)
+        // Numbers are drawn from the top edge; keep their centre far enough
+        // down that a larger face is not clipped by the frame.
+        let labelY = max(8, metrics.labelFontSize * 0.72)
         for tick in visibleTicks(halfHeight: Double(size.width / 2)) {
             let x = size.width / 2 + CGFloat(tick.position - selectedPosition)
             guard x >= -2, x <= size.width + 2 else { continue }
-            let tickLength = tick.isMajor ? size.height * 0.42 : size.height * 0.22
+            let tickLength = tick.isMajor ? metrics.majorLength : metrics.minorLength
             var path = Path()
             path.move(to: CGPoint(x: x, y: size.height - tickLength))
             path.addLine(to: CGPoint(x: x, y: size.height))
@@ -205,9 +243,9 @@ struct RulerSlider: View {
                            lineWidth: tick.isMajor ? 1.5 : 1)
             if tick.isMajor {
                 context.draw(Text(tickLabel(tick.value))
-                    .font(NitrateTypography.font(size: 8))
+                    .font(NitrateTypography.font(size: metrics.labelFontSize))
                     .foregroundStyle(.white.opacity(0.7)),
-                    at: CGPoint(x: x, y: 8), anchor: .center)
+                    at: CGPoint(x: x, y: labelY), anchor: .center)
             }
         }
         var pointer = Path()
