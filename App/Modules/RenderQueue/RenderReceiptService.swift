@@ -16,6 +16,13 @@ enum RenderReceiptService {
         "source-color-validation", "capture-color-space", "source-color-test-bypass"
     ].map { "com.filmemulation." + $0 })
 
+    private static let keyPrefix = "com.filmemulation."
+    /// One value, matching the movie path's per-item bound.
+    private static let maximumValueBytes = 16_384
+    /// A JPEG has no item list, so the whole payload is one EXIF string. The cap
+    /// keeps a malformed or hostile comment from being parsed at arbitrary size.
+    private static let maximumPayloadBytes = 65_536
+
     static func capture(url: URL, renderDurationSeconds: Double?,
                         includeThumbnail: Bool = true) async -> RenderReceipt {
         var receipt = RenderReceipt(renderDurationSeconds: renderDurationSeconds)
@@ -27,6 +34,10 @@ enum RenderReceiptService {
             receipt.pixelWidth = properties[kCGImagePropertyPixelWidth] as? Int
             receipt.pixelHeight = properties[kCGImagePropertyPixelHeight] as? Int
             receipt.codec = CGImageSourceGetType(imageSource) as String?
+            // A JPEG has no QuickTime item list: the shared recipe travels in
+            // EXIF UserComment. Without this the still's receipt showed every
+            // recipe field as unavailable while the movie's did not.
+            receipt.metadata = stillMetadata(inImageProperties: properties)
             if includeThumbnail, let thumbnail = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
@@ -63,7 +74,8 @@ enum RenderReceiptService {
             for item in items {
                 guard item.keySpace == .quickTimeMetadata,
                       let key = item.key as? String, metadataKeys.contains(key),
-                      let value = try? await item.load(.stringValue), value.utf8.count <= 16_384 else { continue }
+                      let value = try? await item.load(.stringValue),
+                      value.utf8.count <= maximumValueBytes else { continue }
                 receipt.metadata[key] = value
             }
         }
@@ -75,6 +87,47 @@ enum RenderReceiptService {
             receipt.thumbnailJPEG = jpeg(result.image)
         }
         return receipt
+    }
+
+    /// The shared recipe a delivered still states in EXIF UserComment, keyed the
+    /// way the movie path keys its QuickTime items.
+    ///
+    /// The payload JSON uses unprefixed keys (`film-stock`, `print-gauge`); the
+    /// receipt republishes every allowed key as `com.filmemulation.<key>` so one
+    /// queue view reads both media types. A missing, oversized, malformed or
+    /// non-object payload yields no entries rather than partial guesses, and a
+    /// value over the movie path's per-item bound is dropped on its own.
+    static func stillMetadata(inImageProperties properties: [CFString: Any]) -> [String: String] {
+        guard let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any],
+              let comment = exif[kCGImagePropertyExifUserComment] as? String,
+              comment.utf8.count <= maximumPayloadBytes,
+              // ImageIO can keep a character-set prefix ahead of the JSON.
+              let start = comment.firstIndex(of: "{"), let end = comment.lastIndex(of: "}"),
+              start < end,
+              let data = String(comment[start...end]).data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let payload = object as? [String: String] else { return [:] }
+        var values: [String: String] = [:]
+        for (key, value) in payload {
+            let namespaced = keyPrefix + key
+            guard metadataKeys.contains(namespaced),
+                  value.utf8.count <= maximumValueBytes else { continue }
+            values[namespaced] = value
+        }
+        return values
+    }
+
+    /// Metadata read back from an already-delivered local file, for a receipt
+    /// written before the image branch read the payload. Returns nil when the
+    /// file has no allowed payload, so a legacy receipt is never given invented
+    /// values. Reads only the app-owned output, never the Photos library.
+    static func deliveredImageMetadata(at url: URL) -> [String: String]? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
+            return nil
+        }
+        let values = stillMetadata(inImageProperties: properties)
+        return values.isEmpty ? nil : values
     }
 
     private static func jpeg(_ image: CGImage) -> Data? {

@@ -146,8 +146,33 @@ final class RenderQueueViewModel {
             jobs = []
             publishQueueMessage()
         }
+        backfillLegacyPhotoReceiptMetadata()
         reconcileOrphanedCaptures()
         processNext()
+    }
+
+    /// Receipts written before the still branch read its EXIF payload carry an
+    /// empty metadata map even though the retained JPEG still states the recipe.
+    /// Re-read that app-owned output once at load; this invents nothing and never
+    /// consults the Photos library. A record that already has metadata is left
+    /// untouched, and a missing output leaves the receipt empty.
+    @discardableResult
+    func backfillLegacyPhotoReceiptMetadata() -> Bool {
+        var changed = false
+        for index in jobs.indices {
+            guard jobs[index].isPhoto == true,
+                  var receipt = jobs[index].receipt, receipt.metadata.isEmpty,
+                  let output = jobs[index].retainedOutputURL,
+                  let metadata = RenderReceiptService.deliveredImageMetadata(at: output) else { continue }
+            receipt.metadata = metadata
+            jobs[index].receipt = receipt
+            changed = true
+        }
+        guard changed else { return false }
+        // Best effort: the values are re-read from the file next launch, so a
+        // failed write must not pause rendering or surface a delivery failure.
+        _ = persistJobs()
+        return true
     }
 
     /// Rescue captures that were marked before recording but never accepted by
