@@ -114,6 +114,7 @@ struct RenderReceiptPhotoMetadataTests {
         "not json",
         "{\"film-stock\":",
         "[1, 2, 3]",
+        #"[{"film-stock":"test"}]"#,
         "{\"film-stock\": 42}"
     ] as [String?])
     func captureYieldsNoMetadataForMissingOrMalformedPayloads(comment: String?) async throws {

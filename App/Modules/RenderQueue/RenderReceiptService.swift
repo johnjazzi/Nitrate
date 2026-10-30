@@ -101,10 +101,7 @@ enum RenderReceiptService {
         guard let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any],
               let comment = exif[kCGImagePropertyExifUserComment] as? String,
               comment.utf8.count <= maximumPayloadBytes,
-              // ImageIO can keep a character-set prefix ahead of the JSON.
-              let start = comment.firstIndex(of: "{"), let end = comment.lastIndex(of: "}"),
-              start < end,
-              let data = String(comment[start...end]).data(using: .utf8),
+              let data = comment.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data),
               let payload = object as? [String: String] else { return [:] }
         var values: [String: String] = [:]
