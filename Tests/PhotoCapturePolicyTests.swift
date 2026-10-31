@@ -257,4 +257,23 @@ struct PhotoCapturePolicyTests {
         #expect(SharedIdleCapabilityFallback.attemptsStillProfile(deviceID: "wide", refusals: refusals))
         #expect(SharedIdleCapabilityFallback.attemptsStillProfile(deviceID: "wide", refusals: []))
     }
+
+    /// `stopped` is both requested and installed on a fresh or drained arbiter.
+    /// Treating that as settled let a lens change run against a stopped session.
+    @Test func aStoppedGraphIsNotASettledLensTarget() throws {
+        var graph = SharedCameraGraphOwnership()
+        #expect(!graph.isSettled)
+        #expect(!graph.isSettledVideo)
+        let stoppedLeaseOption = graph.begin(.stopped)
+        let stoppedLease = try #require(stoppedLeaseOption)
+        #expect(!graph.isSettled)
+        graph.finish(stoppedLease, actual: .stopped)
+        #expect(!graph.isSettled)
+        // Only a running profile may accept the lens change.
+        graph.request(.idle)
+        let idleLeaseOption = graph.begin(.idle)
+        let idleLease = try #require(idleLeaseOption)
+        graph.finish(idleLease, actual: .idle)
+        #expect(graph.isSettled)
+    }
 }

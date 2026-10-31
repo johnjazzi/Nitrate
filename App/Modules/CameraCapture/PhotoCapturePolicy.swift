@@ -41,10 +41,12 @@ struct SharedCameraGraphOwnership: Sendable {
 }
 
 extension SharedCameraGraphOwnership {
-    /// No lease, and the installed profile is the requested one. Lens changes
-    /// and Record start take the device only from here — whichever profile that
-    /// is, so a Video fallback is just as settled as the still profile.
-    var isSettled: Bool { !isBusy && desired == actual }
+    /// No lease, the installed profile is the requested one, and that profile is
+    /// a running graph. Lens changes and Record start take the device only from
+    /// here — whichever profile it is, so a Video fallback is just as settled as
+    /// the still profile. `stopped` is a requested-and-installed profile too, but
+    /// it is not a graph a lens change may build on, so it is not settled.
+    var isSettled: Bool { !isBusy && desired == actual && actual != .stopped }
     /// The settled recording graph, ready for a take without a profile change.
     var isSettledVideo: Bool { desired == .video && actual == .video && !isBusy }
 }
