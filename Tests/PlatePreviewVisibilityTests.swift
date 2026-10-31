@@ -165,12 +165,12 @@ struct PlatePreviewVisibilityTests {
     // MARK: - Grain presence must follow the renderer's model
 
     /// `GrainModel.baseAmount` is the renderer's own presence constant: `pass2_grain` applies
-    /// `0.55 * gaugeAmplitude * latitude`. The preview previously multiplied a preview-only
+    /// `0.605 * gaugeAmplitude * latitude`. The preview previously multiplied a preview-only
     /// `0.2` instead, so every card under-read the grain by more than half. This pins the
     /// shipping configuration to the renderer's value rather than to a second, quieter one.
     @Test func previewGrainPresenceMatchesTheRendererModel() throws {
         let stock = try stockConfig("kodak5219")
-        #expect(GrainModel.baseAmount == 0.55)
+        #expect(GrainModel.baseAmount == 0.605)
         for gauge in PrintGauge.allCases {
             let config = configuration(stock: stock, gauge: gauge, sceneIlluminantKelvin: 3600)
             let expected = GrainModel.amount(gauge: gauge)

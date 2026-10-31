@@ -87,12 +87,13 @@ kernel void pass2_grain(
     // which creates visible global grain pumping. In-plane offsets continue to
     // animate the field, including after the 128-plane index wraps.
     float zSlice = (fmod(frame, 128.0f) + 0.5f) / 128.0f;
-    // The print gauge owns size, so footprint must not depend on ISO. Below a
-    // footprint of ~1.0 the 128³ volume is undersampled (lag-1 correlation
-    // collapses) and finer size yields aliased noise, not finer grain. Floor the
-    // effective size off that regime; 75mm's remaining graininess is removed by
-    // the amplitude multiplier instead. grainSize is already stock × gauge.
-    float footprint = clamp(grainSize, 0.95f, 16.0f);
+    // The print gauge owns size, so footprint must not depend on ISO. `grainSize`
+    // is already stock × gauge and is halved with the CPU ladder; the bounds here
+    // mirror `GrainModel.footprintFloor` / `footprintCeiling` exactly, so the
+    // preview, the debug frame and the export all sample the same footprint. The
+    // floor only rejects degenerate sizes — a footprint under one volume texel is
+    // requested finer tuning, not an undersampling guard.
+    float footprint = clamp(grainSize, 0.475f, 8.0f);
     float2 pixelCoord = float2(gid) / (128.0f * max(footprint, 0.1f));
     // A slowly varying vector displacement breaks the 128-texel repeat without
     // introducing pixelwise UV jumps. Its incommensurate scale keeps the field
@@ -114,7 +115,9 @@ kernel void pass2_grain(
     float luminance = dot(base, float3(0.2126f, 0.7152f, 0.0722f));
     float latitude = smoothstep(0.015f, 0.13f, luminance)
         * (1.0f - smoothstep(0.78f, 0.98f, luminance));
-    float amount = 0.55f * gaugeAmplitude * edgeFactor;
+    // Presence: `GrainModel.baseAmount · gaugeAmplitude`, applied once. The
+    // amplitude multiplier is not folded in anywhere else.
+    float amount = 0.605f * gaugeAmplitude * edgeFactor;
     float3 excursion = grain * (amount * latitude);
     excursion += fine * (0.004f * latitude);
 

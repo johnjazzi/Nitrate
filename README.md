@@ -336,12 +336,14 @@ out of near-black shadows and out of highlights, peaking in the mid-tones, the
 way a real negative's grain reads in the print.
 
 **The print gauge owns grain.** Presence is `baseAmount × gaugeAmplitude`. The
-stock supplies size; the gauge multiplies both — 8mm ×4.0 size / ×0.50 presence,
-16mm ×3.0 / ×0.40, 35mm ×1.8 / ×0.30, 75mm ×1.0 / ×0.15. **ISO does not scale
-grain**; it is the exposure index only. The effective footprint is floored at
-0.95, because below that the 128³ volume is undersampled and finer size yields
-aliased noise rather than finer grain. 75mm's near-grain-free look comes from its
-amplitude multiplier, not from pushing size into that regime.
+stock supplies size; the gauge multiplies both — 8mm ×2.0 size / ×0.50 presence,
+16mm ×1.35 / ×0.36, 35mm ×0.9 / ×0.27, 75mm ×0.5 / ×0.15. **ISO does not scale
+grain**; it is the exposure index only. Size is half the previous ladder across
+all stocks and gauges, with footprint bounds likewise halved to 0.475–8.0.
+Base presence is 0.605, a 10% increase from 0.55; gauge presence ratios are unchanged.
+The finer gauges now sample below the volume's texel scale and may lose spatial
+correlation; the lower bound is not an anti-aliasing guarantee. Visual approval
+of this tuning remains separate from the numerical size and presence contract.
 
 **Edge amplification** is what makes grain follow image structure instead of
 sitting on top of it:
@@ -350,7 +352,7 @@ sitting on top of it:
 edgeMagnitude = length(float2(lumaRight - lumaLeft,    // central difference in x
                               lumaDown  - lumaUp));    // central difference in y
 edgeFactor    = 1.0 + saturate(edgeMagnitude * 3.0) * edgeBoostMultiplier;
-amount        = 0.55 * gaugeAmplitude * edgeFactor;
+amount        = 0.605 * gaugeAmplitude * edgeFactor;
 ```
 
 The gradient is a central difference on the prefiltered neighbourhood, so it

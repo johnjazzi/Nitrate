@@ -11,7 +11,7 @@ struct GrainModelTests {
         // Nominal multipliers are strictly monotonic across the ladder.
         let multipliers = PrintGauge.allCases.sorted { $0.sizeMultiplier < $1.sizeMultiplier }
             .map(\.sizeMultiplier)
-        #expect(multipliers == [1.0, 1.8, 2.7, 4.0], "unexpected ladder: \(multipliers)")
+        #expect(multipliers == [0.5, 0.9, 1.35, 2.0], "unexpected ladder: \(multipliers)")
         // 35mm is the middle of the ladder and the render default.
         #expect(PrintGauge.neutral == .thirtyFiveMillimetre)
         // Effective footprints are ordered across the whole ladder.
@@ -39,45 +39,27 @@ struct GrainModelTests {
         }
     }
 
-    @Test func requestedGaugeTuningReducesOnlySixteenSizeAndSixteenAndThirtyFivePresence() {
-        #expect(PrintGauge.sixteenMillimetre.sizeMultiplier == 2.7)
-        #expect(PrintGauge.sixteenMillimetre.amplitudeMultiplier == 0.36)
-        #expect(PrintGauge.thirtyFiveMillimetre.sizeMultiplier == 1.8)
-        #expect(PrintGauge.thirtyFiveMillimetre.amplitudeMultiplier == 0.27)
-        #expect(PrintGauge.eightMillimetre.sizeMultiplier == 4.0)
-        #expect(PrintGauge.eightMillimetre.amplitudeMultiplier == 0.50)
-        #expect(PrintGauge.seventyFiveMillimetre.sizeMultiplier == 1.0)
-        #expect(PrintGauge.seventyFiveMillimetre.amplitudeMultiplier == 0.15)
-        #expect(GrainModel.baseAmount == 0.55)
-        #expect(GrainModel.footprintFloor == 0.95)
-        #expect(GrainModel.footprintCeiling == 16.0)
-
-        let stocks: [(size: Float, previousSixteen: Float, sixteen: Float,
-                      thirtyFive: Float, eight: Float, seventyFive: Float)] = [
-            (1.15, 3.45, 3.105, 2.07, 4.6, 1.15),
-            (1.3, 3.9, 3.51, 2.34, 5.2, 1.3)
+    @Test func everyStockAndGaugeUsesHalfThePreviousSizeAndTenPercentMorePresence() throws {
+        let gauges: [(PrintGauge, Float, Float)] = [
+            (.eightMillimetre, 4.0, 0.50), (.sixteenMillimetre, 2.7, 0.36),
+            (.thirtyFiveMillimetre, 1.8, 0.27), (.seventyFiveMillimetre, 1.0, 0.15)
         ]
-        for stock in stocks {
-            let sixteen = GrainModel.effectiveSize(stockGrainSize: stock.size, gauge: .sixteenMillimetre)
-            #expect(abs(sixteen - stock.sixteen) < tolerance)
-            #expect(abs(sixteen - stock.previousSixteen * 0.9) < tolerance)
-            let thirtyFive = GrainModel.effectiveSize(stockGrainSize: stock.size, gauge: .thirtyFiveMillimetre)
-            #expect(abs(thirtyFive - stock.thirtyFive) < tolerance)
-            let eight = GrainModel.effectiveSize(stockGrainSize: stock.size, gauge: .eightMillimetre)
-            #expect(abs(eight - stock.eight) < tolerance)
-            let seventyFive = GrainModel.effectiveSize(stockGrainSize: stock.size, gauge: .seventyFiveMillimetre)
-            #expect(abs(seventyFive - stock.seventyFive) < tolerance)
-        }
-
-        for edgeFactor: Float in [1, 3] {
-            let sixteen = GrainModel.amount(gauge: .sixteenMillimetre, edgeFactor: edgeFactor)
-            let thirtyFive = GrainModel.amount(gauge: .thirtyFiveMillimetre, edgeFactor: edgeFactor)
-            #expect(abs(sixteen - 0.2200 * 0.9 * edgeFactor) < tolerance)
-            #expect(abs(thirtyFive - 0.1650 * 0.9 * edgeFactor) < tolerance)
-            let eight = GrainModel.amount(gauge: .eightMillimetre, edgeFactor: edgeFactor)
-            let seventyFive = GrainModel.amount(gauge: .seventyFiveMillimetre, edgeFactor: edgeFactor)
-            #expect(abs(eight - 0.2750 * edgeFactor) < tolerance)
-            #expect(abs(seventyFive - 0.0825 * edgeFactor) < tolerance)
+        #expect(abs(GrainModel.baseAmount - 0.55 * 1.10) < tolerance)
+        #expect(GrainModel.footprintFloor == 0.475)
+        #expect(GrainModel.footprintCeiling == 8.0)
+        // Both shipped stock sizes, plus values exercising the old clamp bounds.
+        for stockSize: Float in [0.1, 0.5, 1.15, 1.3, 12, 100] {
+            for (gauge, previousSizeMultiplier, previousAmplitude) in gauges {
+                let previousFootprint = min(max(stockSize * previousSizeMultiplier, 0.95), 16.0)
+                let footprint = GrainModel.effectiveSize(stockGrainSize: stockSize, gauge: gauge)
+                #expect(abs(footprint - previousFootprint * 0.5) < tolerance)
+                #expect(gauge.amplitudeMultiplier == previousAmplitude)
+                for edgeFactor: Float in [1, 3, 4] {
+                    let previousAmount = 0.55 * previousAmplitude * edgeFactor
+                    #expect(abs(GrainModel.amount(gauge: gauge, edgeFactor: edgeFactor)
+                                - previousAmount * 1.10) < tolerance)
+                }
+            }
         }
     }
 
@@ -91,14 +73,14 @@ struct GrainModelTests {
                     * PrintGauge.eightMillimetre.amplitudeMultiplier) < tolerance)
     }
 
-    @Test func footprintFloorKeepsTheVolumeOutOfTheUndersampledRegime() {
-        // Finest gauge x smallest stock: 0.5 x 0.55 = 0.275 -> floored to 0.95.
+    @Test func footprintBoundsAllowRequestedSubpixelGrainAndClampExtremes() {
+        // Finest gauge x small stock: 0.5 x 0.5 = 0.25 -> bounded at 0.475.
         let extreme = GrainModel.effectiveSize(stockGrainSize: 0.5, gauge: .seventyFiveMillimetre)
         #expect(extreme >= GrainModel.footprintFloor,
-                "no combination may reach the undersampled regime: \(extreme)")
+                "no combination may fall below the requested lower bound: \(extreme)")
         #expect(abs(extreme - GrainModel.footprintFloor) < tolerance)
-        // A finer stock still cannot reach the undersampled regime.
-        #expect(abs(GrainModel.effectiveSize(stockGrainSize: 0.7, gauge: .seventyFiveMillimetre) - 0.95) < tolerance)
+        // The requested subpixel floor is a bound, not an anti-aliasing guarantee.
+        #expect(abs(GrainModel.effectiveSize(stockGrainSize: 0.7, gauge: .seventyFiveMillimetre) - 0.475) < tolerance)
         // Ceiling holds for the coarsest gauge on a large stock.
         #expect(GrainModel.effectiveSize(stockGrainSize: 12, gauge: .eightMillimetre) == GrainModel.footprintCeiling)
     }
