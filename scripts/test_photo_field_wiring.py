@@ -109,6 +109,18 @@ class PhotoFieldWiringTests(unittest.TestCase):
         self.assertGreater(reset_at, body.index('previousLens != lens'))
         self.assertGreater(reset_at, body.index('session.selectCamera(lens, photoIntent: isDevelopmentPhotoMode)'))
 
+    def test_video_fallback_swaps_the_session_input(self):
+        # The still profile's own entry transaction normally swaps the video
+        # input. A fallback install is handed a sensor the session has never
+        # held, so it must swap it itself or the preview, the recording and the
+        # lens row disagree about which camera is live.
+        session = (ROOT / 'App/Modules/CameraCapture/CameraSession.swift').read_text()
+        body = section(session, 'private func installSharedVideoOnQueue(',
+                       'private func launchSharedVideoRequest')
+        self.assertIn('explicit.uniqueID != activeDevice?.uniqueID', body)
+        self.assertLess(body.index('try addDevice(explicit)'),
+                        body.index('session.sessionPreset = .inputPriority'))
+
     def test_photo_mode_change_resets_only_after_the_switch_commits(self):
         view_model = (ROOT / 'App/Modules/CameraCapture/CameraViewModel.swift').read_text()
         body = section(view_model, 'func setDevelopmentPhotoMode(_ enabled: Bool',

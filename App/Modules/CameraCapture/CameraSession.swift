@@ -556,6 +556,16 @@ final class CameraSession: NSObject, @unchecked Sendable {
         suspendPreview(true)
         if session.isRunning { session.stopRunning() }
         session.beginConfiguration()
+        // A fallback install is handed a sensor Photo never committed as the
+        // session's input: the still profile's own entry transaction is what
+        // normally swaps it. Without the swap here the graph, `activeDevice` and
+        // the lens row would agree on the new sensor while the running session
+        // kept previewing and recording the previous one. The idle install passes
+        // no explicit device and skips this entirely.
+        if let explicit, explicit.uniqueID != activeDevice?.uniqueID {
+            do { try addDevice(explicit) }
+            catch { session.commitConfiguration(); throw error }
+        }
         for output in session.outputs { session.removeOutput(output) }
         session.sessionPreset = .inputPriority
         guard session.canAddOutput(videoOutput) else { session.commitConfiguration(); throw CameraError.cannotAddOutput }
