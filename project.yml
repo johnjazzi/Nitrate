@@ -310,6 +310,7 @@ targets:
       - path: App/Modules/FilmStockLibrary/
       # Foundation-only hint policy, shared so its pure logic compiles and is
       # testable on macOS (the AVFoundation call site stays in the iOS session).
+      - path: App/Modules/CameraCapture/CameraHintPreferences.swift
       - path: App/Modules/CameraCapture/StockSelectorHintPolicy.swift
       - path: App/Modules/CameraCapture/PhotoCapturePolicy.swift
       - path: App/Modules/CameraCapture/PhotoExposureSnapshot.swift
@@ -389,6 +390,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
       - path: App/Modules/CameraCapture/CameraFrameRatePolicy.swift
       - path: App/Modules/CameraCapture/CameraAutofocusPolicy.swift
+      - path: App/Modules/CameraCapture/CameraHintPreferences.swift
       - path: App/Modules/CameraCapture/StockSelectorHintPolicy.swift
       - path: App/Modules/CameraCapture/PhotoCapturePolicy.swift
       - path: App/Modules/CameraCapture/PhotoExposureSnapshot.swift
