@@ -88,7 +88,7 @@ struct CameraControlBar: View {
         .onCameraCaptureEvent(isEnabled: hardwareCaptureEnabled) { event in
 #if DEBUG
             if CommandLine.arguments.contains("--trace-camera-control") {
-                print("[CameraControl] event phase=\(event.phase) viewEnabled=\(hardwareCaptureEnabled) "
+                CameraControlDiagnostics.record("event phase=\(event.phase) viewEnabled=\(hardwareCaptureEnabled) "
                     + "runtimeEnabled=\(cameraViewModel.canAcceptHardwareCapture)")
             }
 #endif
@@ -104,7 +104,7 @@ struct CameraControlBar: View {
             guard hardwarePress.receive(phase, isEnabled: cameraViewModel.canAcceptHardwareCapture) else { return }
 #if DEBUG
             if CommandLine.arguments.contains("--trace-camera-control") {
-                print("[CameraControl] accepted photo=\(cameraViewModel.isDevelopmentPhotoMode)")
+                CameraControlDiagnostics.record("accepted photo=\(cameraViewModel.isDevelopmentPhotoMode)")
             }
 #endif
             if cameraViewModel.isDevelopmentPhotoMode { performPhotoCapture() }

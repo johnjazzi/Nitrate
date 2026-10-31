@@ -1990,7 +1990,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             // lens, and whether the active format could track the subject. The
             // tracking property is read only — enabling it is a separate change.
             let requested = Self.autofocusMode(for: device).map { String($0.rawValue) } ?? "none"
-            print("[CameraControl] af point=(\(String(format: "%.3f", point.x)),"
+            CameraControlDiagnostics.record("af point=(\(String(format: "%.3f", point.x)),"
                 + "\(String(format: "%.3f", point.y))) requested=\(requested)"
                 + " active=\(device.focusMode.rawValue)"
                 + " manualHeld=\(committedManualFocusLensPosition != nil)"

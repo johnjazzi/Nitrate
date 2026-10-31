@@ -1157,14 +1157,19 @@ struct ContentView: View {
         guard cameraHardwareControlsVisible else { return false }
         // A second full press must still stop a take or cancel its startup.
         if cameraViewModel.isRecording || cameraViewModel.isStartingRecording { return true }
-        return cameraViewModel.canChangeShootingMode && !showsRecordingFailure
-            && cameraViewModel.errorMessage == nil && !cameraViewModel.isSpaceCritical
+        // A fault or a full disk is not a capture transition: it still disarms.
+        guard !showsRecordingFailure, cameraViewModel.errorMessage == nil,
+              !cameraViewModel.isSpaceCritical else { return false }
+        // Keep the platform interaction armed while handling a Photo full press.
+        // The live model still refuses a second still through its busy gate.
+        if cameraViewModel.isPhotoCaptureBusy { return true }
+        return cameraViewModel.canChangeShootingMode
     }
 
     private func updateCameraHardwareControls() {
 #if DEBUG
         if CommandLine.arguments.contains("--trace-camera-control") {
-            print("[CameraControl] visibility visible=\(cameraHardwareControlsVisible) "
+            CameraControlDiagnostics.record("visibility visible=\(cameraHardwareControlsVisible) "
                 + "captureEnabled=\(hardwareCaptureEnabled) scene=\(scenePhase) "
                 + "runtimeEnabled=\(cameraViewModel.canAcceptHardwareCapture) "
                 + "profileChanging=\(cameraViewModel.isChangingCaptureProfile)")

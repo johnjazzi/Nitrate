@@ -89,12 +89,18 @@ struct CameraControlUnsupportedDeviceTests {
     }
 
     /// Slider eligibility fails closed on unsupported hardware before any of the
-    /// per-adjustment rules run.
+    /// per-adjustment rules run. The capability leads the stable presentation
+    /// gate; write acceptance is that gate ANDed with the transient capture flag,
+    /// so an unsupported phone installs nothing either way.
     @Test func sliderEligibilityFailsClosedOnUnsupportedHardware() throws {
         let model = try source("App/Modules/CameraCapture/CameraViewModel.swift")
-        let eligible = try body(after: "private var areHardwareControlsEligible: Bool", in: model)
+        let eligible = try body(after: "private var areHardwareControlsPresented: Bool", in: model)
         #expect(eligible.contains("guard supportsCameraControl,"),
                 "the capability leads the eligibility guard")
+
+        let write = try body(after: "private var areHardwareControlsEligible: Bool", in: model)
+        #expect(write.contains("areHardwareControlsPresented"),
+                "write acceptance cannot outrun the presentation gate")
     }
 
     /// The full press is part of the feature, so an unsupported phone must not

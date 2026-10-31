@@ -14,6 +14,9 @@ final class CameraViewModel {
     private var photoResults = CameraPhotoResultOwnership()
 
     init() {
+#if DEBUG
+        CameraControlDiagnostics.record("launch build=\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") ?? "unknown")")
+#endif
         activeLens = session.activeLens
         focalEngine = CameraFocalZoomEngine(activeTier: Self.focalTier(for: session.activeLens))
         availableLensTiers = session.availableLenses.map { Self.focalTier(for: $0) }
@@ -652,10 +655,19 @@ final class CameraViewModel {
     }
 
     func setDisplayZoom(_ factor: Double) {
+#if DEBUG
+        CameraControlDiagnostics.record("set-display-zoom value=\(factor) nativeIdle=\(usesNativeIdlePreview) "
+            + "photoBusy=\(isPhotoCaptureBusy) profile=\(isChangingCaptureProfile) "
+            + "starting=\(isStartingRecording) stopping=\(isStoppingRecording) "
+            + "crop=\(photoCropZoom) revision=\(String(describing: zoomSnapshot?.cameraRevision))")
+#endif
         guard !isPhotoCaptureBusy, !isChangingCaptureProfile, !isStartingRecording, !isStoppingRecording else { return }
         if usesNativeIdlePreview {
             guard factor.isFinite, !isSwitchingCameraLens, !isChangingFrameRate else { return }
             photoCropZoom = min(max(factor / (zoomSnapshot?.displayMultiplier ?? 1), 1), 4)
+#if DEBUG
+            CameraControlDiagnostics.record("crop-applied value=\(photoCropZoom)")
+#endif
             return
         }
         guard lifecycleGate.isActive, let snapshot = zoomSnapshot,
@@ -1741,6 +1753,9 @@ final class CameraViewModel {
     /// model ANDs it with the runtime transitions below; it never writes device
     /// state on its own.
     private var areHardwareControlsRequested = false
+#if DEBUG
+    @ObservationIgnored private var lastHardwareDiagnosticState = ""
+#endif
 
     /// Parent API: called from `ContentView` whenever the Settings preference or
     /// the screen's eligibility changes. `enabled == false` keeps the selected
@@ -1751,21 +1766,28 @@ final class CameraViewModel {
         pushCameraHardwareControls()
     }
 
-    /// Slider interaction is refused while any capture transition owns the
-    /// device. Recording itself is not a transition: zoom stays live because
-    /// `setDisplayZoom` permits it mid-take. An exposure slide would be a dead
-    /// control mid-take (`setExposureBiasEV` deliberately drops device writes
-    /// while recording), so exposure is only offered when nothing is rolling.
-    private var areHardwareControlsEligible: Bool {
+    /// Native presentation follows session availability, not per-shot busy state.
+    /// Keep it enabled while handling a full press; capture-time writes are still
+    /// rejected by `areHardwareControlsEligible`. Exposure remains unavailable
+    /// during recording, while zoom can use the existing mid-take setter.
+    private var areHardwareControlsPresented: Bool {
         guard supportsCameraControl,
               areHardwareControlsRequested, cameraConfigured, lifecycleGate.isActive,
               !isSwitchingCameraLens, !isChangingFrameRate, !isChangingCaptureProfile,
-              !isPhotoCaptureBusy, !isStartingRecording, !isStoppingRecording else { return false }
+              !isStartingRecording, !isStoppingRecording else { return false }
         switch hardwareControlAdjustment {
         case .zoom: return true
         case .exposure: return !isRecording && canAdjustEVThroughCurrentPath && hasUsableExposureBiasRange
         case .off: return false
         }
+    }
+
+    /// Write acceptance: the presented control minus the one transient capture
+    /// transition that must never reach the device. A slider value therefore
+    /// keeps its stable presentation while every device write during a capture —
+    /// and every stale revision carried by a retained callback — is dropped.
+    private var areHardwareControlsEligible: Bool {
+        !isPhotoCaptureBusy && areHardwareControlsPresented
     }
 
     /// EV is only a live control while the path that owns exposure can take it.
@@ -1806,9 +1828,23 @@ final class CameraViewModel {
     }
 
     private func pushCameraHardwareControls() {
+#if DEBUG
+        if CommandLine.arguments.contains("--trace-camera-control") {
+            let state = "requested=\(areHardwareControlsRequested) presented=\(areHardwareControlsPresented) "
+                + "eligible=\(areHardwareControlsEligible) "
+                + "configured=\(cameraConfigured) active=\(lifecycleGate.isActive) mode=\(hardwareControlAdjustment) "
+                + "starting=\(isStartingRecording) recording=\(isRecording) stopping=\(isStoppingRecording) "
+                + "profile=\(isChangingCaptureProfile) lens=\(isSwitchingCameraLens) fps=\(isChangingFrameRate) "
+                + "photoBusy=\(isPhotoCaptureBusy) nativeIdle=\(usesNativeIdlePreview)"
+            if state != lastHardwareDiagnosticState {
+                lastHardwareDiagnosticState = state
+                CameraControlDiagnostics.record("vm-gate \(state)")
+            }
+        }
+#endif
         session.updateHardwareControls(CameraHardwareControlRequest(
             adjustment: hardwareControlAdjustment,
-            isEnabled: areHardwareControlsEligible,
+            isEnabled: areHardwareControlsPresented,
             displayZoom: usesNativeIdlePreview
                 ? photoCropZoom * (zoomSnapshot?.displayMultiplier ?? 1)
                 : zoomSnapshot?.displayFactor ?? 1,
@@ -1821,6 +1857,10 @@ final class CameraViewModel {
     /// lens they were measured against is gone.
     private func applyCameraHardwareControlValue(_ adjustment: CameraControlAdjustment,
                                                 _ value: Float, revision: UInt64) {
+#if DEBUG
+        CameraControlDiagnostics.record("vm-slider value=\(value) target=\(adjustment)/\(hardwareControlAdjustment) "
+            + "eligible=\(areHardwareControlsEligible) revision=\(revision)/\(String(describing: zoomSnapshot?.cameraRevision))")
+#endif
         guard areHardwareControlsEligible, adjustment == hardwareControlAdjustment,
               let snapshot = zoomSnapshot, snapshot.cameraRevision == revision else { return }
         switch adjustment {

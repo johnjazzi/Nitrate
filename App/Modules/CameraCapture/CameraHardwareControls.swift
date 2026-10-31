@@ -271,7 +271,7 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
                 + "revision=\(configuration.cameraRevision)"
             if state != lastDiagnosticState {
                 lastDiagnosticState = state
-                print("[CameraControl] apply \(state)")
+                CameraControlDiagnostics.record("apply \(state)")
             }
         }
 #endif
@@ -351,7 +351,12 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
         slider.setActionQueue(queue) { [weak self] newValue in
             self?.handleActionValue(newValue, adjustment: adjustment, generation: generation)
         }
-        guard session.canAddControl(slider) else {
+        let canAdd = session.canAddControl(slider)
+#if DEBUG
+        CameraControlDiagnostics.record("install selected=\(adjustment) canAdd=\(canAdd) "
+            + "controls=\(session.controls.count)/\(session.maxControlsCount) range=\(range) generation=\(generation)")
+#endif
+        guard canAdd else {
             // A platform that reports support but refuses the control gets no
             // slider rather than a silently dead one.
             return
@@ -366,6 +371,9 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
     }
 
     private func removeSlider() {
+#if DEBUG
+        CameraControlDiagnostics.record("remove selected=\(String(describing: installedAdjustment)) generation=\(generation)")
+#endif
         generation &+= 1
         endInteraction()
         guard let slider else {
@@ -389,6 +397,11 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
                                    adjustment: CameraControlAdjustment,
                                    generation: UInt64) {
         dispatchPrecondition(condition: .onQueue(queue))
+#if DEBUG
+        CameraControlDiagnostics.record("slider value=\(value) target=\(adjustment) "
+            + "generation=\(generation)/\(self.generation) installed=\(String(describing: installedAdjustment)) "
+            + "enabled=\(slider?.isEnabled ?? false) revision=\(installedRevision) interacting=\(isUserInteracting)")
+#endif
         guard generation == self.generation,
               installedAdjustment == adjustment,
               let slider, slider.isEnabled,
@@ -410,20 +423,57 @@ final class CameraHardwareControls: NSObject, AVCaptureSessionControlsDelegate, 
     // MARK: AVCaptureSessionControlsDelegate
 
     func sessionControlsDidBecomeActive(_ session: AVCaptureSession) {
+#if DEBUG
+        CameraControlDiagnostics.record("delegate active")
+#endif
         interaction.becameActive()
         onInteractionChange?(true)
     }
 
     func sessionControlsWillEnterFullscreenAppearance(_ session: AVCaptureSession) {
+#if DEBUG
+        CameraControlDiagnostics.record("delegate enter-fullscreen")
+#endif
         onInteractionChange?(true)
     }
 
     func sessionControlsWillExitFullscreenAppearance(_ session: AVCaptureSession) {
+#if DEBUG
+        CameraControlDiagnostics.record("delegate exit-fullscreen")
+#endif
         onInteractionChange?(false)
     }
 
     func sessionControlsDidBecomeInactive(_ session: AVCaptureSession) {
+#if DEBUG
+        CameraControlDiagnostics.record("delegate inactive")
+#endif
         interaction.becameInactive()
         onInteractionChange?(false)
     }
 }
+
+#if DEBUG
+/// Opt-in, single-writer device trace. File IO never runs on the capture queue.
+enum CameraControlDiagnostics {
+    private static let queue = DispatchQueue(label: "com.nitrate.camera-control-trace", qos: .utility)
+    private static let run = UUID().uuidString
+
+    static func record(_ event: String) {
+        guard CommandLine.arguments.contains("--trace-camera-control") else { return }
+        let line = "[CameraControl] run=\(run) t=\(ProcessInfo.processInfo.systemUptime) \(event)\n"
+        queue.async {
+            print(line, terminator: "")
+            let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("camera-control-trace.txt")
+            if !FileManager.default.fileExists(atPath: url.path) {
+                FileManager.default.createFile(atPath: url.path, contents: nil)
+            }
+            guard let file = try? FileHandle(forWritingTo: url), let data = line.data(using: .utf8) else { return }
+            defer { try? file.close() }
+            _ = try? file.seekToEnd()
+            try? file.write(contentsOf: data)
+        }
+    }
+}
+#endif

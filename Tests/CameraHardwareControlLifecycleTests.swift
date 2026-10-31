@@ -162,7 +162,9 @@ struct CameraHardwareControlLifecycleSourceContractTests {
         let model = try source("App/Modules/CameraCapture/CameraViewModel.swift")
         #expect(model.contains("var isManualExposure = false { didSet { pushCameraHardwareControls() } }"))
 
-        let eligible = try body(after: "private var areHardwareControlsEligible: Bool", in: model)
+        // The exposure policy lives on the stable presentation half; write
+        // eligibility is that half ANDed with the transient capture gate.
+        let eligible = try body(after: "private var areHardwareControlsPresented: Bool", in: model)
         #expect(eligible.contains("!isRecording && canAdjustEVThroughCurrentPath && hasUsableExposureBiasRange"))
 
         let path = try body(after: "private var canAdjustEVThroughCurrentPath: Bool", in: model)
@@ -177,5 +179,71 @@ struct CameraHardwareControlLifecycleSourceContractTests {
 
         let usable = try body(after: "private var hasUsableExposureBiasRange: Bool", in: model)
         #expect(usable.contains("CameraHardwareControlPolicy.minimumRangeSpan"))
+    }
+
+    /// Source wiring only: Photo's busy flag must block adjustment writes without
+    /// disabling the platform control inside a full-press callback. Native input
+    /// delivery after a shot still requires a physical Camera Control test.
+    @Test func photoCaptureBusyKeepsTheSliderPresentedButNotWritable() throws {
+        let model = try source("App/Modules/CameraCapture/CameraViewModel.swift")
+
+        let presented = try body(after: "private var areHardwareControlsPresented: Bool", in: model)
+        #expect(!presented.contains("isPhotoCaptureBusy"),
+                "the transient capture flag must not tear down the presented control")
+        for stable in ["supportsCameraControl", "areHardwareControlsRequested", "cameraConfigured",
+                       "lifecycleGate.isActive", "!isSwitchingCameraLens", "!isChangingFrameRate",
+                       "!isChangingCaptureProfile", "!isStartingRecording", "!isStoppingRecording"] {
+            #expect(presented.contains(stable),
+                    "presentation keeps the stable gate \(stable)")
+        }
+        #expect(presented.contains("!isRecording && canAdjustEVThroughCurrentPath && hasUsableExposureBiasRange"),
+                "the exposure policy moves with the stable half, unchanged")
+
+        let eligible = try body(after: "private var areHardwareControlsEligible: Bool", in: model)
+        #expect(eligible.contains("!isPhotoCaptureBusy && areHardwareControlsPresented"),
+                "write acceptance is the stable half plus the one transient capture gate")
+        #expect(!eligible.contains("guard supportsCameraControl"),
+                "the split is one composition, not a second copy of the stable rules")
+
+        // Only platform presentation follows the stable half...
+        let push = try body(after: "private func pushCameraHardwareControls()", in: model)
+        #expect(push.contains("isEnabled: areHardwareControlsPresented"))
+        #expect(!push.contains("isEnabled: areHardwareControlsEligible"),
+                "pushing the transient gate into the request is the dead-slider defect")
+
+        // ...the value path still refuses a capture-time write and stale revision.
+        let apply = try body(after: "private func applyCameraHardwareControlValue(", in: model)
+        #expect(apply.contains("guard areHardwareControlsEligible,"))
+        #expect(apply.contains("snapshot.cameraRevision == revision"))
+    }
+
+    /// Photo's busy flag is the still counterpart of Video's starting/recording
+    /// window: the full press must stay armed across it instead of toggling the
+    /// platform capture event off inside its own callback. The sheet/background,
+    /// fault and disk gates still win.
+    @Test func fullPressStaysArmedThroughPhotoBusyWithoutBypassingSafetyGates() throws {
+        let content = try source("App/ContentView.swift")
+        let enabled = try body(after: "private var hardwareCaptureEnabled: Bool", in: content)
+        #expect(enabled.contains("guard cameraHardwareControlsVisible else { return false }"),
+                "hidden, background, sheet and unsupported-device states still disarm")
+        #expect(enabled.contains(
+            "if cameraViewModel.isRecording || cameraViewModel.isStartingRecording { return true }"),
+                "a take still receives its stop or startup cancel")
+        #expect(enabled.contains("if cameraViewModel.isPhotoCaptureBusy { return true }"),
+                "the transient photo window keeps the press armed")
+        #expect(enabled.contains("return cameraViewModel.canChangeShootingMode"))
+        #expect(enabled.contains("guard !showsRecordingFailure"))
+        #expect(enabled.contains("cameraViewModel.errorMessage == nil"))
+        #expect(enabled.contains("!cameraViewModel.isSpaceCritical"))
+
+        // The transient branch is reached only after the fault and disk gates.
+        let busyBranch = try #require(enabled.range(
+            of: "if cameraViewModel.isPhotoCaptureBusy { return true }"))
+        let faultGate = try #require(enabled.range(of: "guard !showsRecordingFailure"))
+        let spaceGate = try #require(enabled.range(of: "isSpaceCritical"))
+        #expect(faultGate.lowerBound < busyBranch.lowerBound,
+                "a fault outranks the transient photo window")
+        #expect(spaceGate.lowerBound < busyBranch.lowerBound,
+                "critical storage outranks the transient photo window")
     }
 }
