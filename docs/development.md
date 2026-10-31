@@ -18,6 +18,13 @@ fault injection and camera-range dumps remain Debug-only. Release verification
 must cover both the Photo controls and their capture implementation, not only
 whether the mode selector is visible.
 
+Photo is switched per configuration by `PHOTO_MODE_ENABLED` in `project.yml`,
+copied into Info.plist as `PhotoModeEnabled` and read once by
+`DevelopmentPhotoFeature`. Set it to `NO` and rebuild to ship a configuration
+without the mode — the runtime still compiles in, so the switch decides
+presentation, not whether the code exists. There is no stored preference and no
+remote switch, and a build whose value failed to substitute reads as off.
+
 Photo needs a Bayer RAW format from the active camera. When a lens has none, the
 shared idle graph falls back to its Video profile instead of stopping the camera:
 Video preview and recording keep working, Photo refuses with a clear reason, and

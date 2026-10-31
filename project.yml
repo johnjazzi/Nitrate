@@ -202,6 +202,12 @@ targets:
       properties:
         UIAppFonts:
           - Fonts/Barlow-Medium.ttf
+        # Runtime mirror of the PHOTO_MODE_ENABLED build setting (see the
+        # configuration block below). The app reads this value only; it never
+        # reads the build setting, and there is no stored preference or remote
+        # switch. An unexpanded `$(...)` means the setting is missing, which the
+        # availability policy treats as off.
+        PhotoModeEnabled: $(PHOTO_MODE_ENABLED)
     type: application
     platform: iOS
     sources:
@@ -249,18 +255,27 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: ""
         ENABLE_USER_SCRIPT_SANDBOXING: NO
       configs:
+        # PHOTO_MODE_ENABLED is the on/off switch for Photo mode. Set it to NO
+        # for a configuration and rebuild to ship without the mode: it is copied
+        # into Info.plist as PhotoModeEnabled and read once by
+        # DevelopmentPhotoFeature. The runtime is always compiled in, so the
+        # switch decides presentation, not whether the code exists.
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app.dev
           INFOPLIST_KEY_CFBundleDisplayName: Nitrate Dev
+          PHOTO_MODE_ENABLED: YES
         DevRelease:
           PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app.dev
           INFOPLIST_KEY_CFBundleDisplayName: Nitrate Dev
+          PHOTO_MODE_ENABLED: YES
         Release:
           # Must match the App Store Connect record (nitrate.camera) exactly.
           # Local installs never use this production identity. Preserve the
           # com.filmemulation.* movie metadata keys: they are a file contract.
           PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app
           INFOPLIST_KEY_CFBundleDisplayName: Nitrate
+          # NO keeps Photo out of the TestFlight/App Store build.
+          PHOTO_MODE_ENABLED: YES
     preBuildScripts:
       - name: SwiftLint
         script: |

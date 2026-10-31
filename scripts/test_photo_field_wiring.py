@@ -109,6 +109,17 @@ class PhotoFieldWiringTests(unittest.TestCase):
         self.assertGreater(reset_at, body.index('previousLens != lens'))
         self.assertGreater(reset_at, body.index('session.selectCamera(lens, photoIntent: isDevelopmentPhotoMode)'))
 
+    def test_photo_mode_switch_is_a_project_configuration(self):
+        # The on/off switch lives in project.yml per configuration, is copied
+        # into Info.plist under the key the policy reads, and is read there
+        # rather than from a stored preference.
+        project = (ROOT / 'project.yml').read_text()
+        self.assertEqual(project.count('PHOTO_MODE_ENABLED: YES'), 3)
+        self.assertIn('PhotoModeEnabled: $(PHOTO_MODE_ENABLED)', project)
+        policy = (ROOT / 'App/Modules/CameraCapture/DevelopmentPhotoFeature.swift').read_text()
+        self.assertIn('infoPlistKey = "PhotoModeEnabled"', policy)
+        self.assertIn('object(forInfoDictionaryKey: infoPlistKey)', policy)
+
     def test_video_fallback_swaps_the_session_input(self):
         # The still profile's own entry transaction normally swaps the video
         # input. A fallback install is handed a sensor the session has never

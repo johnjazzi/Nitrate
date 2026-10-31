@@ -315,7 +315,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
         onProfile: @escaping @MainActor @Sendable (CameraSessionDeliveryContext, Bool, Bool, Bool, Bool) -> Void) {
         sessionQueue.async {
             guard DevelopmentPhotoFeature.isAvailable(isDebugBuild: Self.isDebugBuild,
-                bundleIdentifier: Bundle.main.bundleIdentifier ?? "") else { return }
+                bundleIdentifier: Bundle.main.bundleIdentifier ?? "",
+                enabled: DevelopmentPhotoFeature.isEnabledByConfiguration) else { return }
             self.sharedIdleEnabled = true
             self.sharedSnapshotObserver = onUpdate
             self.developmentPhotoUpdate = { _ in }
@@ -4126,7 +4127,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
         onUpdate: @escaping @MainActor @Sendable (PhotoExposureSnapshot) -> Void,
         completion: @escaping @MainActor @Sendable (Result<Void, Error>) -> Void) {
         guard DevelopmentPhotoFeature.isAvailable(isDebugBuild: Self.isDebugBuild,
-                bundleIdentifier: Bundle.main.bundleIdentifier ?? ""), self.isConfigured,
+                bundleIdentifier: Bundle.main.bundleIdentifier ?? "",
+                enabled: DevelopmentPhotoFeature.isEnabledByConfiguration), self.isConfigured,
               self.session.isRunning, !self.isRecordingOrPending,
               !self.frameRateTransitionPending, self.developmentPhotoController == nil,
               let device = self.activeDevice else {
