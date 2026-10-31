@@ -443,6 +443,7 @@ targets:
       - path: App/Modules/CameraCapture/InlineManualControls.swift
       - path: App/Modules/CameraCapture/CameraManualControlsFeatureFlags.swift
       - path: App/Modules/CameraCapture/MeteringBoxView.swift
+      - path: App/Modules/CameraCapture/CameraFrameRateControl.swift
       - path: App/Modules/CameraCapture/RecordingFeedbackPolicy.swift
       - path: Resources/Shaders/
         type: metal

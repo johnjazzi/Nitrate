@@ -436,8 +436,11 @@ struct ManualFocusRulerTests {
 
     @Test func inFrameBlockReservesTheButtonStackAndGreysTheRailInAutofocus() throws {
         let screen = try source("App/ContentView.swift")
-        // The button stack keeps its three 44pt controls reserved even in AF.
-        #expect(screen.contains(".frame(width: 44, height: 140)"))
+        // The reserved height follows the Video/Photo key count, even in AF.
+        let hasStackHeight = screen.contains(".frame(width: 44, height: InlineManualControlPresentation.stackHeight(")
+        #expect(hasStackHeight)
+        #expect(InlineManualControlPresentation.stackHeight(showsFrameRate: true) == 188)
+        #expect(InlineManualControlPresentation.stackHeight(showsFrameRate: false) == 140)
         #expect(screen.contains("InlineManualControls("))
         // The rail is greyed and disabled while autofocus is selected rather
         // than forcing the lens into manual focus.

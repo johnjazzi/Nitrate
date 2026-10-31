@@ -7,8 +7,7 @@ import Testing
 ///
 /// Every assertion is either pure presentation, a guard on the real control, or
 /// a source contract over the wiring, so the menu can be inspected without a
-/// camera. RED on the pre-change tree: `CameraFrameRateControl` and its
-/// presentation do not exist there, so this suite does not compile.
+/// camera. Physical rate selection and capture still need device validation.
 struct CameraFrameRateControlTests {
     // MARK: - Offered rates
 
@@ -69,7 +68,8 @@ struct CameraFrameRateControlTests {
     @Test func frameRateKeyKeepsItsFortyFourPointTargetAndGrowsTheStackByOneRow() {
         #expect(CameraFrameRateControlPresentation.optionHeight == 44)
         // Video: focus, aperture, rate, stabilization.
-        #expect(InlineManualControlPresentation.stackHeight(showsFrameRate: true) == 4 * 44 + 3 * 4)
+        let videoHeight: CGFloat = 188
+        #expect(InlineManualControlPresentation.stackHeight(showsFrameRate: true) == videoHeight)
         // Photo keeps its committed height and hides the rate key.
         #expect(InlineManualControlPresentation.stackHeight(showsFrameRate: false) == 140)
         #expect(InlineManualControlPresentation.showsFrameRateKey(isPhotoMode: false, isDevelopMode: false))

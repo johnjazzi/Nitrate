@@ -136,7 +136,7 @@ struct InlineManualControlsTests {
 
     // MARK: - Native render
 
-    @MainActor @Test func realStackKeepsThreeKeysWithin140ptInEveryState() {
+    @MainActor @Test func realStackKeepsFourVideoKeysWithin188ptInEveryState() {
         for mode in CameraStabilizationMode.allCases {
             let host = NSHostingView(rootView: InlineManualControlsHarness(stabilization: manualSnapshot(preferred: mode))
                 .environment(\.colorScheme, .dark))
@@ -145,8 +145,8 @@ struct InlineManualControlsTests {
             host.frame = CGRect(origin: .zero, size: size)
             host.layoutSubtreeIfNeeded()
 
-            #expect(size.height <= 140, "\(mode) must keep the three 44pt keys within 140pt")
-            #expect(size.height >= 132, "\(mode) must keep the three 44pt keys")
+            #expect(size.height <= 188, "\(mode) must keep the four 44pt keys within 188pt")
+            #expect(size.height >= 176, "\(mode) must keep all four 44pt keys")
             #expect(size.width <= 45, "\(mode) must keep the authored 44pt column")
         }
     }

@@ -1255,7 +1255,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         let mode = frameRate
         let orderedFormats = Self.appleLog2CaptureFormats(in: device.formats, mode: mode)
         guard !orderedFormats.isEmpty else {
-            throw Self.unsupportedFrameRateError(for: mode)
+            throw CameraError.unsupportedFrameRateError(for: mode)
         }
 
         var failures: [String] = []
@@ -1424,7 +1424,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             $0.minFrameRate <= Double(mode.fps) && $0.maxFrameRate >= Double(mode.fps)
         }
         guard supported else {
-            throw Self.unsupportedFrameRateError(for: mode)
+            throw CameraError.unsupportedFrameRateError(for: mode)
         }
         device.activeVideoMinFrameDuration = mode.frameDuration
         device.activeVideoMaxFrameDuration = mode.frameDuration
@@ -1734,7 +1734,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
             guard #available(iOS 26.0, *),
                   Self.captureFormatAvailable(for: device, mode: self.frameRate) else {
-                let error = Self.unsupportedFrameRateError(for: self.frameRate)
+                let error = CameraError.unsupportedFrameRateError(for: self.frameRate)
                 self.session.commitConfiguration()
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
                 return
@@ -2967,7 +2967,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             if self.defersVideoDeviceWrites {
                 guard mode.isStandard
                         || Self.captureFormatAvailable(for: self.activeDevice!, mode: mode) else {
-                    finish(Self.unsupportedFrameRateError(for: mode)); return
+                    finish(CameraError.unsupportedFrameRateError(for: mode)); return
                 }
                 self.frameRate = mode
                 finish(nil)
@@ -3086,7 +3086,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         guard let device = activeDevice else { return CameraError.noCameraAvailable }
         guard #available(iOS 26.0, *) else { return CameraError.appleLog2NotSupported }
         guard let format = Self.appleLog2CaptureFormat(in: device.formats, mode: mode) else {
-            return Self.unsupportedFrameRateError(for: mode)
+            return CameraError.unsupportedFrameRateError(for: mode)
         }
         let snapshot = makeFrameRateSnapshot()
         do {
@@ -3297,7 +3297,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             guard #available(iOS 26.0, *),
                   device.activeColorSpace == .appleLog2,
                   Self.appleLog2CaptureFormat(in: [device.activeFormat], mode: self.frameRate) != nil else {
-                let error = Self.unsupportedFrameRateError(for: self.frameRate)
+                let error = CameraError.unsupportedFrameRateError(for: self.frameRate)
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
                 return
             }
@@ -3440,7 +3440,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
               device.activeColorSpace == .appleLog2,
               Self.appleLog2CaptureFormat(in: [device.activeFormat], mode: frameRate) != nil else {
             recordingStartPending = false
-            failPendingStart(Self.unsupportedFrameRateError(for: frameRate))
+            failPendingStart(CameraError.unsupportedFrameRateError(for: frameRate))
             return
         }
         guard !acceptedVideoSettings.isEmpty, !acceptedPixelFormats.isEmpty else {
