@@ -58,7 +58,9 @@ enum TestRepository {
     static let requiredFixturePaths: [String] = [
         "Resources/stocks.json",
         "Resources/Shaders/spatial.metal",
+        "Resources/gauges.json",
         "App/Resources/stocks.json",
+        "App/Resources/gauges.json",
         "App/PrivacyInfo.xcprivacy",
         "Tests/Fixtures/colorchecker-babelcolor-2006.json",
         "App/ContentView.swift"
