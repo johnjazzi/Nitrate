@@ -18,13 +18,12 @@ struct ContentView: View {
     /// camera, a failed profile switch). Shown with the row and cleared shortly after.
     @State private var modeRefusalNotice: String?
     @State private var modeRefusalTask: Task<Void, Never>?
-#if DEBUG
+    /// Photo is available on the registered production and development
+    /// identities in every configuration. The policy reads the bundle identity,
+    /// not `#if DEBUG`, so the TestFlight build offers the same mode.
     private var photoModeAvailable: Bool {
-        DevelopmentPhotoFeature.isAvailable(isDebugBuild: true, bundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+        DevelopmentPhotoFeature.isAvailableForCurrentBundle()
     }
-#else
-    private var photoModeAvailable: Bool { false }
-#endif
     @State private var developModel: DevelopVideoModel
     @State private var showSettings = false
     @State private var showDaylightRescue = false
@@ -1229,7 +1228,12 @@ struct ContentView: View {
         if mode == .photo {
             cameraViewModel.setDevelopmentPhotoMode(true) { result in
                 guard case .success = result else {
-                    showModeRefusal("Photo needs the shared camera, which is not ready")
+                    if case .failure(let error) = result,
+                       (error as? CameraError)?.isPhotoCapabilityRefusal == true {
+                        showModeRefusal("Photo isn't available on this camera")
+                    } else {
+                        showModeRefusal("Photo needs the shared camera, which is not ready")
+                    }
                     return
                 }
                 _ = cameraMode.select(.photo, enabled: true, photoAvailable: photoModeAvailable)

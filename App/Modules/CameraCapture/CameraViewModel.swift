@@ -21,7 +21,6 @@ final class CameraViewModel {
         focalEngine = CameraFocalZoomEngine(activeTier: Self.focalTier(for: session.activeLens))
         availableLensTiers = session.availableLenses.map { Self.focalTier(for: $0) }
         isVideoCaptureProfileActive = !usesSharedIdlePreview
-#if DEBUG
         if usesSharedIdlePreview {
             isChangingCaptureProfile = true
             session.enableSharedIdlePreview(onUpdate: { [weak self] context, snapshot in
@@ -30,10 +29,11 @@ final class CameraViewModel {
                 self.photoExposureSnapshot = snapshot
                 if self.isDevelopmentPhotoMode { self.presentPhotoExposure(snapshot) }
                 self.refreshPhotoAperture()
-            }, onProfile: { [weak self] context, video, busy, configured in
+            }, onProfile: { [weak self] context, video, busy, configured, photoAvailable in
                 guard let self, self.sessionDelivery.accepts(context) else { return }
                 self.isVideoCaptureProfileActive = video
                 self.isChangingCaptureProfile = busy
+                self.isPhotoCaptureAvailable = photoAvailable
                 if busy { self.armCaptureProfileWatchdog() } else { self.captureProfileWatchdog?.cancel(); self.captureProfileWatchdog = nil }
                 if !busy {
                     self.cameraConfigured = configured
@@ -42,7 +42,6 @@ final class CameraViewModel {
                 if video { self.refreshExposure() }
             })
         }
-#endif
         session.observeZoom { [weak self] snapshot in
             guard let self else { return }
             if let snapshot, let current = self.zoomSnapshot {
@@ -129,13 +128,15 @@ final class CameraViewModel {
     /// Observable renderer selection (this model uses @Observable, not Combine).
     private(set) var isVideoCaptureProfileActive = false
     private(set) var isChangingCaptureProfile = false { didSet { pushCameraHardwareControls() } }
+    /// False when the active camera offers no Bayer RAW for Photo's still
+    /// profile. The shared idle graph keeps running its Video profile instead,
+    /// so Video stays usable and Photo refuses with a clear reason.
+    private(set) var isPhotoCaptureAvailable = true
     private var captureProfileWatchdog: Task<Void, Never>?
+    /// Photo mode owns the shared idle camera, so this is true wherever the
+    /// policy admits the app — Debug, TestFlight and App Store alike.
     var usesSharedIdlePreview: Bool {
-#if DEBUG
-        DevelopmentPhotoFeature.isAvailable(isDebugBuild: true, bundleIdentifier: Bundle.main.bundleIdentifier ?? "")
-#else
-        false
-#endif
+        DevelopmentPhotoFeature.isAvailableForCurrentBundle()
     }
     var usesNativeIdlePreview: Bool { usesSharedIdlePreview && !isVideoCaptureProfileActive }
     private(set) var photoExposureSnapshot: PhotoExposureSnapshot? {
@@ -308,12 +309,10 @@ final class CameraViewModel {
         photoCaptureWatchdog = nil
         captureProfileWatchdog?.cancel()
         captureProfileWatchdog = nil
-#if DEBUG
         photoGeneration &+= 1
         isPhotoCaptureBusy = false
         photoExposureSnapshot = nil
         if usesSharedIdlePreview { isChangingCaptureProfile = true }
-#endif
         // A foreground-session boundary resets the session-only frame rate to
         // 24 fps (daylight branch) and drops any in-flight focal gesture (mood
         // branch). Both are independent device-config concerns; neither may be
@@ -970,9 +969,7 @@ final class CameraViewModel {
             // changes sessionFrameRate; neither can relabel this take's URL.
             capturePolicies.record(sourceURL: outputURL, mode: sessionFrameRate)
             captureJournal.markPending(outputURL)
-#if DEBUG
             if usesSharedIdlePreview { session.setVideoRecordingZoomIntent(photoCropZoom) }
-#endif
             session.startRecording(to: outputURL) { [weak self] error in
                 guard let self else { return }
                 // A stale callback must not touch the session: captureGeneration
@@ -1099,7 +1096,7 @@ final class CameraViewModel {
         invalidateApertureUIState()
         invalidateStabilizationUIState()
         let previousLens = activeLens
-        session.selectCamera(lens) { [weak self] error in
+        session.selectCamera(lens, photoIntent: isDevelopmentPhotoMode) { [weak self] error in
             guard let self else { return }
             if error == nil {
                 // Session switches are serialized. Record each successful
@@ -1164,13 +1161,11 @@ final class CameraViewModel {
     }
 
     func toggleISOLock(currentISO: Float) {
-#if DEBUG
         if isDevelopmentPhotoMode {
             guard !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile, let state = photoExposureSnapshot else { return }
             session.setDevelopmentPhotoISOLocked(!state.isoLocked)
             return
         }
-#endif
         exposure.toggleISOLock(currentISO: currentISO)
     }
 
@@ -1292,6 +1287,14 @@ final class CameraViewModel {
 
     func setDevelopmentPhotoMode(_ enabled: Bool,
         completion: @escaping @MainActor @Sendable (Result<Void, Error>) -> Void) {
+        // A RAW-less lens has already been replaced by the shared Video graph;
+        // say why Photo cannot start rather than reporting a camera that is
+        // merely "not ready".
+        if enabled, usesSharedIdlePreview, !isPhotoCaptureAvailable {
+            completion(.failure(CameraError.photoCapabilityUnavailable(
+                "this camera offers no native Bayer RAW. Choose another lens to shoot Photo")))
+            return
+        }
         guard usesSharedIdlePreview, canChangeShootingMode, photoExposureSnapshot != nil else {
             trace("photo-mode-refused enabled=\(enabled) canChange=\(canChangeShootingMode) snapshot=\(photoExposureSnapshot != nil)")
             completion(.failure(CameraError.writerUnavailable("Shared idle camera is not ready")))
@@ -1310,7 +1313,7 @@ final class CameraViewModel {
             session.setDevelopmentPhotoDuration(1)
         }
 #endif
-        photoCaptureStatus = enabled ? "Ready · experimental photo color" : nil
+        photoCaptureStatus = enabled ? "Ready" : nil
         if enabled, let photoExposureSnapshot { presentPhotoExposure(photoExposureSnapshot) }
         else {
             restoreVideoExposurePresentation()
@@ -1364,10 +1367,8 @@ final class CameraViewModel {
     }
 
     func setPhotoShutterDuration(_ seconds: Double) {
-#if DEBUG
         guard isDevelopmentPhotoMode, !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile else { return }
         session.setDevelopmentPhotoDuration(seconds)
-#endif
     }
 
     func togglePhotoShutterLock() {
@@ -1377,7 +1378,6 @@ final class CameraViewModel {
 
     /// Accept an explicit selection so rapid taps do not toggle a stale sensor echo.
     func setPhotoShutterLocked(_ locked: Bool) {
-#if DEBUG
         guard isDevelopmentPhotoMode, !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile else { return }
         // The shutter rail lives inside the ISO control group. Locking a shutter
         // that has no control on screen pins custom exposure with nothing to
@@ -1385,7 +1385,6 @@ final class CameraViewModel {
         // in custom mode for the rest of the session.
         guard !locked || photoExposureSnapshot?.isoLocked == true else { return }
         session.setDevelopmentPhotoShutterLocked(locked)
-#endif
     }
 
     /// The app root accepts this capture only after the shared queue persists it.
@@ -1405,7 +1404,6 @@ final class CameraViewModel {
     /// and either starts a capture or says why it could not — an unresponsive
     /// control with no explanation is the one outcome that is not allowed.
     func takeDevelopmentPhoto(gauge: PrintGauge? = nil) {
-#if DEBUG
         trace("photo-tap enter")
         // The mode toggle can show Photo before the camera has engaged it, and an
         // enter that failed leaves it unengaged. A tap in either window used to
@@ -1483,7 +1481,6 @@ final class CameraViewModel {
                 self.errorMessage = error.localizedDescription
             }
         }
-#endif
     }
 
     /// Refusals and stalls are reported where the operator can read them: the
@@ -1536,7 +1533,6 @@ final class CameraViewModel {
     // MARK: - Manual Exposure
 
     func setManualISO(_ iso: Float) {
-#if DEBUG
         if isDevelopmentPhotoMode {
             guard !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile else { return }
             let value = clampedISO(iso)
@@ -1546,7 +1542,6 @@ final class CameraViewModel {
             session.setDevelopmentPhotoISO(value)
             return
         }
-#endif
         // The session refuses exposure changes during a take
         // (`exposureChangeDuringRecording`), so an optimistic write here would
         // display an ISO the hardware never took. Refuse before mutating, matching
@@ -1605,13 +1600,11 @@ final class CameraViewModel {
     func setLensAperture(_ aperture: Float?) {
         guard canSelectAperture, !isChangingFrameRate, !isChangingCaptureProfile,
               !isPhotoCaptureBusy, !isStartingRecording, !isRecording, !isStoppingRecording else { return }
-#if DEBUG
         if usesSharedIdlePreview, !isDevelopmentPhotoMode {
             selectedLensAperture = aperture
             session.setVideoRecordingApertureIntent(aperture)
             return
         }
-#endif
         apertureCommandGeneration &+= 1
         let commandGeneration = apertureCommandGeneration
         let switchGeneration = cameraLensSwitchGeneration
@@ -1716,7 +1709,6 @@ final class CameraViewModel {
     /// lock uses custom exposure mode, where the device's own bias is always 0,
     /// and the shutter-priority re-meter resets it regardless.
     func setExposureBias(_ bias: Float) {
-#if DEBUG
         if isDevelopmentPhotoMode {
             guard !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile else { return }
             session.setDevelopmentPhotoEV(bias)
@@ -1725,7 +1717,6 @@ final class CameraViewModel {
             CameraExposureBiasPreference.save(bias)
             return
         }
-#endif
         guard !isChangingFrameRate, !isChangingCaptureProfile else { return }
         let range = session.exposureBiasRange
         let clamped = min(max(bias, range.lowerBound), range.upperBound)
@@ -1871,13 +1862,11 @@ final class CameraViewModel {
     }
 
     func toggleManualExposure() {
-#if DEBUG
         if isDevelopmentPhotoMode {
             guard !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile, let state = photoExposureSnapshot else { return }
             session.setDevelopmentPhotoISOLocked(!state.isoLocked)
             return
         }
-#endif
         // A frame-rate transition owns the exposure path; hold the toggle too.
         guard !isChangingFrameRate, !isChangingCaptureProfile else { return }
         if isManualExposure {

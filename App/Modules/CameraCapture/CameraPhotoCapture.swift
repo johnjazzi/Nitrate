@@ -1,4 +1,3 @@
-#if DEBUG
 import AVFoundation
 import CoreMedia
 import Foundation
@@ -340,4 +339,3 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
         case alreadyStarted, manifestTooLarge
     }
 }
-#endif

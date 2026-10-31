@@ -216,4 +216,64 @@ struct PhotoCapturePolicyTests {
                                                       isChangingCaptureProfile: true, isCaptureBusy: true,
                                                       canCapture: false) == .capturing)
     }
+
+    // MARK: - RAW-less sensor fallback
+
+    @Test func aRefusedIdleRequestBecomesTheVideoGraph() {
+        #expect(SharedIdleCapabilityFallback.substituteProfile(for: .idle) == .video)
+        // Only the still profile has a stand-in; other failures keep the fatal path.
+        #expect(SharedIdleCapabilityFallback.substituteProfile(for: .video) == nil)
+        #expect(SharedIdleCapabilityFallback.substituteProfile(for: .stopped) == nil)
+    }
+
+    @Test func aVideoFallbackIsSettledRatherThanRetryingIdle() throws {
+        var graph = SharedCameraGraphOwnership()
+        graph.request(.idle)
+        let idleLeaseOption = graph.begin(.idle)
+        let idleLease = try #require(idleLeaseOption)
+        let installedVideo = graph.finish(idleLease, actual: .video)
+        #expect(installedVideo)
+        // The arbiter is left asking for the graph it actually has, so the
+        // refused idle request cannot be re-entered by driveSharedGraph.
+        let fallback = try #require(SharedIdleCapabilityFallback.substituteProfile(for: .idle))
+        graph.request(fallback)
+        #expect(graph.isSettledVideo)
+        #expect(graph.isSettled)
+        #expect(!graph.acceptsIdleControls)
+        // Record still starts from the settled Video graph without a rebuild.
+        let recordEpoch = graph.request(.video)
+        #expect(graph.acceptsVideoRequest(recordEpoch))
+    }
+
+    @Test func onlyVideoIntentMayDowngradeALensChange() {
+        // Video keeps the lens selectable; Photo keeps its lens and refuses.
+        #expect(SharedIdleCapabilityFallback.admitsLensDowngrade(photoIntent: false))
+        #expect(!SharedIdleCapabilityFallback.admitsLensDowngrade(photoIntent: true))
+    }
+
+    @Test func aRefusedSensorIsNotAskedTwice() {
+        let refusals: Set<String> = ["front"]
+        #expect(!SharedIdleCapabilityFallback.attemptsStillProfile(deviceID: "front", refusals: refusals))
+        #expect(SharedIdleCapabilityFallback.attemptsStillProfile(deviceID: "wide", refusals: refusals))
+        #expect(SharedIdleCapabilityFallback.attemptsStillProfile(deviceID: "wide", refusals: []))
+    }
+
+    /// `stopped` is both requested and installed on a fresh or drained arbiter.
+    /// Treating that as settled let a lens change run against a stopped session.
+    @Test func aStoppedGraphIsNotASettledLensTarget() throws {
+        var graph = SharedCameraGraphOwnership()
+        #expect(!graph.isSettled)
+        #expect(!graph.isSettledVideo)
+        let stoppedLeaseOption = graph.begin(.stopped)
+        let stoppedLease = try #require(stoppedLeaseOption)
+        #expect(!graph.isSettled)
+        graph.finish(stoppedLease, actual: .stopped)
+        #expect(!graph.isSettled)
+        // Only a running profile may accept the lens change.
+        graph.request(.idle)
+        let idleLeaseOption = graph.begin(.idle)
+        let idleLease = try #require(idleLeaseOption)
+        graph.finish(idleLease, actual: .idle)
+        #expect(graph.isSettled)
+    }
 }
