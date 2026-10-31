@@ -145,6 +145,8 @@ targets:
       - path: Tests/FrameRulerPlacementTests.swift
       - path: Tests/MeteringIndicatorTests.swift
       - path: Tests/InlineManualControlsTests.swift
+      - path: Tests/CameraFrameRateControlTests.swift
+      - path: App/Modules/CameraCapture/CameraFrameRateControl.swift
       - path: Tests/ManualControlsFeatureFlagTests.swift
       - path: Tests/FramedPreviewLayoutTests.swift
       - path: Tests/TestRepository.swift

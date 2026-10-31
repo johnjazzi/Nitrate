@@ -53,6 +53,20 @@ enum InlineManualControlPresentation {
     /// Matches the panel's existing manual-focus on/off value.
     static func focusValue(manualFocus: Bool) -> String { manualFocus ? "On" : "Off" }
 
+    /// The stack's reserved height for a given set of keys: every key keeps its
+    /// 44pt face, so adding the frame-rate key grows the stack by exactly one
+    /// row and its 4pt spacing rather than squeezing an existing control.
+    static func stackHeight(showsFrameRate: Bool) -> CGFloat {
+        let keys = showsFrameRate ? 4 : 3
+        return CGFloat(keys) * 44 + CGFloat(keys - 1) * 4
+    }
+
+    /// The frame-rate key belongs to the manual Video block only: Photo has no
+    /// frame-rate pipeline to steer and Develop has no capture at all.
+    static func showsFrameRateKey(isPhotoMode: Bool, isDevelopMode: Bool) -> Bool {
+        !isPhotoMode && !isDevelopMode
+    }
+
     /// An adjustable aperture reads in the app's light-purple menu tint; a fixed
     /// lens greys out without offering a control it cannot honour.
     static func apertureColor(canChange: Bool) -> Color {
@@ -77,6 +91,14 @@ struct InlineManualControls: View {
     var isPhotoMode = false
     var shutterControlEnabled = false
     var toggleShutterControl: () -> Void = {}
+    /// Actual rates the session reports as available, in frames per second.
+    /// Empty by default so a hosted stack never invents a rate.
+    var availableFrameRates: [Int] = []
+    /// The rate actually in force. Defaults to the 24 fps cold-launch rate.
+    var currentFrameRate: Int = 24
+    /// Whether the session will accept a frame-rate change right now.
+    var canChangeFrameRate = false
+    var selectFrameRate: (Int) -> Void = { _ in }
 
     private var effectiveStabilization: CameraStabilizationMode {
         InlineManualControlPresentation.effectiveMode(stabilization)
@@ -91,7 +113,13 @@ struct InlineManualControls: View {
         VStack(spacing: 4) {
             focusButton
             apertureButton
-            if !isPhotoMode { stabilizationButton }
+            if !isPhotoMode {
+                CameraFrameRateControl(availableFPS: availableFrameRates,
+                                       currentFPS: currentFrameRate,
+                                       canChange: canChangeFrameRate,
+                                       select: { chooseFrameRate($0) })
+                stabilizationButton
+            }
         }
         .frame(width: 44)
         .font(NitrateTypography.font(size: 12))
@@ -166,6 +194,13 @@ struct InlineManualControls: View {
     func selectAperture(_ aperture: Float?) {
         guard canChangeAperture else { return }
         setAperture(aperture)
+    }
+
+    /// The frame-rate key writes only a supported rate on an unlocked session.
+    func chooseFrameRate(_ fps: Int) {
+        guard CameraFrameRateControlPresentation.canSelect(
+            fps, availableFPS: availableFrameRates, canChange: canChangeFrameRate) else { return }
+        selectFrameRate(fps)
     }
 
     func selectMode(_ mode: CameraStabilizationMode) {

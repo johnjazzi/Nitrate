@@ -305,7 +305,8 @@ struct ContentView: View {
                 // visibility never resizes the preview and the whole button is hittable.
                 // Photo and Develop keep the rescue hidden: neither has a scene the
                 // daylight control can act on, so it must not take their space.
-                if !isDevelopMode, !isPhotoMode, shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
+                if !isDevelopMode, !isPhotoMode, !daylightRescueSuppressedByHighRate,
+                   shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
                    let rect = DaylightExposureRescueGeometry.buttonRect(
                     above: exposure, in: geometry.size, rotationDegrees: statusRotationDegrees,
                     excluding: daylightRescueExclusion(in: geometry)) {
@@ -345,7 +346,7 @@ struct ContentView: View {
         // An in-camera overlay, not a sheet: the preview, toolbar and shooting bar
         // keep their exact geometry and the scene stays visible behind the dim.
         .overlay {
-            if showDaylightRescue {
+            if showDaylightRescue, !daylightRescueSuppressedByHighRate {
                 DaylightExposureRescueOverlay(
                     armed: cameraViewModel.sessionFrameRate == .daylight60,
                     available: cameraViewModel.supportsDaylight60,
@@ -729,12 +730,41 @@ struct ContentView: View {
                         stabilization: cameraViewModel.recordingStabilization,
                         canChangeStabilization: cameraViewModel.canSetRecordingStabilization,
                         selectStabilization: { cameraViewModel.setRecordingStabilization($0) },
-                        isPhotoMode: isPhotoMode)
-                        .frame(width: 44, height: 140)
+                        isPhotoMode: isPhotoMode,
+                        availableFrameRates: availableInlineFrameRates,
+                        currentFrameRate: cameraViewModel.sessionFrameRate.rawValue,
+                        canChangeFrameRate: cameraViewModel.canChangeSessionFrameRate,
+                        selectFrameRate: selectInlineFrameRate)
+                        // The manual Video block keeps every key at its 44pt face,
+                        // so the extra frame-rate key grows the reserved stack by
+                        // exactly one row. Photo keeps its original height.
+                        .frame(width: 44, height: InlineManualControlPresentation.stackHeight(
+                            showsFrameRate: InlineManualControlPresentation.showsFrameRateKey(
+                                isPhotoMode: isPhotoMode, isDevelopMode: isDevelopMode)))
                         .background(controlMeasurement("inlineManual"))
                 }
             }
         }
+    }
+
+    /// The rates the session reports, as plain numbers for the in-frame key.
+    /// Nothing is inferred here: a rate the engine does not list stays disabled.
+    private var availableInlineFrameRates: [Int] {
+        cameraViewModel.availableSessionFrameRates.map(\.rawValue)
+    }
+
+    /// One write path: the frame-rate key only offers rates the session listed,
+    /// and the view model's own setter re-checks the recording/transition lock.
+    private func selectInlineFrameRate(_ fps: Int) {
+        guard let mode = CameraFrameRate.from(fps: fps) else { return }
+        cameraViewModel.setSessionFrameRate(mode)
+    }
+
+    /// A manual 120 is not the daylight rescue's 60 fps mode: the too-bright
+    /// rescue must never offer a 60 fps return flow that would silently replace
+    /// the rate the operator chose, so it stays out of the way entirely.
+    private var daylightRescueSuppressedByHighRate: Bool {
+        cameraViewModel.sessionFrameRate == .high120
     }
 
     /// Reserve the visible manual surface, not the full camera canvas, so the
@@ -1024,6 +1054,8 @@ struct ContentView: View {
                             style: RecordingIndicatorStyle.resolved(recordingIndicatorStyle),
                             rotationDegrees: CameraGlyphRotation.degrees(for: orientation.deviceOrientation),
                             daylight60Active: cameraViewModel.sessionFrameRate == .daylight60,
+                            frameRateFPS: cameraViewModel.sessionFrameRate == .standard24
+                                ? nil : cameraViewModel.sessionFrameRate.rawValue,
                             onManageDaylight: canManageDaylightMode ? { showDaylightRescue = true } : nil)
     }
 
