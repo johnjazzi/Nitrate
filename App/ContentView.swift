@@ -693,12 +693,17 @@ struct ContentView: View {
         cameraViewModel.canSelectAperture && !cameraViewModel.isChangingFrameRate
     }
 
-    /// The default in-frame block: the zoom rail on the physical left, and the
-    /// manual-focus rail with the inline button stack on the physical right.
+    /// The default in-frame block: the zoom rail on the physical left with the
+    /// actual frame-rate key docked beneath it, and the manual-focus rail with
+    /// the inline button stack on the physical right.
+    ///
     /// Both rails draw at 80% of their 44pt slot, inset flush to the preview
-    /// edge, while the slot keeps the full 44pt tap footprint. The button stack
-    /// keeps its three 44pt controls reserved even in autofocus, where the rail
-    /// renders grey and disabled instead of forcing the lens into manual focus.
+    /// edge, while the slot keeps the full 44pt tap footprint. Each slot owns a
+    /// single outer rotation, so the docked key keeps its place at the physical
+    /// bottom of the left column in both landscape holds without any extra
+    /// geometry. The right stack keeps its three 44pt controls reserved even in
+    /// autofocus, where the rail renders grey and disabled instead of forcing
+    /// the lens into manual focus.
     @ViewBuilder
     private func inlineFrameRulers(in bounds: CGRect) -> some View {
         let zoomRect = FrameRulerPlacementGeometry.rect(
@@ -706,17 +711,34 @@ struct ContentView: View {
             thickness: FrameRulerPlacementGeometry.zoomThickness,
             orientationDegrees: statusRotationDegrees)
         if !zoomRect.isNull {
+            let slotRun = authoredRulerRun(zoomRect)
+            let docksRateKey = InlineFrameRateKeyPlacement.docksKey(
+                isVideoMode: !isPhotoMode && !isDevelopMode, slotRun: slotRun)
             FrameRulerSlot(rect: zoomRect, rotationDegrees: statusRotationDegrees) {
-                FrameZoomRuler(
-                    millimeters: pinchIsActive ? pinchFocalLength
-                                               : cameraViewModel.currentFocalLengthMM,
-                    enabled: canUseZoomControls,
-                    revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
-                    begin: { cameraViewModel.beginSlowZoom($0) },
-                    end: cameraViewModel.endSlowZoom(revision:),
-                    step: cameraViewModel.stepDisplayZoom,
-                    availableFocalRange: cameraViewModel.focalLengthRulerRange,
-                    visualWidth: FrameRulerPlacementGeometry.rulerVisualThickness)
+                VStack(spacing: InlineFrameRateKeyPlacement.spacing) {
+                    FrameZoomRuler(
+                        millimeters: pinchIsActive ? pinchFocalLength
+                                                   : cameraViewModel.currentFocalLengthMM,
+                        enabled: canUseZoomControls,
+                        revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
+                        begin: { cameraViewModel.beginSlowZoom($0) },
+                        end: { cameraViewModel.endSlowZoom(revision:) },
+                        step: cameraViewModel.stepDisplayZoom,
+                        availableFocalRange: cameraViewModel.focalLengthRulerRange,
+                        visualWidth: FrameRulerPlacementGeometry.rulerVisualThickness)
+                        .frame(height: InlineFrameRateKeyPlacement.railHeight(
+                            slotRun: slotRun, docksKey: docksRateKey))
+                    if docksRateKey {
+                        // The existing key, moved not rebuilt: one selector, one
+                        // write path, docked at the bottom of the zoom column.
+                        CameraFrameRateControl(availableFPS: availableInlineFrameRates,
+                                               currentFPS: cameraViewModel.sessionFrameRate.rawValue,
+                                               canChange: cameraViewModel.canChangeSessionFrameRate,
+                                               select: selectInlineFrameRate)
+                            .frame(height: InlineFrameRateKeyPlacement.keyHeight)
+                    }
+                }
+                .frame(width: FrameRulerPlacementGeometry.zoomThickness)
             }
         }
         let focusRect = FrameRulerPlacementGeometry.rect(
@@ -740,22 +762,22 @@ struct ContentView: View {
                         setAperture: { cameraViewModel.setLensAperture($0) },
                         stabilization: cameraViewModel.recordingStabilization,
                         canChangeStabilization: cameraViewModel.canSetRecordingStabilization,
-                        selectStabilization: { cameraViewModel.setRecordingStabilization($0) },
-                        isPhotoMode: isPhotoMode,
-                        availableFrameRates: availableInlineFrameRates,
-                        currentFrameRate: cameraViewModel.sessionFrameRate.rawValue,
-                        canChangeFrameRate: cameraViewModel.canChangeSessionFrameRate,
-                        selectFrameRate: selectInlineFrameRate)
-                        // The manual Video block keeps every key at its 44pt face,
-                        // so the extra frame-rate key grows the reserved stack by
-                        // exactly one row. Photo keeps its original height.
-                        .frame(width: 44, height: InlineManualControlPresentation.stackHeight(
-                            showsFrameRate: InlineManualControlPresentation.showsFrameRateKey(
-                                isPhotoMode: isPhotoMode, isDevelopMode: isDevelopMode)))
+                        selectStabilization: { cameraViewModel.setRecordingStabilization($0) })
+                        // The right stack is the three manual keys at their 44pt
+                        // face in both modes; the frame-rate key is not here.
+                        .frame(width: 44, height: InlineManualControlPresentation.stackHeight)
                         .background(controlMeasurement("inlineManual"))
                 }
             }
         }
+    }
+
+    /// The run a ruler slot offers along its rail, read in the upright authoring
+    /// axis. A ±90° hold swaps the slot's canvas width and height, so the column's
+    /// usable length comes from the edge that is vertical on screen. The test is
+    /// the same `abs == 90` `FrameRulerSlot` applies to its own rotation.
+    private func authoredRulerRun(_ rect: CGRect) -> CGFloat {
+        abs(statusRotationDegrees) == 90 ? rect.width : rect.height
     }
 
     /// The rates the session reports, as plain numbers for the in-frame key.
