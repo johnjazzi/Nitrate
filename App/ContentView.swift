@@ -31,6 +31,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("showFramedPreview") private var showFramedPreview = false
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
+    @AppStorage(CameraControlAdjustment.preferenceKey) private var cameraControlAdjustment = CameraControlAdjustment.defaultValue.rawValue
     @State private var controlBounds: [String: CGRect] = [:]
     @State private var currentSourceURL: URL?
     /// The durable awaiting-stock entry created for the current take, if any.
@@ -364,7 +365,8 @@ struct ContentView: View {
             PurchaseView(viewModel: purchaseViewModel, showFramedPreview: $showFramedPreview,
                          manualFocusEnabled: manualFocusBinding,
                          zoomControlsEnabled: zoomControlsSetting,
-                         legacyManualControlsEnabled: legacyManualControlsSetting)
+                         legacyManualControlsEnabled: legacyManualControlsSetting,
+                         cameraControlSupported: cameraViewModel.supportsCameraControl)
         }
         .onChange(of: cameraViewModel.lastRecordedURL) { _, newURL in
             guard let url = newURL else { return }
@@ -1129,8 +1131,53 @@ struct ContentView: View {
             onPhotoISO: { cameraViewModel.setManualISO($0) },
             onPhotoISOLock: { cameraViewModel.toggleISOLock(currentISO: cameraViewModel.liveISO) },
             onPhotoDuration: cameraViewModel.setPhotoShutterDuration,
+            hardwareCaptureEnabled: hardwareCaptureEnabled,
             onPhotoShutterLock: cameraViewModel.togglePhotoShutterLock
         )
+        .onChange(of: cameraHardwareControlsVisible, initial: true) { _, _ in updateCameraHardwareControls() }
+        .onChange(of: cameraControlAdjustment) { _, _ in updateCameraHardwareControls() }
+        .onDisappear {
+            cameraViewModel.updateCameraHardwareControls(
+                adjustment: CameraControlAdjustment(persistedValue: cameraControlAdjustment), enabled: false)
+        }
+    }
+
+    /// Hardware must not consume capture events behind a sheet or in Develop.
+    private var cameraHardwareControlsVisible: Bool {
+        guard cameraViewModel.supportsCameraControl, scenePhase == .active, !isDevelopMode,
+              !showSettings, !showQueueSheet, !showStockSheet,
+              !showDaylightRescue, !showManualControls else { return false }
+#if DEBUG
+        if debugFrameViewModel != nil || pendingDebugTest != nil { return false }
+#endif
+        return true
+    }
+
+    private var hardwareCaptureEnabled: Bool {
+        guard cameraHardwareControlsVisible else { return false }
+        // A second full press must still stop a take or cancel its startup.
+        if cameraViewModel.isRecording || cameraViewModel.isStartingRecording { return true }
+        // A fault or a full disk is not a capture transition: it still disarms.
+        guard !showsRecordingFailure, cameraViewModel.errorMessage == nil,
+              !cameraViewModel.isSpaceCritical else { return false }
+        // Keep the platform interaction armed while handling a Photo full press.
+        // The live model still refuses a second still through its busy gate.
+        if cameraViewModel.isPhotoCaptureBusy { return true }
+        return cameraViewModel.canChangeShootingMode
+    }
+
+    private func updateCameraHardwareControls() {
+#if DEBUG
+        if CommandLine.arguments.contains("--trace-camera-control") {
+            CameraControlDiagnostics.record("visibility visible=\(cameraHardwareControlsVisible) "
+                + "captureEnabled=\(hardwareCaptureEnabled) scene=\(scenePhase) "
+                + "runtimeEnabled=\(cameraViewModel.canAcceptHardwareCapture) "
+                + "profileChanging=\(cameraViewModel.isChangingCaptureProfile)")
+        }
+#endif
+        cameraViewModel.updateCameraHardwareControls(
+            adjustment: CameraControlAdjustment(persistedValue: cameraControlAdjustment),
+            enabled: cameraHardwareControlsVisible)
     }
 
     private var canChangeCameraMode: Bool {

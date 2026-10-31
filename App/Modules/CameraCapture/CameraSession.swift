@@ -212,6 +212,40 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// A session-boundary reset waiting for the active take to drain.
     private var pendingFrameRateReset = false
 
+    // MARK: - Hardware Camera Control slider
+
+    /// The system Camera Control slider. Queue-confined to `sessionQueue`; the
+    /// session keeps the only strong reference because `AVCaptureSession` holds
+    /// its controls delegate weakly.
+    private let hardwareControls: CameraHardwareControls
+    /// Latest request from the UI. Re-applied on every zoom publish so the
+    /// slider's revision, range and value follow lens, format and profile
+    /// changes without the UI having to push again. Queue-confined.
+    private var hardwareControlRequest: CameraHardwareControlRequest?
+    private var hardwareControlObserver: (@MainActor @Sendable (CameraControlAdjustment, Float, UInt64) -> Void)?
+
+    /// Hardware platform truth: whether this phone has a physical Camera Control
+    /// button, read once from `AVCaptureSession.supportsControls`. It is
+    /// deliberately not combined with `isRunning` or `canAddControl`: those
+    /// describe the graph's transient state, while the button is a property of
+    /// the hardware — a stopped graph must not hide a feature the phone has, and
+    /// a running one must not offer it on a phone that has no button. Set once in
+    /// `init` and never written again, read on the main actor like the other
+    /// word-sized snapshot properties.
+    private(set) var supportsCameraControl = false
+
+    override init() {
+        hardwareControls = CameraHardwareControls(session: session, queue: sessionQueue)
+        super.init()
+        // Cached here so every gate below reads one immutable value instead of
+        // re-querying AVFoundation per press or per settings render.
+        supportsCameraControl = session.supportsControls
+        hardwareControls.onValueChange = { [weak self] adjustment, value, revision in
+            guard let self, let observer = self.hardwareControlObserver else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { observer(adjustment, value, revision) } }
+        }
+    }
+
     /// Head offset for the take that most recently started.
     func recordingHeadOffset() -> TimeInterval {
         recordingStateLock.lock()
@@ -484,10 +518,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
         try startDevelopmentPhotoController(device: device, output: output, directory: directory, update: update)
         apertureCameraRevision &+= 1
         zoomLifecycle.cameraChanged()
-        publishZoom()
         if !session.isRunning { session.startRunning() }
         guard session.isRunning else { throw CameraError.noCameraAvailable }
         isConfigured = true
+        // After the real start, so the retained request can present its slider.
+        refreshHardwareControlsAfterStartOnQueue()
     }
 
     private func installSharedVideoOnQueue() throws {
@@ -1693,6 +1728,74 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
     }
 
+    // MARK: - Hardware Camera Control slider
+
+    /// Installs, updates or removes the single system Camera Control slider.
+    /// Callable from any thread: the session resolves the device ranges and the
+    /// camera revision on its own queue, so a range captured on the main actor
+    /// can never be presented against a newer lens. Rejects the request only
+    /// through the contained controller (unsupported session, `.off`, or an
+    /// unusable range leaves no slider).
+    func updateHardwareControls(_ request: CameraHardwareControlRequest) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.hardwareControlRequest = request
+            self.hardwareControls.apply(self.hardwareControlConfiguration(request))
+        }
+    }
+
+    /// Receives slider values on the main actor together with the camera
+    /// revision the slider was resolved for, so the view model can drop a value
+    /// produced before a lens switch committed.
+    func observeHardwareControlValues(
+        _ observer: @escaping @MainActor @Sendable (CameraControlAdjustment, Float, UInt64) -> Void) {
+        sessionQueue.async { [weak self] in
+            self?.hardwareControlObserver = observer
+        }
+    }
+
+    /// Queue-confined. A slider is only presented while its session runs, so a
+    /// request that arrives before the graph starts (cold launch) or that was
+    /// retired with the previous graph (foreground, recovery, lens/profile
+    /// rebuild) leaves the button with no slider until something re-applies it.
+    /// Every path that really starts the session ends here, and `publishZoom()`
+    /// is that single refresh: it republishes the zoom snapshot, re-resolves the
+    /// live device ranges and re-applies the retained request. No second
+    /// framework path is created.
+    private func refreshHardwareControlsAfterStartOnQueue() {
+        guard session.isRunning else { return }
+        publishZoom()
+    }
+
+    /// Queue-confined. Device truth wins over the request: bounds, EV range and
+    /// revision are read live, and the requested value is clamped into them.
+    private func hardwareControlConfiguration(_ request: CameraHardwareControlRequest)
+        -> CameraHardwareControlConfiguration {
+        var zoomRange: ClosedRange<Float> = 1...1
+        var zoomValue: Float = 1
+        if let device = activeDevice, let bounds = zoomBounds(for: device),
+           bounds.minimumDisplay.isFinite, bounds.maximumDisplay.isFinite,
+           bounds.minimumDisplay <= bounds.maximumDisplay {
+            let minimum = Float(request.usesNativeIdlePreview ? bounds.multiplier : bounds.minimumDisplay)
+            let maximum = Float(request.usesNativeIdlePreview ? bounds.multiplier * 4 : bounds.maximumDisplay)
+            zoomRange = minimum...maximum
+            let requested = request.displayZoom.isFinite ? Float(request.displayZoom) : minimum
+            zoomValue = min(max(requested, minimum), maximum)
+        }
+        let exposure = exposureBiasRange
+        let exposureValue = min(max(request.exposureBias, exposure.lowerBound), exposure.upperBound)
+        return CameraHardwareControlConfiguration(
+            adjustment: request.adjustment,
+            // An unsupported phone presents no control at all, whatever the UI
+            // asked for. Every apply — the first request and each start, lens
+            // and profile re-apply — is resolved here, so this one gate is the
+            // whole session-side refusal.
+            isEnabled: request.isEnabled && supportsCameraControl,
+            zoomRange: zoomRange, zoomValue: zoomValue,
+            exposureRange: exposure, exposureValue: exposureValue,
+            cameraRevision: zoomLifecycle.cameraRevision)
+    }
+
     private func publishZoom() {
         let snapshot: CameraZoomSnapshot?
         if let device = activeDevice, let bounds = zoomBounds(for: device) {
@@ -1708,6 +1811,22 @@ final class CameraSession: NSObject, @unchecked Sendable {
                                           }(),
                                           displayMultiplier: bounds.multiplier)
         } else { snapshot = nil }
+        // Keep the system slider's revision, range and value aligned with the
+        // device after every lens, format and profile change, and after every
+        // zoom the touch UI drives.
+        if var request = hardwareControlRequest {
+            // The stored request carries the magnification the main actor last
+            // published, which is one snapshot stale. Re-applying that value
+            // would write the previous zoom back into the slider, so refresh it
+            // from the snapshot just built. Photo's native idle graph is the
+            // exception: its magnification is the software crop, which the
+            // device reading cannot express.
+            if !request.usesNativeIdlePreview, let snapshot {
+                request.displayZoom = snapshot.displayFactor
+                hardwareControlRequest = request
+            }
+            hardwareControls.apply(hardwareControlConfiguration(request))
+        }
         if let zoomObserver {
             DispatchQueue.main.async { MainActor.assumeIsolated { zoomObserver(snapshot) } }
         }
@@ -1847,19 +1966,49 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
     /// The one place points of interest are written, shared by tap-to-focus and
     /// the switch reset so the visible box and the device cannot drift apart.
-    /// Autofocus is re-armed only when the manual-focus contract allows it; the
-    /// exposure point always follows the point, which moves the metering area
-    /// without changing a locked exposure's ISO or duration.
+    /// The mode is continuous wherever the device supports it, so the selected
+    /// circle keeps refocusing as the scene distance changes instead of focusing
+    /// once per tap; a device without continuous autofocus keeps the one-shot
+    /// fallback. Autofocus is re-armed only when the manual-focus contract
+    /// allows it; the exposure point always follows the point, which moves the
+    /// metering area without changing a locked exposure's ISO or duration.
     private func writeFocusAndExposurePoint(_ point: CGPoint, on device: AVCaptureDevice) {
         if device.isFocusPointOfInterestSupported,
-           device.isFocusModeSupported(.autoFocus),
+           let mode = Self.autofocusMode(for: device),
            CameraManualFocusPolicy.allowsAutofocusOnTap(
                committedLensPosition: committedManualFocusLensPosition) {
             device.focusPointOfInterest = point
-            device.focusMode = .autoFocus
+            device.focusMode = mode
         }
         if device.isExposurePointOfInterestSupported {
             device.exposurePointOfInterest = point
+        }
+#if DEBUG
+        if CommandLine.arguments.contains("--trace-camera-control") {
+            // One line per request: which mode this format actually offers, what
+            // the request installed, whether a committed manual focus held the
+            // lens, and whether the active format could track the subject. The
+            // tracking property is read only — enabling it is a separate change.
+            let requested = Self.autofocusMode(for: device).map { String($0.rawValue) } ?? "none"
+            CameraControlDiagnostics.record("af point=(\(String(format: "%.3f", point.x)),"
+                + "\(String(format: "%.3f", point.y))) requested=\(requested)"
+                + " active=\(device.focusMode.rawValue)"
+                + " manualHeld=\(committedManualFocusLensPosition != nil)"
+                + " trackingSupported=\(device.activeFormat.isContinuousAutoFocusTrackingSupported)"
+                + " trackingEnabled=\(device.isContinuousAutoFocusTrackingEnabled)")
+        }
+#endif
+    }
+
+    /// Map the point-of-interest mode decision onto the device's own modes.
+    /// MUST be called on `sessionQueue`.
+    private static func autofocusMode(for device: AVCaptureDevice) -> AVCaptureDevice.FocusMode? {
+        switch CameraAutofocusPolicy.mode(
+            supportsContinuous: device.isFocusModeSupported(.continuousAutoFocus),
+            supportsSingle: device.isFocusModeSupported(.autoFocus)) {
+        case .continuous: return .continuousAutoFocus
+        case .single: return .autoFocus
+        case nil: return nil
         }
     }
 
@@ -1905,17 +2054,18 @@ final class CameraSession: NSObject, @unchecked Sendable {
         } catch { reportCameraError(error) }
     }
 
-    /// Return the lens to continuous auto-focus and drop the committed MF state.
+    /// Return the lens to continuous auto-focus (or the single-shot mode the
+    /// device supports) and drop the committed MF state.
     func resetAutoFocus() {
         sessionQueue.async { [weak self] in
             guard let self, !self.sharedDeviceTransitionInFlight else { return }
             self.committedManualFocusLensPosition = nil
             guard let device = self.activeDevice,
-                  device.isFocusModeSupported(.continuousAutoFocus) else { return }
+                  let mode = Self.autofocusMode(for: device) else { return }
             do {
                 try device.lockForConfiguration()
                 defer { device.unlockForConfiguration() }
-                device.focusMode = .continuousAutoFocus
+                device.focusMode = mode
             } catch { self.reportCameraError(error) }
         }
     }
@@ -4066,6 +4216,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             updatePreviewConnection()
             session.startRunning()
             guard session.isRunning else { throw CameraError.writerUnavailable("Restored video session did not start") }
+            refreshHardwareControlsAfterStartOnQueue()
             try applyDebugPhotoRestoredControls(run)
             run.evidence["restoration"] = "awaitingDeviceAcknowledgments"
             try writeDebugPhotoEvidence(run)
@@ -4280,7 +4431,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
 #endif
             guard !self.sessionInterrupted else { return }
             if self.sessionRecoveryPending { self.resetVideoSessionAtSafeBoundary() }
-            else if self.isConfigured, !self.session.isRunning { self.session.startRunning() }
+            else if self.isConfigured, !self.session.isRunning {
+                self.session.startRunning()
+                self.refreshHardwareControlsAfterStartOnQueue()
+            }
         }
     }
 
@@ -4463,7 +4617,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
             let observer = onCameraError
             let lens = activeLens
             DispatchQueue.main.async { observer?(error, lens) }
-        } else if desiredSessionRunning { session.startRunning(); suspendPreview(false) }
+        } else if desiredSessionRunning {
+            session.startRunning(); suspendPreview(false)
+            refreshHardwareControlsAfterStartOnQueue()
+        }
     }
 
     deinit {
@@ -4487,6 +4644,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             }
             if self.developmentPhotoController != nil {
                 if !self.session.isRunning { self.session.startRunning() }
+                self.refreshHardwareControlsAfterStartOnQueue()
                 return
             }
             if let run = self.debugPhotoRun { run.shouldRestart = true; return }
@@ -4500,6 +4658,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
             if !self.session.isRunning {
                 self.session.startRunning()
             }
+            // Cold launch and foreground both land here with the UI's request
+            // already retained; a stopped graph never showed its slider.
+            self.refreshHardwareControlsAfterStartOnQueue()
             self.suspendPreview(false)
             if !self.isRecordingOrPending { self.applyRecordingStabilization() }
         }
@@ -4509,6 +4670,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
     func stop() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            // The system control must not outlive the graph it drives.
+            self.hardwareControlRequest = nil
+            self.hardwareControls.uninstall()
             self.desiredSessionRunning = false
 #if DEBUG
             if self.sharedIdleEnabled {

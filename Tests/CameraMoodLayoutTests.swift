@@ -39,13 +39,17 @@ struct CameraMoodLayoutTests {
     }
 
     @Test func photoShutterAcknowledgesTheTapBeforeCallingCapture() throws {
-        let photo = try controlBarSection(from: "        if isPhotoMode {", to: "} else if isDevelopMode {")
+        let photo = try controlBarSection(from: "private var recordButton: some View {\n        if isPhotoMode {", to: "} else if isDevelopMode {")
         let actionStart = try #require(photo.range(of: "Button {"))
         let actionEnd = try #require(photo.range(of: "} label: {"))
         let action = photo[actionStart.upperBound..<actionEnd.lowerBound]
         let statements = action.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        #expect(statements == ["recordFeedback = .start", "recordFeedbackTrigger &+= 1", "onPhotoCapture()"])
+        #expect(statements == ["performPhotoCapture()"])
+        let capture = try controlBarSection(from: "private func performPhotoCapture()", to: "/// The Video REC control")
+        let feedback = try #require(capture.range(of: "recordFeedbackTrigger &+= 1"))
+        let submit = try #require(capture.range(of: "onPhotoCapture()"))
+        #expect(feedback.lowerBound < submit.lowerBound)
         #expect(photo.components(separatedBy: ".sensoryFeedback(").count == 2)
         #expect(photo.contains(".sensoryFeedback(trigger: recordFeedbackTrigger) { _, _ in recordFeedback.sensory }"))
         #expect(!photo.contains("isPhotoCaptureBusy"))
@@ -53,7 +57,7 @@ struct CameraMoodLayoutTests {
     }
 
     @Test func photoShutterPreservesWholeCircleAndNeverDisables() throws {
-        let photo = try controlBarSection(from: "        if isPhotoMode {", to: "} else if isDevelopMode {")
+        let photo = try controlBarSection(from: "private var recordButton: some View {\n        if isPhotoMode {", to: "} else if isDevelopMode {")
         #expect(photo.contains("ZStack {"))
         #expect(photo.contains("PhotoShutterFace()"))
         #expect(photo.contains("Circle().stroke(.white.opacity(0.8), lineWidth: 2).frame(width: 78, height: 78)"))
