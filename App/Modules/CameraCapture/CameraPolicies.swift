@@ -57,19 +57,35 @@ enum CameraCaptureFormatPolicy {
         let supports24FPS: Bool
         /// `videoSupportedFrameRateRanges` contains 60.
         let supports60FPS: Bool
+        /// `videoSupportedFrameRateRanges` contains 120. A 120 fps capture needs a
+        /// format whose ranges include 120; a 60-only range cannot deliver it.
+        let supports120FPS: Bool
         let isTenBitBiPlanar420: Bool
         let isTenBitBiPlanar422: Bool
 
         init(width: Int32, height: Int32, supportsAppleLog2: Bool,
              supports24FPS: Bool, isTenBitBiPlanar420: Bool = false,
-             isTenBitBiPlanar422: Bool = false, supports60FPS: Bool = false) {
+             isTenBitBiPlanar422: Bool = false, supports60FPS: Bool = false,
+             supports120FPS: Bool = false) {
             self.width = width
             self.height = height
             self.supportsAppleLog2 = supportsAppleLog2
             self.supports24FPS = supports24FPS
             self.supports60FPS = supports60FPS
+            self.supports120FPS = supports120FPS
             self.isTenBitBiPlanar420 = isTenBitBiPlanar420
             self.isTenBitBiPlanar422 = isTenBitBiPlanar422
+        }
+
+        /// Whether this format's frame-rate ranges include `fps`. Rates the
+        /// selector does not know are never treated as supported.
+        func supports(fps: Int) -> Bool {
+            switch fps {
+            case 24: return supports24FPS
+            case 60: return supports60FPS
+            case 120: return supports120FPS
+            default: return false
+            }
         }
     }
 
@@ -78,23 +94,23 @@ enum CameraCaptureFormatPolicy {
     }
 
     static func appleLog2CandidateIndexes(in candidates: [Candidate]) -> [Int] {
-        let matches = candidates.indices.filter {
-            let candidate = candidates[$0]
-            return candidate.width == 3840 && candidate.height == 2160
-                && candidate.supportsAppleLog2 && candidate.supports24FPS
-                && (candidate.isTenBitBiPlanar420 || candidate.isTenBitBiPlanar422)
-        }
-        return matches.filter { candidates[$0].isTenBitBiPlanar420 }
-            + matches.filter { candidates[$0].isTenBitBiPlanar422 }
+        appleLog2EligibleCandidateIndexes(in: candidates, fps: 24)
     }
 
     /// Parallel to `appleLog2CandidateIndexes`, but requires a 60 fps range.
     /// `.standard24` selection is unchanged; `.daylight60` uses this.
     static func appleLog2SixtyCandidateIndexes(in candidates: [Candidate]) -> [Int] {
+        appleLog2EligibleCandidateIndexes(in: candidates, fps: 60)
+    }
+
+    /// The one rate-aware 4K Apple Log 2 10-bit selector: geometry, color space,
+    /// bit depth and a frame-rate range that actually includes `fps`. `.high120`
+    /// uses this with 120 so a 60-only format can never be chosen for 120.
+    static func appleLog2EligibleCandidateIndexes(in candidates: [Candidate], fps: Int) -> [Int] {
         let matches = candidates.indices.filter {
             let candidate = candidates[$0]
             return candidate.width == 3840 && candidate.height == 2160
-                && candidate.supportsAppleLog2 && candidate.supports60FPS
+                && candidate.supportsAppleLog2 && candidate.supports(fps: fps)
                 && (candidate.isTenBitBiPlanar420 || candidate.isTenBitBiPlanar422)
         }
         return matches.filter { candidates[$0].isTenBitBiPlanar420 }

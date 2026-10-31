@@ -5,14 +5,20 @@ import CoreMedia
 ///
 /// `.standard24` is the default and the cold-launch value. `.daylight60` is the
 /// break-glass emergency exposure mode (fixed shutter `1/120`, 180°).
+/// `.high120` is the manual-mode high-rate capture: a real 120 fps capture, not
+/// a 120th shutter at 60 fps.
 enum CameraFrameRate: Int, Codable, Equatable, Sendable, CaseIterable, Identifiable {
     case standard24 = 24
     case daylight60 = 60
+    case high120 = 120
 
     var id: Int { rawValue }
     var fps: Int { rawValue }
 
-    /// 180° shutter denominator: 48 at 24 fps, 120 at 60 fps.
+    /// The default mode. Every session starts and resets here.
+    var isStandard: Bool { self == .standard24 }
+
+    /// 180° shutter denominator: 48 at 24 fps, 120 at 60 fps, 240 at 120 fps.
     var shutterDenominator: Int { rawValue * 2 }
 
     /// Fixed frame duration asserted on the capture device for this mode.
@@ -72,6 +78,13 @@ enum CameraFrameRatePolicy {
 
     static func canChange(recording: Bool, starting: Bool, finishing: Bool) -> Bool {
         !recording && !starting && !finishing
+    }
+
+    /// The modes a device can capture, ascending, always including the
+    /// `.standard24` baseline. Never advertises a rate the device cannot deliver,
+    /// so a control is disabled instead of a take failing on a silent downgrade.
+    static func availableModes(_ isEligible: (CameraFrameRate) -> Bool) -> [CameraFrameRate] {
+        [.standard24] + [.daylight60, .high120].filter(isEligible)
     }
 
     /// How a foreground-session boundary resolves the capture frame rate.

@@ -63,7 +63,26 @@ struct CameraFrameRatePolicyTests {
     @Test func wholeNumberFpsMapsToAModeOrNil() {
         #expect(CameraFrameRate.from(fps: 24) == .standard24)
         #expect(CameraFrameRate.from(fps: 60) == .daylight60)
+        #expect(CameraFrameRate.from(fps: 120) == .high120)
         #expect(CameraFrameRate.from(fps: 30) == nil)
+    }
+
+    @Test func highRateIsARealCaptureRateNotAShutter() {
+        // 120 is the capture rate; the 180° shutter for it is 1/240.
+        #expect(CameraFrameRate.high120.fps == 120)
+        #expect(CameraFrameRate.high120.shutterDenominator == 240)
+        #expect(CameraFrameRate.high120.frameDuration == CMTime(value: 1, timescale: 120))
+        #expect(CameraFrameRate.high120.filmShutterDuration == CMTime(value: 1, timescale: 240))
+        #expect(CameraFrameRate.high120.fallbackVideoSampleDuration == CMTime(value: 1, timescale: 120))
+        #expect(CameraFrameRate.allCases == [.standard24, .daylight60, .high120])
+        #expect(CameraFrameRate.standard24.isStandard)
+        #expect(!CameraFrameRate.high120.isStandard)
+    }
+
+    @Test func availabilityNeverAdvertisesARateTheDeviceCannotDeliver() {
+        #expect(CameraFrameRatePolicy.availableModes { _ in false } == [.standard24])
+        #expect(CameraFrameRatePolicy.availableModes { $0 != .high120 } == [.standard24, .daylight60])
+        #expect(CameraFrameRatePolicy.availableModes { _ in true } == [.standard24, .daylight60, .high120])
     }
 
     @Test func rawValuesAreTheFps() {
@@ -121,6 +140,16 @@ struct DaylightCapturePolicyLedgerTests {
         #expect(ledger.policy(for: url("take-3")) == RenderCapturePolicy(24))
         #expect(ledger.policy(for: url("take-2")) == RenderCapturePolicy(60))
         #expect(ledger.policy(for: url("take-0")) == nil)
+    }
+
+    @Test func highRateTakeKeepsItsOwnPolicyThroughTheLedger() {
+        var ledger = DaylightCapturePolicyLedger()
+        ledger.record(sourceURL: url("h"), mode: .high120)
+        #expect(ledger.policy(for: url("h")) == RenderCapturePolicy(120))
+        // A 120 take is never relabelled as its 60 or 24 sibling.
+        #expect(ledger.policy(for: url("h"))?.frameRate == 120)
+        #expect(ledger.policy(for: url("h"))?.shutterDenominator == 240)
+        #expect(ledger.policy(for: url("h"))?.grainPairing == .pairedAtHalfRate)
     }
 
     @Test func clearDropsEveryMemory() {

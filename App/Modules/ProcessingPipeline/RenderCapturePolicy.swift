@@ -10,10 +10,10 @@ import Foundation
 /// the fixed 180° shutter together, so an invalid fps/shutter/grain combination
 /// cannot be constructed.
 struct RenderCapturePolicy: Codable, Equatable, Sendable {
-    /// 24 or 60.
+    /// 24, 60 or 120.
     let frameRate: Int
     let grainPairing: GrainPairing
-    /// 180° fixed shutter denominator: 48 or 120.
+    /// 180° fixed shutter denominator: 48, 120 or 240.
     let shutterDenominator: Int
 
     private enum CodingKeys: String, CodingKey {
@@ -28,14 +28,18 @@ struct RenderCapturePolicy: Codable, Equatable, Sendable {
               try values.decode(Int.self, forKey: .shutterDenominator) == policy.shutterDenominator else {
             throw DecodingError.dataCorrupted(.init(
                 codingPath: decoder.codingPath,
-                debugDescription: "Capture policy must be 24fps/1⁄48/per-frame or 60fps/1⁄120/paired grain."))
+                debugDescription: "Capture policy must be 24fps/1⁄48/per-frame, or 60fps/1⁄120 or 120fps/1⁄240 with paired grain."))
         }
         self = policy
     }
 
-    /// Nil unless `frameRate` is 24 or 60. Derives the pairing and shutter from
-    /// the rate so the three values cannot disagree. `nil` in a job means legacy
-    /// behaviour: 24 fps, per-frame grain, `1/48` shutter metadata.
+    /// Nil unless `frameRate` is 24, 60 or 120. Derives the pairing and shutter
+    /// from the rate so the three values cannot disagree. `nil` in a job means
+    /// legacy behaviour: 24 fps, per-frame grain, `1/48` shutter metadata.
+    ///
+    /// Above 24 fps the 180° shutter keeps the same half-rate paired grain
+    /// semantics: a 120 fps take gets 60 grain realisations, exactly as a 60 fps
+    /// take gets 30, so grain never becomes per-frame noise at a high rate.
     init?(_ frameRate: Int) {
         switch frameRate {
         case 24:
@@ -46,6 +50,10 @@ struct RenderCapturePolicy: Codable, Equatable, Sendable {
             self.frameRate = 60
             self.grainPairing = .pairedAtHalfRate
             self.shutterDenominator = 120
+        case 120:
+            self.frameRate = 120
+            self.grainPairing = .pairedAtHalfRate
+            self.shutterDenominator = 240
         default:
             return nil
         }
