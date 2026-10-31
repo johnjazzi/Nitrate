@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "gauges": [
+    {
+      "gauge": "8mm",
+      "sizeMultiplier": 2.0,
+      "amplitudeMultiplier": 0.55
+    },
+    {
+      "gauge": "16mm",
+      "sizeMultiplier": 1.35,
+      "amplitudeMultiplier": 0.396
+    },
+    {
+      "gauge": "35mm",
+      "sizeMultiplier": 0.9,
+      "amplitudeMultiplier": 0.297
+    },
+    {
+      "gauge": "75mm",
+      "sizeMultiplier": 0.5,
+      "amplitudeMultiplier": 0.165
+    }
+  ]
+}

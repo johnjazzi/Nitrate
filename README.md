@@ -336,14 +336,26 @@ out of near-black shadows and out of highlights, peaking in the mid-tones, the
 way a real negative's grain reads in the print.
 
 **The print gauge owns grain.** Presence is `baseAmount × gaugeAmplitude`. The
-stock supplies size; the gauge multiplies both — 8mm ×2.0 size / ×0.50 presence,
-16mm ×1.35 / ×0.36, 35mm ×0.9 / ×0.27, 75mm ×0.5 / ×0.15. **ISO does not scale
-grain**; it is the exposure index only. Size is half the previous ladder across
-all stocks and gauges, with footprint bounds likewise halved to 0.475–8.0.
-Base presence is 0.605, a 10% increase from 0.55; gauge presence ratios are unchanged.
-The finer gauges now sample below the volume's texel scale and may lose spatial
-correlation; the lower bound is not an anti-aliasing guarantee. Visual approval
-of this tuning remains separate from the numerical size and presence contract.
+stock supplies size; the gauge multiplies both — 8mm ×2.0 size / ×0.55 presence,
+16mm ×1.35 / ×0.396, 35mm ×0.9 / ×0.297, 75mm ×0.5 / ×0.165, with `baseAmount`
+0.55. **ISO does not scale grain**; it is the exposure index only.
+
+**The ladder is configuration, not code.** Those multipliers ship in
+`gauges.json`: `App/Resources/gauges.json` for the App, the byte-identical
+`Resources/gauges.json` for RenderCLI, and both are bundled into the tests that
+read the model. `PrintGauge.sizeMultiplier` and `amplitudeMultiplier` only read
+that document, so re-tuning a gauge is a JSON edit — keep the two copies equal;
+the grain tests assert it. The schema is typed and validated: a duplicated gauge,
+a gauge with no entry, an unknown id, an unsupported `schemaVersion`, or a
+multiplier that is not finite and positive is rejected, never defaulted.
+
+The effective footprint is clamped to `0.95…16.0`, unchanged by this tuning:
+below ~1.0 the 128³ volume is undersampled and finer size yields aliased noise
+rather than finer grain. That bound is also why the finest gauge cannot reach
+exactly half its previous footprint — 75mm asks for 0.575 and 0.65 on the two
+shipped stocks and is held at 0.95 (73–83% of the previous 1.15 and 1.3).
+75mm's near-grain-free look still comes from its amplitude multiplier, not from
+pushing size into that regime.
 
 **Edge amplification** is what makes grain follow image structure instead of
 sitting on top of it:
@@ -352,7 +364,7 @@ sitting on top of it:
 edgeMagnitude = length(float2(lumaRight - lumaLeft,    // central difference in x
                               lumaDown  - lumaUp));    // central difference in y
 edgeFactor    = 1.0 + saturate(edgeMagnitude * 3.0) * edgeBoostMultiplier;
-amount        = 0.605 * gaugeAmplitude * edgeFactor;
+amount        = 0.55 * gaugeAmplitude * edgeFactor;
 ```
 
 The gradient is a central difference on the prefiltered neighbourhood, so it

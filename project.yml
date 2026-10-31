@@ -143,6 +143,10 @@ targets:
       - path: App/Modules/CameraCapture/RecordingTallyLight.swift
       - path: App/Modules/CameraCapture/FocalLengthRuler.swift
       - path: App/Modules/CameraCapture/CameraStatusPresentation.swift
+    resources:
+      # This target links GrainModel, whose gauge multipliers come from the
+      # bundled gauges.json; ship the same document the App uses.
+      - path: Resources/gauges.json
     settings:
       SWIFT_VERSION: "6.0"
       # The fixture-packaging build phase reads the checkout and writes into the
@@ -180,6 +184,9 @@ targets:
       - path: App/Resources/Grain
         type: folder
       - path: App/Resources/stocks.json
+      # Print-gauge grain tuning. The CLI ships the identical Resources/gauges.json
+      # so the App and the CLI render from one ladder; keep both copies equal.
+      - path: App/Resources/gauges.json
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -240,6 +247,7 @@ targets:
       - path: Resources/LUTs/
         type: file
       - path: Resources/stocks.json
+      - path: Resources/gauges.json
     dependencies:
       - sdk: Metal.framework
       - sdk: AVFoundation.framework
@@ -314,6 +322,10 @@ targets:
         type: folder
         buildPhase: resources
       - path: Resources/stocks.json
+        buildPhase: resources
+      # Grain gauge tuning, so `PrintGauge.sizeMultiplier` / `amplitudeMultiplier`
+      # resolve from the bundle instead of the source checkout.
+      - path: Resources/gauges.json
         buildPhase: resources
     dependencies:
       - sdk: Metal.framework
