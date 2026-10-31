@@ -16,7 +16,15 @@ struct GrainModelTests {
     ]
     private static let shippedAmplitudes: [PrintGauge: Float] = [
         .eightMillimetre: 0.55, .sixteenMillimetre: 0.396,
-        .thirtyFiveMillimetre: 0.297, .seventyFiveMillimetre: 0.165
+        .thirtyFiveMillimetre: 0.36, .seventyFiveMillimetre: 0.165
+    ]
+    /// Presence lift over the previous ladder, per gauge. 35mm carries more than
+    /// the 10% the other gauges ship: at half its previous footprint, card-size
+    /// grain measured 0.003386 against one 8-bit display step of 0.003922, and
+    /// 0.36 is the presence that clears that floor (measured 0.004033).
+    private static let presenceLift: [PrintGauge: Float] = [
+        .eightMillimetre: 1.1, .sixteenMillimetre: 1.1,
+        .thirtyFiveMillimetre: 4.0 / 3.0, .seventyFiveMillimetre: 1.1
     ]
     /// The ladder this tuning replaced, used to state the half-size contract.
     private static let previousSizes: [PrintGauge: Float] = [
@@ -193,16 +201,20 @@ struct GrainModelTests {
         }
     }
 
-    /// Presence is 10% above the previous ladder for every gauge at every edge
-    /// boost, and the single loudness scale stays at 0.55.
-    @Test func presenceIsTenPercentAboveThePreviousLadder() {
+    /// Presence follows the shipped lift over the previous ladder at every edge
+    /// boost, and the single loudness scale stays at 0.55. 8mm, 16mm and 75mm
+    /// ship 10% louder; 35mm ships the larger lift that keeps its card-size
+    /// grain above the 8-bit floor at half its previous footprint.
+    @Test func presenceFollowsTheShippedLiftOverThePreviousLadder() {
         #expect(GrainModel.baseAmount == 0.55)
         for gauge in PrintGauge.allCases {
             let previousAmplitude = Self.previousAmplitudes[gauge] ?? 0
-            #expect(abs(gauge.amplitudeMultiplier - previousAmplitude * 1.1) < tolerance)
+            let lift = Self.presenceLift[gauge] ?? 1
+            #expect(abs(gauge.amplitudeMultiplier - previousAmplitude * lift) < tolerance,
+                    "gauge \(gauge): amplitude \(gauge.amplitudeMultiplier) must be \(previousAmplitude * lift)")
             for edgeFactor: Float in [1, 3, 4] {
                 let previous = GrainModel.baseAmount * previousAmplitude * edgeFactor
-                #expect(abs(GrainModel.amount(gauge: gauge, edgeFactor: edgeFactor) - previous * 1.1) < tolerance)
+                #expect(abs(GrainModel.amount(gauge: gauge, edgeFactor: edgeFactor) - previous * lift) < tolerance)
             }
         }
     }
@@ -224,7 +236,7 @@ struct GrainModelTests {
     private static let shippedEntries: [Entry] = [
         ("8mm", "2.0", "0.55"),
         ("16mm", "1.35", "0.396"),
-        ("35mm", "0.9", "0.297"),
+        ("35mm", "0.9", "0.36"),
         ("75mm", "0.5", "0.165")
     ]
 

@@ -351,8 +351,12 @@ way a real negative's grain reads in the print.
 
 **The print gauge owns grain.** Presence is `baseAmount × gaugeAmplitude`. The
 stock supplies size; the gauge multiplies both — 8mm ×2.0 size / ×0.55 presence,
-16mm ×1.35 / ×0.396, 35mm ×0.9 / ×0.297, 75mm ×0.5 / ×0.165, with `baseAmount`
-0.55. **ISO does not scale grain**; it is the exposure index only.
+16mm ×1.35 / ×0.396, 35mm ×0.9 / ×0.36, 75mm ×0.5 / ×0.165, with `baseAmount`
+0.55. 8mm, 16mm and 75mm sit 10% above the previous ladder; 35mm sits ~33% above
+it, because halving its footprint put card-size grain 16% below one 8-bit display
+step (measured sigma 0.003386 against 1/255 = 0.003922) and the extra presence is
+what keeps a 35mm preview card visibly grained at the new size. **ISO does not
+scale grain**; it is the exposure index only.
 
 **The ladder is configuration, not code.** Those multipliers ship in
 `gauges.json`: `App/Resources/gauges.json` for the App, the byte-identical
