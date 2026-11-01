@@ -665,10 +665,14 @@ struct ContentView: View {
         if !shown { cameraViewModel.endSlowZoom() }
     }
 
-    /// The live aperture readout for the in-frame controls: the actual hardware
-    /// aperture, never a stored or optimistic value.
+    /// The aperture the in-frame control prints: the operator's choice when there
+    /// is one, otherwise the measured iris. Video's choice never reaches the idle
+    /// device, so printing the hardware value alone made a working control look
+    /// dead — the take did shoot at the chosen stop.
     private var apertureReadout: String {
-        cameraViewModel.liveAperture.map { String(format: "f/%.1f", $0) } ?? "N/A"
+        CameraAperturePolicy.displayAperture(selected: cameraViewModel.selectedLensAperture,
+                                             measured: cameraViewModel.liveAperture)
+            .map { String(format: "f/%.1f", $0) } ?? "N/A"
     }
 
     /// Aperture can change only on a variable-aperture lens and only while the

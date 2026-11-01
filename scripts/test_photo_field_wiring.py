@@ -113,8 +113,12 @@ class PhotoFieldWiringTests(unittest.TestCase):
         # The shared idle still profile holds Auto on the device while Video's
         # choice waits for the take, so the poll must not overwrite that choice.
         view_model = (ROOT / 'App/Modules/CameraCapture/CameraViewModel.swift').read_text()
-        self.assertIn('session.readApertureSnapshot(videoIntent: !isDevelopmentPhotoMode)', view_model)
-        self.assertIn('session.readApertureSnapshot(videoIntent: false)', view_model)
+        # Both reads — the 0.5s poll and the shared-idle snapshot callback — must
+        # use the same intent, or one overwrites the choice between the other and
+        # the control flickers between the device iris and the selection.
+        self.assertEqual(
+            view_model.count('session.readApertureSnapshot(videoIntent: !isDevelopmentPhotoMode)'), 2)
+        self.assertNotIn('session.readApertureSnapshot(videoIntent: false)', view_model)
         session = (ROOT / 'App/Modules/CameraCapture/CameraSession.swift').read_text()
         body = section(session, 'func readApertureSnapshot(', '/// A Gray-World estimate')
         self.assertIn('CameraAperturePolicy.reportedSelection(', body)

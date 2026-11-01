@@ -69,6 +69,15 @@ struct CameraPolicyTests {
             measuredOffset: 0.2, deviceAperture: nil, selectedAperture: 2.8, isDeferred: true) == 0.2)
     }
 
+    /// The in-frame control must print the chosen stop even when the idle device
+    /// keeps its own iris, or the control reads as broken while the take honours it.
+    @Test func displayedApertureIsTheChoiceThenTheMeasuredIris() {
+        #expect(CameraAperturePolicy.displayAperture(selected: 4.0, measured: 1.48) == 4.0)
+        #expect(CameraAperturePolicy.displayAperture(selected: nil, measured: 1.48) == 1.48)
+        #expect(CameraAperturePolicy.displayAperture(selected: nil, measured: nil) == nil)
+        #expect(CameraAperturePolicy.displayAperture(selected: 2.8, measured: nil) == 2.8)
+    }
+
     @Test func apertureSelectionReconcilesToNearestSupportedStopAfterLensChange() {
         let variable: CameraAperturePolicy.Capability = .variable([1.4, 2, 2.8, 4])
         #expect(CameraAperturePolicy.reconcile(2.5, with: variable) == 2.8)
