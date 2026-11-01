@@ -208,6 +208,20 @@ enum CameraAperturePolicy {
         }
     }
 
+    /// Which aperture the UI should show as selected.
+    ///
+    /// While the shared idle still profile owns the device, a Video choice is an
+    /// intent: it is stored for the take's own graph and deliberately not written
+    /// to the idle device, so the device's own selection stays at Auto. Reporting
+    /// the device value here made every 0.5 s exposure poll overwrite the
+    /// operator's choice, which reads as an aperture control that refuses to take
+    /// a value. Photo and every non-shared graph keep reading the device.
+    static func reportedSelection(videoIntent: Bool, sharedIdleLeaseActive: Bool,
+                                  videoAperture: Float?, deviceSelection: Float?) -> Float? {
+        guard sharedIdleLeaseActive, videoIntent else { return deviceSelection }
+        return videoAperture
+    }
+
     /// `nil` represents Auto. Explicit choices are reconciled to the nearest
     /// stop reported by the new active format.
     static func reconcile(_ selected: Float?, with capability: Capability) -> Float? {

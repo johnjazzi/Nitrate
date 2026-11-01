@@ -20,6 +20,29 @@ struct CameraPolicyTests {
         #expect(CameraAperturePolicy.recommendedStops([1, 2], minimum: 3, maximum: 2).isEmpty)
     }
 
+    /// From 0.4.3 the shared idle still profile stays installed while Video is
+    /// the intent, so a Video aperture is an intent for the take's graph and never
+    /// a device write. Reporting the device's Auto value made the 0.5 s exposure
+    /// poll overwrite every choice, which is an aperture control that refuses to
+    /// take a value.
+    @Test func videoApertureIntentIsTheReportedSelectionUnderTheSharedIdleLease() {
+        #expect(CameraAperturePolicy.reportedSelection(
+            videoIntent: true, sharedIdleLeaseActive: true,
+            videoAperture: 2.8, deviceSelection: nil) == 2.8)
+        // Auto is a real choice: an explicit nil intent must stay nil rather than
+        // fall back to whatever the device happens to hold.
+        #expect(CameraAperturePolicy.reportedSelection(
+            videoIntent: true, sharedIdleLeaseActive: true,
+            videoAperture: nil, deviceSelection: 1.8) == nil)
+        // Photo, and any graph the shared idle does not own, read the device.
+        #expect(CameraAperturePolicy.reportedSelection(
+            videoIntent: false, sharedIdleLeaseActive: true,
+            videoAperture: 2.8, deviceSelection: 1.8) == 1.8)
+        #expect(CameraAperturePolicy.reportedSelection(
+            videoIntent: true, sharedIdleLeaseActive: false,
+            videoAperture: 2.8, deviceSelection: 1.8) == 1.8)
+    }
+
     @Test func apertureSelectionReconcilesToNearestSupportedStopAfterLensChange() {
         let variable: CameraAperturePolicy.Capability = .variable([1.4, 2, 2.8, 4])
         #expect(CameraAperturePolicy.reconcile(2.5, with: variable) == 2.8)
