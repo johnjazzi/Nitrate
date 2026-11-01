@@ -1962,9 +1962,11 @@ final class CameraViewModel {
     private func refreshPhotoAperture() {
         guard !photoApertureReadPending else { return }
         photoApertureReadPending = true
-        // Photo owns the still graph here, so the device's own selection is the
-        // truth; the video intent must not leak into the still control.
-        session.readApertureSnapshot(videoIntent: false) { [weak self] snapshot in
+        // This read also runs off the continuous shared-idle snapshot, so it must
+        // use the same intent as the exposure poll: with Video owning the choice,
+        // reading the device's own (Auto) selection here overwrote the choice
+        // between polls and the control flickered f/1.5 <-> f/4.0.
+        session.readApertureSnapshot(videoIntent: !isDevelopmentPhotoMode) { [weak self] snapshot in
             guard let self else { return }
             self.photoApertureReadPending = false
             guard self.usesNativeIdlePreview, !self.isSwitchingCameraLens else { return }
