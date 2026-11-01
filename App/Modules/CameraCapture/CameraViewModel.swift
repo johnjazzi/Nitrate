@@ -1915,7 +1915,14 @@ final class CameraViewModel {
         refreshRecordingStabilization()
         liveISO = session.currentISO
         liveShutterSeconds = session.currentShutterSeconds
-        liveExposureTargetOffset = session.currentExposureTargetOffset
+        // A Video aperture choice waits for the take's graph, so the idle meter
+        // cannot show what it costs. Predict that here, or the EV indicator says
+        // 0 EV for a choice that will shoot nearly two stops darker.
+        liveExposureTargetOffset = CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: session.currentExposureTargetOffset,
+            deviceAperture: liveAperture,
+            selectedAperture: selectedLensAperture,
+            isDeferred: usesSharedIdlePreview && !isDevelopmentPhotoMode)
         hasExposureMeter = session.hasExposureMeter
         hintTick &+= 1
         neutralSceneRequestGeneration &+= 1
