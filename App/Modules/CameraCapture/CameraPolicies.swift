@@ -208,6 +208,16 @@ enum CameraAperturePolicy {
         }
     }
 
+    /// The aperture the in-frame control prints.
+    ///
+    /// A Video choice is an intent the idle device never takes, so printing only
+    /// the hardware value left the control looking dead while the take really did
+    /// shoot at the chosen stop. The choice wins when there is one; the measured
+    /// iris is the fallback, in Auto and on a fixed-aperture lens.
+    static func displayAperture(selected: Float?, measured: Float?) -> Float? {
+        selected ?? measured
+    }
+
     /// Exposure the operator will get from a Video aperture choice that has not
     /// reached the device yet.
     ///

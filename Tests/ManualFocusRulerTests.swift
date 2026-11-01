@@ -447,9 +447,13 @@ struct ManualFocusRulerTests {
         #expect(ruler.contains("foregroundStyle(enabled ? Color.yellow : Color.gray)"))
     }
 
-    @Test func inFrameControlsUseLiveHardwareReadbackAndHonestGates() throws {
+    /// The printed aperture is the operator's choice, falling back to the measured
+    /// iris: Video's choice never reaches the idle device, so a hardware-only
+    /// readout showed f/1.5 for a take that really shot at f/4.0.
+    @Test func inFrameControlsPrintTheChosenApertureAndHonestGates() throws {
         let screen = try source("App/ContentView.swift")
-        #expect(screen.contains("cameraViewModel.liveAperture.map { String(format: \"f/%.1f\", $0) } ?? \"N/A\""))
+        #expect(screen.contains("CameraAperturePolicy.displayAperture(selected: cameraViewModel.selectedLensAperture,"))
+        #expect(screen.contains("measured: cameraViewModel.liveAperture)"))
         #expect(screen.contains("cameraViewModel.canSelectAperture && !cameraViewModel.isChangingFrameRate"))
         #expect(screen.contains("setAperture: { cameraViewModel.setLensAperture($0) }"))
         #expect(screen.contains("selectedAperture: cameraViewModel.selectedLensAperture"))
