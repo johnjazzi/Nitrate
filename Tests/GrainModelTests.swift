@@ -8,11 +8,17 @@ import Testing
 struct GrainModelTests {
     private let tolerance: Float = 0.0001
 
-    /// Tuning shipped in `gauges.json`: the previous ladder (4.0 / 2.7 / 1.8 /
-    /// 1.0) halved on the size axis, and 10% above the previous presence.
+    /// Tuning shipped in `gauges.json`. Size relative to the previous ladder
+    /// (4.0 / 2.7 / 1.8 / 1.0): 8mm keeps its old size, 16mm sits three quarters
+    /// of the way there, 35mm halves it and 75mm asks for half and is floored.
     private static let shippedSizes: [PrintGauge: Float] = [
-        .eightMillimetre: 2.0, .sixteenMillimetre: 1.35,
+        .eightMillimetre: 4.0, .sixteenMillimetre: 2.025,
         .thirtyFiveMillimetre: 0.9, .seventyFiveMillimetre: 0.5
+    ]
+    /// Shipped size as a fraction of the previous ladder's size.
+    private static let sizeFractionOfPrevious: [PrintGauge: Float] = [
+        .eightMillimetre: 1.0, .sixteenMillimetre: 0.75,
+        .thirtyFiveMillimetre: 0.5, .seventyFiveMillimetre: 0.5
     ]
     private static let shippedAmplitudes: [PrintGauge: Float] = [
         .eightMillimetre: 0.55, .sixteenMillimetre: 0.396,
@@ -130,7 +136,7 @@ struct GrainModelTests {
         // Nominal multipliers are strictly monotonic across the ladder.
         let multipliers = PrintGauge.allCases.sorted { $0.sizeMultiplier < $1.sizeMultiplier }
             .map(\.sizeMultiplier)
-        #expect(multipliers == [0.5, 0.9, 1.35, 2.0], "unexpected ladder: \(multipliers)")
+        #expect(multipliers == [0.5, 0.9, 2.025, 4.0], "unexpected ladder: \(multipliers)")
         // 35mm is the middle of the ladder and the render default.
         #expect(PrintGauge.neutral == .thirtyFiveMillimetre)
         // Effective footprints are ordered across the whole ladder.
@@ -147,19 +153,23 @@ struct GrainModelTests {
     /// 8mm, 16mm and 35mm land on exactly half their previous footprint on both
     /// shipped stocks; the safety bounds are the pre-tuning ones and do not clip
     /// those rungs.
-    @Test func coarseThroughNeutralGaugesHalveThePreviousFootprintOnEveryShippedStock() {
+    /// 8mm keeps the footprint it had before this tuning, 16mm keeps three
+    /// quarters of it, 35mm halves it. Only 35mm changes how fine the grain is;
+    /// the coarse gauge stays where it was so the ladder's top does not move.
+    @Test func coarseThroughNeutralGaugesShipTheDeclaredSizeFractionOnEveryShippedStock() {
         #expect(GrainModel.footprintFloor == 0.95, "the safety floor must stay at its origin/dev value")
         #expect(GrainModel.footprintCeiling == 16.0, "the safety ceiling must stay at its origin/dev value")
         let unclamped: [PrintGauge] = [.eightMillimetre, .sixteenMillimetre, .thirtyFiveMillimetre]
         for stockSize in Self.shippedStockSizes {
             for gauge in unclamped {
                 let previousSize = Self.previousSizes[gauge] ?? 0
+                let fraction = Self.sizeFractionOfPrevious[gauge] ?? 1
                 let previousFootprint = previousSize * stockSize
                 let footprint = GrainModel.effectiveSize(stockGrainSize: stockSize, gauge: gauge)
                 #expect(footprint > GrainModel.footprintFloor,
                         "\(gauge.rawValue) on \(stockSize) must not reach the floor: \(footprint)")
-                #expect(abs(footprint - previousFootprint / 2) < tolerance,
-                        "\(gauge.rawValue) on \(stockSize): \(footprint) vs half of \(previousFootprint)")
+                #expect(abs(footprint - previousFootprint * fraction) < tolerance,
+                        "\(gauge.rawValue) on \(stockSize): \(footprint) vs \(fraction) of \(previousFootprint)")
             }
         }
     }
@@ -234,8 +244,8 @@ struct GrainModelTests {
     private typealias Entry = (gauge: String, size: String, amplitude: String)
 
     private static let shippedEntries: [Entry] = [
-        ("8mm", "2.0", "0.55"),
-        ("16mm", "1.35", "0.396"),
+        ("8mm", "4.0", "0.55"),
+        ("16mm", "2.025", "0.396"),
         ("35mm", "0.9", "0.36"),
         ("75mm", "0.5", "0.165")
     ]

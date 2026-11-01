@@ -3,12 +3,12 @@
   "gauges": [
     {
       "gauge": "8mm",
-      "sizeMultiplier": 2.0,
+      "sizeMultiplier": 4.0,
       "amplitudeMultiplier": 0.55
     },
     {
       "gauge": "16mm",
-      "sizeMultiplier": 1.35,
+      "sizeMultiplier": 2.025,
       "amplitudeMultiplier": 0.396
     },
     {

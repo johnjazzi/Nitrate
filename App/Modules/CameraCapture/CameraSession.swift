@@ -2244,7 +2244,12 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
     /// Read all aperture UI state on the serialized camera queue. The revision
     /// lets the view model discard snapshots queued before a lens/config change.
-    func readApertureSnapshot(completion: @escaping @MainActor @Sendable (CameraApertureSnapshot) -> Void) {
+    /// `videoIntent` says whether Video (not Photo) owns the shooting intent. It
+    /// only matters while the shared idle still profile owns the device: Video's
+    /// aperture choice is an intent for the take's graph, so that is the value
+    /// the UI must show as selected.
+    func readApertureSnapshot(videoIntent: Bool,
+                              completion: @escaping @MainActor @Sendable (CameraApertureSnapshot) -> Void) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             let capability: CameraAperturePolicy.Capability
@@ -2253,6 +2258,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 capability = Self.apertureCapability(for: device)
                 let aperture = device.lensAperture
                 measured = aperture.isFinite && aperture > 0 ? aperture : nil
+                self.traceApertureRead(device: device, capability: capability)
             } else {
                 capability = .unavailable
                 measured = nil
@@ -2260,7 +2266,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
             let snapshot = CameraApertureSnapshot(
                 capability: capability,
                 measured: measured,
-                selected: self.selectedLensAperture,
+                selected: CameraAperturePolicy.reportedSelection(
+                    videoIntent: videoIntent,
+                    sharedIdleLeaseActive: self.sharedIdleLeaseActive,
+                    videoAperture: self.sharedVideoAperture,
+                    deviceSelection: self.selectedLensAperture),
                 cameraRevision: self.apertureCameraRevision
             )
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(snapshot) } }
@@ -2309,6 +2319,35 @@ final class CameraSession: NSObject, @unchecked Sendable {
             }
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(estimate) } }
         }
+    }
+
+    /// Opt-in aperture capability trace (`--trace-aperture`): the read the UI
+    /// actually consumes, plus the Video recording format's own capability for
+    /// the same lens. The shared idle still profile changes `activeFormat`, so
+    /// this distinguishes a lens that lost variable aperture from an idle format
+    /// that never advertised it.
+    private func traceApertureRead(device: AVCaptureDevice, capability: CameraAperturePolicy.Capability) {
+#if DEBUG
+        guard CommandLine.arguments.contains("--trace-aperture") else { return }
+        let active = device.activeFormat
+        let describe: (CameraAperturePolicy.Capability) -> String = {
+            "\($0.isVariable ? "variable" : (($0.stops.isEmpty) ? "unavailable" : "fixed"))[\($0.stops.map { String(format: "%.2f", $0) }.joined(separator: ","))]"
+        }
+        let dimensions = active.formatDescription.dimensions
+        var line = "aperture-read idle=\(sharedIdleLeaseActive) lens=\(activeLens.rawValue) active=\(describe(capability)) " +
+            "activeFormat=\(Int(dimensions.width))x\(Int(dimensions.height)) " +
+            "activeRange=f/\(String(format: "%.2f", active.minLensAperture))...f/\(String(format: "%.2f", active.maxLensAperture))"
+        if #available(iOS 27.0, *), let videoFormat = Self.appleLog2CaptureFormat(in: device.formats, mode: frameRate) {
+            let videoCapability = CameraAperturePolicy.capability(
+                recommended: videoFormat.recommendedLensApertureStops,
+                minimum: videoFormat.minLensAperture,
+                maximum: videoFormat.maxLensAperture)
+            line += " videoFormatCapability=\(describe(videoCapability))"
+        } else {
+            line += " videoFormatCapability=none"
+        }
+        print("[aperture-trace] \(line)")
+#endif
     }
 
     @available(iOS 27.0, *)

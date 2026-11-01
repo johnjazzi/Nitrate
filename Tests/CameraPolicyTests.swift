@@ -20,6 +20,55 @@ struct CameraPolicyTests {
         #expect(CameraAperturePolicy.recommendedStops([1, 2], minimum: 3, maximum: 2).isEmpty)
     }
 
+    /// From 0.4.3 the shared idle still profile stays installed while Video is
+    /// the intent, so a Video aperture is an intent for the take's graph and never
+    /// a device write. Reporting the device's Auto value made the 0.5 s exposure
+    /// poll overwrite every choice, which is an aperture control that refuses to
+    /// take a value.
+    @Test func videoApertureIntentIsTheReportedSelectionUnderTheSharedIdleLease() {
+        #expect(CameraAperturePolicy.reportedSelection(
+            videoIntent: true, sharedIdleLeaseActive: true,
+            videoAperture: 2.8, deviceSelection: nil) == 2.8)
+        // Auto is a real choice: an explicit nil intent must stay nil rather than
+        // fall back to whatever the device happens to hold.
+        #expect(CameraAperturePolicy.reportedSelection(
+            videoIntent: true, sharedIdleLeaseActive: true,
+            videoAperture: nil, deviceSelection: 1.8) == nil)
+        // Photo, and any graph the shared idle does not own, read the device.
+        #expect(CameraAperturePolicy.reportedSelection(
+            videoIntent: false, sharedIdleLeaseActive: true,
+            videoAperture: 2.8, deviceSelection: 1.8) == 1.8)
+        #expect(CameraAperturePolicy.reportedSelection(
+            videoIntent: true, sharedIdleLeaseActive: false,
+            videoAperture: 2.8, deviceSelection: 1.8) == 1.8)
+    }
+
+    /// A Video aperture choice lands with the take, not on the idle device, so the
+    /// EV indicator has to predict the stops it costs.
+    @Test func deferredVideoAperturePredictsTheExposureItCosts() {
+        // f/1.48 -> f/2.8 is 1.84 stops darker.
+        let predicted = CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: 0, deviceAperture: 1.48, selectedAperture: 2.8, isDeferred: true)
+        #expect(abs(predicted - (-1.839)) < 0.01, "got \(predicted)")
+        // A wider iris adds light in the positive direction.
+        let brighter = CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: 0, deviceAperture: 2.8, selectedAperture: 1.48, isDeferred: true)
+        #expect(abs(brighter - 1.839) < 0.01, "got \(brighter)")
+        // The measured offset is the base, not discarded.
+        let based = CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: 0.5, deviceAperture: 1.48, selectedAperture: 2.8, isDeferred: true)
+        #expect(abs(based - (0.5 - 1.839)) < 0.01, "got \(based)")
+        // Already applied, nothing selected, or Auto: the meter is the truth.
+        #expect(CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: 0.2, deviceAperture: 1.48, selectedAperture: 2.8, isDeferred: false) == 0.2)
+        #expect(CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: 0.2, deviceAperture: 1.48, selectedAperture: nil, isDeferred: true) == 0.2)
+        #expect(CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: 0.2, deviceAperture: 1.48, selectedAperture: 1.48, isDeferred: true) == 0.2)
+        #expect(CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: 0.2, deviceAperture: nil, selectedAperture: 2.8, isDeferred: true) == 0.2)
+    }
+
     @Test func apertureSelectionReconcilesToNearestSupportedStopAfterLensChange() {
         let variable: CameraAperturePolicy.Capability = .variable([1.4, 2, 2.8, 4])
         #expect(CameraAperturePolicy.reconcile(2.5, with: variable) == 2.8)

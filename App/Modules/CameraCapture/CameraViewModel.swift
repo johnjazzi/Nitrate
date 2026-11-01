@@ -1598,6 +1598,7 @@ final class CameraViewModel {
     }
 
     func setLensAperture(_ aperture: Float?) {
+        traceApertureGate("set \(aperture.map { String(format: "%.2f", $0) } ?? "auto")")
         guard canSelectAperture, !isChangingFrameRate, !isChangingCaptureProfile,
               !isPhotoCaptureBusy, !isStartingRecording, !isRecording, !isStoppingRecording else { return }
         if usesSharedIdlePreview, !isDevelopmentPhotoMode {
@@ -1631,6 +1632,21 @@ final class CameraViewModel {
         if errorMessage.hasPrefix("Failed to set aperture:") || apertureErrors.contains(errorMessage) {
             self.errorMessage = nil
         }
+    }
+
+    /// Opt-in gate trace (`--trace-aperture`): every input the aperture control
+    /// is decided by, so a dead control names the exact gate that refused.
+    func traceApertureGate(_ event: String) {
+#if DEBUG
+        guard CommandLine.arguments.contains("--trace-aperture") else { return }
+        print("[aperture-gate] \(event) lens=\(activeLens.rawValue)/\(activeLens.position) "
+            + "lifecycle=\(lifecycleGate.isActive) configured=\(cameraConfigured) "
+            + "switching=\(isSwitchingCameraLens) changingProfile=\(isChangingCaptureProfile) "
+            + "variable=\(apertureIsVariable) stops=\(apertureStops.map { String(format: "%.2f", $0) }) "
+            + "selected=\(selectedLensAperture.map { String(format: "%.2f", $0) } ?? "auto") "
+            + "photo=\(isDevelopmentPhotoMode) videoProfile=\(isVideoCaptureProfileActive) "
+            + "canSelect=\(canSelectAperture)")
+#endif
     }
 
     /// Aperture adjustment is intentionally limited to the physical rear main
@@ -1899,7 +1915,14 @@ final class CameraViewModel {
         refreshRecordingStabilization()
         liveISO = session.currentISO
         liveShutterSeconds = session.currentShutterSeconds
-        liveExposureTargetOffset = session.currentExposureTargetOffset
+        // A Video aperture choice waits for the take's graph, so the idle meter
+        // cannot show what it costs. Predict that here, or the EV indicator says
+        // 0 EV for a choice that will shoot nearly two stops darker.
+        liveExposureTargetOffset = CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: session.currentExposureTargetOffset,
+            deviceAperture: liveAperture,
+            selectedAperture: selectedLensAperture,
+            isDeferred: usesSharedIdlePreview && !isDevelopmentPhotoMode)
         hasExposureMeter = session.hasExposureMeter
         hintTick &+= 1
         neutralSceneRequestGeneration &+= 1
@@ -1918,7 +1941,7 @@ final class CameraViewModel {
         }
         apertureSnapshotRequestGeneration &+= 1
         let requestGeneration = apertureSnapshotRequestGeneration
-        session.readApertureSnapshot { [weak self] snapshot in
+        session.readApertureSnapshot(videoIntent: !isDevelopmentPhotoMode) { [weak self] snapshot in
             guard let self,
                   self.apertureSnapshotRequestGeneration == requestGeneration,
                   snapshot.cameraRevision >= self.apertureCameraRevision else { return }
@@ -1927,6 +1950,7 @@ final class CameraViewModel {
             self.apertureStops = snapshot.capability.stops
             self.apertureIsVariable = snapshot.capability.isVariable
             self.selectedLensAperture = snapshot.selected
+            self.traceApertureGate("snapshot")
         }
         // NOTE: liveExposureBias is intentionally NOT refreshed here. It is our
         // own compensation value, not the device's (which reads 0 in custom
@@ -1938,7 +1962,9 @@ final class CameraViewModel {
     private func refreshPhotoAperture() {
         guard !photoApertureReadPending else { return }
         photoApertureReadPending = true
-        session.readApertureSnapshot { [weak self] snapshot in
+        // Photo owns the still graph here, so the device's own selection is the
+        // truth; the video intent must not leak into the still control.
+        session.readApertureSnapshot(videoIntent: false) { [weak self] snapshot in
             guard let self else { return }
             self.photoApertureReadPending = false
             guard self.usesNativeIdlePreview, !self.isSwitchingCameraLens else { return }
@@ -1947,10 +1973,12 @@ final class CameraViewModel {
             self.apertureStops = snapshot.capability.stops
             self.apertureIsVariable = snapshot.capability.isVariable
             self.selectedLensAperture = snapshot.selected
+            self.traceApertureGate("photo-snapshot")
         }
     }
 
     private func invalidateApertureUIState() {
+        traceApertureGate("invalidate")
         apertureSnapshotRequestGeneration &+= 1
         liveAperture = nil
         apertureStops = []

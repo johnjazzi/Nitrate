@@ -109,6 +109,17 @@ class PhotoFieldWiringTests(unittest.TestCase):
         self.assertGreater(reset_at, body.index('previousLens != lens'))
         self.assertGreater(reset_at, body.index('session.selectCamera(lens, photoIntent: isDevelopmentPhotoMode)'))
 
+    def test_aperture_read_reports_the_video_intent_not_the_idle_device(self):
+        # The shared idle still profile holds Auto on the device while Video's
+        # choice waits for the take, so the poll must not overwrite that choice.
+        view_model = (ROOT / 'App/Modules/CameraCapture/CameraViewModel.swift').read_text()
+        self.assertIn('session.readApertureSnapshot(videoIntent: !isDevelopmentPhotoMode)', view_model)
+        self.assertIn('session.readApertureSnapshot(videoIntent: false)', view_model)
+        session = (ROOT / 'App/Modules/CameraCapture/CameraSession.swift').read_text()
+        body = section(session, 'func readApertureSnapshot(', '/// A Gray-World estimate')
+        self.assertIn('CameraAperturePolicy.reportedSelection(', body)
+        self.assertIn('sharedIdleLeaseActive: self.sharedIdleLeaseActive', body)
+
     def test_photo_mode_switch_is_a_project_configuration(self):
         # The on/off switch lives in project.yml per configuration, is copied
         # into Info.plist under the key the policy reads, and is read there

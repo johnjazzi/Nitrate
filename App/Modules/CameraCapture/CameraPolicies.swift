@@ -208,6 +208,40 @@ enum CameraAperturePolicy {
         }
     }
 
+    /// Exposure the operator will get from a Video aperture choice that has not
+    /// reached the device yet.
+    ///
+    /// While the shared idle still profile owns the device, Video's aperture is
+    /// an intent for the take's own graph: the idle device keeps its iris, so the
+    /// meter's own offset says nothing about the stops the choice costs. Without
+    /// this the EV indicator read 0 EV for a choice that would shoot two stops
+    /// darker. A wider chosen iris (smaller f-number) adds light, so the sign is
+    /// positive in that direction.
+    static func predictedExposureOffsetEV(measuredOffset: Float, deviceAperture: Float?,
+                                          selectedAperture: Float?, isDeferred: Bool) -> Float {
+        guard isDeferred, measuredOffset.isFinite,
+              let deviceAperture, deviceAperture.isFinite, deviceAperture > 0,
+              let selectedAperture, selectedAperture.isFinite, selectedAperture > 0 else {
+            return measuredOffset
+        }
+        guard abs(selectedAperture - deviceAperture) > 0.001 else { return measuredOffset }
+        return measuredOffset + 2 * log2(deviceAperture / selectedAperture)
+    }
+
+    /// Which aperture the UI should show as selected.
+    ///
+    /// While the shared idle still profile owns the device, a Video choice is an
+    /// intent: it is stored for the take's own graph and deliberately not written
+    /// to the idle device, so the device's own selection stays at Auto. Reporting
+    /// the device value here made every 0.5 s exposure poll overwrite the
+    /// operator's choice, which reads as an aperture control that refuses to take
+    /// a value. Photo and every non-shared graph keep reading the device.
+    static func reportedSelection(videoIntent: Bool, sharedIdleLeaseActive: Bool,
+                                  videoAperture: Float?, deviceSelection: Float?) -> Float? {
+        guard sharedIdleLeaseActive, videoIntent else { return deviceSelection }
+        return videoAperture
+    }
+
     /// `nil` represents Auto. Explicit choices are reconciled to the nearest
     /// stop reported by the new active format.
     static func reconcile(_ selected: Float?, with capability: Capability) -> Float? {
