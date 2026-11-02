@@ -149,6 +149,12 @@ struct CameraModeCarouselRenderTests {
         let view = CameraModeCarousel(selected: .develop, enabled: false, onSelect: { _ in })
         #expect(view.resolvedSwipe(CGSize(width: -80, height: 0)) == .none,
                 "A disabled row swallows a swipe.")
+
+        // It does not swallow a tap: the letter answers with the reason instead.
+        #expect(view.resolvedTap(.video) == .refused(.video),
+                "A dimmed letter must answer a tap, not ignore it.")
+        let live = CameraModeCarousel(selected: .develop, enabled: true, onSelect: { _ in })
+        #expect(live.resolvedTap(.video) == .select(.video))
     }
 
     @Test func landscapeLabelsRotateWithoutExpandingTheStrip() throws {
