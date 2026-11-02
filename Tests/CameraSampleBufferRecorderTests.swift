@@ -1733,6 +1733,20 @@ struct CameraCaptureRuntimeSourceContractTests {
         #expect(!source.contains("activeVideoMinFrameDuration = previousMinFrameDuration"))
     }
 
+    /// A finished take is delivered on the delivery window; the strict 0.12 s
+    /// measurement stays the smoke's number, so the two are wired separately.
+    @Test func finishedTakeUsesTheDeliveryWindowWhileTheSmokeKeepsTheStrictBound() throws {
+        let recorder = try String(contentsOf: TestRepository.url(
+            for: "App/Modules/CameraCapture/CameraSampleBufferRecorder.swift"), encoding: .utf8)
+        #expect(recorder.contains(
+            "CameraCapturePreservationProbe.isDeliverable(skew: skew, endDifference: endDifference)"))
+        #expect(recorder.contains("CameraCapturePreservationProbe.deliveryTolerance"))
+        // The smoke's strict measurement is asserted behaviourally in
+        // CameraCapturePreservationProbeTests rather than by reading the probe's
+        // source, which is not part of the bundled test repository.
+        #expect(!recorder.contains("validateSynchronization(skew: skew"))
+    }
+
     @Test func recorderFallbackIsParameterisedNotHardcoded() throws {
         let source = try String(contentsOf: TestRepository.url(
             for: "App/Modules/CameraCapture/CameraSampleBufferRecorder.swift"), encoding: .utf8)

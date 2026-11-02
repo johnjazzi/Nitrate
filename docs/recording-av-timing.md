@@ -50,8 +50,14 @@ above the unchanged 0.12-second acceptance limit.
   shutdown itself does not cut off the drain. A foreground resume cancels deferred
   session shutdown.
 - Check the first **nonempty audio segment**, not just compressed PTS zero. Keep
-  the 0.12-second start/end tolerance. Apply it to normal completed recordings as
-  well as the preservation smoke.
+  the 0.12-second start/end tolerance as the *measurement*: it is what the device
+  preservation smoke reports and what the interior source-audio continuity gate
+  enforces.
+- Deliver a finished take on the wider 0.2-second **delivery** window. A take
+  whose only defect is a boundary timing difference inside 200 ms is rendered and
+  shown like any other take; the measured value is still logged. Withholding the
+  film look over a fifth of a second is what confuses the operator, and the take
+  is no worse for it.
 - Anchor the origin only on a take whose microphone is actually delivering. A
   configured microphone that has been silent for longer than the warm-up window
   holds the first eligible frames (bounded by the warm-up ceiling) instead of
@@ -90,6 +96,27 @@ will not reproduce on demand.
 A video-only take, or one whose microphone is live, starts exactly as before. The
 cost of the gate is the dropped head frames, which is the same material whose
 audio was lost.
+
+## Delivering a take inside 200 ms
+
+The gate above removes the class of failure, but the take that prompted it was
+not lost to the gap — it was lost to the reaction to the gap. The validation
+correctly measured 0.143 s against the strict 0.12 s bound and the take was
+retained as original-only: the Log clip reached Photos, but the film look was
+never rendered.
+
+Two windows now exist, on purpose:
+
+| Window | Value | Owner | Meaning |
+|---|---:|---|---|
+| `synchronizationTolerance` | 0.12 s | preservation smoke, interior continuity gate | the measurement |
+| `deliveryTolerance` | 0.20 s | finished-take validation | whether the take is rendered |
+
+A finished take is delivered when both the head skew and the tail difference are
+inside `deliveryTolerance`; anything wider is still retained as an original-only
+take with the measured values in the message. The smoke keeps reporting the
+strict number, so a device run can still show a tighter figure than the app used
+to accept a take.
 
 ## Device evidence
 

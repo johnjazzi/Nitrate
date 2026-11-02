@@ -1055,11 +1055,18 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                 segments: audioSegments)
             let endDifference = abs(CMTimeSubtract(CMTimeRangeGetEnd(timeRange),
                                                    CMTimeRangeGetEnd(audioTimeRange)).seconds)
-            do {
-                try CameraCapturePreservationProbe.validateSynchronization(skew: skew, endDifference: endDifference)
-            } catch {
-                throw CameraSampleBufferRecorderError.invalidFinalMovie(error.localizedDescription)
+            // A boundary timing difference inside the delivery window is
+            // logged and rendered, not turned into an original-only take.
+            guard CameraCapturePreservationProbe.isDeliverable(skew: skew, endDifference: endDifference) else {
+                throw CameraSampleBufferRecorderError.invalidFinalMovie(String(
+                    format: "Preservation check failed: A/V first-sample skew %.3fs or end-duration "
+                          + "difference %.3fs exceeds %.2fs.",
+                    skew, endDifference, CameraCapturePreservationProbe.deliveryTolerance))
             }
+#if DEBUG
+            print(String(format: "Capture A/V delivery: skew=%.3fs, end-delta=%.3fs (delivery limit %.2fs)",
+                         skew, endDifference, CameraCapturePreservationProbe.deliveryTolerance))
+#endif
         }
         #if DEBUG
         print("HEVC Log2 output validation: codec=hvc1, size=\(expectedDimensions.width)x\(expectedDimensions.height), bits=10, log=\(String(describing: logTransfer)), matrix=\(String(describing: matrix)), display=\(expectedDisplay.0)x\(expectedDisplay.1), audioSamples=\(appendedAudioSamples), transform=\(preferredTransform)")
