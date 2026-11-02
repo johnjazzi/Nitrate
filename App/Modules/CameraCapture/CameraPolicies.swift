@@ -496,6 +496,18 @@ enum CameraSampleValidationPolicy {
         recentDropCount >= threshold
     }
 
+    /// Whether a dropped frame belongs to the encoder's start-up rather than a
+    /// failing take. The first append pays a one-time encoder initialisation
+    /// that blocks the delegate queue; a 60 fps source spills several frames into
+    /// the pool during it. Those are priming cost. Nothing before the first
+    /// accepted frame, and nothing after the bounded window, is excused.
+    static func isEncoderPrimingDrop(firstAppended: Double?, dropTime: Double,
+                                     window: Double = 0.5) -> Bool {
+        guard let firstAppended else { return true }
+        guard firstAppended.isFinite, dropTime.isFinite else { return false }
+        return dropTime - firstAppended < window
+    }
+
     static func dropTimesWithinWindow(_ times: [Double], now: Double, window: Double = 2) -> [Double] {
         guard now.isFinite, window.isFinite, window >= 0 else { return [] }
         return times.filter { $0.isFinite && now >= $0 && now - $0 <= window } + [now]

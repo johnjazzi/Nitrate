@@ -83,8 +83,14 @@ enum CameraFrameRatePolicy {
     /// The modes a device can capture, ascending, always including the
     /// `.standard24` baseline. Never advertises a rate the device cannot deliver,
     /// so a control is disabled instead of a take failing on a silent downgrade.
-    static func availableModes(_ isEligible: (CameraFrameRate) -> Bool) -> [CameraFrameRate] {
-        [.standard24] + [.daylight60, .high120].filter(isEligible)
+    static func availableModes(
+        _ isEligible: (CameraFrameRate) -> Bool,
+        highFrameRateEnabled: Bool = HighFrameRateFeature.isAvailableInThisBuild()
+    ) -> [CameraFrameRate] {
+        [.standard24] + [.daylight60, .high120].filter {
+            HighFrameRateFeature.allows(fps: $0.fps, available: highFrameRateEnabled)
+                && isEligible($0)
+        }
     }
 
     /// How a foreground-session boundary resolves the capture frame rate.

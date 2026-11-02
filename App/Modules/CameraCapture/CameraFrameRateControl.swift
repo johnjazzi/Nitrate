@@ -14,8 +14,9 @@ struct CameraFrameRateOption: Identifiable, Equatable, Sendable {
     /// rate, so the face can never claim the rate that is not running.
     var faceValue: String { "\(fps)" }
 
-    /// Full spoken unit, as the shutter control speaks its own values.
-    var spokenValue: String { "\(fps) frames per second" }
+    /// The operator-facing unit. The manual block speaks in the same compact
+    /// form it paints, so the key and the menu agree.
+    var spokenValue: String { "\(fps)FPS" }
 }
 
 /// Pure decisions for the compact frame-rate menu: which rates are offered,
@@ -23,8 +24,9 @@ struct CameraFrameRateOption: Identifiable, Equatable, Sendable {
 enum CameraFrameRateControlPresentation {
     /// Every rate the manual Video block lists, whether or not this device can
     /// deliver it. 24 is the cold-launch rate, 60 the daylight rescue rate and
-    /// 120 the high-rate option. Unsupported entries stay listed and are
-    /// disabled, so the menu never hides a rate the engine could not offer.
+    /// 120 the high-rate option, withdrawn entirely unless the build enables it.
+    /// Unsupported entries stay listed and are disabled, so the menu never hides
+    /// a rate the engine could not offer.
     static let canonicalFPS = [24, 60, 120]
 
     /// The menu's touch height, matching the other manual keys.
@@ -33,8 +35,10 @@ enum CameraFrameRateControlPresentation {
     /// Canonical rates in ascending order, unioned with whatever the session
     /// reports and deduplicated, so a device that reports an extra rate still
     /// shows it in one stable, ordered list.
-    static func options(availableFPS: [Int]) -> [CameraFrameRateOption] {
+    static func options(availableFPS: [Int],
+                        highFrameRateEnabled: Bool = false) -> [CameraFrameRateOption] {
         let rates = Set(canonicalFPS + availableFPS.filter { $0 > 0 })
+            .filter { HighFrameRateFeature.allows(fps: $0, available: highFrameRateEnabled) }
         return rates.sorted().map(CameraFrameRateOption.init(fps:))
     }
 
@@ -61,10 +65,12 @@ enum CameraFrameRateControlPresentation {
         CameraFrameRateOption(fps: currentFPS).spokenValue
     }
 
-    /// Menu rows name the checked, current rate as well as the others.
-    static func rowTitle(fps: Int, currentFPS: Int) -> String {
-        fps == currentFPS ? "\(fps) frames per second, current" : "\(fps) frames per second"
-    }
+    /// Every row reads the same. The rate in force is shown by weight, not by
+    /// appending a word, so the row text never changes length mid-take.
+    static func rowTitle(fps: Int) -> String { "\(fps)FPS" }
+
+    /// The row for the rate in force is bold; the others stay regular.
+    static func isCurrentRow(fps: Int, currentFPS: Int) -> Bool { fps == currentFPS }
 }
 
 /// The compact frame-rate key: one native menu in the manual Video block that
@@ -78,10 +84,15 @@ struct CameraFrameRateControl: View {
     let currentFPS: Int
     /// Whether the session will accept a change right now.
     let canChange: Bool
+    /// Whether this build and identity ship the manual 120 fps mode. False by
+    /// default: a caller that forgets the flag hides the rate instead of
+    /// offering one the session will refuse.
+    var highFrameRateEnabled: Bool = false
     let select: (Int) -> Void
 
     private var options: [CameraFrameRateOption] {
-        CameraFrameRateControlPresentation.options(availableFPS: availableFPS)
+        CameraFrameRateControlPresentation.options(availableFPS: availableFPS,
+                                                   highFrameRateEnabled: highFrameRateEnabled)
     }
 
     var body: some View {
@@ -90,8 +101,9 @@ struct CameraFrameRateControl: View {
                 Button {
                     choose(option.fps)
                 } label: {
-                    Text(CameraFrameRateControlPresentation.rowTitle(fps: option.fps,
-                                                                    currentFPS: currentFPS))
+                    Text(CameraFrameRateControlPresentation.rowTitle(fps: option.fps))
+                        .fontWeight(CameraFrameRateControlPresentation.isCurrentRow(
+                            fps: option.fps, currentFPS: currentFPS) ? .bold : .regular)
                 }
                 .disabled(!CameraFrameRateControlPresentation.canSelect(
                     option.fps, availableFPS: availableFPS, canChange: canChange))
@@ -116,8 +128,11 @@ struct CameraFrameRateControl: View {
 
     // MARK: - Named guard
 
-    /// The single guard shared by the live menu and the focused tests.
+    /// The single guard shared by the live menu and the focused tests. It also
+    /// refuses the gated rate when the build leaves the switch off, so a stale
+    /// row or a direct call cannot start a take the session would reject.
     func choose(_ fps: Int) {
+        guard HighFrameRateFeature.allows(fps: fps, available: highFrameRateEnabled) else { return }
         guard CameraFrameRateControlPresentation.canSelect(
             fps, availableFPS: availableFPS, canChange: canChange) else { return }
         select(fps)

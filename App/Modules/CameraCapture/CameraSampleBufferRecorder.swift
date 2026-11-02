@@ -247,12 +247,29 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         recordVideoDrop(at: ProcessInfo.processInfo.systemUptime)
     }
 
+    /// Uptime of the first accepted video frame, the anchor for the encoder's
+    /// priming window.
+    private var firstAppendedUptime: Double?
+
+    private func isWithinEncoderPrimeWindow(now: Double) -> Bool {
+        CameraSampleValidationPolicy.isEncoderPrimingDrop(firstAppended: firstAppendedUptime,
+                                                          dropTime: now)
+    }
+
     private func recordVideoDrop(at now: Double) {
         // Once stop has been requested the take is finalising rather than running:
         // its frames are already in the writer, so a drop burst here must not abort
         // and discard a recording the user has finished. The drain timeout still
         // bounds a tail that never arrives.
         guard state == .awaitingVideo || state == .recording, stopAudioEndTime == nil else { return }
+        // The first append pays the encoder's one-time initialisation, which can
+        // block the delegate queue for ~125 ms. At 60 fps that burst alone
+        // overflows a capture pool sized for a slower cadence, so those frames
+        // are priming cost, not a failing take. Everything after the window is
+        // still counted, so a genuine stall still aborts.
+        if isWithinEncoderPrimeWindow(now: now) {
+            return
+        }
         recentDropTimes = CameraSampleValidationPolicy.dropTimesWithinWindow(recentDropTimes, now: now)
         if CameraSampleValidationPolicy.shouldFailForFrameDrops(recentDropCount: recentDropTimes.count) {
             fail(CameraSampleBufferRecorderError.sustainedFrameDrops(recentDropTimes.count))
@@ -549,6 +566,9 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
 #endif
         lastVideoTime = presentationTime
         lastVideoEndTime = Self.sampleEnd(sampleBuffer, fallbackDuration: videoFallbackDuration)
+        if firstAppendedUptime == nil {
+            firstAppendedUptime = ProcessInfo.processInfo.systemUptime
+        }
         appendedVideoFrames += 1
 #if DEBUG
         if sourceProbe == nil { sourceProbe = firstFrameProbe }
@@ -923,6 +943,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         audioHandoffLock.unlock()
         latchedQualityError = nil
         appendedVideoFrames = 0
+        firstAppendedUptime = nil
         appendedAudioSamples = 0
         recentDropTimes = []
         requiresAudioEvidence = false

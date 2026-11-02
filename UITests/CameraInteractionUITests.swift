@@ -1,6 +1,115 @@
 import XCTest
 
 final class CameraInteractionUITests: XCTestCase {
+    /// Whether the app under test was compiled with the experimental 120 fps
+    /// control. The value comes from this test bundle's generated
+    /// `Nitrate120FPSEnabled` Info.plist key; a missing or unparseable value is
+    /// OFF, which is what a default build produces.
+    ///
+    /// This is the only gate that may skip a 120 fps expectation. When the key is
+    /// ON the control is expected to exist, so a missing menu option fails.
+    private static var is120FPSEnabledInBuild: Bool {
+        guard let raw = Bundle(for: CameraInteractionUITests.self)
+            .object(forInfoDictionaryKey: "Nitrate120FPSEnabled") else { return false }
+        if let flag = raw as? Bool { return flag }
+        if let number = raw as? NSNumber { return number.boolValue }
+        if let text = raw as? String {
+            return ["YES", "TRUE", "1"].contains(text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased())
+        }
+        return false
+    }
+
+    @MainActor func testManual60FPSRecordsTenSecondsThroughVisibleControls() throws {
+        try recordManualRateThroughVisibleControls(fps: 60)
+    }
+
+    @MainActor func testManual120FPSRecordsTenSecondsThroughVisibleControls() throws {
+        try recordManualRateThroughVisibleControls(fps: 120)
+    }
+
+
+    @MainActor func testManual120FPSRecordsThirtySecondsThroughVisibleControls() throws {
+        try recordManualRateThroughVisibleControls(fps: 120, minimumSeconds: 30)
+    }
+
+    /// Exercise the normal view-model path: visible mode/lens/manual controls,
+    /// native FPS menu, REC, confirmed timer progression, and STOP. No smoke FPS
+    /// argument or direct session start is permitted in this regression.
+    @MainActor private func recordManualRateThroughVisibleControls(
+        fps: Int, minimumSeconds: Double = 10, arguments: [String] = []
+    ) throws {
+        // Compiled-out control: nothing to drive, so the run is skipped. In a
+        // flag-ON build this branch is not taken and every selector below must
+        // exist; a missing 120 fps menu option therefore fails the test.
+        if fps == 120, !Self.is120FPSEnabledInBuild {
+            throw XCTSkip("120 fps is compiled out of this test build (Nitrate120FPSEnabled OFF)")
+        }
+        continueAfterFailure = false
+        let app = launchReadyCamera(arguments: arguments, hideDiagnosticButtons: true)
+        selectVideo(in: app)
+        selectWideLens(in: app)
+        lockManualISO(in: app)
+        let manual = app.buttons["Manual controls"]
+        waitUntilReady(manual, in: app, named: "manual-fps-\(fps)-controls-ready")
+        if manual.value as? String != "Expanded" { manual.tap() }
+        let rate = app.buttons["Capture frame rate"]
+        waitUntilReady(rate, in: app, named: "manual-fps-\(fps)-menu-ready")
+        rate.tap()
+        let option = app.buttons.matching(NSPredicate(format: "label == %@", "\(fps)FPS")).firstMatch
+        waitUntilReady(option, in: app, named: "manual-fps-\(fps)-option-ready", timeout: 10)
+        // Native-menu element.tap() attempted a failing scroll-to-visible and
+        // left the menu open. Tap the row's own centre instead, resolved from
+        // the element rather than from app-space coordinates, which can lag the
+        // menu's presentation window.
+        // A tap that lands during the menu's presentation animation is swallowed,
+        // so the row is given a beat to settle and the tap is retried once before
+        // the commit is judged.
+        func tapRow() { option.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
+        Thread.sleep(forTimeInterval: 0.6)
+        tapRow()
+        var commitResult = XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "\(fps)FPS"), object: rate)], timeout: 8)
+        if commitResult != .completed {
+            tapRow()
+            commitResult = XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "value == %@", "\(fps)FPS"), object: rate)], timeout: 20)
+        }
+        if commitResult != .completed { attachEvidence(app, named: "failed-manual-fps-\(fps)-commit") }
+        XCTAssertEqual(commitResult, .completed, "The visible FPS selector must commit the requested rate")
+        attachEvidence(app, named: "manual-fps-\(fps)-selected-before-record")
+        let start = app.buttons["Start recording"]
+        waitUntilReady(start, in: app, named: "manual-fps-\(fps)-record-ready")
+        start.tap()
+        let stop = app.buttons["Stop recording"]
+        waitUntilReady(stop, in: app, named: "manual-fps-\(fps)-writer-started")
+        waitForConfirmedRecording(in: app, minimumSeconds: minimumSeconds, named: "manual-fps-\(fps)-duration")
+        attachEvidence(app, named: "manual-fps-\(fps)-before-stop")
+        stop.tap()
+        waitUntilReady(start, in: app, named: "manual-fps-\(fps)-idle-after-stop", timeout: 40)
+        XCTAssertFalse(app.alerts.firstMatch.exists, "A recording failure alert is not a successful stop")
+        let failure = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Recording failed:")).firstMatch
+        XCTAssertFalse(failure.exists, "An inline recording failure is not a successful stop")
+        XCTAssertEqual(rate.value as? String, "\(fps)FPS")
+        attachEvidence(app, named: "manual-fps-\(fps)-stopped")
+    }
+
+    @MainActor private func waitForConfirmedRecording(in app: XCUIApplication,
+                                                      minimumSeconds: Double, named name: String) {
+        let status = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == %@", "Recording status")).firstMatch
+        let elapsed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard status.exists else { return false }
+            guard let value = status.value as? String,
+                  value.hasPrefix("Recording, capture confirmed. "),
+                  let time = value.components(separatedBy: ". ").dropFirst().first else { return false }
+            let clock = time.split(separator: ":").compactMap { Double($0) }
+            return clock.count == 2 && clock[0] * 60 + clock[1] >= minimumSeconds
+        }, object: nil)
+        let result = XCTWaiter.wait(for: [elapsed], timeout: minimumSeconds + 10)
+        if result != .completed { attachEvidence(app, named: "failed-\(name)") }
+        XCTAssertEqual(result, .completed,
+                       "Confirmed capture must advance beyond \(minimumSeconds) seconds, not merely acknowledge REC")
+    }
     /// Exercise the real scene lifecycle, then prove capture rather than merely
     /// finding a still-visible preview after activation.
     @MainActor func testPhotoCaptureRecoversAcrossBackgroundRoundTrips() throws {
@@ -59,18 +168,7 @@ final class CameraInteractionUITests: XCTestCase {
         waitUntilReady(stop, in: app, named: "video-writer-started")
         XCTAssertFalse(app.buttons["cameraMode.photo"].isEnabled,
                        "Mode changes must remain blocked during a real take")
-        let status = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "label == %@", "Recording status")).firstMatch
-        let elapsedTake = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            guard let value = status.value as? String,
-                  value.hasPrefix("Recording, capture confirmed. "),
-                  let time = value.components(separatedBy: ". ").dropFirst().first else { return false }
-            let clock = time.split(separator: ":").compactMap { Double($0) }
-            return clock.count == 2 && clock[0] * 60 + clock[1] >= 2
-        }, object: nil)
-        let elapsedResult = XCTWaiter.wait(for: [elapsedTake], timeout: 10)
-        if elapsedResult != .completed { attachEvidence(app, named: "failed-video-timer-advance") }
-        XCTAssertEqual(elapsedResult, .completed, "Confirmed recording must advance beyond two seconds, not merely acknowledge REC")
+        waitForConfirmedRecording(in: app, minimumSeconds: 2, named: "video-timer-advance")
         attachEvidence(app, named: "video-recording-before-stop")
         stop.tap()
         waitUntilReady(start, in: app, named: "video-stop-restored-idle", timeout: 40)
@@ -199,12 +297,18 @@ final class CameraInteractionUITests: XCTestCase {
         let auto = exposureControl(in: app, manual: false)
         XCTAssertTrue(auto.waitForExistence(timeout: 10),
                       "The auto-exposure control must be present before locking")
-        auto.press(forDuration: 0.7)
-        let locked = XCTNSPredicateExpectation(predicate: NSPredicate { [weak self] _, _ in
-            self?.allowPendingPrivacyAlert(in: app)
-            return self?.exposureControl(in: app, manual: true).exists == true
-        }, object: nil)
-        let result = XCTWaiter.wait(for: [locked], timeout: 15)
+        // The long press can land while the session is still settling, so it is
+        // retried rather than treated as one-shot.
+        var result: XCTWaiter.Result = .timedOut
+        for _ in 0..<3 {
+            auto.press(forDuration: 0.7)
+            let locked = XCTNSPredicateExpectation(predicate: NSPredicate { [weak self] _, _ in
+                self?.allowPendingPrivacyAlert(in: app)
+                return self?.exposureControl(in: app, manual: true).exists == true
+            }, object: nil)
+            result = XCTWaiter.wait(for: [locked], timeout: 10)
+            if result == .completed { break }
+        }
         if result != .completed { attachEvidence(app, named: "failed-ei-lock") }
         XCTAssertEqual(result, .completed, "A long press must commit a manual exposure index")
     }
@@ -650,8 +754,15 @@ final class CameraInteractionUITests: XCTestCase {
         waitUntilReady(app.buttons["cameraMode.photo"], in: app, named: "camera-launch-ready")
         waitUntilReady(app.otherElements["camera.preview"], in: app, named: "camera-preview-ready")
         if hideDiagnosticButtons {
-            XCTAssertFalse(app.buttons["DEBUG"].exists, "Launch defaults must actually remove the intercepting DEBUG target")
-            XCTAssertFalse(app.buttons["FAULT"].exists, "Launch defaults must actually remove the intercepting FAULT target")
+            // The diagnostics mount with the camera chrome rather than the
+            // scene, so their absence is waited for instead of sampled once.
+            for identifier in ["DEBUG", "FAULT"] {
+                let button = app.buttons[identifier]
+                let gone = XCTNSPredicateExpectation(
+                    predicate: NSPredicate(format: "exists == false"), object: button)
+                XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 10), .completed,
+                               "Launch defaults must actually remove the intercepting \(identifier) target")
+            }
         }
         return app
     }
@@ -755,4 +866,42 @@ final class CameraInteractionUITests: XCTestCase {
         hierarchy.lifetime = .keepAlways
         add(hierarchy)
     }
+
+
+
+
+    /// The experimental 120 fps option must stay hidden in the normal app. Launch
+    /// defaults only — no feature or diagnostic override may enable it.
+    @MainActor func testDefaultFPSMenuHidesExperimental120() throws {
+        if Self.is120FPSEnabledInBuild {
+            throw XCTSkip("This build compiles the experimental 120 fps control in; the default-OFF menu test does not apply")
+        }
+        continueAfterFailure = false
+        let app = launchReadyCamera(hideDiagnosticButtons: true)
+        selectVideo(in: app)
+        lockManualISO(in: app)
+        let manual = app.buttons["Manual controls"]
+        waitUntilReady(manual, in: app, named: "default-fps-controls-ready")
+        if manual.value as? String != "Expanded" { manual.tap() }
+        let rate = app.buttons["Capture frame rate"]
+        waitUntilReady(rate, in: app, named: "default-fps-menu-ready")
+        rate.tap()
+        let twentyFour = fpsOption(24, in: app)
+        let sixty = fpsOption(60, in: app)
+        XCTAssertTrue(twentyFour.waitForExistence(timeout: 10), "24 fps must remain offered by the normal app")
+        XCTAssertTrue(sixty.waitForExistence(timeout: 10), "60 fps must remain offered by the normal app")
+        let oneTwenty = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "120FPS")).firstMatch
+        XCTAssertFalse(oneTwenty.exists, "The experimental 120 fps rate must not be offered in the normal app")
+        attachEvidence(app, named: "default-fps-menu-without-120")
+    }
+
+    @MainActor private func fpsOption(_ fps: Int, in app: XCUIApplication) -> XCUIElement {
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "\(fps)FPS")).firstMatch
+    }
+
+
+
+
+
 }

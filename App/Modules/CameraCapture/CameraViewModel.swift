@@ -103,6 +103,9 @@ final class CameraViewModel {
     var supportsDaylight60: Bool { availableSessionFrameRates.contains(.daylight60) }
     /// Whether this lens can capture a real 120 fps take.
     var supportsHigh120: Bool { availableSessionFrameRates.contains(.high120) }
+    /// Whether this build and identity ship the manual 120 fps mode. The menu,
+    /// the policy and the session all read this one predicate.
+    var isHighFrameRateEnabled: Bool { HighFrameRateFeature.isAvailableInThisBuild() }
     /// True while an arm/disarm is in flight. Record, lens and exposure actions
     /// are held until the transition settles, mirroring the stabilizer gate.
     private(set) var isChangingFrameRate = false { didSet { pushCameraHardwareControls() } }

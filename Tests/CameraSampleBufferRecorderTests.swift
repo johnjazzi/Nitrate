@@ -161,12 +161,17 @@ struct CameraSampleBufferRecorderTests {
         #expect(await sparseRig.events.nextFinished() == nil)
         try? FileManager.default.removeItem(at: sparseURL)
 
+        // A burst only counts once a frame has actually been accepted; drops
+        // before the first append are the encoder's priming window.
         let burstRig = makeRig(FakeWriterBehavior())
         let burstURL = try begin(burstRig.recorder, events: burstRig.events)
-        burstRig.recorder.submitDropForTesting(at: 200)
-        burstRig.recorder.submitDropForTesting(at: 201)
-        burstRig.recorder.submitDropForTesting(at: 201.5)
-        #expect(await burstRig.events.nextStarted()?.contains("dropped 3 frames") == true)
+        burstRig.recorder.submitVideoSampleForTesting(try Self.log2Sample())
+        let burstStart = ProcessInfo.processInfo.systemUptime + 2
+        burstRig.recorder.submitDropForTesting(at: burstStart)
+        burstRig.recorder.submitDropForTesting(at: burstStart + 0.1)
+        burstRig.recorder.submitDropForTesting(at: burstStart + 0.2)
+        // The writer already started, so the abort is reported to the finish
+        // callback rather than to start.
         #expect(await burstRig.events.nextFinished()?.contains("dropped 3 frames") == true)
         #expect(!FileManager.default.fileExists(atPath: burstURL.path))
     }

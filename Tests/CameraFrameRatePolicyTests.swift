@@ -80,9 +80,19 @@ struct CameraFrameRatePolicyTests {
     }
 
     @Test func availabilityNeverAdvertisesARateTheDeviceCannotDeliver() {
-        #expect(CameraFrameRatePolicy.availableModes { _ in false } == [.standard24])
-        #expect(CameraFrameRatePolicy.availableModes { $0 != .high120 } == [.standard24, .daylight60])
-        #expect(CameraFrameRatePolicy.availableModes { _ in true } == [.standard24, .daylight60, .high120])
+        #expect(CameraFrameRatePolicy.availableModes({ _ in false }, highFrameRateEnabled: true)
+                == [.standard24])
+        #expect(CameraFrameRatePolicy.availableModes({ $0 != .high120 }, highFrameRateEnabled: true)
+                == [.standard24, .daylight60])
+        #expect(CameraFrameRatePolicy.availableModes({ _ in true }, highFrameRateEnabled: true)
+                == [.standard24, .daylight60, .high120])
+    }
+
+    /// The 120 fps switch is build configuration, not device capability: with it
+    /// off the menu never offers the rate even on a device that could deliver it.
+    @Test func theSwitchWithdrawsOneHundredTwentyEvenWhenTheDeviceCouldDeliverIt() {
+        #expect(CameraFrameRatePolicy.availableModes({ _ in true }, highFrameRateEnabled: false)
+                == [.standard24, .daylight60])
     }
 
     @Test func rawValuesAreTheFps() {

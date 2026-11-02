@@ -14,23 +14,39 @@ struct CameraFrameRateControlTests {
     // MARK: - Offered rates
 
     @Test func offeredRatesAreCanonicalAndAscending() {
-        let options = CameraFrameRateControlPresentation.options(availableFPS: [24, 60, 120])
+        let options = CameraFrameRateControlPresentation.options(availableFPS: [24, 60, 120],
+                                                                 highFrameRateEnabled: true)
         #expect(options.map(\.fps) == [24, 60, 120])
         #expect(options.map(\.faceValue) == ["24", "60", "120"])
     }
 
     @Test func unavailableRatesStayListedSoNothingIsHidden() {
-        // A device that cannot run 120 still shows it, disabled, rather than
-        // pretending the rate does not exist.
-        let options = CameraFrameRateControlPresentation.options(availableFPS: [24, 60])
+        // A build that ships the mode still shows 120 for a device that cannot
+        // run it, disabled, rather than pretending the rate does not exist.
+        let options = CameraFrameRateControlPresentation.options(availableFPS: [24, 60],
+                                                                 highFrameRateEnabled: true)
         #expect(options.map(\.fps) == [24, 60, 120])
         #expect(CameraFrameRateControlPresentation.isSupported(120, availableFPS: [24, 60]) == false)
         #expect(CameraFrameRateControlPresentation.canSelect(120, availableFPS: [24, 60], canChange: true) == false)
         #expect(CameraFrameRateControlPresentation.canSelect(24, availableFPS: [24, 60], canChange: true))
     }
 
+    @Test func disabledBuildHidesTheHighRateFromEveryMenuRow() {
+        // Default OFF: 120 never appears, not even as a disabled canonical row,
+        // while 24 and 60 keep working.
+        #expect(CameraFrameRateControlPresentation.options(availableFPS: [24, 60, 120])
+                .map(\.fps) == [24, 60])
+        #expect(CameraFrameRateControlPresentation.options(availableFPS: [24, 60, 120],
+                                                           highFrameRateEnabled: false)
+                .map(\.fps) == [24, 60])
+        #expect(CameraFrameRateControlPresentation.options(availableFPS: [24, 60],
+                                                           highFrameRateEnabled: false)
+                .map(\.fps) == [24, 60])
+    }
+
     @Test func duplicateAndExtraRatesCollapseToOneOrderedList() {
-        let options = CameraFrameRateControlPresentation.options(availableFPS: [120, 24, 120, 30])
+        let options = CameraFrameRateControlPresentation.options(availableFPS: [120, 24, 120, 30],
+                                                                 highFrameRateEnabled: true)
         #expect(options.map(\.fps) == [24, 30, 60, 120])
         #expect(Set(options.map(\.id)).count == options.count)
     }
@@ -50,11 +66,13 @@ struct CameraFrameRateControlTests {
         #expect(CameraFrameRateOption(fps: 120).faceValue == "120")
         #expect(CameraFrameRateOption(fps: 24).faceValue == "24")
         #expect(CameraFrameRateControlPresentation.accessibilityValue(currentFPS: 120)
-                == "120 frames per second")
-        #expect(CameraFrameRateControlPresentation.rowTitle(fps: 60, currentFPS: 120)
-                == "60 frames per second")
-        #expect(CameraFrameRateControlPresentation.rowTitle(fps: 120, currentFPS: 120)
-                == "120 frames per second, current")
+                == "120FPS")
+        #expect(CameraFrameRateControlPresentation.rowTitle(fps: 60) == "60FPS")
+        #expect(CameraFrameRateControlPresentation.rowTitle(fps: 120) == "120FPS")
+        // The rate in force is marked by weight, never by a suffix, so no row's
+        // text changes when the selection moves.
+        #expect(CameraFrameRateControlPresentation.isCurrentRow(fps: 120, currentFPS: 120))
+        #expect(CameraFrameRateControlPresentation.isCurrentRow(fps: 60, currentFPS: 120) == false)
     }
 
     @Test func standardRateIsNeutralAndHigherRatesAreOrange() {
@@ -78,7 +96,8 @@ struct CameraFrameRateControlTests {
     @Test func rateKeyDocksUnderTheZoomRailInVideoOnly() {
         // Video, a full-height column: the key docks and the rail keeps the rest.
         #expect(InlineFrameRateKeyPlacement.docksKey(isVideoMode: true, slotRun: 400))
-        #expect(InlineFrameRateKeyPlacement.railHeight(slotRun: 400, docksKey: true) == 400 - 48)
+        let expectedRailHeight: CGFloat = 400 - 48
+        #expect(InlineFrameRateKeyPlacement.railHeight(slotRun: 400, docksKey: true) == expectedRailHeight)
         // Photo and Develop have no rate pipeline to steer.
         #expect(InlineFrameRateKeyPlacement.docksKey(isVideoMode: false, slotRun: 400) == false)
         #expect(InlineFrameRateKeyPlacement.railHeight(slotRun: 400, docksKey: false) == 400)
@@ -107,18 +126,31 @@ struct CameraFrameRateControlTests {
     @Test @MainActor func choosingASupportedRateCallsTheSingleWriterOnce() {
         var written: [Int] = []
         let control = CameraFrameRateControl(availableFPS: [24, 60, 120], currentFPS: 24,
-                                             canChange: true, select: { written.append($0) })
+                                             canChange: true, highFrameRateEnabled: true,
+                                             select: { written.append($0) })
         control.choose(120)
         #expect(written == [120])
+    }
+
+    @Test @MainActor func choosingTheHighRateWritesNothingWhenTheBuildDisablesIt() {
+        var written: [Int] = []
+        let control = CameraFrameRateControl(availableFPS: [24, 60, 120], currentFPS: 24,
+                                             canChange: true, highFrameRateEnabled: false,
+                                             select: { written.append($0) })
+        control.choose(120)
+        control.choose(60)
+        #expect(written == [60])
     }
 
     @Test @MainActor func choosingAnUnsupportedOrLockedRateWritesNothing() {
         var written: [Int] = []
         let unsupported = CameraFrameRateControl(availableFPS: [24, 60], currentFPS: 24,
-                                                 canChange: true, select: { written.append($0) })
+                                                 canChange: true, highFrameRateEnabled: true,
+                                                 select: { written.append($0) })
         unsupported.choose(120)
         let locked = CameraFrameRateControl(availableFPS: [24, 60, 120], currentFPS: 120,
-                                            canChange: false, select: { written.append($0) })
+                                            canChange: false, highFrameRateEnabled: true,
+                                            select: { written.append($0) })
         locked.choose(60)
         #expect(written.isEmpty)
     }
@@ -165,7 +197,8 @@ struct CameraFrameRateControlTests {
                             .overlay(Rectangle().strokeBorder(Color(.sRGB, red: 1, green: 0, blue: 0, opacity: 1), lineWidth: 2))
                         CameraFrameRateControl(
                             availableFPS: CameraFrameRateControlPresentation.canonicalFPS,
-                            currentFPS: 120, canChange: true, select: { _ in })
+                            currentFPS: 120, canChange: true, highFrameRateEnabled: true,
+                            select: { _ in })
                             .frame(height: InlineFrameRateKeyPlacement.keyHeight)
                             .overlay(Rectangle().strokeBorder(Color(.sRGB, red: 0, green: 0, blue: 1, opacity: 1), lineWidth: 2))
                     }

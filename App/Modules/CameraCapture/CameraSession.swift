@@ -2946,6 +2946,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
             func finish(_ error: Error?) {
                 self.completeFrameRateTransition(generation: generation, error: error, completion: completion)
             }
+            // A build that does not ship the high-rate mode refuses it at the
+            // session too, so no stale selection or direct caller can arm a rate
+            // the menu no longer offers.
+            guard HighFrameRateFeature.allows(fps: mode.fps,
+                                              available: HighFrameRateFeature.isAvailableInThisBuild()) else {
+                finish(CameraError.unsupportedFrameRateError(for: mode))
+                return
+            }
             guard !self.frameRateTransitionPending else {
                 finish(CameraError.frameRateTransitionInProgress)
                 return

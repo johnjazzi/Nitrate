@@ -722,7 +722,7 @@ struct ContentView: View {
                         enabled: canUseZoomControls,
                         revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
                         begin: { cameraViewModel.beginSlowZoom($0) },
-                        end: { cameraViewModel.endSlowZoom(revision:) },
+                        end: cameraViewModel.endSlowZoom(revision:),
                         step: cameraViewModel.stepDisplayZoom,
                         availableFocalRange: cameraViewModel.focalLengthRulerRange,
                         visualWidth: FrameRulerPlacementGeometry.rulerVisualThickness)
@@ -734,6 +734,7 @@ struct ContentView: View {
                         CameraFrameRateControl(availableFPS: availableInlineFrameRates,
                                                currentFPS: cameraViewModel.sessionFrameRate.rawValue,
                                                canChange: cameraViewModel.canChangeSessionFrameRate,
+                                               highFrameRateEnabled: cameraViewModel.isHighFrameRateEnabled,
                                                select: selectInlineFrameRate)
                             .frame(height: InlineFrameRateKeyPlacement.keyHeight)
                     }
