@@ -176,17 +176,19 @@ struct ContentView: View {
                     horizontalInset: controlBarHorizontalInset(in: geometry)) {
                     CameraModeCarousel(selected: cameraMode.selected, enabled: canChangeCameraMode,
                                        rotationDegrees: statusRotationDegrees, onSelect: selectCameraMode,
-                                       photoAvailable: photoModeAvailable)
+                                       photoAvailable: photoModeAvailable,
+                                       onBlockedSelect: { _ in explainBlockedModeTap() })
                         .frame(width: slot.width, height: slot.height)
                         .position(x: slot.midX, y: slot.midY)
-                        // A dimmed row that cannot say why is the bug, not the
-                        // refusal: the letters are disabled, so they can never
-                        // explain themselves on a tap. The reason is shown while
-                        // the row is blocked, and any refusal the row cannot gate
-                        // shows itself here for a moment.
+                        // The letters are dimmed rather than disabled, so a tap
+                        // can still explain itself — for a moment, where the
+                        // operator is looking. It is not a standing label: a take
+                        // dims this row for its whole length, and a permanent
+                        // "stop the take to change modes" banner over a running
+                        // take is noise the recording status face already covers.
                         .overlay(alignment: .top) {
-                            if let reason = cameraViewModel.shootingModeBlockedReason ?? modeRefusalNotice {
-                                modeStatusCapsule(reason)
+                            if let notice = modeRefusalNotice {
+                                modeStatusCapsule(notice)
                                     .offset(y: -30)
                             }
                         }
@@ -1312,8 +1314,18 @@ struct ContentView: View {
         }
     }
 
+    /// A dimmed row is not a dead one: a tap answers from the same gate that dims
+    /// it, so a refusal is never silent and never has to be a standing label.
+    private func explainBlockedModeTap() {
+        showModeRefusal(cameraViewModel.shootingModeBlockedReason
+            ?? "Finish the current action to change modes")
+    }
+
     private func selectCameraMode(_ mode: CameraMode) {
-        guard canChangeCameraMode else { return }
+        guard canChangeCameraMode else {
+            explainBlockedModeTap()
+            return
+        }
         guard CameraMode.visibleModes(photoAvailable: photoModeAvailable).contains(mode),
               mode != cameraMode.selected else { return }
         if mode == .photo {
