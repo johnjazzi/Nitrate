@@ -24,7 +24,10 @@ struct VideoImportEntryTests {
         #expect(screen.contains("isDevelopMode: isDevelopMode"))
         #expect(screen.contains("selectionOnly: isDevelopMode"))
         #expect(screen.contains(".allowsHitTesting(!isDevelopMode)"))
-        #expect(screen.contains("guard canChangeCameraMode else { return }"))
+        // A refused mode tap answers with the reason rather than returning
+        // silently: the dimmed row has no standing banner to explain itself.
+        #expect(!screen.contains("guard canChangeCameraMode else { return }"))
+        #expect(screen.contains("explainBlockedModeTap()"))
         #expect(screen.contains("CameraModeStripGeometry.frame"))
     }
 

@@ -176,16 +176,27 @@ struct ContentView: View {
                     horizontalInset: controlBarHorizontalInset(in: geometry)) {
                     CameraModeCarousel(selected: cameraMode.selected, enabled: canChangeCameraMode,
                                        rotationDegrees: statusRotationDegrees, onSelect: selectCameraMode,
-                                       photoAvailable: photoModeAvailable)
+                                       photoAvailable: photoModeAvailable,
+                                       onBlockedSelect: { _ in explainBlockedModeTap() })
                         .frame(width: slot.width, height: slot.height)
                         .position(x: slot.midX, y: slot.midY)
-                        // No visual reason capsule here. It was offset -30 from
-                        // the mode row, which put it under the Dynamic Island
-                        // where the sensor housing clipped it mid-sentence, and
-                        // nothing but an error or a warning is allowed to put
-                        // words on screen during a take. The row is already
-                        // dimmed and disabled, and the reason stays on its
-                        // accessibility value for VoiceOver.
+                        // The letters are dimmed rather than disabled, so a tap
+                        // can still explain itself — for a moment, where the
+                        // operator is looking. It is not a standing label: a take
+                        // dims this row for its whole length, and a permanent
+                        // "stop the take to change modes" banner over a running
+                        // take is noise the recording status face already covers.
+                        //
+                        // The capsule sits BELOW the row, not above it: at -30 it
+                        // landed under the sensor housing and was clipped
+                        // mid-sentence. It only ever answers a tap, so it cannot
+                        // become a standing label over a take.
+                        .overlay(alignment: .top) {
+                            if let notice = modeRefusalNotice {
+                                modeStatusCapsule(notice)
+                                    .offset(y: 44)
+                            }
+                        }
                         .accessibilityValue(cameraViewModel.shootingModeBlockedReason
                             ?? modeRefusalNotice ?? "")
                 }
@@ -1318,8 +1329,18 @@ struct ContentView: View {
         }
     }
 
+    /// A dimmed row is not a dead one: a tap answers from the same gate that dims
+    /// it, so a refusal is never silent and never has to be a standing label.
+    private func explainBlockedModeTap() {
+        showModeRefusal(cameraViewModel.shootingModeBlockedReason
+            ?? "Finish the current action to change modes")
+    }
+
     private func selectCameraMode(_ mode: CameraMode) {
-        guard canChangeCameraMode else { return }
+        guard canChangeCameraMode else {
+            explainBlockedModeTap()
+            return
+        }
         guard CameraMode.visibleModes(photoAvailable: photoModeAvailable).contains(mode),
               mode != cameraMode.selected else { return }
         if mode == .photo {
@@ -1406,7 +1427,11 @@ struct ContentView: View {
         }
     }
 
-    /// The capsule the photo strip uses for its own status.
+    /// The mode row's own status face, the same capsule the photo strip uses.
+    private func modeStatusCapsule(_ status: String) -> some View {
+        statusCapsule(status, identifier: "camera.modeStatus")
+    }
+
     private func statusCapsule(_ status: String, identifier: String) -> some View {
         Text(status)
             .foregroundStyle(.white)
