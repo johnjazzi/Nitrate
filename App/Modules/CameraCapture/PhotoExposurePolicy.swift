@@ -33,6 +33,58 @@ struct PhotoExposureCommand: Equatable, Sendable {
     let durationSeconds: Double
 }
 
+/// The metered exposure the operator was looking at, and the aperture and
+/// compensation it was metered under. The controller records it before its
+/// first custom write, because the device's own metering produced it.
+struct PhotoApertureBaseline: Equatable, Sendable {
+    let iso: Float
+    let aperture: Float
+    let ev: Float
+}
+
+struct PhotoApertureResolution: Equatable, Sendable {
+    let iso: Float
+    /// The compensation this ISO actually delivers, in EV from neutral. Equals
+    /// the requested EV unless the ISO range clipped the request.
+    let achievedEV: Float
+    let targetLimited: Bool
+}
+
+enum PhotoApertureExposurePolicy {
+    /// The ISO that puts a held aperture back on the operator's EV target.
+    ///
+    /// Exposure is `ISO * t / N²`, so moving the iris from `baseline.aperture`
+    /// to `aperture` changes the light by `(aperture / baseline.aperture)²` and
+    /// is answered in gain; a change of target scales it by
+    /// `2^(ev - baseline.ev)`. Both terms are measured from the *baseline*, not
+    /// from the ISO currently installed: deriving the next value from the value
+    /// a previous move already corrected compounds every gesture.
+    ///
+    /// When the request lands outside the format's ISO range the resolution is
+    /// clamped and flagged `targetLimited`, and `achievedEV` reports the
+    /// compensation that clamp really delivers, so the UI can say the target is
+    /// unreachable instead of showing a meter parked several stops off it.
+    static func resolveISO(baseline: PhotoApertureBaseline, aperture: Float,
+                           ev: Float, isoRange: ClosedRange<Float>) -> PhotoApertureResolution? {
+        guard baseline.iso.isFinite, baseline.iso > 0,
+              baseline.aperture.isFinite, baseline.aperture > 0,
+              aperture.isFinite, aperture > 0,
+              ev.isFinite, baseline.ev.isFinite,
+              isoRange.lowerBound.isFinite, isoRange.upperBound.isFinite,
+              isoRange.lowerBound > 0, isoRange.upperBound >= isoRange.lowerBound else { return nil }
+        let iris = Double(aperture) / Double(baseline.aperture)
+        let proposed = Double(baseline.iso) * iris * iris * pow(2.0, Double(ev - baseline.ev))
+        guard proposed.isFinite, proposed > 0 else { return nil }
+        let value = min(max(proposed, Double(isoRange.lowerBound)), Double(isoRange.upperBound))
+        // 2^achievedEV / 2^requestedEV = value / proposed, so the shortfall is
+        // one log2 away from the requested target.
+        let achieved = ev + Float(log2(value / proposed))
+        return PhotoApertureResolution(iso: Float(value),
+                                       achievedEV: achieved,
+                                       targetLimited: abs(value - proposed) > proposed * 0.0001)
+    }
+}
+
 enum PhotoExposurePolicyError: Error, Equatable {
     case nonFiniteInput
     case invalidRange
