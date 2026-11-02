@@ -254,6 +254,7 @@ final class RenderQueueViewModel {
     }
 
     func enqueue(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge? = nil,
+                 pushPull: PushPullExposure = .neutral,
                  deliveryPreferences: RenderDeliveryPreferences? = nil,
                  capturePolicy: RenderCapturePolicy? = nil) {
         guard Self.isUsableFile(sourceURL) else {
@@ -261,13 +262,13 @@ final class RenderQueueViewModel {
             return
         }
         if let awaiting = awaitingStockJobs.first(where: { $0.sourceURL == sourceURL }) {
-            assignStock(jobId: awaiting.id, stockId: stockId, iso: iso, gauge: gauge,
+            assignStock(jobId: awaiting.id, stockId: stockId, iso: iso, gauge: gauge, pushPull: pushPull,
                         deliveryPreferences: deliveryPreferences, capturePolicy: capturePolicy)
             return
         }
         rendererErrorMessage = nil
         jobs.append(RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso,
-                              printGauge: gauge, sessionId: sessionId,
+                              printGauge: gauge, pushPull: pushPull, sessionId: sessionId,
                               deliveryPreferences: deliveryPreferences ?? DeliverySettings.renderPreferences(),
                               capturePolicy: capturePolicy))
         // The enqueue must be durable before any render or Photos side effect.
@@ -310,6 +311,7 @@ final class RenderQueueViewModel {
 
     /// Assign a stock to an awaiting entry and let it render.
     func assignStock(jobId: UUID, stockId: String, iso: Float, gauge: PrintGauge? = nil,
+                     pushPull: PushPullExposure = .neutral,
                      deliveryPreferences: RenderDeliveryPreferences? = nil,
                      capturePolicy: RenderCapturePolicy? = nil) {
         guard let index = jobs.firstIndex(where: { $0.id == jobId }),
@@ -317,6 +319,7 @@ final class RenderQueueViewModel {
         jobs[index].stockId = stockId
         jobs[index].iso = iso
         jobs[index].printGauge = gauge
+        jobs[index].pushPull = pushPull
         if let deliveryPreferences { jobs[index].deliveryPreferences = deliveryPreferences }
         // The capture policy is snapshotted at enqueue/take start and read by the
         // renderer, never re-read from live UI. Assigning a stock must not
@@ -849,7 +852,10 @@ final class RenderQueueViewModel {
         guard let renderer else {
             throw QueueError.rendererUnavailable(rendererInitError ?? "Metal pipeline could not start. Reboot the app.")
         }
-        guard let config = library?.config(for: job.stockId, iso: job.iso, gauge: job.printGauge) else {
+        // The push/pull is read from the job at render time, so a value changed
+        // before a Retry is the value the next render uses.
+        guard let config = library?.config(for: job.stockId, iso: job.iso, gauge: job.printGauge,
+                                          pushPull: job.pushPull ?? .neutral) else {
             throw QueueError.stockUnavailable(job.stockId)
         }
         // The render reads only the job's persisted policy, never live UI.

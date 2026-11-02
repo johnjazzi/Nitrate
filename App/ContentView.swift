@@ -1473,6 +1473,8 @@ struct ContentView: View {
             isPresented: $showStockSheet,
             selectedStock: $selectedStock,
             currentISO: $currentISO,
+            meteredOffsetEV: cameraViewModel.hasExposureMeter
+                ? cameraViewModel.liveExposureTargetOffset : nil,
             selectionOnly: isDevelopMode
         )
     }
@@ -1518,11 +1520,19 @@ private struct StockSheetView: View {
     @Binding var isPresented: Bool
     @Binding var selectedStock: FilmStockConfig?
     @Binding var currentISO: Float
+    /// Live metered offset from the operator's EV target (EV, positive = over),
+    /// or nil when the device has no meter reading yet. Auto resolves against
+    /// this snapshot when the sheet renders.
+    var meteredOffsetEV: Float?
     var selectionOnly = false
 
     @State private var stocks: [FilmStockConfig] = []
     @State private var localSelection: FilmStockConfig?
     @State private var gauge: PrintGauge = .thirtyFiveMillimetre
+    /// Auto is checked by default: a stock renders neutral until the meter says
+    /// the scene sits over target. Turning it off hands the ladder to the user.
+    @State private var pushPullAutomatic = true
+    @State private var pushPullStops: PushPullStops = .none
 
     var body: some View {
         NavigationStack {
@@ -1537,6 +1547,8 @@ private struct StockSheetView: View {
                         if !stocks.isEmpty { stockCarousel }
 
                         if localSelection != nil { gaugePicker }
+
+                        if localSelection != nil { pushPullPicker }
 
                         if let url = sourceURL, !selectionOnly {
                             renderButton(sourceURL: url)
@@ -1561,6 +1573,7 @@ private struct StockSheetView: View {
                 if localSelection == nil {
                     localSelection = selectedStock ?? stocks.first
                     gauge = localSelection.flatMap { library.lastGauge(for: $0.stockId) } ?? .thirtyFiveMillimetre
+                    restorePushPull(for: localSelection)
                 }
                 currentISO = localSelection?.defaultISO ?? 400
                 persistPreferences()
@@ -1571,6 +1584,7 @@ private struct StockSheetView: View {
                     currentISO = stock.defaultISO
                     library.setSelectedStock(stock.stockId)
                     library.setGauge(gauge, for: stock.stockId)
+                    library.setPushPull(pushPullPreference, for: stock.stockId)
                 }
             }
             .onChange(of: localSelection) { _, _ in persistPreferences() }
@@ -1609,12 +1623,16 @@ private struct StockSheetView: View {
         ) {
             gauge = restored
         }
+        if previous?.stockId != stock.stockId {
+            restorePushPull(for: stock)
+        }
     }
 
     private func persistPreferences() {
         guard let stock = localSelection else { return }
         library.setSelectedStock(stock.stockId)
         library.setGauge(gauge, for: stock.stockId)
+        library.setPushPull(pushPullPreference, for: stock.stockId)
     }
 
     private var gaugePicker: some View {
@@ -1632,6 +1650,80 @@ private struct StockSheetView: View {
         }
     }
 
+    // MARK: - Push / Pull
+
+    /// The sheet's live preference: auto checked, or the manual rung.
+    private var pushPullPreference: PushPullPreference {
+        PushPullPreference(isAutomatic: pushPullAutomatic, manualStops: pushPullStops)
+    }
+
+    /// What the render will actually do, resolved against the meter now.
+    private var resolvedPushPull: PushPullExposure {
+        pushPullPreference.resolved(meteredOffsetEV: meteredOffsetEV)
+    }
+
+    private func restorePushPull(for stock: FilmStockConfig?) {
+        let remembered = stock.map { library.lastPushPull(for: $0.stockId) } ?? .standard
+        pushPullAutomatic = remembered.isAutomatic
+        pushPullStops = remembered.manualStops
+    }
+
+    /// Stock + gauge + push/pull are the three choices that define a render, so
+    /// the stop count sits with the gauge ladder rather than in a settings page.
+    private var pushPullPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Push / Pull").font(NitrateTypography.font(.headline))
+                Spacer()
+                // The state is legible whether or not it is checked.
+                Text(pushPullBadge)
+                    .font(NitrateTypography.font(.caption))
+                    .foregroundStyle(resolvedPushPull.isNeutral ? .secondary : Color.accentColor)
+            }
+            Picker("Push / Pull", selection: $pushPullStops) {
+                ForEach(PushPullStops.allCases) { stops in
+                    Text(stops.displayName).tag(stops)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(pushPullAutomatic)
+            .opacity(pushPullAutomatic ? 0.45 : 1)
+
+            Toggle(isOn: $pushPullAutomatic) {
+                Text("Auto from the meter").font(NitrateTypography.font(.subheadline))
+            }
+
+            Text(pushPullExplanation)
+                .font(NitrateTypography.font(.caption))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var pushPullBadge: String {
+        let resolved = resolvedPushPull
+        guard !resolved.isNeutral else { return "normal" }
+        let amount = abs(resolved.stops.stops)
+        return "\(resolved.stops.effectName) \(amount) \(amount == 1 ? "stop" : "stops")"
+    }
+
+    private var pushPullExplanation: String {
+        let resolved = resolvedPushPull
+        if pushPullAutomatic {
+            guard let meteredOffsetEV else {
+                return "No live meter reading — this take renders normal. "
+                    + "Turn Auto off to choose a push or pull by hand."
+            }
+            if resolved.isNeutral {
+                return String(format: "Meter %+.1f EV against target: within a stop, so the render stays normal.",
+                              meteredOffsetEV)
+            }
+            return "Meter reads \(String(format: "%+.1f", meteredOffsetEV)) EV over target, so this render is "
+                + "\(resolved.stops.effectName) \(abs(resolved.stops.stops)) stops. "
+                + "Turn Auto off to choose by hand."
+        }
+        return "Renders \(resolved.stops.displayName) stops: the take is unchanged and the file's metadata records it."
+    }
+
     private func renderButton(sourceURL: URL) -> some View {
         Button {
             guard let stock = localSelection else {
@@ -1644,7 +1736,8 @@ private struct StockSheetView: View {
                     jobId: jobId,
                     stockId: stock.stockId,
                     iso: stock.defaultISO,
-                    gauge: gauge
+                    gauge: gauge,
+                    pushPull: resolvedPushPull
                 )
             } else {
                 renderQueueViewModel.enqueue(
@@ -1652,6 +1745,7 @@ private struct StockSheetView: View {
                     stockId: stock.stockId,
                     iso: stock.defaultISO,
                     gauge: gauge,
+                    pushPull: resolvedPushPull,
                     capturePolicy: capturePolicy
                 )
             }
@@ -1660,6 +1754,9 @@ private struct StockSheetView: View {
             HStack {
                 Image(systemName: "play.rectangle.fill")
                 Text("Render with \(localSelection?.displayName ?? "Stock")")
+                if !resolvedPushPull.isNeutral {
+                    Text(resolvedPushPull.stops.displayName).fontWeight(.semibold)
+                }
             }
             .frame(maxWidth: .infinity)
             .padding()

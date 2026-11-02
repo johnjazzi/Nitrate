@@ -125,11 +125,15 @@ final class StillFilmRenderResources {
         }
         var zero: Float = 0
         var contrast = config.outputContrast
+        // The photo path renders the stock's baseline; a push/pull is a video
+        // render setting, so the stop count is pinned neutral here.
+        var stops = Float(config.effectivePushPull.stops.stops)
         encoder.setComputePipelineState(lutPipeline)
         encoder.setTexture(input, index: 0); encoder.setTexture(output, index: 1); encoder.setTexture(lut, index: 2)
         encoder.setBytes(&zero, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&zero, length: MemoryLayout<Float>.size, index: 1)
         encoder.setBytes(&contrast, length: MemoryLayout<Float>.size, index: 2)
+        encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 3)
         encoder.dispatchThreadgroups(MTLSize(width: (input.width + 15) / 16, height: (input.height + 15) / 16, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         encoder.endEncoding(); command.commit(); command.waitUntilCompleted()

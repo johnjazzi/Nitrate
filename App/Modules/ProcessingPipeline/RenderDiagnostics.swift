@@ -325,6 +325,14 @@ enum RenderMovieMetadata {
             "grain-gauge-amplitude": String(config.effectivePrintGauge.amplitudeMultiplier),
             "grain-algorithm": config.effectiveRecipe.grainAlgorithm,
             "grain-edge-boost-multiplier": String(config.effectiveRecipe.edgeBoostMultiplier),
+            // Render-time push/pull. The delivered file states that the take was
+            // pulled or pushed and by how many stops, plus whether the meter or
+            // the operator chose it. A neutral render records "none" so the
+            // absence of a push/pull is evidence, not silence.
+            "push-pull": config.effectivePushPull.stops.effectName,
+            "push-pull-stops": String(config.effectivePushPull.stops.stops),
+            "push-pull-mode": config.effectivePushPull.origin.rawValue,
+            "push-pull-linear-gain": String(PushPullTransfer.linearGain(for: config.effectivePushPull.stops)),
             "shutter-speed": capturePolicy.map { "1/\($0.shutterDenominator)" } ?? "1/48",
             "shutter-angle": "180",
             "encoding-codec": RenderEncodingContract.codec,
@@ -332,6 +340,9 @@ enum RenderMovieMetadata {
             "color-contract-verified": String(config.effectiveRecipe.colorContractVerified),
             "render-settings-schema": "1", "render-settings": json
         ]
+        if let offset = config.effectivePushPull.meteredOffsetEV {
+            metadataValues["push-pull-metered-offset-ev"] = String(offset)
+        }
         if isImportedSource {
             metadataValues["source-origin"] = "photos-import"
             metadataValues["shutter-speed"] = "unknown-or-not-recorded"

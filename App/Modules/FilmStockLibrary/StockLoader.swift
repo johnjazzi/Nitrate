@@ -7,6 +7,7 @@ final class FilmStockLibrary {
     private(set) var stocks: [FilmStockConfig] = []
     private let isoDefaultsKey = "film_stock_iso_defaults"
     private let gaugeDefaultsKey = "film_stock_gauge_defaults"
+    private let pushPullDefaultsKey = "film_stock_push_pull_defaults"
     private let selectedStockKey = "film_stock_selected_id"
     private let userDefaults: UserDefaults
 
@@ -38,11 +39,12 @@ final class FilmStockLibrary {
     }
 
     /// AD-10: Return a config with all fields preserved (including tints).
-    func config(for stockId: String, iso: Float, gauge: PrintGauge? = nil) -> FilmStockConfig? {
+    func config(for stockId: String, iso: Float, gauge: PrintGauge? = nil,
+                pushPull: PushPullExposure = .neutral) -> FilmStockConfig? {
         guard let template = stocks.first(where: { $0.stockId == stockId }) else {
             return nil
         }
-        return template.overridingISO(iso).overridingGauge(gauge)
+        return template.overridingISO(iso).overridingGauge(gauge).overridingPushPull(pushPull)
     }
 
     /// Returns stocks available for video rendering.
@@ -78,6 +80,24 @@ final class FilmStockLibrary {
     /// Restore the last-used print gauge for a stock; nil means neutral 35mm.
     func lastGauge(for stockId: String) -> PrintGauge? {
         gaugeValues()[stockId].flatMap(PrintGauge.init(rawValue:))
+    }
+
+    /// Save the sheet's push/pull preference (auto checked, or a manual rung).
+    func setPushPull(_ preference: PushPullPreference, for stockId: String) {
+        var defaults = pushPullValues()
+        defaults[stockId] = preference.encoded
+        userDefaults.set(defaults, forKey: pushPullDefaultsKey)
+    }
+
+    /// Restore the last-used push/pull preference for a stock.
+    func lastPushPull(for stockId: String) -> PushPullPreference {
+        PushPullPreference.decode(pushPullValues()[stockId])
+    }
+
+    private func pushPullValues() -> [String: String] {
+        (userDefaults.dictionary(forKey: pushPullDefaultsKey) ?? [:]).reduce(into: [:]) { values, item in
+            if let text = item.value as? String { values[item.key] = text }
+        }
     }
 
     private func gaugeValues() -> [String: String] {
