@@ -871,10 +871,18 @@ struct CameraSampleBufferRecorderTests {
 
     @available(macOS 14.2, iOS 17.2, *)
     @Test func configuredMicrophoneWithNoAudioIsNotReportedAsCleanSuccess() async throws {
-        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let clock = RecorderClockBox(10)
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true), uptime: clock.now)
         let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"],
                             requiresAudioEvidence: true)
         defer { try? FileManager.default.removeItem(at: url) }
+        // A configured microphone holds the origin until it is heard; a deaf
+        // stream must still start at the ceiling rather than hang the take.
+        clock.advance(to: 10)
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 9.9))
+        await rig.drainSubmittedWork()
+        #expect(rig.control.current == nil, "A silent configured microphone must hold the origin")
+        clock.advance(to: 10 + CameraAudioWarmUpPolicy.maximumWait)
         rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
         await rig.drainSubmittedWork()
         let writer = try #require(rig.control.current)
@@ -1267,7 +1275,98 @@ struct CameraSampleBufferRecorderTests {
         #expect(FileManager.default.fileExists(atPath: url.path))
     }
 
-    private func makeRig(_ behavior: FakeWriterBehavior, deadlines: RecorderDrainDeadlines? = nil) -> RecorderRig {
+    // MARK: - Warm-audio origin gate
+
+    /// The reported defect: the origin was anchored on the first video frame
+    /// while the microphone pipeline had stalled, so the clip opened with a
+    /// silent head. The origin must wait for a live stream and then anchor
+    /// where the preroll can cover the start.
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func originWaitsForAStalledMicrophoneAndKeepsTheFlushedPreroll() async throws {
+        let clock = RecorderClockBox(1_000)
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true), uptime: clock.now)
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"],
+                            requiresAudioEvidence: true)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // The stream delivered once, then went silent for longer than the window.
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 9.9))
+        await rig.drainSubmittedWork()
+        clock.advance(to: 1_000.3)
+
+        // The first eligible frames arrive while the microphone is stalled. No
+        // origin may be anchored on them: their samples were never delivered.
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10.04))
+        await rig.drainSubmittedWork()
+        #expect(rig.control.current == nil, "A stalled microphone must not anchor the origin")
+        #expect(rig.events.startedCount == 0)
+
+        // The stream resumes; the next frame anchors and the preroll packet that
+        // covers the start is written, not dropped.
+        clock.advance(to: 1_000.32)
+        rig.recorder.receiveCapturedAudio(try Self.pcmSample(pts: 10.1))
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10.08))
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+        #expect(writer.sessionStart == CMTime(seconds: 10.08, preferredTimescale: 600))
+        #expect(writer.videoTimings.map(\.presentationTime) == [CMTime(seconds: 10.08, preferredTimescale: 600)])
+        #expect(writer.audioTimings.map(\.presentationTime) == [CMTime(seconds: 10.1, preferredTimescale: 48_000)])
+        #expect(rig.events.startedCount == 1)
+        rig.recorder.cancel()
+        await rig.drainSubmittedWork()
+    }
+
+    /// A live microphone never delays the start.
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func liveMicrophoneDoesNotHoldTheOrigin() async throws {
+        let clock = RecorderClockBox(2_000)
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true), uptime: clock.now)
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"],
+                            requiresAudioEvidence: true)
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.receiveCapturedAudio(try Self.pcmSample(pts: 10))
+        clock.advance(to: 2_000.02)
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        await rig.drainSubmittedWork()
+        #expect(rig.control.current?.sessionStart == CMTime(seconds: 10, preferredTimescale: 600))
+        rig.recorder.cancel()
+        await rig.drainSubmittedWork()
+    }
+
+    /// A take with no microphone configured is untouched by the gate.
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func videoOnlyTakeIsNotHeldForAudio() async throws {
+        let clock = RecorderClockBox(3_000)
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true), uptime: clock.now)
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: nil)
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        await rig.drainSubmittedWork()
+        #expect(rig.control.current?.sessionStart == CMTime(seconds: 10, preferredTimescale: 600))
+        rig.recorder.cancel()
+        await rig.drainSubmittedWork()
+    }
+
+    /// The gate is a bounded wait, not a requirement that audio exists.
+    @Test func warmUpPolicyHoldsOnlyInsideTheWindowAndCeiling() {
+        #expect(!CameraAudioWarmUpPolicy.isLive(lastArrival: nil, now: 100))
+        #expect(CameraAudioWarmUpPolicy.isLive(lastArrival: 100, now: 100.1))
+        #expect(!CameraAudioWarmUpPolicy.isLive(lastArrival: 100, now: 100.2))
+        // Not required at all, or already live: never hold.
+        #expect(!CameraAudioWarmUpPolicy.holdsStart(requiresAudio: false, lastArrival: nil,
+                                                    now: 100, heldSince: 100))
+        #expect(!CameraAudioWarmUpPolicy.holdsStart(requiresAudio: true, lastArrival: 100,
+                                                    now: 100.01, heldSince: 100))
+        // Stalled: hold until the ceiling, then start anyway.
+        #expect(CameraAudioWarmUpPolicy.holdsStart(requiresAudio: true, lastArrival: 100,
+                                                   now: 100.3, heldSince: 100.3))
+        #expect(!CameraAudioWarmUpPolicy.holdsStart(requiresAudio: true, lastArrival: 100,
+                                                    now: 100.4, heldSince: 100))
+    }
+
+    private func makeRig(_ behavior: FakeWriterBehavior, deadlines: RecorderDrainDeadlines? = nil,
+                         uptime: (() -> TimeInterval)? = nil) -> RecorderRig {
         let events = RecorderEventQueue()
         let control = FakeWriterControl()
         let queue = DispatchQueue(label: "test.sample-buffer-recorder")
@@ -1276,7 +1375,9 @@ struct CameraSampleBufferRecorderTests {
                 let writer = FakeCameraSampleBufferWriter(url: url, behavior: behavior)
                 control.install(writer, settings: settings, transform: transform)
                 return writer
-            }, outputValidator: { _, _, _, _ in }, scheduleDrainTimeout: deadlines.map { deadlines in
+            }, outputValidator: { _, _, _, _ in },
+            uptime: uptime ?? { ProcessInfo.processInfo.systemUptime },
+            scheduleDrainTimeout: deadlines.map { deadlines in
                 { delay, action in deadlines.schedule(after: delay, action: action) }
             })
         return RecorderRig(recorder: recorder, events: events, control: control, queue: queue)
@@ -1307,6 +1408,15 @@ private final class RecorderDrainDeadlines: @unchecked Sendable {
         lock.unlock()
         pending.forEach { $0() }
     }
+}
+
+/// Controllable monotonic uptime for the capture warm-up gate.
+private final class RecorderClockBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: TimeInterval
+    init(_ value: TimeInterval) { self.value = value }
+    func now() -> TimeInterval { lock.lock(); defer { lock.unlock() }; return value }
+    func advance(to next: TimeInterval) { lock.lock(); defer { lock.unlock() }; value = next }
 }
 
 private final class RecorderIntBox: @unchecked Sendable {
