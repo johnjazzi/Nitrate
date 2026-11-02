@@ -91,6 +91,12 @@ FILE_FIXTURES: tuple[str, ...] = (
     "App/Modules/CameraCapture/FrameRulerPlacement.swift",
     "App/Modules/CameraCapture/FrameZoomRuler.swift",
     "App/Modules/CameraCapture/InlineManualControls.swift",
+    "App/Modules/CameraCapture/CameraFrameRateControl.swift",
+    "App/Modules/CameraCapture/CameraFrameRatePolicy.swift",
+    "App/Modules/CameraCapture/CameraHighFrameRateAvailability.swift",
+    # Build configuration: the 120 fps switch is a project.yml setting.
+    "project.yml",
+    "App/Modules/CameraCapture/RecordingStatusFace.swift",
     "App/Modules/CameraCapture/CameraManualControlsFeatureFlags.swift",
     "App/Modules/CameraCapture/CameraPreviewPolicy.swift",
     "App/Modules/FilmStockLibrary/StockSamplePreview.swift",

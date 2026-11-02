@@ -91,10 +91,21 @@ final class CameraViewModel {
     /// foreground-session boundary (background, disappear, cold launch) and is
     /// never persisted.
     private(set) var sessionFrameRate: CameraFrameRate = .standard24
+    /// The session modes the active lens can really capture, ascending, read
+    /// atomically from its 4K Apple Log 2 10-bit formats. Conservative
+    /// `[.standard24]` until a capability read proves more, and refreshed after
+    /// configuration, a settled lens switch and every session reset. Never claims
+    /// a rate the device cannot deliver, so nothing silently falls back to 24.
+    private(set) var availableSessionFrameRates: [CameraFrameRate] = [.standard24]
     /// Whether the active device/format advertises a 4K Apple Log 2 10-bit 60 fps
-    /// range. Refreshed after configuration and lens switches; drives the
-    /// control's unavailable state. It never silently disarms the mode.
-    private(set) var supportsDaylight60 = false
+    /// range. Compatibility view of `availableSessionFrameRates`; it never
+    /// silently disarms the mode.
+    var supportsDaylight60: Bool { availableSessionFrameRates.contains(.daylight60) }
+    /// Whether this lens can capture a real 120 fps take.
+    var supportsHigh120: Bool { availableSessionFrameRates.contains(.high120) }
+    /// Whether this build and identity ship the manual 120 fps mode. The menu,
+    /// the policy and the session all read this one predicate.
+    var isHighFrameRateEnabled: Bool { HighFrameRateFeature.isAvailableInThisBuild() }
     /// True while an arm/disarm is in flight. Record, lens and exposure actions
     /// are held until the transition settles, mirroring the stabilizer gate.
     private(set) var isChangingFrameRate = false { didSet { pushCameraHardwareControls() } }
@@ -426,7 +437,7 @@ final class CameraViewModel {
                 return
             }
             self.cameraConfigured = true
-            self.refreshDaylight60Eligibility()
+            self.refreshFrameRateEligibility()
             self.startSession()
         }
     }
@@ -1133,7 +1144,7 @@ final class CameraViewModel {
                 }
                 // A lens switch can change 60 fps eligibility. Refresh it, but
                 // never silently disarm an armed mode on a failed switch.
-                self.refreshDaylight60Eligibility()
+                self.refreshFrameRateEligibility()
             }
             // Resolve every caller. ContentView commits each successful lens;
             // failures remain visible while they never replace the committed
@@ -1198,14 +1209,20 @@ final class CameraViewModel {
                                                finishing: isStoppingRecording)
     }
 
-    /// Arm or disarm the break-glass daylight 60 fps mode. Refused while a take
-    /// is pending/active/draining, during a transition, or when the device is
-    /// ineligible (the control disables itself in that case). Never persisted.
+    /// Arm or disarm the break-glass daylight 60 fps mode. Compatibility wrapper
+    /// over `setSessionFrameRate`, which owns the transition.
     func setDaylight60Enabled(_ enabled: Bool) {
+        setSessionFrameRate(enabled ? .daylight60 : .standard24)
+    }
+
+    /// The one canonical session frame-rate setter. Refused while a take is
+    /// pending/active/draining, during a transition, or when this lens is not
+    /// eligible for `mode` (the control disables itself in that case). Never
+    /// persisted, and never downgraded silently.
+    func setSessionFrameRate(_ target: CameraFrameRate) {
         guard !isDevelopmentPhotoMode, !isPhotoCaptureBusy else { return }
-        let target: CameraFrameRate = enabled ? .daylight60 : .standard24
         guard target != sessionFrameRate, canChangeSessionFrameRate else { return }
-        guard target == .standard24 || supportsDaylight60 else { return }
+        guard target.isStandard || availableSessionFrameRates.contains(target) else { return }
         // The transition claims the device configuration; any idle pinch
         // accumulation and its queued switch are stale once the format changes.
         focalEngine.invalidate()
@@ -1233,19 +1250,26 @@ final class CameraViewModel {
         capturePolicies.policy(for: sourceURL)
     }
 
-    /// Refresh the daylight-60 eligibility from the active device. Called after
-    /// the camera configures and after a lens switch settles. It never silently
-    /// disarms an armed mode.
-    private func refreshDaylight60Eligibility() {
+    /// Refresh the eligible session modes from the active lens. Called after the
+    /// camera configures and after a lens switch settles. The result is applied
+    /// only when the generation, lifecycle, configuration, lens-switch state and
+    /// the lens itself still match the read, so a slow capability answer for a
+    /// lens the operator already left can never advertise its rates. It never
+    /// silently disarms an armed mode.
+    private func refreshFrameRateEligibility() {
         guard lifecycleGate.isActive, cameraConfigured, !isSwitchingCameraLens else {
-            supportsDaylight60 = false
+            availableSessionFrameRates = [.standard24]
             return
         }
         let generation = frameRateGeneration
-        session.supportsDaylight60 { [weak self] supported in
+        let lens = activeLens
+        session.frameRateCapability { [weak self] capability in
             guard let self, self.frameRateGeneration == generation,
-                  self.lifecycleGate.isActive, self.cameraConfigured else { return }
-            self.supportsDaylight60 = supported
+                  self.lifecycleGate.isActive, self.cameraConfigured,
+                  !self.isSwitchingCameraLens,
+                  let capability, capability.lens == lens,
+                  capability.lens == self.activeLens else { return }
+            self.availableSessionFrameRates = capability.modes
         }
     }
 
@@ -1259,7 +1283,7 @@ final class CameraViewModel {
         frameRateGeneration &+= 1
         isChangingFrameRate = false
         sessionFrameRate = .standard24
-        supportsDaylight60 = false
+        availableSessionFrameRates = [.standard24]
         // Per-URL take policies survive this reset until the queue snapshots them.
         session.resetFrameRateForNextSession()
     }

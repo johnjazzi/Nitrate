@@ -31,6 +31,10 @@ struct ContentView: View {
     @AppStorage("showFramedPreview") private var showFramedPreview = false
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
     @AppStorage(CameraControlAdjustment.preferenceKey) private var cameraControlAdjustment = CameraControlAdjustment.defaultValue.rawValue
+    /// The persisted Camera Tips switch, shared with the Settings row. ON by
+    /// default, so an install that never opens Settings behaves as before.
+    @AppStorage(CameraHintPreferences.showsAdvisoryTipsKey)
+    private var showsAdvisoryTips = CameraHintPreferences.defaultShowsAdvisoryTips
     @State private var controlBounds: [String: CGRect] = [:]
     @State private var currentSourceURL: URL?
     /// The durable awaiting-stock entry created for the current take, if any.
@@ -305,7 +309,8 @@ struct ContentView: View {
                 // visibility never resizes the preview and the whole button is hittable.
                 // Photo and Develop keep the rescue hidden: neither has a scene the
                 // daylight control can act on, so it must not take their space.
-                if !isDevelopMode, !isPhotoMode, shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
+                if !isDevelopMode, !isPhotoMode, !daylightRescueSuppressedByHighRate,
+                   shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
                    let rect = DaylightExposureRescueGeometry.buttonRect(
                     above: exposure, in: geometry.size, rotationDegrees: statusRotationDegrees,
                     excluding: daylightRescueExclusion(in: geometry)) {
@@ -345,7 +350,7 @@ struct ContentView: View {
         // An in-camera overlay, not a sheet: the preview, toolbar and shooting bar
         // keep their exact geometry and the scene stays visible behind the dim.
         .overlay {
-            if showDaylightRescue {
+            if showDaylightRescue, !daylightRescueSuppressedByHighRate {
                 DaylightExposureRescueOverlay(
                     armed: cameraViewModel.sessionFrameRate == .daylight60,
                     available: cameraViewModel.supportsDaylight60,
@@ -446,6 +451,13 @@ struct ContentView: View {
             // A take or a frame-rate/lens transition owns the device: stop the
             // arrows' ramp rather than let it race the reconfigure.
             if busy { cameraViewModel.endSlowZoom() }
+        }
+        .onChange(of: showsAdvisoryTips) { _, enabled in
+            // Turning advisory tips off clears whatever cue is on screen and any
+            // half-accrued sustained condition. It never resets the persisted
+            // launch tracker, so the cue can appear again once tips are back on.
+            if !enabled { showDaylightRescue = false }
+            stockSelectorHint.update(stockHintInputs)
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
@@ -681,12 +693,17 @@ struct ContentView: View {
         cameraViewModel.canSelectAperture && !cameraViewModel.isChangingFrameRate
     }
 
-    /// The default in-frame block: the zoom rail on the physical left, and the
-    /// manual-focus rail with the inline button stack on the physical right.
+    /// The default in-frame block: the zoom rail on the physical left with the
+    /// actual frame-rate key docked beneath it, and the manual-focus rail with
+    /// the inline button stack on the physical right.
+    ///
     /// Both rails draw at 80% of their 44pt slot, inset flush to the preview
-    /// edge, while the slot keeps the full 44pt tap footprint. The button stack
-    /// keeps its three 44pt controls reserved even in autofocus, where the rail
-    /// renders grey and disabled instead of forcing the lens into manual focus.
+    /// edge, while the slot keeps the full 44pt tap footprint. Each slot owns a
+    /// single outer rotation, so the docked key keeps its place at the physical
+    /// bottom of the left column in both landscape holds without any extra
+    /// geometry. The right stack keeps its three 44pt controls reserved even in
+    /// autofocus, where the rail renders grey and disabled instead of forcing
+    /// the lens into manual focus.
     @ViewBuilder
     private func inlineFrameRulers(in bounds: CGRect) -> some View {
         let zoomRect = FrameRulerPlacementGeometry.rect(
@@ -694,17 +711,35 @@ struct ContentView: View {
             thickness: FrameRulerPlacementGeometry.zoomThickness,
             orientationDegrees: statusRotationDegrees)
         if !zoomRect.isNull {
+            let slotRun = authoredRulerRun(zoomRect)
+            let docksRateKey = InlineFrameRateKeyPlacement.docksKey(
+                isVideoMode: !isPhotoMode && !isDevelopMode, slotRun: slotRun)
             FrameRulerSlot(rect: zoomRect, rotationDegrees: statusRotationDegrees) {
-                FrameZoomRuler(
-                    millimeters: pinchIsActive ? pinchFocalLength
-                                               : cameraViewModel.currentFocalLengthMM,
-                    enabled: canUseZoomControls,
-                    revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
-                    begin: { cameraViewModel.beginSlowZoom($0) },
-                    end: cameraViewModel.endSlowZoom(revision:),
-                    step: cameraViewModel.stepDisplayZoom,
-                    availableFocalRange: cameraViewModel.focalLengthRulerRange,
-                    visualWidth: FrameRulerPlacementGeometry.rulerVisualThickness)
+                VStack(spacing: InlineFrameRateKeyPlacement.spacing) {
+                    FrameZoomRuler(
+                        millimeters: pinchIsActive ? pinchFocalLength
+                                                   : cameraViewModel.currentFocalLengthMM,
+                        enabled: canUseZoomControls,
+                        revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
+                        begin: { cameraViewModel.beginSlowZoom($0) },
+                        end: cameraViewModel.endSlowZoom(revision:),
+                        step: cameraViewModel.stepDisplayZoom,
+                        availableFocalRange: cameraViewModel.focalLengthRulerRange,
+                        visualWidth: FrameRulerPlacementGeometry.rulerVisualThickness)
+                        .frame(height: InlineFrameRateKeyPlacement.railHeight(
+                            slotRun: slotRun, docksKey: docksRateKey))
+                    if docksRateKey {
+                        // The existing key, moved not rebuilt: one selector, one
+                        // write path, docked at the bottom of the zoom column.
+                        CameraFrameRateControl(availableFPS: availableInlineFrameRates,
+                                               currentFPS: cameraViewModel.sessionFrameRate.rawValue,
+                                               canChange: cameraViewModel.canChangeSessionFrameRate,
+                                               highFrameRateEnabled: cameraViewModel.isHighFrameRateEnabled,
+                                               select: selectInlineFrameRate)
+                            .frame(height: InlineFrameRateKeyPlacement.keyHeight)
+                    }
+                }
+                .frame(width: FrameRulerPlacementGeometry.zoomThickness)
             }
         }
         let focusRect = FrameRulerPlacementGeometry.rect(
@@ -728,13 +763,42 @@ struct ContentView: View {
                         setAperture: { cameraViewModel.setLensAperture($0) },
                         stabilization: cameraViewModel.recordingStabilization,
                         canChangeStabilization: cameraViewModel.canSetRecordingStabilization,
-                        selectStabilization: { cameraViewModel.setRecordingStabilization($0) },
-                        isPhotoMode: isPhotoMode)
-                        .frame(width: 44, height: 140)
+                        selectStabilization: { cameraViewModel.setRecordingStabilization($0) })
+                        // The right stack is the three manual keys at their 44pt
+                        // face in both modes; the frame-rate key is not here.
+                        .frame(width: 44, height: InlineManualControlPresentation.stackHeight)
                         .background(controlMeasurement("inlineManual"))
                 }
             }
         }
+    }
+
+    /// The run a ruler slot offers along its rail, read in the upright authoring
+    /// axis. A ±90° hold swaps the slot's canvas width and height, so the column's
+    /// usable length comes from the edge that is vertical on screen. The test is
+    /// the same `abs == 90` `FrameRulerSlot` applies to its own rotation.
+    private func authoredRulerRun(_ rect: CGRect) -> CGFloat {
+        abs(statusRotationDegrees) == 90 ? rect.width : rect.height
+    }
+
+    /// The rates the session reports, as plain numbers for the in-frame key.
+    /// Nothing is inferred here: a rate the engine does not list stays disabled.
+    private var availableInlineFrameRates: [Int] {
+        cameraViewModel.availableSessionFrameRates.map(\.rawValue)
+    }
+
+    /// One write path: the frame-rate key only offers rates the session listed,
+    /// and the view model's own setter re-checks the recording/transition lock.
+    private func selectInlineFrameRate(_ fps: Int) {
+        guard let mode = CameraFrameRate.from(fps: fps) else { return }
+        cameraViewModel.setSessionFrameRate(mode)
+    }
+
+    /// A manual 120 is not the daylight rescue's 60 fps mode: the too-bright
+    /// rescue must never offer a 60 fps return flow that would silently replace
+    /// the rate the operator chose, so it stays out of the way entirely.
+    private var daylightRescueSuppressedByHighRate: Bool {
+        cameraViewModel.sessionFrameRate == .high120
     }
 
     /// Reserve the visible manual surface, not the full camera canvas, so the
@@ -1006,10 +1070,28 @@ struct ContentView: View {
         CameraGlyphRotation.degrees(for: orientation.deviceOrientation)
     }
 
+    /// Tips are on. Every unsolicited advisory cue consults this.
+    /// Errors, faults, recording failures, storage warnings and the live
+    /// frame-rate badge never read it.
+    private var isAdvisoryCueAllowed: Bool {
+        CameraHintPreferences.allowsAdvisoryCue(showsAdvisoryTips: showsAdvisoryTips)
+    }
+
+    /// The stock-selector nudge additionally needs a usable, idle camera, so it
+    /// can never paint over a take, a transition, a sheet or a fault.
+    private var isStockHintCueAllowed: Bool {
+        CameraHintPreferences.allowsAdvisoryCue(showsAdvisoryTips: showsAdvisoryTips,
+                                                isCameraReady: isStockHintActive)
+    }
+
     /// Meter readings use neutral scene EV in native AE and custom exposure alike.
     /// Compare against the requested compensation regardless of which leg is held.
+    ///
+    /// This trigger is advisory only: turning tips off hides the button, which
+    /// leaves the idle armed-session badge below as the way back to 24 fps.
     private var shouldOfferDaylightRescue: Bool {
-        DaylightExposureRescuePolicy.shouldOffer(
+        guard isAdvisoryCueAllowed else { return false }
+        return DaylightExposureRescuePolicy.shouldOffer(
             meteredEV: cameraViewModel.liveExposureTargetOffset,
             targetEV: cameraViewModel.liveExposureBias,
             isAvailable: cameraViewModel.hasExposureMeter)
@@ -1024,6 +1106,8 @@ struct ContentView: View {
                             style: RecordingIndicatorStyle.resolved(recordingIndicatorStyle),
                             rotationDegrees: CameraGlyphRotation.degrees(for: orientation.deviceOrientation),
                             daylight60Active: cameraViewModel.sessionFrameRate == .daylight60,
+                            frameRateFPS: cameraViewModel.sessionFrameRate == .standard24
+                                ? nil : cameraViewModel.sessionFrameRate.rawValue,
                             onManageDaylight: canManageDaylightMode ? { showDaylightRescue = true } : nil)
     }
 
@@ -1066,7 +1150,10 @@ struct ContentView: View {
     private var stockHintInputs: StockSelectorHintInputs {
         let armed = stockSelectorHint.isArmed
         return StockSelectorHintInputs(
-            isActive: isStockHintActive,
+            // The shared advisory gate: tips off ends the cue and its sustained
+            // clock without spending the once-per-launch hint, so turning tips
+            // back on can still show it later in the same launch.
+            isActive: isStockHintCueAllowed,
             isSelectorOpened: stockSelectorOpenedThisLaunch,
             tick: armed ? cameraViewModel.hintTick : 0,
             estimateKelvin: armed ? cameraViewModel.neutralSceneKelvin : nil,

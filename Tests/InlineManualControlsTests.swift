@@ -136,7 +136,7 @@ struct InlineManualControlsTests {
 
     // MARK: - Native render
 
-    @MainActor @Test func realStackKeepsThreeKeysWithin140ptInEveryState() {
+    @MainActor @Test func realStackKeepsThreeVideoKeysWithin140ptInEveryState() {
         for mode in CameraStabilizationMode.allCases {
             let host = NSHostingView(rootView: InlineManualControlsHarness(stabilization: manualSnapshot(preferred: mode))
                 .environment(\.colorScheme, .dark))
@@ -146,8 +146,11 @@ struct InlineManualControlsTests {
             host.layoutSubtreeIfNeeded()
 
             #expect(size.height <= 140, "\(mode) must keep the three 44pt keys within 140pt")
-            #expect(size.height >= 132, "\(mode) must keep the three 44pt keys")
+            #expect(size.height >= 128, "\(mode) must keep all three 44pt keys")
             #expect(size.width <= 45, "\(mode) must keep the authored 44pt column")
+            // The right stack is the three manual keys only: the actual
+            // frame-rate key is docked in the physical-left zoom column.
+            #expect(InlineManualControlPresentation.stackHeight == 140)
         }
     }
 

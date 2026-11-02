@@ -339,6 +339,18 @@ struct CameraPolicyTests {
         #expect(CameraSampleValidationPolicy.dropTimesWithinWindow([0, 1.9], now: 3.8) == [1.9, 3.8])
     }
 
+    /// The encoder's first append blocks long enough that a 60 fps source spills
+    /// frames into the capture pool. Those are start-up cost; a burst after the
+    /// window is still a failing take.
+    @Test func encoderPrimingWindowExcusesOnlyTheStartUpBurst() {
+        #expect(CameraSampleValidationPolicy.isEncoderPrimingDrop(firstAppended: nil, dropTime: 10))
+        #expect(CameraSampleValidationPolicy.isEncoderPrimingDrop(firstAppended: 10, dropTime: 10.01))
+        #expect(CameraSampleValidationPolicy.isEncoderPrimingDrop(firstAppended: 10, dropTime: 10.49))
+        #expect(!CameraSampleValidationPolicy.isEncoderPrimingDrop(firstAppended: 10, dropTime: 10.5))
+        #expect(!CameraSampleValidationPolicy.isEncoderPrimingDrop(firstAppended: 10, dropTime: 14))
+        #expect(!CameraSampleValidationPolicy.isEncoderPrimingDrop(firstAppended: 10, dropTime: .infinity))
+    }
+
     @Test func cancelledStartRetainsRecorderEpochUntilItsTerminalCallback() throws {
         var bridge = CameraRecorderCompletionBridge()
         let firstStarted = bridge.begin(epoch: 41)

@@ -161,12 +161,17 @@ struct CameraSampleBufferRecorderTests {
         #expect(await sparseRig.events.nextFinished() == nil)
         try? FileManager.default.removeItem(at: sparseURL)
 
+        // A burst only counts once a frame has actually been accepted; drops
+        // before the first append are the encoder's priming window.
         let burstRig = makeRig(FakeWriterBehavior())
         let burstURL = try begin(burstRig.recorder, events: burstRig.events)
-        burstRig.recorder.submitDropForTesting(at: 200)
-        burstRig.recorder.submitDropForTesting(at: 201)
-        burstRig.recorder.submitDropForTesting(at: 201.5)
-        #expect(await burstRig.events.nextStarted()?.contains("dropped 3 frames") == true)
+        burstRig.recorder.submitVideoSampleForTesting(try Self.log2Sample())
+        let burstStart = ProcessInfo.processInfo.systemUptime + 2
+        burstRig.recorder.submitDropForTesting(at: burstStart)
+        burstRig.recorder.submitDropForTesting(at: burstStart + 0.1)
+        burstRig.recorder.submitDropForTesting(at: burstStart + 0.2)
+        // The writer already started, so the abort is reported to the finish
+        // callback rather than to start.
         #expect(await burstRig.events.nextFinished()?.contains("dropped 3 frames") == true)
         #expect(!FileManager.default.fileExists(atPath: burstURL.path))
     }
@@ -1708,6 +1713,54 @@ struct CameraCaptureRuntimeSourceContractTests {
         #expect(source.contains("videoFrameDuration: frameRate.fallbackVideoSampleDuration"))
     }
 
+    private func viewModelSource() throws -> String {
+        try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraViewModel.swift"),
+                   encoding: .utf8)
+    }
+
+    @Test func capabilityReadsEveryRateAtomicallyForTheLensItNames() throws {
+        let source = try sessionSource()
+        #expect(source.contains("struct FrameRateCapability: Equatable, Sendable"))
+        #expect(source.contains("func frameRateCapability("))
+        #expect(source.contains("func supportsFrameRate(_ mode: CameraFrameRate,"))
+        // One read: the lens and the eligible modes are produced together, so a
+        // result can never mix a stale lens's formats with a new lens's answer.
+        #expect(source.contains("CameraFrameRatePolicy.availableModes { mode in"))
+        #expect(source.contains("desired.contains(mode)"))
+        #expect(source.contains("let capability = FrameRateCapability(lens: lens, modes: modes)"))
+        // 120 is only offered when a real format range includes 120.
+        #expect(source.contains("Self.appleLog2CaptureFormat(in: device.formats, mode: mode) != nil"))
+        // The 60-era seam survives as a wrapper, not a second policy.
+        let support = try #require(source.range(of: "func supportsDaylight60(completion:"))
+        let after = String(source[support.lowerBound...].prefix(400))
+        #expect(after.contains("frameRateCapability(desired: [.daylight60])"))
+    }
+
+    @Test func viewModelPublishesEligibleModesAndOneCanonicalSetter() throws {
+        let model = try viewModelSource()
+        #expect(model.contains("private(set) var availableSessionFrameRates: [CameraFrameRate] = [.standard24]"))
+        #expect(model.contains("var supportsDaylight60: Bool { availableSessionFrameRates.contains(.daylight60) }"))
+        #expect(model.contains("var supportsHigh120: Bool { availableSessionFrameRates.contains(.high120) }"))
+        #expect(model.contains("func setSessionFrameRate(_ target: CameraFrameRate)"))
+        // The arm/disarm wrapper keeps its API but owns no transition of its own.
+        let wrapper = try #require(model.range(of: "func setDaylight60Enabled(_ enabled: Bool)"))
+        let wrapperBody = String(model[wrapper.lowerBound...].prefix(200))
+        #expect(wrapperBody.contains("setSessionFrameRate(enabled ? .daylight60 : .standard24)"))
+        #expect(!wrapperBody.contains("isChangingFrameRate"))
+        // An eligible-but-not-this-lens rate is refused, never downgraded.
+        #expect(model.contains("guard target.isStandard || availableSessionFrameRates.contains(target) else { return }"))
+        // The capability answer is applied only for the read's generation, a live
+        // lifecycle, and the lens the session actually read.
+        #expect(model.contains("capability.lens == lens,"))
+        #expect(model.contains("capability.lens == self.activeLens else { return }"))
+        #expect(model.contains("self.frameRateGeneration == generation,"))
+        // A session boundary resets the offered modes to the conservative set.
+        let reset = try #require(model.range(of: "private func resetFrameRateForSessionBoundary()"))
+        let resetBody = String(model[reset.lowerBound...].prefix(600))
+        #expect(resetBody.contains("availableSessionFrameRates = [.standard24]"))
+        #expect(resetBody.contains("session.resetFrameRateForNextSession()"))
+    }
+
     @Test func captureAngleUsesTheActiveFrameRate() throws {
         let source = try sessionSource()
         #expect(source.contains("let angle = Int((shutterSeconds * Double(frameRate.fps) * 360.0).rounded())"))
@@ -1717,12 +1770,18 @@ struct CameraCaptureRuntimeSourceContractTests {
         #expect(!source.contains("Self.filmShutterDuration"))
     }
 
-    @Test func daylight60FailureIsDistinctAndNeverDowngrades() throws {
+    @Test func highFrameRateFailureIsDistinctAndNeverDowngrades() throws {
         let source = try sessionSource()
         #expect(source.contains("case daylight60Unsupported(String)"))
-        #expect(source.contains("CameraError.daylight60Unsupported(CameraError.daylight60Reason)"))
-        // A 24-eligible format must not be selected when 60 was requested.
-        #expect(source.contains("CameraCaptureFormatPolicy.appleLog2SixtyCandidateIndexes"))
+        // One seam decides the refusal for every non-standard rate, so a refused
+        // 120 cannot be reported with a 60-only explanation or fall back to 24.
+        #expect(source.contains("static func unsupportedFrameRateError(for mode: CameraFrameRate) -> CameraError"))
+        #expect(source.contains("mode.isStandard\n            ? .appleLog2NotSupported"))
+        #expect(source.contains("no 4K Apple Log 2 10-bit format supports \\(mode.fps) fps on this device"))
+        // A 24/60-eligible format must not be selected when another rate was
+        // requested: the selector is rate-aware and never the 24 baseline.
+        #expect(source.contains("CameraCaptureFormatPolicy.appleLog2EligibleCandidateIndexes(\n            in: candidates, fps: mode.fps)"))
+        #expect(!source.contains("appleLog2SixtyCandidateIndexes"))
     }
 
     @Test func modeChangeRestoresThePreviousStateAtomically() throws {

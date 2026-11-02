@@ -1255,9 +1255,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         let mode = frameRate
         let orderedFormats = Self.appleLog2CaptureFormats(in: device.formats, mode: mode)
         guard !orderedFormats.isEmpty else {
-            throw mode == .daylight60
-                ? CameraError.daylight60Unsupported(CameraError.daylight60Reason)
-                : CameraError.appleLog2NotSupported
+            throw CameraError.unsupportedFrameRateError(for: mode)
         }
 
         var failures: [String] = []
@@ -1426,9 +1424,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             $0.minFrameRate <= Double(mode.fps) && $0.maxFrameRate >= Double(mode.fps)
         }
         guard supported else {
-            throw mode == .daylight60
-                ? CameraError.daylight60Unsupported(CameraError.daylight60Reason)
-                : CameraError.appleLog2NotSupported
+            throw CameraError.unsupportedFrameRateError(for: mode)
         }
         device.activeVideoMinFrameDuration = mode.frameDuration
         device.activeVideoMaxFrameDuration = mode.frameDuration
@@ -1462,6 +1458,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
         try reassertFrameDuration(on: device, mode: mode)
     }
 
+    /// Every eligible 4K Apple Log 2 10-bit format whose frame-rate ranges include
+    /// `mode.fps`, best bit-depth first. `.high120` needs a range that really
+    /// includes 120, so a 60-only format is never offered for it.
     private static func appleLog2CaptureFormats(in formats: [AVCaptureDevice.Format],
                                                 mode: CameraFrameRate = .standard24) -> [AVCaptureDevice.Format] {
         guard #available(iOS 26.0, *) else { return [] }
@@ -1477,6 +1476,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
             let supports60FPS = format.videoSupportedFrameRateRanges.contains {
                 $0.minFrameRate <= 60 && $0.maxFrameRate >= 60
             }
+            let supports120FPS = format.videoSupportedFrameRateRanges.contains {
+                $0.minFrameRate <= 120 && $0.maxFrameRate >= 120
+            }
             return CameraCaptureFormatPolicy.Candidate(
                 width: dimensions.width, height: dimensions.height,
                 supportsAppleLog2: format.supportedColorSpaces.contains(.appleLog2),
@@ -1491,12 +1493,12 @@ final class CameraSession: NSObject, @unchecked Sendable {
                     return subtype == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange
                         || subtype == kCVPixelFormatType_422YpCbCr10BiPlanarFullRange
                 }(),
-                supports60FPS: supports60FPS
+                supports60FPS: supports60FPS,
+                supports120FPS: supports120FPS
             )
         }
-        let indexes = mode == .daylight60
-            ? CameraCaptureFormatPolicy.appleLog2SixtyCandidateIndexes(in: candidates)
-            : CameraCaptureFormatPolicy.appleLog2CandidateIndexes(in: candidates)
+        let indexes = CameraCaptureFormatPolicy.appleLog2EligibleCandidateIndexes(
+            in: candidates, fps: mode.fps)
         return indexes.map { formats[$0] }
     }
 
@@ -1732,9 +1734,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
             guard #available(iOS 26.0, *),
                   Self.captureFormatAvailable(for: device, mode: self.frameRate) else {
-                let error = self.frameRate == .daylight60
-                    ? CameraError.daylight60Unsupported(CameraError.daylight60Reason)
-                    : CameraError.appleLog2NotSupported
+                let error = CameraError.unsupportedFrameRateError(for: self.frameRate)
                 self.session.commitConfiguration()
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
                 return
@@ -2910,6 +2910,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
     // MARK: - Frame-rate mode (session-only daylight 60 fps)
 
     /// The capture state restored when a frame-rate transition must roll back.
+    /// The session modes one lens can really capture, read atomically with the
+    /// lens they were read from. `modes` is ascending and always contains
+    /// `.standard24`; nothing the device cannot deliver is ever advertised.
+    struct FrameRateCapability: Equatable, Sendable {
+        let lens: CameraLens
+        let modes: [CameraFrameRate]
+    }
+
     private struct FrameRateSnapshot {
         let mode: CameraFrameRate
         let format: AVCaptureDevice.Format
@@ -2938,6 +2946,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
             func finish(_ error: Error?) {
                 self.completeFrameRateTransition(generation: generation, error: error, completion: completion)
             }
+            // A build that does not ship the high-rate mode refuses it at the
+            // session too, so no stale selection or direct caller can arm a rate
+            // the menu no longer offers.
+            guard HighFrameRateFeature.allows(fps: mode.fps,
+                                              available: HighFrameRateFeature.isAvailableInThisBuild()) else {
+                finish(CameraError.unsupportedFrameRateError(for: mode))
+                return
+            }
             guard !self.frameRateTransitionPending else {
                 finish(CameraError.frameRateTransitionInProgress)
                 return
@@ -2957,8 +2973,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 return
             }
             if self.defersVideoDeviceWrites {
-                guard mode == .standard24 || Self.captureFormatAvailable(for: self.activeDevice!, mode: mode) else {
-                    finish(CameraError.daylight60Unsupported(CameraError.daylight60Reason)); return
+                guard mode.isStandard
+                        || Self.captureFormatAvailable(for: self.activeDevice!, mode: mode) else {
+                    finish(CameraError.unsupportedFrameRateError(for: mode)); return
                 }
                 self.frameRate = mode
                 finish(nil)
@@ -2973,16 +2990,55 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
     /// Whether the active (or default) camera advertises a 4K Apple Log 2 10-bit
     /// format whose ranges include 60 fps. Read at arm time so the control is
-    /// disabled on an ineligible device instead of failing a take.
+    /// disabled on an ineligible device instead of failing a take. Kept as the
+    /// named compatibility seam; `frameRateCapability` is the general form.
     func supportsDaylight60(completion: @escaping @MainActor @Sendable (Bool) -> Void) {
+        frameRateCapability(desired: [.daylight60]) { capability in
+            completion(capability?.modes.contains(.daylight60) ?? false)
+        }
+    }
+
+    /// The eligible session modes for the active lens, read atomically with the
+    /// lens they belong to. One `sessionQueue` hop inspects every desired rate
+    /// against the real active 4K Apple Log 2 10-bit formats, so a capability
+    /// refresh can never mix a stale lens's formats with a new lens's answer.
+    /// The completion carries the lens so the caller can reject a result whose
+    /// lens changed while the read was in flight. Nil means no device to ask.
+    func frameRateCapability(
+        desired: [CameraFrameRate] = CameraFrameRate.allCases,
+        completion: @escaping @MainActor @Sendable (FrameRateCapability?) -> Void
+    ) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            let device = self.activeDevice ?? AVCaptureDevice.default(
-                self.activeLens.deviceType, for: .video, position: self.activeLens.position)
-            let supported = device.map {
-                Self.appleLog2CaptureFormat(in: $0.formats, mode: .daylight60) != nil
-            } ?? false
-            DispatchQueue.main.async { MainActor.assumeIsolated { completion(supported) } }
+            let lens = self.activeLens
+            guard let device = self.activeDevice ?? AVCaptureDevice.default(
+                lens.deviceType, for: .video, position: lens.position) else {
+                DispatchQueue.main.async { MainActor.assumeIsolated { completion(nil) } }
+                return
+            }
+            #if os(iOS)
+            guard #available(iOS 26.0, *) else {
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { completion(FrameRateCapability(lens: lens, modes: [.standard24])) }
+                }
+                return
+            }
+            #endif
+            let modes = CameraFrameRatePolicy.availableModes { mode in
+                desired.contains(mode)
+                    && Self.appleLog2CaptureFormat(in: device.formats, mode: mode) != nil
+            }
+            let capability = FrameRateCapability(lens: lens, modes: modes)
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(capability) } }
+        }
+    }
+
+    /// Whether one named mode is capturable now. Thin general alias so a caller
+    /// does not have to read the whole capability list to ask about one rate.
+    func supportsFrameRate(_ mode: CameraFrameRate,
+                           completion: @escaping @MainActor @Sendable (Bool) -> Void) {
+        frameRateCapability(desired: [mode]) { capability in
+            completion(capability?.modes.contains(mode) ?? false)
         }
     }
 
@@ -3038,9 +3094,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         guard let device = activeDevice else { return CameraError.noCameraAvailable }
         guard #available(iOS 26.0, *) else { return CameraError.appleLog2NotSupported }
         guard let format = Self.appleLog2CaptureFormat(in: device.formats, mode: mode) else {
-            return mode == .daylight60
-                ? CameraError.daylight60Unsupported(CameraError.daylight60Reason)
-                : CameraError.appleLog2NotSupported
+            return CameraError.unsupportedFrameRateError(for: mode)
         }
         let snapshot = makeFrameRateSnapshot()
         do {
@@ -3251,9 +3305,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             guard #available(iOS 26.0, *),
                   device.activeColorSpace == .appleLog2,
                   Self.appleLog2CaptureFormat(in: [device.activeFormat], mode: self.frameRate) != nil else {
-                let error = self.frameRate == .daylight60
-                    ? CameraError.daylight60Unsupported(CameraError.daylight60Reason)
-                    : CameraError.appleLog2NotSupported
+                let error = CameraError.unsupportedFrameRateError(for: self.frameRate)
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
                 return
             }
@@ -3396,9 +3448,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
               device.activeColorSpace == .appleLog2,
               Self.appleLog2CaptureFormat(in: [device.activeFormat], mode: frameRate) != nil else {
             recordingStartPending = false
-            failPendingStart(frameRate == .daylight60
-                ? CameraError.daylight60Unsupported(CameraError.daylight60Reason)
-                : CameraError.appleLog2NotSupported)
+            failPendingStart(CameraError.unsupportedFrameRateError(for: frameRate))
             return
         }
         guard !acceptedVideoSettings.isEmpty, !acceptedPixelFormats.isEmpty else {
@@ -5064,8 +5114,23 @@ enum CameraError: LocalizedError {
     case photoCapabilityUnavailable(String)
 
     /// Plain-words reason carried by `.daylight60Unsupported`.
-    static let daylight60Reason =
-        "no 4K Apple Log 2 10-bit format supports 60 fps on this device"
+    static let daylight60Reason = unsupportedFrameRateReason(for: .daylight60)
+
+    /// The reason a device refused `mode`. The `.daylight60Unsupported` case name
+    /// is retained for source compatibility; it carries any non-standard session
+    /// rate's reason, so a refused 120 never reports a 60-only explanation.
+    static func unsupportedFrameRateReason(for mode: CameraFrameRate) -> String {
+        "no 4K Apple Log 2 10-bit format supports \(mode.fps) fps on this device"
+    }
+
+    /// The refusal for a device that cannot deliver `mode`: the standard mode
+    /// keeps the plain Log 2 error, every high rate names its own rate. Never a
+    /// silent downgrade to 24.
+    static func unsupportedFrameRateError(for mode: CameraFrameRate) -> CameraError {
+        mode.isStandard
+            ? .appleLog2NotSupported
+            : .daylight60Unsupported(unsupportedFrameRateReason(for: mode))
+    }
 
     /// A camera that cannot run Photo at all, as opposed to a transient busy or
     /// broken configuration. UI uses this to explain the refusal accurately.
@@ -5105,7 +5170,7 @@ enum CameraError: LocalizedError {
         case .lensRollbackFailed(let original, let rollback):
             return "Camera switch failed (\(original.localizedDescription)); restoring the previous camera also failed (\(rollback.localizedDescription))."
         case .daylight60Unsupported(let detail):
-            return "Daylight 60 fps is unavailable on this device: \(detail)."
+            return "High frame rate is unavailable on this device: \(detail)."
         case .frameRateTransitionInProgress:
             return "A frame-rate change is already in progress."
         case .frameRateTransitionSuperseded:

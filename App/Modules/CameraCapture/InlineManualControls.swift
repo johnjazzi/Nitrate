@@ -53,6 +53,12 @@ enum InlineManualControlPresentation {
     /// Matches the panel's existing manual-focus on/off value.
     static func focusValue(manualFocus: Bool) -> String { manualFocus ? "On" : "Off" }
 
+    /// The stack's reserved height: three 44pt keys (AF/MF, aperture,
+    /// stabilization) with a 4pt gap between them. The frame-rate key is docked
+    /// at the bottom of the physical-left zoom column instead, so this stack is
+    /// the same 140pt in Video and Photo and never grows for a rate key.
+    static let stackHeight: CGFloat = 140
+
     /// An adjustable aperture reads in the app's light-purple menu tint; a fixed
     /// lens greys out without offering a control it cannot honour.
     static func apertureColor(canChange: Bool) -> Color {
@@ -60,10 +66,49 @@ enum InlineManualControlPresentation {
     }
 }
 
+/// Where the frame-rate key docks in the default in-frame layout: at the bottom
+/// of the same 44pt physical-left column that carries the zoom rail, never in a
+/// floating canvas position and never as a second selector.
+///
+/// The key keeps the shared 44pt manual-key face. A column too short to hold the
+/// key above nothing is left to the zoom rail alone, so the preview can never be
+/// asked for a layout that clips a control or hides one behind a fold.
+enum InlineFrameRateKeyPlacement {
+    /// The same 44pt face every manual key uses.
+    static let keyHeight: CGFloat = CameraFrameRateControlPresentation.optionHeight
+
+    /// The gap between the zoom rail and the key beneath it, matching the stack.
+    static let spacing: CGFloat = 4
+
+    /// The shortest run the zoom rail still needs to draw its arrows, ticks and
+    /// focal readout. The key docks only when the column can also spare it.
+    static let minimumRailHeight: CGFloat = 44
+
+    /// The rate key is a manual Video control: Photo has no frame-rate pipeline
+    /// to steer and Develop has no capture at all.
+    static func docksKey(isVideoMode: Bool, slotRun: CGFloat) -> Bool {
+        guard isVideoMode, slotRun.isFinite,
+              slotRun >= keyHeight + spacing + minimumRailHeight else { return false }
+        return true
+    }
+
+    /// The run left for the zoom rail once the key has taken its 44pt face and
+    /// the 4pt gap. The two never overlap, whatever the preview height.
+    static func railHeight(slotRun: CGFloat, docksKey: Bool) -> CGFloat {
+        guard slotRun.isFinite, slotRun > 0 else { return 0 }
+        guard docksKey else { return slotRun }
+        return max(0, slotRun - (keyHeight + spacing))
+    }
+}
+
 /// The compact in-frame manual control stack that replaces the old popup face:
 /// a 44pt column of MF/AF, aperture and stabilization keys placed directly under
 /// the focus ruler. Every key is a native button or menu, all three keep a 44pt
 /// height, and the stack never scrolls or hides a control behind a fold.
+///
+/// The actual frame-rate key is deliberately not here: at the operator's request
+/// it lives at the bottom of the physical-left zoom column, so this right-hand
+/// stack keeps its three keys and its 140pt height.
 struct InlineManualControls: View {
     @Binding var manualFocus: Bool
     let apertureReadout: String
@@ -74,7 +119,6 @@ struct InlineManualControls: View {
     let stabilization: CameraStabilizationSnapshot
     let canChangeStabilization: Bool
     let selectStabilization: (CameraStabilizationMode) -> Void
-    var isPhotoMode = false
     var shutterControlEnabled = false
     var toggleShutterControl: () -> Void = {}
 
@@ -91,7 +135,7 @@ struct InlineManualControls: View {
         VStack(spacing: 4) {
             focusButton
             apertureButton
-            if !isPhotoMode { stabilizationButton }
+            stabilizationButton
         }
         .frame(width: 44)
         .font(NitrateTypography.font(size: 12))

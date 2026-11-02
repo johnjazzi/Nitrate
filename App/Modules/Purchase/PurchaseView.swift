@@ -31,6 +31,11 @@ struct PurchaseView: View {
     /// value resolves to Zoom, exactly like the camera screen's own resolution.
     @AppStorage(CameraControlAdjustment.preferenceKey) private var cameraControlAdjustment = CameraControlAdjustment.defaultValue.rawValue
     @AppStorage(MeteringIndicatorPreferences.showsIndicatorKey) private var showsMeteringIndicator = MeteringIndicatorPreferences.defaultShowsIndicator
+    /// The persisted Camera Tips switch the camera screen reads to gate its
+    /// unsolicited advisory cues. ON by default; camera errors, faults, recording
+    /// failures, storage warnings and live status are never affected.
+    @AppStorage(CameraHintPreferences.showsAdvisoryTipsKey)
+    private var showsAdvisoryTips = CameraHintPreferences.defaultShowsAdvisoryTips
 #if DEBUG
     @AppStorage(DebugControlPreferences.showsDebugButtonKey) private var showsDebugButton = true
     @AppStorage(DebugControlPreferences.showsFaultButtonKey) private var showsFaultButton = true
@@ -373,6 +378,14 @@ struct PurchaseView: View {
                               accessibilityTitle: "Metering indicator",
                               help: "Shows a circle at the selected metering point.",
                               isOn: $showsMeteringIndicator)
+
+            SettingsToggleRow(icon: "lightbulb",
+                              title: "Camera Tips",
+                              accessibilityTitle: "Camera tips",
+                              help: "Shows brief advice while you shoot, such as when the scene is too bright "
+                                  + "or the selected stock may be off. Camera errors, warnings and recording "
+                                  + "status always show.",
+                              isOn: $showsAdvisoryTips)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)

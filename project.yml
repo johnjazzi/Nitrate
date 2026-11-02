@@ -20,8 +20,8 @@ settings:
     # Single source of truth for the version shown on the splash and in
     # CFBundleShortVersionString / CFBundleVersion. Bump MARKETING_VERSION for a
     # user-visible release, CURRENT_PROJECT_VERSION for every build.
-    MARKETING_VERSION: "0.4.7"
-    CURRENT_PROJECT_VERSION: "19"
+    MARKETING_VERSION: "0.4.8"
+    CURRENT_PROJECT_VERSION: "20"
     INFOPLIST_KEY_CFBundleDisplayName: Nitrate
     INFOPLIST_KEY_NSCameraUsageDescription: "Nitrate needs camera access to capture Apple Log video for film stock processing."
     INFOPLIST_KEY_NSMicrophoneUsageDescription: "Nitrate records audio to accompany your film clips."
@@ -33,6 +33,9 @@ settings:
     # the reviewed App Store Connect export-compliance answer.
     INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: "NO"
     DEVELOPMENT_TEAM: "U43C6BCZFS"
+    # Manual 120 fps capture ships per build configuration. Off by default, so a
+    # build that never opts in cannot offer the rate.
+    NITRATE_ENABLE_120_FPS: "NO"
 
 configs:
   Debug: debug
@@ -110,6 +113,10 @@ schemes:
 
 targets:
   CameraInteractionUITests:
+    info:
+      path: build/generated/CameraInteractionUITests-Info.plist
+      properties:
+        Nitrate120FPSEnabled: $(NITRATE_ENABLE_120_FPS)
     type: bundle.ui-testing
     platform: iOS
     sources:
@@ -145,6 +152,10 @@ targets:
       - path: Tests/FrameRulerPlacementTests.swift
       - path: Tests/MeteringIndicatorTests.swift
       - path: Tests/InlineManualControlsTests.swift
+      - path: Tests/CameraFrameRateControlTests.swift
+      - path: App/Modules/CameraCapture/CameraFrameRateControl.swift
+      - path: Tests/HighFrameRateFeatureTests.swift
+      - path: App/Modules/CameraCapture/CameraHighFrameRateAvailability.swift
       - path: Tests/ManualControlsFeatureFlagTests.swift
       - path: Tests/FramedPreviewLayoutTests.swift
       - path: Tests/TestRepository.swift
@@ -212,6 +223,9 @@ targets:
         # switch. An unexpanded `$(...)` means the setting is missing, which the
         # availability policy treats as off.
         PhotoModeEnabled: $(PHOTO_MODE_ENABLED)
+        # Runtime mirror of the manual 120 fps switch. Off in every shipped
+        # configuration; an unexpanded value is treated as off.
+        Nitrate120FPSEnabled: $(NITRATE_ENABLE_120_FPS)
     type: application
     platform: iOS
     sources:
@@ -271,10 +285,12 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app.dev
           INFOPLIST_KEY_CFBundleDisplayName: Nitrate Dev
           PHOTO_MODE_ENABLED: YES
+          NITRATE_ENABLE_120_FPS: "NO"
         DevRelease:
           PRODUCT_BUNDLE_IDENTIFIER: com.nitrate.app.dev
           INFOPLIST_KEY_CFBundleDisplayName: Nitrate Dev
           PHOTO_MODE_ENABLED: YES
+          NITRATE_ENABLE_120_FPS: "NO"
         Release:
           # Must match the App Store Connect record (nitrate.camera) exactly.
           # Local installs never use this production identity. Preserve the
@@ -283,6 +299,7 @@ targets:
           INFOPLIST_KEY_CFBundleDisplayName: Nitrate
           # NO keeps Photo out of the TestFlight/App Store build.
           PHOTO_MODE_ENABLED: YES
+          NITRATE_ENABLE_120_FPS: "NO"
     preBuildScripts:
       - name: SwiftLint
         script: |
@@ -308,6 +325,7 @@ targets:
       - path: App/Modules/FilmStockLibrary/
       # Foundation-only hint policy, shared so its pure logic compiles and is
       # testable on macOS (the AVFoundation call site stays in the iOS session).
+      - path: App/Modules/CameraCapture/CameraHintPreferences.swift
       - path: App/Modules/CameraCapture/StockSelectorHintPolicy.swift
       - path: App/Modules/CameraCapture/PhotoCapturePolicy.swift
       - path: App/Modules/CameraCapture/PhotoExposureSnapshot.swift
@@ -385,8 +403,10 @@ targets:
       - path: App/Modules/CameraCapture/CameraZoomPolicy.swift
       - path: App/Modules/CameraCapture/CameraFocalZoomPolicy.swift
       - path: App/Modules/CameraCapture/CameraStabilizationPolicy.swift
+      - path: App/Modules/CameraCapture/CameraHighFrameRateAvailability.swift
       - path: App/Modules/CameraCapture/CameraFrameRatePolicy.swift
       - path: App/Modules/CameraCapture/CameraAutofocusPolicy.swift
+      - path: App/Modules/CameraCapture/CameraHintPreferences.swift
       - path: App/Modules/CameraCapture/StockSelectorHintPolicy.swift
       - path: App/Modules/CameraCapture/PhotoCapturePolicy.swift
       - path: App/Modules/CameraCapture/PhotoExposureSnapshot.swift
@@ -439,6 +459,7 @@ targets:
       - path: App/Modules/CameraCapture/InlineManualControls.swift
       - path: App/Modules/CameraCapture/CameraManualControlsFeatureFlags.swift
       - path: App/Modules/CameraCapture/MeteringBoxView.swift
+      - path: App/Modules/CameraCapture/CameraFrameRateControl.swift
       - path: App/Modules/CameraCapture/RecordingFeedbackPolicy.swift
       - path: Resources/Shaders/
         type: metal

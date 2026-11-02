@@ -20,6 +20,17 @@ struct RecordingStatusFace: View {
     /// idle-only armed badge, so the mode is unmistakable before and during a
     /// take and can always be returned to 24 fps.
     var daylight60Active = false
+    /// The actual session rate in frames per second, when it is not the 24 fps
+    /// default. Preferred over the legacy `daylight60Active` flag so an armed
+    /// manual 120 can never be labelled or spoken as daylight 60. `nil` keeps
+    /// every existing call site and render test exactly as they were.
+    var frameRateFPS: Int? = nil
+
+    /// The badge's rate: the explicit one when supplied, otherwise the legacy
+    /// daylight flag. `nil` means the standard 24 fps face.
+    private var activeFrameRateFPS: Int? {
+        frameRateFPS ?? (daylight60Active ? 60 : nil)
+    }
     /// Existing active badge is the way back to 24fps when rescue has reduced
     /// exposure below the offer threshold. Never interactive during a take.
     var onManageDaylight: (() -> Void)? = nil
@@ -33,13 +44,16 @@ struct RecordingStatusFace: View {
         }
     }
 
-    var modeStatusLabel: String { daylight60Active ? stateLabel + " · 60FPS" : stateLabel }
+    var modeStatusLabel: String {
+        guard let fps = activeFrameRateFPS else { return stateLabel }
+        return stateLabel + " · \(fps)FPS"
+    }
 
     /// Idle-only armed badge. When `.daylight60` is armed and no take is running
     /// this face *is* the return off-ramp to 24 fps (the timer/dot are exclusive
     /// to a confirmed take and are never restored here). It therefore renders the
     /// state and mode label alone: no recording mark, no elapsed timer text.
-    private var isArmedIdleBadge: Bool { daylight60Active && presentation == .idle }
+    private var isArmedIdleBadge: Bool { activeFrameRateFPS != nil && presentation == .idle }
 
     var accessibilityStatus: String {
         switch presentation {
@@ -52,7 +66,7 @@ struct RecordingStatusFace: View {
 
     /// Hazard tint while armed; otherwise the presentation tint.
     private var displayTint: Color {
-        guard daylight60Active else { return tint }
+        guard activeFrameRateFPS != nil else { return tint }
         return style == .monochrome ? .white : Color(red: 0.95, green: 0.45, blue: 0.12)
     }
 
@@ -64,6 +78,14 @@ struct RecordingStatusFace: View {
         case .recording: return Color(red: 0.95, green: 0.22, blue: 0.18)
         case .stopping: return Color(red: 0.72, green: 0.42, blue: 0.40)
         }
+    }
+
+    /// The face's full spoken value, also asserted directly by the presentation
+    /// tests so the announced rate cannot drift from the painted one.
+    var spokenStatus: String {
+        accessibilityStatus
+            + (text.isEmpty || isArmedIdleBadge ? "" : ". \(text)")
+            + rateSpokenSuffix
     }
 
     var body: some View {
@@ -92,15 +114,21 @@ struct RecordingStatusFace: View {
                height: abs(rotationDegrees) == 90 ? 112 : 40)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Recording status")
-        .accessibilityValue(accessibilityStatus
-                            + (text.isEmpty || isArmedIdleBadge ? "" : ". \(text)")
-                            + (daylight60Active ? ". Daylight 60 fps armed." : ""))
+        .accessibilityValue(spokenStatus)
         .contentShape(RoundedRectangle(cornerRadius: 10))
         .onTapGesture { onManageDaylight?() }
         .accessibilityAddTraits(onManageDaylight == nil ? [] : .isButton)
         .accessibilityHint(onManageDaylight == nil ? "" : "Manage temporary 60fps mode or return to 24fps")
         .accessibilityAction { onManageDaylight?() }
         .allowsHitTesting(onManageDaylight != nil)
+    }
+
+    /// Daylight 60 keeps its established wording; any other armed rate states
+    /// its own number so the spoken value matches what is actually running.
+    private var rateSpokenSuffix: String {
+        guard let fps = activeFrameRateFPS else { return "" }
+        if fps == 60, daylight60Active || frameRateFPS == nil { return ". Daylight 60 fps armed." }
+        return ". \(fps) fps armed."
     }
 
     @ViewBuilder private var statusMark: some View {
