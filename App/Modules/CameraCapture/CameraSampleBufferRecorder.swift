@@ -116,6 +116,19 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     /// clean success. Not debug-only — a Release build that configured a
     /// microphone owes the user the same audio-integrity evidence.
     private var requiresAudioEvidence = false
+    /// Uptime of the most recently delivered microphone packet, or nil when the
+    /// stream has not been heard since launch. Shared with the audio callback,
+    /// which stamps it on its own queue, so it is read and written under
+    /// `audioHandoffLock`.
+    private var lastAudioArrivalUptime: TimeInterval?
+    /// When the first eligible frame started waiting for a live microphone, or
+    /// nil when no frame is being held.
+    private var audioWarmUpHeldSince: TimeInterval?
+    /// Frames dropped while waiting for the microphone, for the take's log.
+    private var audioWarmUpHeldFrames = 0
+    /// Monotonic uptime source; injectable so the hold can be driven in tests
+    /// without waiting on wall time.
+    private let uptime: () -> TimeInterval
 #if DEBUG
     private var preservationProbeEnabled = false
     private var sourceProbe: CameraYUVProbe?
@@ -127,10 +140,12 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     init(queue: DispatchQueue,
          writerFactory: @escaping CameraSampleBufferWriterFactory = CameraSampleBufferRecorder.defaultWriterFactory,
          outputValidator: @escaping (URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void = CameraSampleBufferRecorder.validateOutput,
+         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          scheduleDrainTimeout: ((TimeInterval, @escaping @Sendable () -> Void) -> Void)? = nil) {
         self.queue = queue
         self.writerFactory = writerFactory
         self.outputValidator = outputValidator
+        self.uptime = uptime
         self.scheduleDrainTimeout = scheduleDrainTimeout ?? { delay, action in
             queue.asyncAfter(deadline: .now() + delay, execute: action)
         }
@@ -187,6 +202,10 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                                           && videoFrameDuration > .zero)
                 ? videoFrameDuration : CMTime(value: 1, timescale: 24)
             self.requiresAudioEvidence = requiresAudioEvidence
+            // A new take re-arms the warm-up gate; the arrival stamp above is
+            // stream state, not clip state, so it deliberately survives.
+            self.audioWarmUpHeldSince = nil
+            self.audioWarmUpHeldFrames = 0
 #if DEBUG
             self.preservationProbeEnabled = preservationProbeEnabled
             self.sourceProbe = nil
@@ -245,6 +264,9 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     func receiveCapturedAudio(_ sampleBuffer: CMSampleBuffer) {
         audioHandoffLock.lock()
         let generation = audioHandoffEpoch
+        // Stamped on the delegate's own queue: this records when the microphone
+        // pipeline actually delivered, which is what the warm-up gate asks.
+        lastAudioArrivalUptime = uptime()
         guard pendingAudioHandoffs < 64 else {
             let reportOverflow = audioOverflowEpoch != generation
             audioOverflowEpoch = generation
@@ -497,6 +519,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         if startAfter.isValid, startAfter.isNumeric, presentationTime < startAfter {
             return
         }
+        if state == .awaitingVideo, holdsOriginForAudioWarmUp() { return }
         guard CameraSampleValidationPolicy.timestampIsIncreasing(
             current: presentationTime.seconds, previous: lastVideoTime?.seconds
         ), presentationTime.isValid, presentationTime.isNumeric else {
@@ -545,6 +568,39 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         if let stopAudioEndTime, let lastVideoEndTime, lastVideoEndTime >= stopAudioEndTime {
             finalizeOnQueue()
         }
+    }
+
+    /// True while the take's origin waits for a live microphone; the caller
+    /// drops the frame instead of anchoring on a stream that is not running.
+    private func holdsOriginForAudioWarmUp() -> Bool {
+        audioHandoffLock.lock()
+        let lastArrival = lastAudioArrivalUptime
+        audioHandoffLock.unlock()
+        let now = uptime()
+        let heldSince = audioWarmUpHeldSince ?? now
+        guard CameraAudioWarmUpPolicy.holdsStart(requiresAudio: requiresAudioEvidence,
+                                                 lastArrival: lastArrival,
+                                                 now: now, heldSince: heldSince) else {
+            if audioWarmUpHeldSince != nil {
+#if DEBUG
+                print("Capture audio warm-up: origin held \(Int(audioWarmUpHeldFrames)) frames " +
+                      "(\(Int((now - heldSince) * 1000))ms) for a live microphone")
+#endif
+                audioWarmUpHeldSince = nil
+                audioWarmUpHeldFrames = 0
+            }
+            return false
+        }
+        audioWarmUpHeldSince = heldSince
+        audioWarmUpHeldFrames += 1
+#if DEBUG
+        if audioWarmUpHeldFrames == 1 {
+            let silence = lastArrival.map { Int((now - $0) * 1000) }
+            print("Capture audio warm-up: microphone silent " +
+                  "\(silence.map { "\($0)ms" } ?? "since launch"); holding the origin")
+        }
+#endif
+        return true
     }
 
     private func startWriter(at time: CMTime) -> Bool {
@@ -675,7 +731,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
               "audioPTS=\(lastAudioTime?.seconds ?? -1), audioEnd=\(lastAudioEndTime?.seconds ?? -1), " +
               "target=\(stopAudioEndTime?.seconds ?? -1), frames=\(appendedVideoFrames), " +
               "audio-first=\(firstAudioTimeForDiagnostics?.seconds ?? -1), audioDuration=\(audioDurationForDiagnostics), " +
-              "maxAudioGap=\(maximumAudioGapForDiagnostics), audioPackets=\(appendedAudioSamples)")
+              "maxAudioGap=\(maximumAudioGapForDiagnostics), audioPackets=\(appendedAudioSamples), " +
+              "audioWarmUpHeldFrames=\(audioWarmUpHeldFrames)")
 #endif
         guard move(to: .stop) else { return }
         recentDropTimes.removeAll()
@@ -869,6 +926,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         appendedAudioSamples = 0
         recentDropTimes = []
         requiresAudioEvidence = false
+        audioWarmUpHeldSince = nil
+        audioWarmUpHeldFrames = 0
 #if DEBUG
         preservationProbeEnabled = false
         sourceProbe = nil
@@ -996,11 +1055,18 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                 segments: audioSegments)
             let endDifference = abs(CMTimeSubtract(CMTimeRangeGetEnd(timeRange),
                                                    CMTimeRangeGetEnd(audioTimeRange)).seconds)
-            do {
-                try CameraCapturePreservationProbe.validateSynchronization(skew: skew, endDifference: endDifference)
-            } catch {
-                throw CameraSampleBufferRecorderError.invalidFinalMovie(error.localizedDescription)
+            // A boundary timing difference inside the delivery window is
+            // logged and rendered, not turned into an original-only take.
+            guard CameraCapturePreservationProbe.isDeliverable(skew: skew, endDifference: endDifference) else {
+                throw CameraSampleBufferRecorderError.invalidFinalMovie(String(
+                    format: "Preservation check failed: A/V first-sample skew %.3fs or end-duration "
+                          + "difference %.3fs exceeds %.2fs.",
+                    skew, endDifference, CameraCapturePreservationProbe.deliveryTolerance))
             }
+#if DEBUG
+            print(String(format: "Capture A/V delivery: skew=%.3fs, end-delta=%.3fs (delivery limit %.2fs)",
+                         skew, endDifference, CameraCapturePreservationProbe.deliveryTolerance))
+#endif
         }
         #if DEBUG
         print("HEVC Log2 output validation: codec=hvc1, size=\(expectedDimensions.width)x\(expectedDimensions.height), bits=10, log=\(String(describing: logTransfer)), matrix=\(String(describing: matrix)), display=\(expectedDisplay.0)x\(expectedDisplay.1), audioSamples=\(appendedAudioSamples), transform=\(preferredTransform)")
@@ -1266,6 +1332,42 @@ enum CameraAudioEvidencePolicy {
                                        hasAudioSettings: Bool,
                                        appendedAudioSamples: Int) -> Bool {
         requiresAudioEvidence && hasAudioSettings && appendedAudioSamples == 0
+    }
+}
+
+/// A take that contracted for audio may not anchor its origin on a microphone
+/// that is not delivering yet.
+///
+/// The origin is the first eligible video frame's presentation time, and audio
+/// older than the origin is discarded rather than retimed. If the microphone
+/// pipeline has stalled when that frame arrives, the samples covering the first
+/// part of the take were never delivered and the clip opens with a silent head —
+/// the failure the final validation then reports. Holding the origin until the
+/// microphone has been heard recently lets the preroll flush across the start
+/// instead. Only recent silence is held, and only for a configured microphone: a
+/// dead stream must still record video.
+enum CameraAudioWarmUpPolicy {
+    /// The capture audio pipeline delivers a packet roughly every 21 ms at
+    /// 48 kHz, so this is several packets of silence — a live stream is never
+    /// mistaken for a stalled one by a single missed callback.
+    static let silentWindow: TimeInterval = 0.15
+    /// Ceiling on the hold. A microphone that never delivers must not hang the
+    /// record button or turn a short take into "no video frames".
+    static let maximumWait: TimeInterval = 0.4
+
+    /// The microphone stream is live: its most recent packet arrived inside the
+    /// silence window.
+    static func isLive(lastArrival: TimeInterval?, now: TimeInterval) -> Bool {
+        guard let lastArrival else { return false }
+        return now - lastArrival <= silentWindow
+    }
+
+    /// Hold the origin: audio is required, the stream is silent, and the wait
+    /// has not yet reached its ceiling.
+    static func holdsStart(requiresAudio: Bool, lastArrival: TimeInterval?,
+                           now: TimeInterval, heldSince: TimeInterval) -> Bool {
+        guard requiresAudio, !isLive(lastArrival: lastArrival, now: now) else { return false }
+        return now - heldSince < maximumWait
     }
 }
 

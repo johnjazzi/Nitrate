@@ -176,6 +176,22 @@ enum CameraCapturePreservationProbe {
         return CMTimeSubtract(actualStart, firstVideoPTS).seconds
     }
 
+    /// The take path's own bound. `synchronizationTolerance` stays the strict
+    /// measurement — it is what the preservation smoke reports and what the
+    /// interior source-audio gate enforces — but a finished take whose only
+    /// defect is a boundary timing difference inside this window is still
+    /// delivered and rendered. Withholding the film look over a sub-fifth-of-a-
+    /// second head or tail is what confuses the operator; the measured value is
+    /// still logged.
+    static let deliveryTolerance: Double = 0.2
+
+    /// A boundary timing difference small enough to deliver. Non-finite values
+    /// are never deliverable: they mean the movie could not be read.
+    static func isDeliverable(skew: Double, endDifference: Double) -> Bool {
+        guard skew.isFinite, endDifference.isFinite else { return false }
+        return abs(skew) <= deliveryTolerance && endDifference <= deliveryTolerance
+    }
+
     static func validateSynchronization(skew: Double, endDifference: Double) throws {
         guard skew.isFinite, endDifference.isFinite,
               abs(skew) <= synchronizationTolerance, endDifference <= synchronizationTolerance else {
