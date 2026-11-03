@@ -192,6 +192,57 @@ struct DebugFrameRenderTests {
                 "The debug sheet must truthfully label halation as pre-LUT")
     }
 
+    /// The lens diffusion node must not swallow halation: the halo is added to
+    /// the DIFFUSED scene, so a diffuser in front of the lens softens the frame
+    /// and still leaves red-dominant light outside the highlight. This mirrors
+    /// the debug sheet, where the diffusion dials come from the print gauge and
+    /// are therefore on by default.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func halationSurvivesTheDiffusionNodeInTheDebugPath() throws {
+        let renderer = try makeRenderer()
+        let config = try loadConfig()
+        let frame = try Self.makeSyntheticFrame()
+
+        var diffusionOff = PipelineRenderer.DebugFrameParameters(config: config)
+        diffusionOff.glowStrength = 0
+        diffusionOff.presenceMultiplier = 0
+        diffusionOff.halationStrength = 0.9
+        diffusionOff.halationRadiusFraction = 0.03
+        diffusionOff.diffusion = .disabled
+
+        var diffusionOn = diffusionOff
+        // The shipped 8mm rung: the widest diffuser the ladder can put in front
+        // of the lens.
+        diffusionOn.diffusion = DiffusionSettings(preset: .radius35, amount: 0.5)
+
+        var darkOff = diffusionOff
+        darkOff.halationStrength = 0
+        var darkOn = diffusionOn
+        darkOn.halationStrength = 0
+
+        func band(_ parameters: PipelineRenderer.DebugFrameParameters) throws -> ChannelMeans {
+            let render = try #require(renderer.renderDebugFrame(
+                pixelBuffer: frame, config: config, parameters: parameters))
+            return mean(try read(render.pixelBuffer), columns: 82..<100, rows: 52..<76)
+        }
+
+        let haloOff = try band(diffusionOff)
+        let haloOn = try band(diffusionOn)
+        let baseOff = try band(darkOff)
+        let baseOn = try band(darkOn)
+
+        // Halation must add light with the diffuser off...
+        #expect((haloOff.red - baseOff.red) / 255.0 > 0.01,
+                "halation must add light with diffusion off (red delta \((haloOff.red - baseOff.red) / 255.0))")
+        // ...and with it on. The diffuser lifts the whole band, so the comparison
+        // is against the same settings with halation disabled.
+        let deltaOn = (haloOn.red - baseOn.red) / 255.0
+        #expect(deltaOn > 0.01,
+                "halation must still add light through the diffusion node (red delta \(deltaOn))")
+        #expect(haloOn.red > baseOn.green,
+                "the halo must stay red-dominant through the diffusion node")
+    }
+
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
     func debugHalationGainAboveOneReachesTheRenderedPixels() throws {
         let renderer = try makeRenderer()

@@ -89,6 +89,32 @@ struct DiffusionTests {
         }
     }
 
+    /// The radii are derived, not chosen: one measured scatter radius, the
+    /// format's own enlargement, and a single authored filter gain.
+    @Test
+    func radiusFollowsTheFormatEnlargement() {
+        // 16mm has to be enlarged ~3.5x more than 35mm to fill the same frame.
+        #expect(abs(DiffusionPhysics.enlargementRelativeTo35mm(.sixteenMillimetre) - 36.0 / 10.26) < 0.01)
+        #expect(abs(DiffusionPhysics.enlargementRelativeTo35mm(.eightMillimetre) - 36.0 / 5.79) < 0.01)
+
+        let eight = DiffusionPhysics.radiusPixels(.eightMillimetre)
+        let sixteen = DiffusionPhysics.radiusPixels(.sixteenMillimetre)
+        let thirtyFive = DiffusionPhysics.radiusPixels(.thirtyFiveMillimetre)
+        let sixtyFive = DiffusionPhysics.radiusPixels(.seventyFiveMillimetre)
+        #expect(eight > sixteen && sixteen > thirtyFive && thirtyFive > sixtyFive,
+                "radius must fall with format: \(eight), \(sixteen), \(thirtyFive), \(sixtyFive)")
+        // 20 um of scatter, x4 filter gain, at a 1080p-wide delivery.
+        #expect(abs(thirtyFive - 4.27) < 0.3, "35mm lands at ~4 px (was \(thirtyFive))")
+        #expect(abs(sixteen - 14.96) < 0.5, "16mm lands at ~15 px (was \(sixteen))")
+        #expect(abs(eight - 26.5) < 0.6, "8mm lands at ~26 px (was \(eight))")
+
+        // Rounded to the shipped rungs, with 75mm bypassed rather than rounded.
+        #expect(DiffusionPhysics.preset(for: .eightMillimetre) == .radius35)
+        #expect(DiffusionPhysics.preset(for: .sixteenMillimetre) == .radius16)
+        #expect(DiffusionPhysics.preset(for: .thirtyFiveMillimetre) == .radius4)
+        #expect(DiffusionPhysics.preset(for: .seventyFiveMillimetre) == .radius75)
+    }
+
     // MARK: - Gauge ownership
 
     /// The print format IS the radius ladder, and it runs from the softest
@@ -98,7 +124,7 @@ struct DiffusionTests {
     func everyGaugeOwnsItsRadius() throws {
         #expect(PrintGauge.eightMillimetre.diffusionPreset == .radius35)
         #expect(PrintGauge.sixteenMillimetre.diffusionPreset == .radius16)
-        #expect(PrintGauge.thirtyFiveMillimetre.diffusionPreset == .radius8)
+        #expect(PrintGauge.thirtyFiveMillimetre.diffusionPreset == .radius4)
         #expect(PrintGauge.seventyFiveMillimetre.diffusionPreset == .radius75)
         #expect(PrintGauge.seventyFiveMillimetre.diffusion.preset.isBypass)
         // The ladder is inverted against grain coarseness: the gauge with the
@@ -129,8 +155,8 @@ struct DiffusionTests {
             // The shipped starting ladder: softer format, wider and stronger.
             let shipped: [PrintGauge: (preset: DiffusionPreset, amount: Float)] = [
                 .eightMillimetre: (.radius35, 0.5),
-                .sixteenMillimetre: (.radius16, 0.4),
-                .thirtyFiveMillimetre: (.radius8, 0.2),
+                .sixteenMillimetre: (.radius16, 0.3),
+                .thirtyFiveMillimetre: (.radius4, 0.2),
                 .seventyFiveMillimetre: (.radius75, 0)
             ]
             let expected = try #require(shipped[gauge])

@@ -15,6 +15,7 @@ import simd
 /// (`spatial_halation_apply`).
 enum DiffusionPreset: String, CaseIterable, Identifiable, Codable, Sendable {
     case off
+    case radius4
     case radius8
     case radius16
     case radius35
@@ -31,6 +32,7 @@ enum DiffusionPreset: String, CaseIterable, Identifiable, Codable, Sendable {
     var radiusPixels: Float? {
         switch self {
         case .off, .radius75: return nil
+        case .radius4: return 4
         case .radius8: return 8
         case .radius16: return 16
         case .radius35: return 35
@@ -42,6 +44,7 @@ enum DiffusionPreset: String, CaseIterable, Identifiable, Codable, Sendable {
     var title: String {
         switch self {
         case .off: return "Off"
+        case .radius4: return "4"
         case .radius8: return "8"
         case .radius16: return "16"
         case .radius35: return "35"
@@ -53,6 +56,81 @@ enum DiffusionPreset: String, CaseIterable, Identifiable, Codable, Sendable {
     var detail: String {
         guard let radiusPixels else { return "bypassed" }
         return String(format: "%.0f px @1080p", radiusPixels)
+    }
+}
+
+/// Where the radius numbers come from.
+///
+/// The ladder is not a taste table: it follows the measured light scatter of the
+/// emulsion, scaled by how much each format has to be enlarged to fill the same
+/// delivered frame. A 16mm negative is enlarged ~3.5x more than a 35mm one, so
+/// the SAME physical scatter in the emulsion lands 3.5x wider in the picture —
+/// which is why 16mm and 8mm read softer than 35mm without pretending the
+/// smaller emulsions scatter light differently.
+///
+/// Measured inputs, both from published film-stock work rather than invented
+/// here:
+///
+///  * **Scatter radius.** Photographic emulsion spread functions have a core of
+///    a few micrometres plus a base-reflection halo out to tens of micrometres;
+///    20 um is the working figure for "the light that leaves a highlight and
+///    lands somewhere else" (ENS Louis-Lumiere's film-texture study puts the
+///    emulsion's own scattering at roughly 2 pixels of a 35mm scan, which is
+///    ~13 um — the same order).
+///  * **Negative width.** Widths are the standard image areas, not the film
+///    stock: Super 8 5.79 mm, 16mm 10.26 mm, 35mm still 36 mm, 65mm 5-perf
+///    52.5 mm.
+///
+/// One authored constant remains, `filterGain`, because a 20 um scatter on 35mm
+/// is ~1 pixel at a 1080p delivery — physically true and visually invisible. A
+/// diffusion node on 35mm is a FILTER (the Pro-Mist class), not the emulsion
+/// alone, and a filter scatters far wider than silver halide does. The gain is
+/// the one place taste is allowed to act, and it is deliberately a single
+/// number: change it and every gauge moves together, in physically correct
+/// proportion.
+enum DiffusionPhysics {
+    /// Radius of the light scatter itself, in micrometres at the negative.
+    static let scatterRadiusMicrometres: Float = 20
+    /// Multiplier taking the emulsion's own scatter to a lens diffusion filter's
+    /// spread. 4x lands 35mm at ~4 px, 16mm at ~15 px and 8mm at ~26 px on a
+    /// 1080p frame.
+    static let filterGain: Float = 4
+    /// Width of the delivered reference frame the radii are expressed against.
+    static let referenceWidthPixels: Float = 1920
+
+    /// Standard image width of each format's negative, in millimetres.
+    static func negativeWidthMillimetres(_ gauge: PrintGauge) -> Float {
+        switch gauge {
+        case .eightMillimetre: return 5.79        // Super 8 image area
+        case .sixteenMillimetre: return 10.26     // 16mm (10.26 x 7.49)
+        case .thirtyFiveMillimetre: return 36     // 35mm still, full frame
+        case .seventyFiveMillimetre: return 52.5  // 65mm 5-perf
+        }
+    }
+
+    /// Enlargement of one format relative to 35mm, which is what makes a smaller
+    /// negative look softer at the same delivered size.
+    static func enlargementRelativeTo35mm(_ gauge: PrintGauge) -> Float {
+        negativeWidthMillimetres(.thirtyFiveMillimetre) / negativeWidthMillimetres(gauge)
+    }
+
+    /// Radius, in reference-frame pixels, that this format's scatter lands at.
+    static func radiusPixels(_ gauge: PrintGauge) -> Float {
+        let scatterMillimetres = scatterRadiusMicrometres / 1000
+        let fraction = scatterMillimetres / negativeWidthMillimetres(gauge)
+        return fraction * referenceWidthPixels * filterGain
+    }
+
+    /// The ladder rung this format rounds to. Rungs are the shipped presets;
+    /// 75mm is bypassed rather than rounded, because the reference print does
+    /// not diffuse.
+    static func preset(for gauge: PrintGauge) -> DiffusionPreset {
+        if gauge == .seventyFiveMillimetre { return .radius75 }
+        let radius = radiusPixels(gauge)
+        return DiffusionPreset.allCases
+            .filter { $0.radiusPixels != nil && !$0.isBypass }
+            .min { abs(($0.radiusPixels ?? 0) - radius) < abs(($1.radiusPixels ?? 0) - radius) }
+            ?? .radius8
     }
 }
 

@@ -34,21 +34,13 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     /// form, so exported metadata reads "35mm", not "thirtyFiveMillimetre".
     var displayName: String { rawValue }
 
-    /// The lens-diffusion radius this gauge implies.
-    ///
-    /// The ladder runs from the softest format to the sharpest: 8mm spreads the
-    /// light furthest (35 px at a 1080p frame), 16mm takes the middle step, and
-    /// 35mm — the sharpest gauge that renders diffusion at all — spreads it the
-    /// least (8 px). 75mm is the reference print and is bypassed: a large-format
-    /// negative does not diffuse, and skipping it keeps that gauge free.
-    var diffusionPreset: DiffusionPreset {
-        switch self {
-        case .eightMillimetre: return .radius35
-        case .sixteenMillimetre: return .radius16
-        case .thirtyFiveMillimetre: return .radius8
-        case .seventyFiveMillimetre: return .radius75
-        }
-    }
+    /// The lens-diffusion radius this gauge implies, derived from the format
+    /// rather than chosen: see `DiffusionPhysics`, which scales a measured
+    /// emulsion scatter radius by the enlargement each negative needs to fill
+    /// the delivered frame. A smaller negative is enlarged more, so the same
+    /// physical scatter lands wider — 8mm reads softest, 35mm sharpest, and the
+    /// 75mm reference print is bypassed.
+    var diffusionPreset: DiffusionPreset { DiffusionPhysics.preset(for: self) }
 
     /// This gauge's authored diffusion: its radius plus the amount shipped in
     /// `gauges.json`. A stock may override it; this is the gauge's own setting.

@@ -267,7 +267,7 @@ struct GrainModelTests {
     private static let shippedEntries: [Entry] = [
         ("8mm", "4.0", "0.55", "radius35", "0.5"),
         ("16mm", "2.025", "0.396", "radius16", "0.4"),
-        ("35mm", "0.9", "0.36", "radius8", "0.2"),
+        ("35mm", "0.9", "0.36", "radius4", "0.2"),
         ("75mm", "0.5", "0.165", "radius75", "0")
     ]
 

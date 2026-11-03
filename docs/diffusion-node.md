@@ -26,8 +26,8 @@ frame, so a preset keeps its size relative to the picture. `sigma = radius / 2`.
 | Gauge | Radius @1080p | Amount | Behaviour |
 |-------|---------------|--------|-----------|
 | 8mm   | 35 px         | 0.50   | rendered  |
-| 16mm  | 16 px         | 0.40   | rendered  |
-| 35mm  | 8 px          | 0.20   | rendered  |
+| 16mm  | 16 px         | 0.30   | rendered  |
+| 35mm  | 4 px          | 0.20   | rendered  |
 | 75mm  | 75 px         | 0      | **bypassed** |
 
 The ladder runs from the softest format to the sharpest: the gauge with the

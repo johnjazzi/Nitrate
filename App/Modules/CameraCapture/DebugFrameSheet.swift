@@ -501,6 +501,8 @@ struct DebugFrameSheet: View {
             Text(diffusionReadout)
                 .font(NitrateTypography.font(.caption).monospacedDigit())
             Text("Each print gauge owns its radius and amount; this section re-seeds from the gauge.")
+            Text("Amount = share of scene light taken from the diffused copy (linear mix, so "
+                 + "0.50 halves contrast). Radius = how far it spreads, σ = radius / 2.")
             Text("Scene-linear, pre-LUT: softens the light before halation and the stock LUT.")
                 .font(NitrateTypography.font(.caption2))
                 .foregroundStyle(.secondary)

@@ -108,11 +108,11 @@ struct MetadataCardsTests {
         #expect(cell(legacy, "Diffusion")?.value == ReceiptMetadataCards.missing)
 
         // A job that has not delivered yet states what its gauge will render:
-        // 16mm spreads 16 px at 0.40.
+        // 16mm spreads 16 px at 0.30.
         var queued = RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/take"), stockId: "kodak5219",
                                iso: 500, printGauge: .sixteenMillimetre)
         queued.receipt = nil
-        #expect(cell(ReceiptMetadataCards.make(job: queued), "Diffusion")?.value == "16px · 0.40")
+        #expect(cell(ReceiptMetadataCards.make(job: queued), "Diffusion")?.value == "16px · 0.30")
 
         // 75mm is bypassed no matter the amount.
         var bypassedJob = RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/take"), stockId: "kodak5219",

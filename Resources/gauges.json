@@ -13,13 +13,13 @@
       "sizeMultiplier": 2.025,
       "amplitudeMultiplier": 0.396,
       "diffusionPreset": "radius16",
-      "diffusionAmount": 0.4
+      "diffusionAmount": 0.3
     },
     {
       "gauge": "35mm",
       "sizeMultiplier": 0.9,
       "amplitudeMultiplier": 0.36,
-      "diffusionPreset": "radius8",
+      "diffusionPreset": "radius4",
       "diffusionAmount": 0.2
     },
     {

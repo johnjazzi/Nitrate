@@ -45,6 +45,10 @@ struct NitrateApp: App {
         if HalationDeviceBenchmark.isRequested {
             Task.detached { HalationDeviceBenchmark.run() }
         }
+        // Development-only diffusion cost harness; `-diffusion-benchmark`.
+        if DiffusionDeviceBenchmark.isRequested {
+            Task.detached { DiffusionDeviceBenchmark.run() }
+        }
         #endif
     }
 
