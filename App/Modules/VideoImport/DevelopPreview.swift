@@ -214,7 +214,7 @@ struct DevelopPreview: View {
                 .font(NitrateTypography.font(.headline))
                 .foregroundStyle(.white)
                 .accessibilityIdentifier("develop.saved")
-            clipPicker("Choose Another Clip")
+            chooseAnotherActions
         }
     }
 
@@ -234,8 +234,24 @@ struct DevelopPreview: View {
                 .frame(maxWidth: .infinity, minHeight: 48)
                 .background(DevelopPreviewChrome.orange, in: RoundedRectangle(cornerRadius: 12))
                 .accessibilityIdentifier("develop.retry")
-            clipPicker("Choose Another Clip")
+            chooseAnotherActions
         }
+    }
+
+    /// The way out of a finished or failed render: one title, then the same two
+    /// entry points the panel starts with, so the next medium is a deliberate
+    /// choice rather than whatever the single old button happened to open.
+    private var chooseAnotherActions: some View {
+        VStack(spacing: 10) {
+            Text("Choose another")
+                .font(NitrateTypography.font(.subheadline))
+                .foregroundStyle(DevelopPreviewChrome.muted)
+            HStack(spacing: 10) {
+                clipPicker("Video")
+                photoPicker("Photo")
+            }
+        }
+        .accessibilityIdentifier("develop.chooseAnother")
     }
 
     private func clipPicker(_ title: String) -> some View {
