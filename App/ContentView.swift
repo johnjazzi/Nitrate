@@ -1536,24 +1536,32 @@ private struct StockSheetView: View {
 
     var body: some View {
         NavigationStack {
-            // No vertical scroll: the preview flexes to whatever height is left
-            // after the one control row and Render, so stock, gauge and push/pull
-            // are all visible together on a 320pt phone. A stack that scrolls hid
-            // the push/pull picker below the fold, which read as the feature being
-            // missing.
-            VStack(spacing: 12) {
-                StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Three stacked rows, no vertical scroll. The row heights come from
+            // the height the sheet actually has — half for the preview, a quarter
+            // each for the stock carousel and the gauge + push/pull row — so
+            // every control is on screen on a phone. The preview gives up height
+            // first if the sheet is short; the control rows never scroll away.
+            VStack(spacing: StockSheetLayout.rowSpacing) {
+                GeometryReader { proxy in
+                    let rows = StockSheetLayout.rows(forAvailableHeight: proxy.size.height)
+                    VStack(spacing: StockSheetLayout.rowSpacing) {
+                        StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: rows.preview)
+                            .clipped()
 
-                if !stocks.isEmpty { controlRow }
+                        if !stocks.isEmpty {
+                            stockCarousel.frame(height: rows.stocks)
+                        }
 
-                if let url = sourceURL, !selectionOnly {
-                    renderButton(sourceURL: url)
-                } else if !selectionOnly {
-                    Text("Record a video to render.")
-                        .font(NitrateTypography.font(.caption))
-                        .foregroundStyle(.secondary)
+                        if localSelection != nil {
+                            controlRow.frame(height: rows.controls)
+                        }
+                    }
+                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
                 }
+
+                sheetFooter
             }
             .padding()
             .navigationTitle("Film Stock")
@@ -1587,29 +1595,67 @@ private struct StockSheetView: View {
         }
     }
 
-    // MARK: - Control row
+    // MARK: - Rows
 
-    /// The three choices that define a render, side by side above Render: stock,
-    /// print gauge, and push/pull. Push/pull takes a fifth of the row and sits
-    /// next to the gauge ladder it modifies; stock and gauge split the rest. One
-    /// row keeps all three visible with the preview above them — stacked, the
-    /// push/pull picker fell below the fold on a phone and read as missing.
-    private var controlRow: some View {
-        GeometryReader { proxy in
-            let widths = StockControlRowLayout.widths(forAvailableWidth: proxy.size.width)
-            // Bottom-aligned: the pill has no caption, so it lines up with the
-            // controls themselves rather than with their captions.
-            HStack(alignment: .bottom, spacing: StockControlRowLayout.spacing) {
-                stockCell.frame(width: widths.stock)
-                gaugeCell.frame(width: widths.gauge)
-                pushPullPill.frame(width: widths.pushPull)
-            }
-        }
-        .frame(height: StockControlRowLayout.rowHeight)
+    /// The stock carousel, restored: centred stock cards that scroll sideways,
+    /// one tap to pick a stock. It writes through the same selection binding as
+    /// the sheet, so choosing a card still restores that stock's remembered
+    /// gauge and push/pull through `select`.
+    private var stockCarousel: some View {
+        StockCarousel(stocks: stocks, selectedStockId: selectedStockIdBinding)
+            .accessibilityIdentifier("stock.carousel")
+            .accessibilityLabel("Film stock")
+            .accessibilityValue(localSelection?.displayName ?? "None")
     }
 
-    /// One cell: a short caption over its control, so three compact controls fit
-    /// one row without losing which is which.
+    /// The carousel and the sheet share one selection: the carousel writes the
+    /// id of the stock it centred through the binding, and the sheet resolves it
+    /// back to a config (ISO + remembered gauge).
+    private var selectedStockIdBinding: Binding<String?> {
+        Binding(
+            get: { localSelection?.stockId },
+            set: { newValue in
+                guard let newValue, let stock = stocks.first(where: { $0.stockId == newValue }) else { return }
+                select(stock)
+            }
+        )
+    }
+
+    /// The bottom row: the print gauge on the left and the push/pull pill beside
+    /// it on the right. The gauge takes the larger share — four segments have to
+    /// stay legible — and the pill keeps its fixed fifth.
+    private var controlRow: some View {
+        GeometryReader { proxy in
+            let widths = StockSheetLayout.controlWidths(forAvailableWidth: proxy.size.width)
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                // Bottom-aligned: the pill has no caption, so it lines up with
+                // the segmented control rather than with the caption above it.
+                HStack(alignment: .bottom, spacing: StockSheetLayout.controlSpacing) {
+                    gaugeCell.frame(width: widths.gauge)
+                    pushPullPill.frame(width: widths.pushPull)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+    }
+
+    /// Render, or the note that there is nothing to render yet. It keeps its own
+    /// compact row under the three, so the preview/stock/controls split always
+    /// gets the rest of the sheet.
+    @ViewBuilder private var sheetFooter: some View {
+        if let url = sourceURL, !selectionOnly {
+            renderButton(sourceURL: url)
+        } else if !selectionOnly {
+            Text("Record a video to render.")
+                .font(NitrateTypography.font(.caption))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// One cell: a short caption over its control, so the gauge keeps its label
+    /// in the shared bottom row.
     private func controlCell<Content: View>(_ caption: String,
                                             @ViewBuilder control: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -1619,56 +1665,6 @@ private struct StockSheetView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
             control()
-        }
-    }
-
-    /// The shared face of the menu-style cells: one bordered 34pt surface, so the
-    /// stock and push/pull dropdowns line up with the segmented gauge control.
-    private func controlFace<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 7)
-            .frame(height: 34)
-            .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.14), lineWidth: 1)
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    /// Stock selection as a dropdown, sharing the row with the gauge instead of
-    /// taking a 132pt carousel above it. Picking a stock still runs `select`, so
-    /// the remembered gauge and push/pull for that stock are restored.
-    private var stockCell: some View {
-        controlCell("Stock") {
-            Menu {
-                ForEach(stocks, id: \.stockId) { stock in
-                    Button {
-                        select(stock)
-                    } label: {
-                        if stock.stockId == localSelection?.stockId {
-                            Label(stock.displayName, systemImage: "checkmark")
-                        } else {
-                            Text(stock.displayName)
-                        }
-                    }
-                }
-            } label: {
-                controlFace {
-                    HStack(spacing: 5) {
-                        StockSwatchMini(stock: localSelection)
-                        Text(localSelection?.displayName ?? "Choose")
-                            .font(NitrateTypography.font(.caption))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.65)
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.down").font(NitrateTypography.font(size: 8, relativeTo: .caption2))
-                    }
-                }
-            }
-            .accessibilityIdentifier("stock.selection")
-            .accessibilityLabel("Film stock")
-            .accessibilityValue(localSelection?.displayName ?? "None")
         }
     }
 
@@ -1852,24 +1848,5 @@ private struct StockSheetView: View {
             .foregroundStyle(.white)
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
-    }
-}
-
-/// Compact duotone swatch for the stock dropdown: the same primary/secondary
-/// stripe the carousel card uses, small enough to sit inside the 34pt control
-/// row. The name beside it carries the identity, so it is decorative only.
-private struct StockSwatchMini: View {
-    let stock: FilmStockConfig?
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: 3)
-            .fill(stock?.primaryColor ?? Color.white.opacity(0.25))
-            .overlay {
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(stock?.secondaryColor ?? Color.clear)
-                    .padding(.vertical, 5)
-            }
-            .frame(width: 13, height: 20)
-            .accessibilityHidden(true)
     }
 }
