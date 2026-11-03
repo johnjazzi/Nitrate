@@ -559,6 +559,14 @@ struct ContentView: View {
             stockId: stock.stockId,
             iso: currentISO,
             gauge: library.lastGauge(for: stock.stockId),
+            // This path renders straight off the camera without passing through
+            // the stock sheet, so it has to resolve the push/pull itself. It used
+            // to omit the argument entirely, which defaulted every clip to
+            // neutral and made push/pull look broken on video while photos — which
+            // do pass a resolved value — worked.
+            pushPull: library.lastPushPull(for: stock.stockId)
+                .resolved(meteredOffsetEV: cameraViewModel.hasExposureMeter
+                    ? cameraViewModel.liveExposureTargetOffset : nil),
             capturePolicy: cameraViewModel.capturePolicy(for: sourceURL)
         )
     }

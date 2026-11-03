@@ -94,7 +94,7 @@ enum ReceiptMetadataCards {
             MetadataCard(id: "exposure", rows: [exposure, pushPull]),
             MetadataCard(id: "color", rows: [colorSpace]),
             MetadataCard(id: "lens", rows: [lens, slate]),
-            MetadataCard(id: "notes", rows: [], notes: "")
+            // No notes card: the owner does not want a free-text field here.
         ]
     }
 

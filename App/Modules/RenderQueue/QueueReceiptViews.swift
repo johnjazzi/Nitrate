@@ -182,13 +182,39 @@ struct QueueReceiptMetadataView: View {
                 $0.recordedAt.formatted(date: .complete, time: .complete)
             } ?? QueueReceiptPresentation.unavailable),
             ("App version", QueueReceiptPresentation.text(receipt?.appVersion)),
-            ("App build", QueueReceiptPresentation.text(receipt?.appBuild))
+            ("App build", QueueReceiptPresentation.text(receipt?.appBuild)),
+            // Technical record the compact cards have no room for.
+            ("Delivered codec", QueueReceiptPresentation.text(receipt?.codec)),
+            ("Delivered resolution", deliveredResolution),
+            ("Delivered frame rate", QueueReceiptPresentation.number(receipt?.framesPerSecond, suffix: " fps")),
+            ("Delivered file size", QueueReceiptPresentation.number(
+                receipt?.fileSizeBytes.map { Double($0) / 1_048_576.0 }, suffix: " MB")),
+            ("Colour space", value("color-space")),
+            ("White balance", QueueReceiptPresentation.numericMetadata(metadata, "white-balance-kelvin")),
+            ("WB tint", QueueReceiptPresentation.numericMetadata(metadata, "wb-tint")),
+            ("Reel", value("reel")),
+            ("Scene", value("scene")),
+            ("Take", value("take")),
+            ("Capture policy", capturePolicyValue),
+            ("Job id", job.id.uuidString)
         ]
         if let warning = job.cleanupWarning { details.append(("Cleanup warning", warning)) }
         return details
     }
 
     private func value(_ suffix: String) -> String { QueueReceiptPresentation.metadata(metadata, suffix) }
+
+    private var deliveredResolution: String {
+        guard let width = receipt?.pixelWidth, let height = receipt?.pixelHeight else {
+            return QueueReceiptPresentation.unavailable
+        }
+        return "\(width) × \(height)"
+    }
+
+    private var capturePolicyValue: String {
+        guard let policy = job.capturePolicy else { return QueueReceiptPresentation.unavailable }
+        return "\(policy.frameRate) fps, 1/\(policy.shutterDenominator), \(policy.grainPairing)"
+    }
 
     private var cleanupStatus: String {
         switch job.mediaCleanupCompleted {

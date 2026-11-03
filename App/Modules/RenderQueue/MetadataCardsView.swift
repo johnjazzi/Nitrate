@@ -100,7 +100,11 @@ struct MetadataCardsView: View {
 
     private var renderRecord: some View {
         DisclosureGroup {
-            VStack(alignment: .leading, spacing: 10) {
+            // Two columns so the record can carry the full technical set without
+            // turning into a long single-file list.
+            LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading),
+                                GridItem(.flexible(), alignment: .leading)],
+                      alignment: .leading, spacing: 10) {
                 ForEach(Array(details.enumerated()), id: \.offset) { _, item in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.label)
@@ -109,6 +113,8 @@ struct MetadataCardsView: View {
                         Text(item.value)
                             .font(NitrateTypography.font(.footnote))
                             .foregroundStyle(.primary)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.8)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }

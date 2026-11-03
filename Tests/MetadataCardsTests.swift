@@ -38,7 +38,8 @@ struct MetadataCardsTests {
             "com.filmemulation.take": "1"
         ]))
 
-        #expect(cards.map(\.id) == ["file", "exposure", "color", "lens", "notes"])
+        // The notes card was removed: the metadata sheet carries no free-text field.
+        #expect(cards.map(\.id) == ["file", "exposure", "color", "lens"])
         #expect(cell(cards, "Proxy")?.value == "H.265")
         #expect(cell(cards, "Frame Rate")?.value == "23.98")
         #expect(cell(cards, "Resolution")?.value == "1080 x 1920")
