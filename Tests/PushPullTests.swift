@@ -251,6 +251,41 @@ struct PushPullTests {
         #expect(reRendered.effectiveRecipe == stock.effectiveRecipe)
     }
 
+    /// Developing an Apple Log 2 import after the fact must apply the same
+    /// push/pull the camera would: the job carries it, and the renderer builds
+    /// the config from the job. Before this the import job stored nothing and
+    /// every developed import rendered neutral.
+    @MainActor @Test func importedVideoCarriesThePushPullIntoTheRender() throws {
+        let library = FilmStockLibrary(userDefaults: try #require(UserDefaults(suiteName: UUID().uuidString)))
+        try library.load(from: TestRepository.url(for: "App/Resources/stocks.json"))
+        let stock = try #require(library.stocks.first)
+
+        library.setPushPull(PushPullPreference(isAutomatic: false, manualStops: .pullTwo), for: stock.stockId)
+        let queueURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString)-queue.json")
+        defer { try? FileManager.default.removeItem(at: queueURL) }
+        let queue = RenderQueueViewModel(persistenceURL: queueURL)
+        queue.library = library
+
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).mov")
+        try Data(repeating: 0, count: 64).write(to: source)
+        defer { try? FileManager.default.removeItem(at: source) }
+
+        let id = try #require(queue.enqueueImportedVideo(
+            sourceURL: source, stockId: stock.stockId, iso: stock.defaultISO, gauge: .thirtyFiveMillimetre
+        ))
+        let job = try #require(queue.jobs.first { $0.id == id })
+        #expect(job.isImportedVideo == true)
+        // The stock's persisted manual pull is what a develop applies.
+        #expect(job.pushPull?.stops == .pullTwo)
+
+        // And it reaches the renderer's config, which is what pass1 reads.
+        let config = try #require(library.config(for: job.stockId, iso: job.iso, gauge: job.printGauge,
+                                                 pushPull: job.pushPull ?? .neutral))
+        #expect(config.effectivePushPull.stops == .pullTwo)
+    }
+
     // MARK: - Helpers
 
     private static func loadStocks() throws -> [FilmStockConfig] {

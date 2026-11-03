@@ -153,11 +153,16 @@ final class DevelopVideoModel {
     /// durable acceptance returns an id; a failed enqueue keeps the selection so
     /// the user can retry.
     @discardableResult
+    /// `pushPull` is the exposure the develop applies to the file's Apple Log 2
+    /// code. A nil value falls back to the stock's persisted manual pull, so a
+    /// developed import matches the camera's current setting rather than
+    /// silently rendering neutral.
     func render(stock: FilmStockConfig, iso: Float, gauge: PrintGauge,
+                pushPull: PushPullExposure? = nil,
                 queue: RenderQueueViewModel) -> UUID? {
         guard canRender(stock: stock, queue: queue), let video else { return nil }
         guard let id = queue.enqueueImportedVideo(sourceURL: video.url, stockId: stock.stockId,
-                                                  iso: iso, gauge: gauge) else {
+                                                  iso: iso, gauge: gauge, pushPull: pushPull) else {
             errorMessage = queue.rendererErrorMessage ?? "Could not queue the video. Try again."
             return nil
         }

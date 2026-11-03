@@ -1226,7 +1226,10 @@ struct ContentView: View {
             onDevelopRender: {
                 guard let stock = selectedStock else { return }
                 let gauge = library.lastGauge(for: stock.stockId) ?? .neutral
-                _ = developModel.render(stock: stock, iso: currentISO, gauge: gauge, queue: renderQueueViewModel)
+                // No meter on a developed import, so the queue resolves the
+                // stock's persisted manual pull (or neutral) for the job.
+                _ = developModel.render(stock: stock, iso: currentISO, gauge: gauge,
+                                        queue: renderQueueViewModel)
             },
             isPhotoMode: isPhotoMode,
             photoStatus: photoDeliveryStatus,

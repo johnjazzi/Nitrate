@@ -195,6 +195,7 @@ final class RenderQueueViewModel {
 
     @discardableResult
     func enqueueImportedVideo(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge? = nil,
+                              pushPull: PushPullExposure? = nil,
                               preferences: RenderDeliveryPreferences? = nil) -> UUID? {
         guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
         guard Self.isUsableFile(sourceURL) else {
@@ -206,7 +207,13 @@ final class RenderQueueViewModel {
         }
         var delivery = preferences ?? DeliverySettings.renderPreferences()
         delivery.saveOriginalLog = false
+        // A developed import is one exposure from the file, so an automatic pull
+        // has no meter reading to act on; the stock's persisted manual pull still
+        // applies, exactly as it does for a still. Without this the job carried
+        // no push/pull at all and every developed import rendered neutral.
+        let resolvedPushPull = pushPull ?? library?.lastPushPull(for: stockId).resolved(meteredOffsetEV: nil) ?? .neutral
         var imported = RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso, printGauge: gauge,
+                                 pushPull: resolvedPushPull,
                                  sessionId: sessionId, deliveryPreferences: delivery)
         imported.isImportedVideo = true
         jobs.append(imported)
