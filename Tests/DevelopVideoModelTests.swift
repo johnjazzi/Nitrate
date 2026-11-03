@@ -286,3 +286,84 @@ private actor DevelopGate {
         continuation = nil
     }
 }
+
+
+/// The photo half of Develop: the same select → validate → accept lifecycle as a
+/// clip, and a stable grain seed per file so re-developing reproduces the grain.
+struct DevelopPhotoSelectionTests {
+    private static func photo(_ url: URL) -> ImportedPhoto {
+        ImportedPhoto(url: url, originalFilename: url.lastPathComponent,
+                      pixelWidth: 4032, pixelHeight: 3024, iso: 800, capturedAt: nil)
+    }
+
+    /// Poll until the main-actor model reports the transition. The predicate runs
+    /// on the main actor so it can read the observed model directly.
+    @MainActor
+    private static func waitUntil(_ condition: @MainActor () -> Bool) async {
+        for _ in 0..<200 {
+            if condition() { return }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    @MainActor @Test func selectingAPhotoAcceptsItAndClearsAnyClip() async throws {
+        let queue = RenderQueueViewModel()
+        var inspected: URL?
+        let model = DevelopVideoModel(queue: queue, inspectPhoto: { url, _ in
+            inspected = url
+            return Self.photo(url)
+        })
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("photo_import_\(UUID().uuidString).dng")
+        try Data(repeating: 1, count: 32).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        model.selectPhoto { DevelopVideoModel.DevelopPhotoTransfer(
+            lease: VideoImportFileLease(url: url), originalFilename: "IMG_0001.DNG") }
+        await Self.waitUntil { !model.isLoading }
+
+        #expect(model.photo?.url == url)
+        #expect(inspected == url)
+        #expect(model.video == nil)
+        #expect(model.errorMessage == nil)
+    }
+
+    /// A picked image that is not raw is refused, and the refusal names what it
+    /// found rather than only saying no.
+    @MainActor @Test func aNonRawPhotoIsRefusedWithItsReason() async {
+        let queue = RenderQueueViewModel()
+        let model = DevelopVideoModel(queue: queue, inspectPhoto: { _, _ in
+            throw PhotoImportError.unsupported(found: "JPEG")
+        })
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("photo_import_\(UUID().uuidString).dng")
+
+        model.selectPhoto { DevelopVideoModel.DevelopPhotoTransfer(
+            lease: VideoImportFileLease(url: url), originalFilename: "IMG_0001.JPG") }
+        await Self.waitUntil { !model.isLoading }
+
+        #expect(model.photo == nil)
+        let message = model.errorMessage ?? ""
+        #expect(message.contains("not a raw photo"), "the refusal must name the problem: \(message)")
+        #expect(message.contains("JPEG"), "the refusal must name what it found: \(message)")
+    }
+
+    @Test func developedPhotoGrainSeedIsStablePerFile() {
+        let first = URL(fileURLWithPath: "/tmp/photo_import_A.dng")
+        let same = URL(fileURLWithPath: "/tmp/photo_import_A.dng")
+        let other = URL(fileURLWithPath: "/tmp/photo_import_B.dng")
+        #expect(DevelopVideoModel.grainSeed(for: Self.photo(first))
+                == DevelopVideoModel.grainSeed(for: Self.photo(same)))
+        #expect(DevelopVideoModel.grainSeed(for: Self.photo(first))
+                != DevelopVideoModel.grainSeed(for: Self.photo(other)))
+    }
+
+    @Test func rawPhotoIdentityNamesTheFileFactsNotTheWorkingName() throws {
+        let url = URL(fileURLWithPath: "/tmp/photo_import_\(UUID().uuidString).dng")
+        let inspected = Self.photo(url)
+        #expect(inspected.detailSummary.contains("4032 × 3024"))
+        #expect(inspected.detailSummary.contains("ISO 800"))
+        #expect(!inspected.detailSummary.contains("photo_import_"),
+                "the working file name must never reach the panel")
+    }
+}

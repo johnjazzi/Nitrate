@@ -8,6 +8,10 @@ struct ImportedVideo: Sendable, Equatable {
     let pixelWidth: Int
     let pixelHeight: Int
     let nominalFrameRate: Double
+    /// When the clip was recorded, when the file carries it. Shown instead of
+    /// the app's own `clip_import_<UUID>.mov` name, which says nothing to the
+    /// operator about which clip this is.
+    var capturedAt: Date? = nil
 }
 
 enum VideoImportError: LocalizedError {
@@ -29,10 +33,13 @@ enum VideoImportService {
     }
 
     /// File-backed, bounded-memory copy. The provider URL is never modified.
-    static func copyToOwnedStorage(from sourceURL: URL, directory: URL? = nil) async throws -> URL {
+    static func copyToOwnedStorage(from sourceURL: URL, directory: URL? = nil,
+                                   prefix: String = "clip_import",
+                                   fileExtension: String = "mov") async throws -> URL {
         let destinationDirectory = directory ?? self.directory
         let operation = Task.detached(priority: .userInitiated) {
-            try copyFile(from: sourceURL, directory: destinationDirectory)
+            try copyFile(from: sourceURL, directory: destinationDirectory,
+                         prefix: prefix, fileExtension: fileExtension)
         }
         return try await withTaskCancellationHandler {
             let owned = try await operation.value
@@ -46,7 +53,8 @@ enum VideoImportService {
         }
     }
 
-    private static func copyFile(from source: URL, directory: URL) throws -> URL {
+    private static func copyFile(from source: URL, directory: URL, prefix: String,
+                                 fileExtension: String) throws -> URL {
         try Task.checkCancellation()
         guard source.isFileURL else { throw VideoImportError.unreadable }
         let scoped = source.startAccessingSecurityScopedResource()
@@ -64,7 +72,7 @@ enum VideoImportService {
         if let capacity, capacity < Int64(fileSize) || capacity - Int64(fileSize) < 64 * 1024 * 1024 {
             throw VideoImportError.insufficientStorage
         }
-        let owned = directory.appendingPathComponent("clip_import_\(UUID().uuidString).mov")
+        let owned = directory.appendingPathComponent("\(prefix)_\(UUID().uuidString).\(fileExtension)")
         guard manager.createFile(atPath: owned.path, contents: nil) else { throw VideoImportError.unreadable }
         var complete = false
         defer { if !complete { try? manager.removeItem(at: owned) } }
@@ -114,9 +122,15 @@ enum VideoImportService {
               width > 0, height > 0, width <= 16_384, height <= 16_384,
               rate.isFinite, rate > 0 else { throw VideoImportError.unreadable }
         try Task.checkCancellation()
+        // The clip's own date, never the copy's: the app's copy is made now.
+        var capturedAt: Date?
+        if let item = try? await asset.load(.creationDate) {
+            capturedAt = try? await item.load(.dateValue)
+        }
         return ImportedVideo(url: url, originalFilename: originalFilename ?? url.lastPathComponent,
                              durationSeconds: duration, pixelWidth: Int(width.rounded()),
-                             pixelHeight: Int(height.rounded()), nominalFrameRate: rate)
+                             pixelHeight: Int(height.rounded()), nominalFrameRate: rate,
+                             capturedAt: capturedAt)
     }
 
     /// Only our own unqueued import names can be discarded. Queue acceptance

@@ -14,6 +14,7 @@ struct DevelopPreview: View {
     let model: DevelopVideoModel
     let queue: RenderQueueViewModel
     @State private var pickerItem: PhotosPickerItem?
+    @State private var photoPickerItem: PhotosPickerItem?
 
     var body: some View {
         ZStack {
@@ -30,6 +31,12 @@ struct DevelopPreview: View {
             if let item {
                 model.select(item)
                 pickerItem = nil
+            }
+        }
+        .onChange(of: photoPickerItem) { _, item in
+            if let item {
+                model.selectPhoto(item)
+                photoPickerItem = nil
             }
         }
     }
@@ -73,24 +80,39 @@ struct DevelopPreview: View {
 
     private var clipSelection: some View {
         VStack(spacing: 16) {
-            clipPicker(model.video == nil ? "Choose Clip" : "Change Clip")
+            // Two entry points, so the operator picks the medium first instead of
+            // hunting for the right file type inside one picker.
+            HStack(spacing: 10) {
+                clipPicker(model.video == nil && model.photo == nil ? "Select Video" : "Change Video")
+                photoPicker(model.video == nil && model.photo == nil ? "Select Photo" : "Change Photo")
+            }
             if let video = model.video {
-                VStack(spacing: 4) {
-                    Text(video.originalFilename)
-                        .font(NitrateTypography.font(.callout))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                    Text(technicalSummary(video))
-                        .font(NitrateTypography.font(.caption))
-                        .foregroundStyle(DevelopPreviewChrome.muted)
-                }
-                .accessibilityIdentifier("develop.clipInfo")
+                identity(title: Self.videoTitle(video), detail: Self.videoDetail(video))
+            } else if let photo = model.photo {
+                identity(title: Self.photoTitle(photo), detail: photo.detailSummary)
             } else {
-                Text("Choose an Apple Log 2 clip to develop.")
+                Text("Choose an Apple Log 2 clip or a raw photo to develop.")
                     .font(NitrateTypography.font(.footnote))
                     .foregroundStyle(DevelopPreviewChrome.muted)
             }
         }
+    }
+
+    /// The identity of what was picked. A capture date and the media's own
+    /// numbers, never the app's `clip_import_<UUID>.mov` working name.
+    private func identity(title: String, detail: String) -> some View {
+        VStack(spacing: 4) {
+            Text(title)
+                .font(NitrateTypography.font(.callout))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+            Text(detail)
+                .font(NitrateTypography.font(.caption).monospacedDigit())
+                .foregroundStyle(DevelopPreviewChrome.muted)
+                .multilineTextAlignment(.center)
+        }
+        .accessibilityIdentifier("develop.clipInfo")
     }
 
     private var transferState: some View {
@@ -156,10 +178,34 @@ struct DevelopPreview: View {
         .accessibilityIdentifier("develop.choose")
     }
 
-    private func technicalSummary(_ video: ImportedVideo) -> String {
-        "\(video.pixelWidth) × \(video.pixelHeight) · "
-            + String(format: "%.1f s", video.durationSeconds) + " · "
-            + String(format: "%.2f fps", video.nominalFrameRate)
+    private func photoPicker(_ title: String) -> some View {
+        PhotosPicker(selection: $photoPickerItem, matching: .images,
+                     preferredItemEncoding: .current) {
+            Label(title, systemImage: "camera.aperture")
+                .font(NitrateTypography.font(.headline))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 52)
+                .background(DevelopPreviewChrome.control, in: RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .disabled(isActive)
+        .accessibilityIdentifier("develop.choosePhoto")
+    }
+
+    /// "12 Nov 2026 at 14:03", or the only honest thing left when the file has no
+    /// date: that the clip is selected.
+    static func videoTitle(_ video: ImportedVideo) -> String {
+        video.capturedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Selected clip"
+    }
+
+    static func videoDetail(_ video: ImportedVideo) -> String {
+        String(format: "%.1f s", video.durationSeconds) + " · "
+            + String(format: "%.2f fps", video.nominalFrameRate) + " · "
+            + "\(video.pixelWidth) × \(video.pixelHeight)"
+    }
+
+    static func photoTitle(_ photo: ImportedPhoto) -> String {
+        photo.capturedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Selected photo"
     }
 }
 

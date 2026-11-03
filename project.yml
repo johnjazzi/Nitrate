@@ -379,6 +379,7 @@ targets:
       - path: App/Modules/CameraCapture/DevelopShutterFace.swift
       - path: App/Modules/RenderQueue/RenderJobProgress.swift
       - path: App/Modules/VideoImport/VideoImportService.swift
+      - path: App/Modules/VideoImport/PhotoImportService.swift
       - path: App/Modules/VideoImport/VideoImportFileLease.swift
       - path: App/Modules/RenderQueue/RenderJob.swift
       - path: App/Modules/RenderQueue/RenderReceipt.swift
