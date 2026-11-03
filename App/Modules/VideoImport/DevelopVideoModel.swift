@@ -120,7 +120,10 @@ final class DevelopVideoModel {
             lease = nil
             video = nil
             isLoading = false
-            errorMessage = "Choose an Apple Log 2 video that can be read on this device."
+            // Say WHY a clip was refused when the import service knows: a
+            // non-Log clip is a different problem from an unreadable one.
+            errorMessage = (error as? VideoImportError)?.errorDescription
+                ?? "Choose an Apple Log 2 video that can be read on this device."
             finish(token)
         }
     }

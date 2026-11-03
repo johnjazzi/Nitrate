@@ -265,6 +265,28 @@ struct DevelopVideoModelTests {
     }
 }
 
+/// Photos cannot filter a picker by colour, so a non-Apple-Log clip can only be
+/// refused after selection. These pin that the refusal says what it found, and
+/// that the gate runs without copying the file.
+struct VideoImportGateTests {
+    @Test func nonAppleLogClipIsNamedNotJustRefused() throws {
+        let error = VideoImportError.unsupported(observed: "transfer=ITU_R_709_2, primaries=ITU_R_709_2")
+        let message = try #require(error.errorDescription)
+        #expect(message.contains("not Apple Log 2"))
+        #expect(message.contains("ITU_R_709_2"), "the message must state what the tags actually said")
+    }
+
+    @Test func validateAppleLog2RefusesSomethingThatIsNotAVideo() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).mov")
+        try Data("not a movie".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        await #expect(throws: VideoImportError.self) {
+            try await VideoImportService.validateAppleLog2(at: url)
+        }
+    }
+}
+
 /// Suspends a lifecycle step until the test resumes it.
 private actor DevelopGate {
     private var continuation: CheckedContinuation<Void, Never>?

@@ -11,11 +11,18 @@ struct ImportedVideo: Sendable, Equatable {
 }
 
 enum VideoImportError: LocalizedError {
-    case unsupported, unreadable, insufficientStorage
+    /// The clip's stream tags are not Apple Log 2. `observed` carries what the
+    /// tags actually said, so the sheet can say why instead of only that it
+    /// refused.
+    case unsupported(observed: String)
+    case unreadable
+    case insufficientStorage
 
     var errorDescription: String? {
         switch self {
-        case .unsupported: return "Choose an Apple Log 2 video."
+        case .unsupported(let observed):
+            return "This clip is not Apple Log 2 (found \(observed)). "
+                + "Develop only accepts Apple Log 2 recordings."
         case .unreadable: return "This video could not be read. Try selecting it again."
         case .insufficientStorage: return "Free some storage before opening this video."
         }
@@ -90,6 +97,30 @@ enum VideoImportService {
         return owned
     }
 
+    /// Apple Log 2 stream-tag gate, run BEFORE the file is copied into owned
+    /// storage.
+    ///
+    /// The picker cannot filter by colour: `PHPickerFilter` only covers media
+    /// kind, albums and similar indexed properties, and Photos does not index a
+    /// clip's transfer function. So the earliest possible point is the file the
+    /// system hands over, and checking it here means a Rec.709 clip is refused
+    /// after a tag read instead of after copying gigabytes into the app.
+    static func validateAppleLog2(at url: URL) async throws {
+        try Task.checkCancellation()
+        let asset = AVURLAsset(url: url)
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let descriptions = try? await track.load(.formatDescriptions) else {
+            throw VideoImportError.unreadable
+        }
+        do {
+            _ = try RenderInputColorProvenance.inspect(descriptions)
+        } catch let error as RenderInputColorContractError {
+            throw VideoImportError.unsupported(observed: error.observed)
+        } catch {
+            throw VideoImportError.unsupported(observed: "unreadable colour tags")
+        }
+    }
+
     static func inspect(url: URL, originalFilename: String? = nil) async throws -> ImportedVideo {
         try Task.checkCancellation()
         guard url.isFileURL else { throw VideoImportError.unreadable }
@@ -103,7 +134,9 @@ enum VideoImportService {
         }
         let descriptions = try await track.load(.formatDescriptions)
         do { _ = try RenderInputColorProvenance.inspect(descriptions) }
-        catch { throw VideoImportError.unsupported }
+        catch let error as RenderInputColorContractError {
+            throw VideoImportError.unsupported(observed: error.observed)
+        } catch { throw VideoImportError.unsupported(observed: "unreadable colour tags") }
         let duration = try await asset.load(.duration).seconds
         let size = try await track.load(.naturalSize)
         let transform = try await track.load(.preferredTransform)

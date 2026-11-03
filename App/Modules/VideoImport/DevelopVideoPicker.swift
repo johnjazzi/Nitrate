@@ -15,6 +15,10 @@ struct DevelopPickedVideo: Transferable, Sendable {
 
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(importedContentType: .movie) { received in
+            // Validate the clip's stream tags BEFORE copying it: the picker
+            // cannot filter by colour, but there is no reason to copy a
+            // non-Apple-Log movie into app storage just to reject it.
+            try await VideoImportService.validateAppleLog2(at: received.file)
             let url = try await VideoImportService.copyToOwnedStorage(from: received.file)
             return DevelopPickedVideo(transfer: DevelopClipTransfer(
                 lease: VideoImportFileLease(url: url),
