@@ -33,21 +33,24 @@ struct StockSamplePreview: View {
     var body: some View {
         switch Self.catalog {
         case .success(let catalog):
-            VStack(spacing: 10) {
+            VStack(spacing: 8) {
                 // A paged TabView has no intrinsic size: without a definite frame it
-                // collapses and no card appears. Give it the plate's 2:3 shape, bounded so
-                // the strip below stays reachable on a short phone.
+                // collapses and no card appears. Give it the plate's 2:3 shape, sized from
+                // the space the sheet actually has so the controls below stay on screen on
+                // a short phone instead of being pushed under the fold.
                 GeometryReader { proxy in
-                    let cardWidth = min(proxy.size.width, 250)
+                    let cardWidth = max(60, min(proxy.size.width, proxy.size.height / 1.5, 250))
                     pages(catalog)
                         .frame(width: cardWidth, height: cardWidth * 1.5)
                         .frame(maxWidth: .infinity)
                 }
-                .frame(height: 375)
+                .frame(minHeight: 120, maxHeight: .infinity)
                 sceneDots(catalog)
                 Text(catalog.disclaimer)
                     .font(NitrateTypography.font(.caption2))
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
             }
             .onAppear {
                 if !catalog.scenes.contains(where: { $0.id == sceneID }), let first = catalog.scenes.first {

@@ -8,23 +8,31 @@ import Testing
 struct PushPullTests {
     // MARK: - Ladder
 
-    @Test func ladderIsFixedStopsFromMinusTwoToPlusTwo() {
-        #expect(PushPullStops.allCases.map(\.stops) == [-2, -1, 0, 1, 2])
+    @Test func ladderIsFixedStopsFromMinusThreeToPlusTwo() {
+        #expect(PushPullStops.allCases.map(\.stops) == [-3, -2, -1, 0, 1, 2])
+        #expect(PushPullStops.pullThree.displayName == "-3")
         #expect(PushPullStops.pullTwo.displayName == "-2")
         #expect(PushPullStops.pullOne.displayName == "-1")
         #expect(PushPullStops.none.displayName == "0")
         #expect(PushPullStops.pushOne.displayName == "+1")
         #expect(PushPullStops.pushTwo.displayName == "+2")
+        #expect(PushPullStops.pullThree.isPull)
         #expect(PushPullStops.pullTwo.isPull)
         #expect(!PushPullStops.pushTwo.isPull)
         #expect(PushPullStops.none.linearGain == 1)
         #expect(PushPullStops.pullOne.linearGain == 0.5)
         #expect(PushPullStops.pullTwo.linearGain == 0.25)
+        #expect(PushPullStops.pullThree.linearGain == 0.125)
         #expect(PushPullStops.pushTwo.linearGain == 4)
+        // What the closed control reads: PUSH and PULL never share a word with
+        // neutral, so the state is legible without opening the control.
+        #expect(PushPullStops.allCases.map(\.effectWord) == ["PULL", "PULL", "PULL", "0", "PUSH", "PUSH"])
     }
 
     @Test func persistedStopsOutsideTheLadderSnapToTheNearestRung() throws {
-        #expect(PushPullStops.nearest(to: -7) == .pullTwo)
+        #expect(PushPullStops.nearest(to: -7) == .pullThree)
+        #expect(PushPullStops.nearest(to: -4) == .pullThree)
+        #expect(PushPullStops.nearest(to: -2) == .pullTwo)
         #expect(PushPullStops.nearest(to: 3) == .pushTwo)
         #expect(PushPullStops.nearest(to: -1) == .pullOne)
         // A future build's wider ladder must not make the queue unreadable.

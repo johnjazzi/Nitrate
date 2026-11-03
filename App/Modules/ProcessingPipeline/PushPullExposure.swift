@@ -7,12 +7,14 @@ import simd
 /// (brighter). The ladder is deliberately short and fixed rather than
 /// continuous: the operator is choosing a development convention for the stock,
 /// the same way a lab pushes or pulls a roll, and every step must be
-/// reproducible from the queue's persisted value alone.
+/// reproducible from the queue's persisted value alone. It runs -3 to +2, so a
+/// badly over-rated take can be pulled three stops back into the cube's range.
 ///
 /// The value is *not* a capture exposure change — the take is already recorded.
 /// It is applied to the Apple Log 2 code the decoder hands the colour pipeline,
 /// before the stock's cube, so the cube still sees a correctly encoded frame.
 enum PushPullStops: Int, Codable, CaseIterable, Equatable, Sendable, Identifiable {
+    case pullThree = -3
     case pullTwo = -2
     case pullOne = -1
     case none = 0
@@ -33,6 +35,11 @@ enum PushPullStops: Int, Codable, CaseIterable, Equatable, Sendable, Identifiabl
 
     /// Past-tense word used in prose and diagnostics ("pulled 2 stops").
     var effectName: String { rawValue == 0 ? "normal" : (isPull ? "pulled" : "pushed") }
+
+    /// Single word for the collapsed push/pull control: PUSH, PULL or 0. Read
+    /// off the value rather than a case list, so extending the ladder cannot
+    /// leave a rung without a label.
+    var effectWord: String { rawValue > 0 ? "PUSH" : (rawValue < 0 ? "PULL" : "0") }
 
     /// Nearest rung for a persisted integer. A queue written by a future build
     /// with a wider ladder must not make every job unreadable.

@@ -1536,31 +1536,26 @@ private struct StockSheetView: View {
 
     var body: some View {
         NavigationStack {
-            // The example preview is tall, so the sheet scrolls vertically:
-            // a short phone at 320pt can still reach the gauge and Render.
-            GeometryReader { geometry in
-                ScrollView(.vertical) {
-                    VStack(spacing: 20) {
-                        StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge)
-                            .frame(maxWidth: .infinity)
+            // No vertical scroll: the preview flexes to whatever height is left
+            // after the one control row and Render, so stock, gauge and push/pull
+            // are all visible together on a 320pt phone. A stack that scrolls hid
+            // the push/pull picker below the fold, which read as the feature being
+            // missing.
+            VStack(spacing: 12) {
+                StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                        if !stocks.isEmpty { stockCarousel }
+                if !stocks.isEmpty { controlRow }
 
-                        if localSelection != nil { gaugePicker }
-
-                        if localSelection != nil { pushPullPicker }
-
-                        if let url = sourceURL, !selectionOnly {
-                            renderButton(sourceURL: url)
-                        } else if !selectionOnly {
-                            Text("Record a video to render.")
-                                .font(NitrateTypography.font(.caption))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding()
+                if let url = sourceURL, !selectionOnly {
+                    renderButton(sourceURL: url)
+                } else if !selectionOnly {
+                    Text("Record a video to render.")
+                        .font(NitrateTypography.font(.caption))
+                        .foregroundStyle(.secondary)
                 }
             }
+            .padding()
             .navigationTitle("Film Stock")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1592,21 +1587,110 @@ private struct StockSheetView: View {
         }
     }
 
-    private var stockCarousel: some View {
-        StockCarousel(stocks: stocks, selectedStockId: selectedStockIdBinding)
+    // MARK: - Control row
+
+    /// The three choices that define a render, side by side above Render: stock,
+    /// print gauge, and push/pull. Push/pull takes a fifth of the row and sits
+    /// next to the gauge ladder it modifies; stock and gauge split the rest. One
+    /// row keeps all three visible with the preview above them — stacked, the
+    /// push/pull picker fell below the fold on a phone and read as missing.
+    private var controlRow: some View {
+        GeometryReader { proxy in
+            let widths = StockControlRowLayout.widths(forAvailableWidth: proxy.size.width)
+            // Bottom-aligned: the pill has no caption, so it lines up with the
+            // controls themselves rather than with their captions.
+            HStack(alignment: .bottom, spacing: StockControlRowLayout.spacing) {
+                stockCell.frame(width: widths.stock)
+                gaugeCell.frame(width: widths.gauge)
+                pushPullPill.frame(width: widths.pushPull)
+            }
+        }
+        .frame(height: StockControlRowLayout.rowHeight)
     }
 
-    /// The carousel and the sheet share one selection: the carousel writes the
-    /// id of the stock it centred through the binding, and the sheet resolves it
-    /// back to a config (ISO + remembered gauge).
-    private var selectedStockIdBinding: Binding<String?> {
-        Binding(
-            get: { localSelection?.stockId },
-            set: { newValue in
-                guard let newValue, let stock = stocks.first(where: { $0.stockId == newValue }) else { return }
-                select(stock)
+    /// One cell: a short caption over its control, so three compact controls fit
+    /// one row without losing which is which.
+    private func controlCell<Content: View>(_ caption: String,
+                                            @ViewBuilder control: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(caption)
+                .font(NitrateTypography.font(.caption2))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            control()
+        }
+    }
+
+    /// The shared face of the menu-style cells: one bordered 34pt surface, so the
+    /// stock and push/pull dropdowns line up with the segmented gauge control.
+    private func controlFace<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 7)
+            .frame(height: 34)
+            .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.14), lineWidth: 1)
             }
-        )
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Stock selection as a dropdown, sharing the row with the gauge instead of
+    /// taking a 132pt carousel above it. Picking a stock still runs `select`, so
+    /// the remembered gauge and push/pull for that stock are restored.
+    private var stockCell: some View {
+        controlCell("Stock") {
+            Menu {
+                ForEach(stocks, id: \.stockId) { stock in
+                    Button {
+                        select(stock)
+                    } label: {
+                        if stock.stockId == localSelection?.stockId {
+                            Label(stock.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(stock.displayName)
+                        }
+                    }
+                }
+            } label: {
+                controlFace {
+                    HStack(spacing: 5) {
+                        StockSwatchMini(stock: localSelection)
+                        Text(localSelection?.displayName ?? "Choose")
+                            .font(NitrateTypography.font(.caption))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.65)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.down").font(NitrateTypography.font(size: 8, relativeTo: .caption2))
+                    }
+                }
+            }
+            .accessibilityIdentifier("stock.selection")
+            .accessibilityLabel("Film stock")
+            .accessibilityValue(localSelection?.displayName ?? "None")
+        }
+    }
+
+    private var gaugeCell: some View {
+        controlCell("Gauge · mm") {
+            Picker("Print Gauge", selection: $gauge) {
+                ForEach(PrintGauge.allCases, id: \.self) { gauge in
+                    Text(gaugeShortLabel(gauge)).tag(gauge)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(height: 34)
+            .accessibilityIdentifier("stock.gauge")
+            .accessibilityValue(gauge.displayName)
+        }
+    }
+
+    /// Segment label only: the caption above carries the unit, so four gauges fit
+    /// a third of a 320pt row without truncating.
+    private func gaugeShortLabel(_ gauge: PrintGauge) -> String {
+        gauge.displayName.replacingOccurrences(of: "mm", with: "")
     }
 
     /// Adopt a stock as the local selection. ISO follows the stock; the remembered
@@ -1635,24 +1719,9 @@ private struct StockSheetView: View {
         library.setPushPull(pushPullPreference, for: stock.stockId)
     }
 
-    private var gaugePicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Print Gauge").font(NitrateTypography.font(.headline))
-            Picker("Print Gauge", selection: $gauge) {
-                ForEach(PrintGauge.allCases, id: \.self) { gauge in
-                    Text(gauge.displayName).tag(gauge)
-                }
-            }
-            .pickerStyle(.segmented)
-            Text("Gauge sets grain size and presence (8mm coarse → 75mm near grain-free).")
-                .font(NitrateTypography.font(.caption))
-                .foregroundStyle(.secondary)
-        }
-    }
-
     // MARK: - Push / Pull
 
-    /// The sheet's live preference: auto checked, or the manual rung.
+    /// The sheet's live preference: auto, or the manual rung.
     private var pushPullPreference: PushPullPreference {
         PushPullPreference(isAutomatic: pushPullAutomatic, manualStops: pushPullStops)
     }
@@ -1668,60 +1737,79 @@ private struct StockSheetView: View {
         pushPullStops = remembered.manualStops
     }
 
-    /// Stock + gauge + push/pull are the three choices that define a render, so
-    /// the stop count sits with the gauge ladder rather than in a settings page.
-    private var pushPullPicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Push / Pull").font(NitrateTypography.font(.headline))
-                Spacer()
-                // The state is legible whether or not it is checked.
-                Text(pushPullBadge)
-                    .font(NitrateTypography.font(.caption))
-                    .foregroundStyle(resolvedPushPull.isNeutral ? .secondary : Color.accentColor)
-            }
-            Picker("Push / Pull", selection: $pushPullStops) {
-                ForEach(PushPullStops.allCases) { stops in
-                    Text(stops.displayName).tag(stops)
+    /// Push/pull as one small pill beside the gauge. Closed, the pill reads the
+    /// effective stops as a single word — PUSH, PULL or 0 — so the state is
+    /// legible without opening it, and auto and a manual 0 never look alike.
+    /// Tapping it opens the full ladder plus Auto; there is no separate toggle.
+    private var pushPullPill: some View {
+        Menu {
+            Button { chooseAutomatic() } label: {
+                if pushPullAutomatic {
+                    Label("Auto from the meter", systemImage: "checkmark")
+                } else {
+                    Text("Auto from the meter")
                 }
             }
-            .pickerStyle(.segmented)
-            .disabled(pushPullAutomatic)
-            .opacity(pushPullAutomatic ? 0.45 : 1)
-
-            Toggle(isOn: $pushPullAutomatic) {
-                Text("Auto from the meter").font(NitrateTypography.font(.subheadline))
+            Divider()
+            ForEach(PushPullStops.allCases) { stops in
+                Button { chooseManual(stops) } label: {
+                    if !pushPullAutomatic && pushPullStops == stops {
+                        Label(stops.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(stops.displayName)
+                    }
+                }
             }
-
-            Text(pushPullExplanation)
-                .font(NitrateTypography.font(.caption))
-                .foregroundStyle(.secondary)
+        } label: {
+            // The word sits in a fixed slot: it never widens the pill, so the
+            // cell keeps its fifth of the row whatever the meter resolves to.
+            Text(resolvedPushPull.stops.effectWord)
+                .font(NitrateTypography.font(.caption2))
+                .fontWeight(.semibold)
+                .kerning(0.5)
+                .foregroundStyle(pushPullTint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity)
+                .frame(height: 34)
+                .background(Capsule().fill(pushPullTint.opacity(0.16)))
+                .overlay { Capsule().stroke(pushPullTint.opacity(0.6), lineWidth: 1) }
+                .contentShape(Capsule())
         }
+        .accessibilityIdentifier("stock.pushPull")
+        .accessibilityLabel("Push or pull")
+        .accessibilityValue(pushPullAccessibilityValue)
     }
 
-    private var pushPullBadge: String {
-        let resolved = resolvedPushPull
-        guard !resolved.isNeutral else { return "normal" }
-        let amount = abs(resolved.stops.stops)
-        return "\(resolved.stops.effectName) \(amount) \(amount == 1 ? "stop" : "stops")"
+    private var pushPullTint: Color {
+        let stops = resolvedPushPull.stops.stops
+        if stops > 0 { return .orange }
+        if stops < 0 { return .blue }
+        return .secondary
     }
 
-    private var pushPullExplanation: String {
-        let resolved = resolvedPushPull
-        if pushPullAutomatic {
-            guard let meteredOffsetEV else {
-                return "No live meter reading — this take renders normal. "
-                    + "Turn Auto off to choose a push or pull by hand."
-            }
-            if resolved.isNeutral {
-                return String(format: "Meter %+.1f EV against target: within a stop, so the render stays normal.",
-                              meteredOffsetEV)
-            }
-            return "Meter reads \(String(format: "%+.1f", meteredOffsetEV)) EV over target, so this render is "
-                + "\(resolved.stops.effectName) \(abs(resolved.stops.stops)) stops. "
-                + "Turn Auto off to choose by hand."
+    private var pushPullAccessibilityValue: String {
+        let effect = resolvedPushPull.isNeutral
+            ? "normal"
+            : "\(resolvedPushPull.stops.effectName) \(abs(resolvedPushPull.stops.stops)) stops"
+        return pushPullAutomatic
+            ? "\(resolvedPushPull.stops.effectWord), \(effect) from the meter"
+            : "\(resolvedPushPull.stops.effectWord), \(effect) chosen by hand"
+    }
+
+    /// Auto is a state, not a stop: the manual rung is left as dialled, so
+    /// switching back to a hand choice in the same session restores it.
+    private func chooseAutomatic() {
+        withAnimation(.easeOut(duration: 0.15)) { pushPullAutomatic = true }
+        persistPreferences()
+    }
+
+    private func chooseManual(_ stops: PushPullStops) {
+        withAnimation(.easeOut(duration: 0.15)) {
+            pushPullAutomatic = false
+            pushPullStops = stops
         }
-        return "Renders \(resolved.stops.displayName) stops: the take is unchanged and the file's metadata records it."
+        persistPreferences()
     }
 
     private func renderButton(sourceURL: URL) -> some View {
@@ -1764,5 +1852,24 @@ private struct StockSheetView: View {
             .foregroundStyle(.white)
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
+    }
+}
+
+/// Compact duotone swatch for the stock dropdown: the same primary/secondary
+/// stripe the carousel card uses, small enough to sit inside the 34pt control
+/// row. The name beside it carries the identity, so it is decorative only.
+private struct StockSwatchMini: View {
+    let stock: FilmStockConfig?
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 3)
+            .fill(stock?.primaryColor ?? Color.white.opacity(0.25))
+            .overlay {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(stock?.secondaryColor ?? Color.clear)
+                    .padding(.vertical, 5)
+            }
+            .frame(width: 13, height: 20)
+            .accessibilityHidden(true)
     }
 }
