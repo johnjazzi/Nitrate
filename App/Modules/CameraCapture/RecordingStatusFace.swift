@@ -101,9 +101,9 @@ struct RecordingStatusFace: View {
                         .minimumScaleFactor(0.85)
                 }
             }
-            Text(modeStatusLabel)
-                .font(NitrateTypography.font(size: 8)).tracking(1)
-                .lineLimit(1).minimumScaleFactor(0.7)
+            // No mode/rate text here. The badge sits high and gets clipped by the
+            // sensor housing while recording, and only errors and warnings are
+            // allowed to put words on screen during a take.
         }
         .foregroundStyle(displayTint)
         .frame(width: 112, height: 40)

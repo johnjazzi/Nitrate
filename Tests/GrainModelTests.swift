@@ -92,10 +92,10 @@ struct GrainModelTests {
 
         // A gauge listed twice — the same id, and its legacy long spelling.
         #expect(throws: GaugeConfigError.duplicateGauge("8mm")) {
-            _ = try decode(Self.document(shipped + [("8mm", "2.0", "0.55", "radius8", "0")]))
+            _ = try decode(Self.document(shipped + [("8mm", "2.0", "0.55", "radius35", "0.5")]))
         }
         #expect(throws: GaugeConfigError.duplicateGauge("8mm")) {
-            _ = try decode(Self.document(shipped + [("eightMillimetre", "2.0", "0.55", "radius8", "0")]))
+            _ = try decode(Self.document(shipped + [("eightMillimetre", "2.0", "0.55", "radius35", "0.5")]))
         }
         // A gauge with no entry at all.
         #expect(throws: GaugeConfigError.missingGauges(["75mm"])) {
@@ -118,7 +118,7 @@ struct GrainModelTests {
         // Unknown gauge identifiers, a non-finite number and a missing field all
         // fail to decode rather than falling back to a default entry.
         #expect(throws: (any Error).self) {
-            _ = try decode(Self.document(shipped + [("9mm", "1.0", "0.2", "radius8", "0")]))
+            _ = try decode(Self.document(shipped + [("9mm", "1.0", "0.2", "radius35", "0")]))
         }
         #expect(throws: (any Error).self) {
             _ = try decode(Self.document(Self.replacing(shipped, gauge: "8mm", size: "1e400")))
@@ -265,9 +265,9 @@ struct GrainModelTests {
                                preset: String, amount: String)
 
     private static let shippedEntries: [Entry] = [
-        ("8mm", "4.0", "0.55", "radius8", "0"),
-        ("16mm", "2.025", "0.396", "radius16", "0"),
-        ("35mm", "0.9", "0.36", "radius35", "0"),
+        ("8mm", "4.0", "0.55", "radius35", "0.5"),
+        ("16mm", "2.025", "0.396", "radius16", "0.4"),
+        ("35mm", "0.9", "0.36", "radius8", "0.2"),
         ("75mm", "0.5", "0.165", "radius75", "0")
     ]
 

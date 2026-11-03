@@ -150,9 +150,11 @@ struct LUTSamplingTests {
         encoder.setTexture(lut, index: 2)
         var noEffect: Float = 0
         var neutralContrast: Float = 1
+        var noPushPull: Float = 0
         encoder.setBytes(&noEffect, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&noEffect, length: MemoryLayout<Float>.size, index: 1)
         encoder.setBytes(&neutralContrast, length: MemoryLayout<Float>.size, index: 2)
+        encoder.setBytes(&noPushPull, length: MemoryLayout<Float>.size, index: 3)
         let widthPerGroup = max(1, gpu.pipeline.threadExecutionWidth)
         let groupCount = (width + widthPerGroup - 1) / widthPerGroup
         encoder.dispatchThreadgroups(

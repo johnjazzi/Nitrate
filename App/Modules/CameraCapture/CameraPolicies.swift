@@ -268,6 +268,29 @@ enum CameraAperturePolicy {
         return videoAperture
     }
 
+#if os(iOS)
+    /// The active format's iris capability, read live from the device. iOS-only:
+    /// the iris properties do not exist on macOS, where this file also builds.
+    @available(iOS 27.0, *)
+    static func capability(for device: AVCaptureDevice) -> Capability {
+        let format = device.activeFormat
+        return capability(recommended: format.recommendedLensApertureStops,
+                          minimum: format.minLensAperture, maximum: format.maxLensAperture)
+    }
+#endif
+
+    /// The aperture a controller can actually hold on a device with `capability`.
+    ///
+    /// A lens whose iris cannot vary has nothing to hold, and a stop chosen on a
+    /// different lens is reconciled to the nearest stop this one reports. Holding
+    /// the carried-over stop regardless is what made a lens switch fail the next
+    /// exposure write with `unsupportedMode` and report a recording error on a
+    /// take that was never in trouble.
+    static func heldAperture(_ requested: Float?, capability: Capability) -> Float? {
+        guard let requested, capability.isVariable else { return nil }
+        return reconcile(requested, with: capability)
+    }
+
     /// `nil` represents Auto. Explicit choices are reconciled to the nearest
     /// stop reported by the new active format.
     static func reconcile(_ selected: Float?, with capability: Capability) -> Float? {

@@ -164,6 +164,30 @@ class PhotoFieldWiringTests(unittest.TestCase):
         reset_at = body.rindex('cameraViewModel.resetFocusAreaToCenter()')
         self.assertGreater(reset_at, body.index('cameraMode.select(mode, enabled: true'))
 
+    def test_held_aperture_with_a_floating_iso_resolves_the_gain(self):
+        # Reported: 0 EV metered at f/8, then f/4.0, and the meter sat at the
+        # aperture delta because the pre-change ISO was written again. A held
+        # aperture with a floating ISO must resolve gain from the metered
+        # baseline and report a target the ISO range cannot reach.
+        controller = (ROOT / 'App/Modules/CameraCapture/DevelopmentPhotoController.swift').read_text()
+        apply = section(controller, 'private func applyCurrentIntent()',
+                        'let iso = isoLocked ? (pinnedISO ?? device.iso) : device.iso')
+        self.assertIn('resolvedISO(for: aperture)', apply)
+        resolve = section(controller, 'private func resolvedISO(for aperture: Float)',
+                          'private func meteredBaseline')
+        self.assertIn('PhotoApertureExposurePolicy.resolveISO(', resolve)
+        self.assertIn('targetLimited = resolution.targetLimited', resolve)
+        self.assertIn('apertureBaseline = nil', section(controller, 'func restoreIntent(',
+                                                        'func setISO('))
+
+    def test_aperture_resolution_scales_gain_by_the_iris_and_the_ev_delta(self):
+        policy = (ROOT / 'App/Modules/CameraCapture/PhotoExposurePolicy.swift').read_text()
+        body = section(policy, 'static func resolveISO(baseline:',
+                       'enum PhotoExposurePolicyError')
+        self.assertIn('Double(aperture) / Double(baseline.aperture)', body)
+        self.assertIn('pow(2.0, Double(ev - baseline.ev))', body)
+        self.assertIn('targetLimited:', body)
+
     def test_debug_snapshots_selected_gauge(self):
         body = self.content.split('private func openDebugFrame()', 1)[1].split('\n    }', 1)[0]
         self.assertIn('library.lastGauge(for:', body)

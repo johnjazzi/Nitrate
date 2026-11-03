@@ -19,6 +19,7 @@ final class StillFilmRenderResources {
     /// Explicit still-only calibration override; nil retains the shipping gain.
     /// Keep this fixed with stock/gauge/seed when comparing candidate renders.
     init(stockID: String, gauge: PrintGauge, seed: UInt32, bundle: Bundle = .main,
+         pushPull: PushPullExposure = .neutral,
          stillPresenceGain: Float? = nil) throws {
         if let stillPresenceGain, !stillPresenceGain.isFinite || stillPresenceGain < 0 {
             throw DevelopmentPhotoRenderer.RenderError.decode("Invalid still grain presence gain")
@@ -37,7 +38,7 @@ final class StillFilmRenderResources {
             throw DevelopmentPhotoRenderer.RenderError.unsupportedStock(stockID)
         }
         // One resolved recipe drives both GPU parameters and delivered metadata.
-        let config = template.overridingGauge(gauge)
+        let config = template.overridingGauge(gauge).overridingPushPull(pushPull)
         try config.validate()
         let bytes = try Data(contentsOf: grain)
         let n = 128
@@ -125,11 +126,15 @@ final class StillFilmRenderResources {
         }
         var zero: Float = 0
         var contrast = config.outputContrast
+        // The still applies the same development convention as the take: a
+        // push/pull resolved for this job (neutral when none was chosen).
+        var stops = Float(config.effectivePushPull.stops.stops)
         encoder.setComputePipelineState(lutPipeline)
         encoder.setTexture(input, index: 0); encoder.setTexture(output, index: 1); encoder.setTexture(lut, index: 2)
         encoder.setBytes(&zero, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&zero, length: MemoryLayout<Float>.size, index: 1)
         encoder.setBytes(&contrast, length: MemoryLayout<Float>.size, index: 2)
+        encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 3)
         encoder.dispatchThreadgroups(MTLSize(width: (input.width + 15) / 16, height: (input.height + 15) / 16, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         encoder.endEncoding(); command.commit(); command.waitUntilCompleted()

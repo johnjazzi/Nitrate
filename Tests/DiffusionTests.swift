@@ -91,22 +91,30 @@ struct DiffusionTests {
 
     // MARK: - Gauge ownership
 
-    /// The print format IS the radius ladder, and 75mm — the reference print —
-    /// is bypassed.
+    /// The print format IS the radius ladder, and it runs from the softest
+    /// format to the sharpest: 8mm spreads furthest, 35mm least, and 75mm — the
+    /// reference print — is bypassed.
     @Test
-    func everyGaugeOwnsItsRadius() {
-        #expect(PrintGauge.eightMillimetre.diffusionPreset == .radius8)
+    func everyGaugeOwnsItsRadius() throws {
+        #expect(PrintGauge.eightMillimetre.diffusionPreset == .radius35)
         #expect(PrintGauge.sixteenMillimetre.diffusionPreset == .radius16)
-        #expect(PrintGauge.thirtyFiveMillimetre.diffusionPreset == .radius35)
+        #expect(PrintGauge.thirtyFiveMillimetre.diffusionPreset == .radius8)
         #expect(PrintGauge.seventyFiveMillimetre.diffusionPreset == .radius75)
         #expect(PrintGauge.seventyFiveMillimetre.diffusion.preset.isBypass)
+        // The ladder is inverted against grain coarseness: the gauge with the
+        // most grain spreads the most light, the sharpest rendered gauge least.
+        let eight = try #require(PrintGauge.eightMillimetre.diffusionPreset.radiusPixels)
+        let sixteen = try #require(PrintGauge.sixteenMillimetre.diffusionPreset.radiusPixels)
+        let thirtyFive = try #require(PrintGauge.thirtyFiveMillimetre.diffusionPreset.radiusPixels)
+        #expect(eight > sixteen && sixteen > thirtyFive,
+                "radius must fall 8mm > 16mm > 35mm: \(eight), \(sixteen), \(thirtyFive)")
     }
 
-    /// The shipped gauge document carries one diffusion setting per gauge, the
-    /// App and CLI copies are identical, and no gauge renders diffusion until an
-    /// amount is authored — the node ships wired but silent.
+    /// The shipped gauge document carries one diffusion setting per gauge — the
+    /// ladder ships as authored data, not as code — the App and CLI copies are
+    /// identical, and every rung states its own radius AND its own amount.
     @Test
-    func shippedGaugesCarryTheirOwnDiffusionAndShipSilent() throws {
+    func shippedGaugesCarryTheirOwnDiffusionLadder() throws {
         let root = TestRepository.root
         let cliURL = root.appendingPathComponent("Resources/gauges.json")
         let appURL = root.appendingPathComponent("App/Resources/gauges.json")
@@ -118,9 +126,20 @@ struct DiffusionTests {
             let tuning = try #require(resolved[gauge])
             #expect(tuning.diffusionPreset == gauge.diffusionPreset,
                     "\(gauge.rawValue) must ship its own radius")
-            #expect(tuning.diffusion.amount == 0,
-                    "\(gauge.rawValue) must ship silent until the amount is tuned")
-            #expect(!tuning.diffusion.isEnabled)
+            // The shipped starting ladder: softer format, wider and stronger.
+            let shipped: [PrintGauge: (preset: DiffusionPreset, amount: Float)] = [
+                .eightMillimetre: (.radius35, 0.5),
+                .sixteenMillimetre: (.radius16, 0.4),
+                .thirtyFiveMillimetre: (.radius8, 0.2),
+                .seventyFiveMillimetre: (.radius75, 0)
+            ]
+            let expected = try #require(shipped[gauge])
+            #expect(tuning.diffusionPreset == expected.preset,
+                    "\(gauge.rawValue) radius: \(tuning.diffusionPreset.rawValue)")
+            #expect(abs(tuning.diffusionAmount - expected.amount) < 1e-6,
+                    "\(gauge.rawValue) amount: \(tuning.diffusionAmount)")
+            // 75mm is the one gauge that renders nothing, by preset.
+            #expect(tuning.diffusion.isEnabled == (gauge != .seventyFiveMillimetre))
         }
     }
 
@@ -135,7 +154,7 @@ struct DiffusionTests {
         #expect(parameters.diffusion.preset == PrintGauge.neutral.diffusionPreset)
 
         parameters.applyGauge(.eightMillimetre)
-        #expect(parameters.diffusion.preset == .radius8)
+        #expect(parameters.diffusion.preset == .radius35)
         #expect(parameters.diffusion.amount == PrintGauge.eightMillimetre.diffusion.amount)
 
         parameters.applyGauge(.seventyFiveMillimetre)

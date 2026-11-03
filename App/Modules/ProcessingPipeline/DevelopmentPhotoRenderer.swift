@@ -7,14 +7,17 @@ import Foundation
 /// Development-only still renderer. Exposure gain is intentionally uncalibrated (1.0).
 enum DevelopmentPhotoRenderer {
     static func render(originalDNG: URL, stockID: String, resourcesURL: URL? = nil,
-                       gauge: PrintGauge = .neutral, seed: UInt32 = 0, cropZoom: Double = 1, bundle: Bundle = .main) throws -> URL {
+                       gauge: PrintGauge = .neutral, seed: UInt32 = 0, cropZoom: Double = 1,
+                       pushPull: PushPullExposure = .neutral,
+                       bundle: Bundle = .main) throws -> URL {
         let normalizedStock: String
         switch stockID.lowercased() {
         case "kodak5207", "5207": normalizedStock = "5207"
         case "kodak5219", "5219": normalizedStock = "5219"
         default: throw RenderError.unsupportedStock(stockID)
         }
-        let film = try StillFilmRenderResources(stockID: "kodak" + normalizedStock, gauge: gauge, seed: seed, bundle: bundle)
+        let film = try StillFilmRenderResources(stockID: "kodak" + normalizedStock, gauge: gauge, seed: seed,
+                                                bundle: bundle, pushPull: pushPull)
         let decoder = try RAWPhotoDecoder(device: film.device, queue: film.queue)
         let decodedRAW = try decoder.decode(url: originalDNG, temperature: film.config.lightType == "D" ? 5600 : 3200)
         guard let decoded = CIImage(mtlTexture: decodedRAW.texture,

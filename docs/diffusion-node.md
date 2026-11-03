@@ -23,12 +23,16 @@ the blur passes and nothing else.
 Radii are authored in pixels at a **1080p-wide frame** and scale with the real
 frame, so a preset keeps its size relative to the picture. `sigma = radius / 2`.
 
-| Preset     | Radius @1080p | Gauge that owns it | Behaviour |
-|------------|---------------|--------------------|-----------|
-| `radius8`  | 8 px          | 8mm                | rendered  |
-| `radius16` | 16 px         | 16mm               | rendered  |
-| `radius35` | 35 px         | 35mm               | rendered  |
-| `radius75` | 75 px         | 75mm               | **bypassed** |
+| Gauge | Radius @1080p | Amount | Behaviour |
+|-------|---------------|--------|-----------|
+| 8mm   | 35 px         | 0.50   | rendered  |
+| 16mm  | 16 px         | 0.40   | rendered  |
+| 35mm  | 8 px          | 0.20   | rendered  |
+| 75mm  | 75 px         | 0      | **bypassed** |
+
+The ladder runs from the softest format to the sharpest: the gauge with the
+most grain spreads the most light, and the sharpest gauge that diffuses at all
+(35mm) spreads the least. 75mm — the reference print — does not diffuse.
 
 `radius75` is registered so the ladder can be compared end to end, but it
 renders nothing: the node returns its input texture untouched, allocating no
@@ -46,10 +50,10 @@ print gauge owns it — exactly like grain size and presence:
   when present, otherwise the gauge's;
 - the DEBUG sheet re-seeds its diffusion dials when the gauge changes.
 
-The shipped amounts are **0 for every gauge**, so the node ships wired but
-silent: no delivered render changes until an amount is authored in
-`gauges.json` (both `Resources/` and `App/Resources/` copies) or dialled in the
-debug sheet.
+Both axes are authored per gauge, so the shipped ladder is data rather than
+code. Re-tuning is an edit in `gauges.json` (both `Resources/` and
+`App/Resources/` copies) or a drag in the debug sheet, and a stock can override
+its gauge with its own `diffusion` object.
 
 ## Why a pyramid instead of a wide kernel
 
@@ -85,8 +89,8 @@ which is roughly the cost of a small blur at full working resolution.
   the source (catches blocky pyramid seams);
 - `off`, `radius75` and amount 0 hand back the input texture object itself;
 - diffusion composes with halation instead of replacing it;
-- every gauge owns its radius, the shipped document is identical in both copies,
-  and every shipped amount is 0.
+- every gauge owns its radius and amount (8mm > 16mm > 35mm, 0.50 / 0.40 /
+  0.20), the shipped document is identical in both copies, and 75mm stays off.
 
 ## Tuning it
 

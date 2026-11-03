@@ -36,15 +36,16 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
 
     /// The lens-diffusion radius this gauge implies.
     ///
-    /// The print format IS the radius ladder: a smaller negative spreads light
-    /// over a shorter distance, so 8mm/16mm/35mm map to 8/16/35 px at a 1080p
-    /// frame. 75mm is the reference print and is bypassed — a large-format
+    /// The ladder runs from the softest format to the sharpest: 8mm spreads the
+    /// light furthest (35 px at a 1080p frame), 16mm takes the middle step, and
+    /// 35mm — the sharpest gauge that renders diffusion at all — spreads it the
+    /// least (8 px). 75mm is the reference print and is bypassed: a large-format
     /// negative does not diffuse, and skipping it keeps that gauge free.
     var diffusionPreset: DiffusionPreset {
         switch self {
-        case .eightMillimetre: return .radius8
+        case .eightMillimetre: return .radius35
         case .sixteenMillimetre: return .radius16
-        case .thirtyFiveMillimetre: return .radius35
+        case .thirtyFiveMillimetre: return .radius8
         case .seventyFiveMillimetre: return .radius75
         }
     }

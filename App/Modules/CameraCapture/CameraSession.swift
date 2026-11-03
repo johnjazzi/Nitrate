@@ -538,7 +538,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
             output = try installNativePhotoGraph(device)
             retainedPhotoOutput = output
         }
-        selectedLensAperture = sharedPhotoIntent?.aperture
+        // The intent may carry a stop from the lens this one replaces; hold what
+        // this lens can actually do rather than letting the restore fail.
+        selectedLensAperture = heldPhotoAperture(sharedPhotoIntent?.aperture, on: device)
         try startDevelopmentPhotoController(device: device, output: output, directory: directory, update: update)
         apertureCameraRevision &+= 1
         zoomLifecycle.cameraChanged()
@@ -1298,9 +1300,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         configureCaptureRotation(for: device)
         apertureCameraRevision &+= 1
         if #available(iOS 27.0, *), selectedLensAperture != nil {
-            let capability = Self.apertureCapability(for: device)
-            selectedLensAperture = capability.isVariable
-                ? CameraAperturePolicy.reconcile(selectedLensAperture, with: capability) : nil
+            selectedLensAperture = heldPhotoAperture(selectedLensAperture, on: device)
             if selectedLensAperture != nil {
                 try applySelectedAperture(on: device, mode: isShutterPriority ? .shutterPriority : .manual)
             }
@@ -2352,12 +2352,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
     @available(iOS 27.0, *)
     private static func apertureCapability(for device: AVCaptureDevice) -> CameraAperturePolicy.Capability {
-        let format = device.activeFormat
-        return CameraAperturePolicy.capability(
-            recommended: format.recommendedLensApertureStops,
-            minimum: format.minLensAperture,
-            maximum: format.maxLensAperture
-        )
+        CameraAperturePolicy.capability(for: device)
     }
 
     private func logApertureCapability(for device: AVCaptureDevice, lens: CameraLens) {
@@ -2447,6 +2442,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
         defer { device.unlockForConfiguration() }
         device.setExposureModeCustom(duration: duration, iso: iso) { _ in }
         try reassertFrameDuration(on: device, mode: frameRate)
+    }
+
+    /// The aperture the intent may hold on `device`, reconciled to the stops the
+    /// lens reports. A stop chosen on another lens is not a stop this one has.
+    private func heldPhotoAperture(_ requested: Float?, on device: AVCaptureDevice) -> Float? {
+        guard #available(iOS 27.0, *) else { return requested }
+        return CameraAperturePolicy.heldAperture(requested,
+            capability: CameraAperturePolicy.capability(for: device))
     }
 
     /// The aperture a custom-exposure write should hold: the user's explicit
@@ -3838,7 +3841,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
         activeDevice = device
         activeLens = lens
         apertureCameraRevision &+= 1
-        selectedLensAperture = sharedPhotoIntent?.aperture
+        // The reported bug: the stop chosen on the lens being left is not a stop
+        // this one has, and holding it unexamined failed the next exposure write.
+        selectedLensAperture = heldPhotoAperture(sharedPhotoIntent?.aperture, on: device)
         configureCaptureRotation(for: device)
         zoomLifecycle.cameraChanged()
         publishZoom()
@@ -3873,7 +3878,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         let controller = DevelopmentPhotoController(device: device, output: output,
             pixelFormat: pixelFormat, dimensions: size, directory: directory,
             queue: sessionQueue, onUpdate: delivery) { [weak self] message in
-                self?.reportDevelopmentPhotoError(CameraError.writerUnavailable(message))
+                self?.reportDevelopmentPhotoError(CameraError.photoExposureUnavailable(message))
             }
         developmentPhotoController = controller
         try controller.start()
@@ -4262,7 +4267,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             let controller = DevelopmentPhotoController(device: device, output: output,
                 pixelFormat: pixelFormat, dimensions: size, directory: directory,
                 queue: self.sessionQueue, onUpdate: onUpdate) { [weak self] message in
-                    self?.reportDevelopmentPhotoError(CameraError.writerUnavailable(message))
+                    self?.reportDevelopmentPhotoError(CameraError.photoExposureUnavailable(message))
                 }
             self.developmentPhotoController = controller
             self.developmentPhotoUpdate = onUpdate
@@ -5108,6 +5113,10 @@ enum CameraError: LocalizedError {
     case frameRateTransitionInProgress
     case frameRateTransitionSuperseded
     case captureRecoveryRequired(String)
+    /// A Photo exposure control could not be applied. Distinct from
+    /// `.writerUnavailable`: the recording graph is fine, so the message must not
+    /// claim recording is unavailable.
+    case photoExposureUnavailable(String)
     /// The selected camera has no Bayer RAW format for Photo's still profile.
     /// Distinct from a fatal configuration failure: the shared idle graph falls
     /// back to its Video graph instead of stopping the camera.
@@ -5149,6 +5158,8 @@ enum CameraError: LocalizedError {
             return "Failed to add a sample-buffer output to the capture session."
         case .writerUnavailable(let detail):
             return "Apple Log 2 HEVC Main10 recording is unavailable. \(detail)"
+        case .photoExposureUnavailable(let detail):
+            return "Photo exposure could not be updated: \(detail)."
         case .appleLogNotSupported:
             return "Apple Log color space is not supported on this device."
         case .appleLog2NotSupported:

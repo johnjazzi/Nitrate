@@ -13,10 +13,16 @@ import ImageIO
 enum PhotoDeliveryMetadata {
     /// The still's own exposure, when the DNG reports it. A photo is one
     /// exposure, so the movie's nominal shutter angle and frame rate are omitted
-    /// rather than invented; the real shutter and ISO travel instead.
+    /// rather than invented; the real shutter and ISO travel instead, together
+    /// with the lens, aperture and focal length the DNG knows.
     struct StillCapture: Equatable, Sendable {
         var exposureSeconds: Double?
         var iso: Int?
+        /// Aperture as the lens's f-number, e.g. 3.99932.
+        var fNumber: Double?
+        /// Lens description as the DNG reports it, e.g. "iPhone 16 Pro back triple camera".
+        var lensModel: String?
+        var focalLengthMM: Double?
         /// EXIF orientation of the stored DNG. The photo connection's rotation
         /// angle is installed immediately before the capture, so this is the
         /// orientation the DNG itself reports; `CIRAWFilter` uprights it on
@@ -35,7 +41,7 @@ enum PhotoDeliveryMetadata {
         "shutter-angle", "capture-frame-rate", "encoding-bitrate-target"
     ]
 
-    /// Read the as-shot exposure straight from the DNG. Absent EXIF leaves both
+    /// Read the as-shot exposure straight from the DNG. Absent EXIF leaves the
     /// fields nil; the payload then carries no capture-exposure claim at all.
     static func capture(fromDNG url: URL) -> StillCapture {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -45,8 +51,14 @@ enum PhotoDeliveryMetadata {
         }
         let exposure = (exif[kCGImagePropertyExifExposureTime] as? NSNumber)?.doubleValue
         let iso = (exif[kCGImagePropertyExifISOSpeedRatings] as? [NSNumber])?.first?.intValue
+        let fNumber = (exif[kCGImagePropertyExifFNumber] as? NSNumber)?.doubleValue
+        let focalLength = (exif[kCGImagePropertyExifFocalLength] as? NSNumber)?.doubleValue
+        let lens = (exif[kCGImagePropertyExifLensModel] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
-        return StillCapture(exposureSeconds: exposure, iso: iso, orientation: orientation)
+        return StillCapture(exposureSeconds: exposure, iso: iso,
+                            fNumber: fNumber, lensModel: lens.flatMap { $0.isEmpty ? nil : $0 },
+                            focalLengthMM: focalLength, orientation: orientation)
     }
 
     /// ImageIO properties for the delivered JPEG, merged over the encoder's own
@@ -65,6 +77,15 @@ enum PhotoDeliveryMetadata {
             overrides["iso"] = String(iso)
             overrides["iso-role"] = "capture-exposure-index"
         }
+        if let fNumber = capture.fNumber, fNumber.isFinite, fNumber > 0 {
+            overrides["aperture-f-number"] = String(fNumber)
+        }
+        if let lens = capture.lensModel {
+            overrides["lens"] = lens
+        }
+        if let focalLength = capture.focalLengthMM, focalLength.isFinite, focalLength > 0 {
+            overrides["focal-length-mm"] = String(focalLength)
+        }
         let values = try RenderMovieMetadata.recipeValues(config: config,
             overrides: overrides, omitting: movieOnlyKeys)
         let payload = try JSONSerialization.data(withJSONObject: values, options: [.sortedKeys])
@@ -75,6 +96,16 @@ enum PhotoDeliveryMetadata {
         if let iso = capture.iso, iso > 0 { exif[kCGImagePropertyExifISOSpeedRatings] = [iso] }
         if let seconds = capture.exposureSeconds, seconds.isFinite, seconds > 0 {
             exif[kCGImagePropertyExifExposureTime] = seconds
+        }
+        // Photo apps read the capture fields from EXIF, not from the payload.
+        if let fNumber = capture.fNumber, fNumber.isFinite, fNumber > 0 {
+            exif[kCGImagePropertyExifFNumber] = fNumber
+        }
+        if let lens = capture.lensModel {
+            exif[kCGImagePropertyExifLensModel] = lens
+        }
+        if let focalLength = capture.focalLengthMM, focalLength.isFinite, focalLength > 0 {
+            exif[kCGImagePropertyExifFocalLength] = focalLength
         }
         return [
             kCGImagePropertyIPTCDictionary: [

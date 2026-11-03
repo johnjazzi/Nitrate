@@ -160,8 +160,13 @@ final class SpatialEffectsStage {
         let halfHeight = max(1, (height + 1) / 2)
         // At zero diffusion, use a full-resolution mask so down/up-sampling
         // cannot spread a one-pixel source despite the blur being disabled.
-        // Without halation the mask has nothing to carry and stays half-res.
-        let fullResMask = strength != 0 && radiusFraction <= 0
+        // Without halation the mask has nothing to carry and stays half-res, and
+        // so does the diffusion node's scene: the prepare kernel writes both
+        // textures at the MASK's dimensions, so a full-res mask beside a
+        // half-res scene would write outside the scene and leave three quarters
+        // of it empty. With a diffuser in front of the lens the frame is being
+        // spread anyway, so the half-res mask costs nothing visible.
+        let fullResMask = strength != 0 && radiusFraction <= 0 && plan == nil
         let maskWidth = fullResMask ? width : halfWidth
         let maskHeight = fullResMask ? height : halfHeight
 

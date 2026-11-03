@@ -107,6 +107,17 @@ struct RenderContractTests {
             #expect(values["com.filmemulation.iso-role"] == "selected-render-exposure-index")
             #expect(values["com.filmemulation.shutter-speed"] == "1/48")
             #expect(values["com.filmemulation.shutter-angle"] == "180")
+            // The lens diffusion node travels with the file: which radius the
+            // gauge rendered, how far the scene was blended toward it, and the
+            // authored 1080p radius the preset stands for.
+            #expect(values["com.filmemulation.diffusion-preset"]
+                    == config.effectiveDiffusion.preset.rawValue)
+            #expect(values["com.filmemulation.diffusion-amount"] == String(config.effectiveDiffusion.amount))
+            #expect(values["com.filmemulation.diffusion-radius-px-1080p"]
+                    == String(config.effectiveDiffusion.preset.radiusPixels ?? 0))
+            #expect(values["com.filmemulation.diffusion"]
+                    == (config.effectiveDiffusion.isEnabled
+                        ? "\(config.effectiveDiffusion.preset.title)px" : "off"))
             #expect(values["com.filmemulation.grain-algorithm"] == config.effectiveRecipe.grainAlgorithm)
             #expect(values["com.filmemulation.grain-edge-boost-multiplier"] == String(config.effectiveRecipe.edgeBoostMultiplier))
             #expect(values["com.filmemulation.render-settings-schema"] == "1")

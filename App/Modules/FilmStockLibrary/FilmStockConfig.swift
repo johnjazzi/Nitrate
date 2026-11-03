@@ -37,6 +37,10 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
     /// key decodes to a disabled node: the node ships off until a stock authors
     /// a preset and an amount.
     var diffusion: DiffusionSettings? = nil
+    /// Render-time push/pull in fixed stops, applied to the Apple Log 2 code
+    /// before the stock's cube. Defaults to neutral so stocks.json and every
+    /// queue written before the control existed keep rendering unchanged.
+    var pushPull: PushPullExposure? = nil
 
     /// The gauge actually applied to the render: the selected gauge or 35mm.
     var effectivePrintGauge: PrintGauge { printGauge ?? .neutral }
@@ -47,6 +51,10 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
     /// because diffusion is a property of the format rather than of the emulsion
     /// — the same stock printed at 16mm and at 75mm does not diffuse alike.
     var effectiveDiffusion: DiffusionSettings { diffusion ?? effectivePrintGauge.diffusion }
+
+    /// The push/pull actually applied to the render: the chosen setting, or
+    /// neutral when the document/queue predates the control.
+    var effectivePushPull: PushPullExposure { pushPull ?? .neutral }
 
     /// Copy the complete value so per-shot ISO cannot discard recipe or display metadata.
     func overridingISO(_ iso: Float) -> FilmStockConfig {
@@ -60,6 +68,14 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
     func overridingGauge(_ gauge: PrintGauge?) -> FilmStockConfig {
         var copy = self
         copy.printGauge = gauge
+        return copy
+    }
+
+    /// Copy with a per-shot push/pull, so the stop count cannot discard the
+    /// recipe or display metadata (mirrors `overridingISO` / `overridingGauge`).
+    func overridingPushPull(_ pushPull: PushPullExposure) -> FilmStockConfig {
+        var copy = self
+        copy.pushPull = pushPull
         return copy
     }
 
@@ -85,6 +101,8 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
         // the scene-linear blend can never invert or over-gain the frame.
         try require(effectiveDiffusion.amount.isFinite && (0...1).contains(effectiveDiffusion.amount),
                     "diffusion.amount")
+        try require(effectivePushPull.meteredOffsetEV?.isFinite ?? true, "pushPull.meteredOffsetEV")
+        try require(PushPullStops.allCases.contains(effectivePushPull.stops), "pushPull.stops")
         try effectiveRecipe.validate(stockID: stockId)
     }
 

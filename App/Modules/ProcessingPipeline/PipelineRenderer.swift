@@ -585,6 +585,7 @@ final class PipelineRenderer: @unchecked Sendable {
                     input: halated,
                     lut: lut,
                     outputContrast: config.outputContrast,
+                    pushPullStops: config.effectivePushPull.stops,
                     width: width,
                     height: height
                 ) else { return nil }
@@ -999,6 +1000,7 @@ final class PipelineRenderer: @unchecked Sendable {
                             input: halated,
                             lut: context.lut,
                             outputContrast: config.outputContrast,
+                            pushPullStops: config.effectivePushPull.stops,
                             width: width,
                             height: height
                         ) else {
@@ -1173,6 +1175,7 @@ final class PipelineRenderer: @unchecked Sendable {
         input: MTLTexture,
         lut: MTLTexture,
         outputContrast: Float,
+        pushPullStops: PushPullStops = .none,
         width: Int,
         height: Int
     ) -> MTLTexture? {
@@ -1188,6 +1191,9 @@ final class PipelineRenderer: @unchecked Sendable {
         var halation: Float = 0
         var glow: Float = 0
         var contrast = outputContrast
+        // Render-time push/pull, in stops. Applied inside the kernel before the
+        // cube is sampled (scene-linear gain, re-encoded as Apple Log 2).
+        var stops = Float(pushPullStops.stops)
 
         encoder.setComputePipelineState(pass1Pipeline!)
         encoder.setTexture(input, index: 0)
@@ -1196,6 +1202,7 @@ final class PipelineRenderer: @unchecked Sendable {
         encoder.setBytes(&halation, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&glow, length: MemoryLayout<Float>.size, index: 1)
         encoder.setBytes(&contrast, length: MemoryLayout<Float>.size, index: 2)
+        encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 3)
 
         let threadGroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let threadGroups = MTLSize(

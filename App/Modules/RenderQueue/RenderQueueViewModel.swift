@@ -226,6 +226,7 @@ final class RenderQueueViewModel {
     @discardableResult
     func enqueuePhoto(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge,
                       cropZoom: Double, seed: UInt32,
+                      pushPull: PushPullExposure? = nil,
                       preferences: RenderDeliveryPreferences? = nil) -> UUID? {
         guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
         guard Self.isUsableFile(sourceURL), sourceURL.pathExtension.lowercased() == "dng",
@@ -236,8 +237,12 @@ final class RenderQueueViewModel {
         if let existing = jobs.first(where: { $0.sourceURL.standardizedFileURL == sourceURL.standardizedFileURL }) {
             return existing.isPhoto == true ? existing.id : nil
         }
+        // A still is one exposure, so an automatic pull has no meter reading to
+        // act on; the stock's persisted manual pull still applies. The resolved
+        // value is stored on the job and is what the render applies.
+        let resolvedPushPull = pushPull ?? library?.lastPushPull(for: stockId).resolved(meteredOffsetEV: nil) ?? .neutral
         var photo = RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso,
-                              printGauge: gauge, sessionId: sessionId,
+                              printGauge: gauge, pushPull: resolvedPushPull, sessionId: sessionId,
                               deliveryPreferences: preferences ?? DeliverySettings.renderPreferences())
         photo.isPhoto = true
         photo.photoCropZoom = cropZoom
@@ -254,6 +259,7 @@ final class RenderQueueViewModel {
     }
 
     func enqueue(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge? = nil,
+                 pushPull: PushPullExposure = .neutral,
                  deliveryPreferences: RenderDeliveryPreferences? = nil,
                  capturePolicy: RenderCapturePolicy? = nil) {
         guard Self.isUsableFile(sourceURL) else {
@@ -261,13 +267,13 @@ final class RenderQueueViewModel {
             return
         }
         if let awaiting = awaitingStockJobs.first(where: { $0.sourceURL == sourceURL }) {
-            assignStock(jobId: awaiting.id, stockId: stockId, iso: iso, gauge: gauge,
+            assignStock(jobId: awaiting.id, stockId: stockId, iso: iso, gauge: gauge, pushPull: pushPull,
                         deliveryPreferences: deliveryPreferences, capturePolicy: capturePolicy)
             return
         }
         rendererErrorMessage = nil
         jobs.append(RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso,
-                              printGauge: gauge, sessionId: sessionId,
+                              printGauge: gauge, pushPull: pushPull, sessionId: sessionId,
                               deliveryPreferences: deliveryPreferences ?? DeliverySettings.renderPreferences(),
                               capturePolicy: capturePolicy))
         // The enqueue must be durable before any render or Photos side effect.
@@ -310,6 +316,7 @@ final class RenderQueueViewModel {
 
     /// Assign a stock to an awaiting entry and let it render.
     func assignStock(jobId: UUID, stockId: String, iso: Float, gauge: PrintGauge? = nil,
+                     pushPull: PushPullExposure = .neutral,
                      deliveryPreferences: RenderDeliveryPreferences? = nil,
                      capturePolicy: RenderCapturePolicy? = nil) {
         guard let index = jobs.firstIndex(where: { $0.id == jobId }),
@@ -317,6 +324,7 @@ final class RenderQueueViewModel {
         jobs[index].stockId = stockId
         jobs[index].iso = iso
         jobs[index].printGauge = gauge
+        jobs[index].pushPull = pushPull
         if let deliveryPreferences { jobs[index].deliveryPreferences = deliveryPreferences }
         // The capture policy is snapshotted at enqueue/take start and read by the
         // renderer, never re-read from live UI. Assigning a stock must not
@@ -609,12 +617,17 @@ final class RenderQueueViewModel {
     }
 
     private func captureReceipt(_ id: UUID, url: URL, elapsed: Double?) async -> RenderReceipt {
-        let imported = job(id)?.isImportedVideo == true
+        let job = job(id)
+        let imported = job?.isImportedVideo == true
+        // The original is read here, before delivery cleanup removes it, so the
+        // "Original" row of the metadata cards has real evidence.
+        let original = job.map { $0.sourceURL.isFileURL && Self.isUsableFile($0.sourceURL) ? $0.sourceURL : nil } ?? nil
         var receipt: RenderReceipt
         if let receiptOperation {
             receipt = await receiptOperation(url, elapsed)
         } else {
-            receipt = await RenderReceiptService.capture(url: url, renderDurationSeconds: elapsed,
+            receipt = await RenderReceiptService.capture(url: url, originalURL: original,
+                                                         renderDurationSeconds: elapsed,
                                                          includeThumbnail: !imported)
         }
         if imported { receipt.thumbnailJPEG = nil }
@@ -843,13 +856,16 @@ final class RenderQueueViewModel {
             return try await Task.detached(priority: .userInitiated) {
                 try DevelopmentPhotoRenderer.render(originalDNG: job.sourceURL, stockID: job.stockId,
                     gauge: job.printGauge ?? .neutral, seed: job.photoGrainSeed ?? 0,
-                    cropZoom: job.photoCropZoom ?? 1)
+                    cropZoom: job.photoCropZoom ?? 1, pushPull: job.pushPull ?? .neutral)
             }.value
         }
         guard let renderer else {
             throw QueueError.rendererUnavailable(rendererInitError ?? "Metal pipeline could not start. Reboot the app.")
         }
-        guard let config = library?.config(for: job.stockId, iso: job.iso, gauge: job.printGauge) else {
+        // The push/pull is read from the job at render time, so a value changed
+        // before a Retry is the value the next render uses.
+        guard let config = library?.config(for: job.stockId, iso: job.iso, gauge: job.printGauge,
+                                          pushPull: job.pushPull ?? .neutral) else {
             throw QueueError.stockUnavailable(job.stockId)
         }
         // The render reads only the job's persisted policy, never live UI.

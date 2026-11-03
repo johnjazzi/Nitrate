@@ -24,6 +24,10 @@ struct StockSamplePreview: View {
     let stock: FilmStockConfig?
     /// Print gauge, so the preview shows the grain that gauge produces.
     var gauge: PrintGauge?
+    /// Render push/pull, in stops. The preview fakes its effect with a plain
+    /// brightness lift or drop rather than re-developing the plate: it exists to
+    /// show the direction and rough size of the change, not to predict the file.
+    var pushPullStops: Int = 0
     @State private var sceneID = ""
     /// The optional magnified crop. The card's frame never changes with it, so the sheet keeps
     /// its height; only the sampled window (and the grain/halation scale) does.
@@ -33,10 +37,13 @@ struct StockSamplePreview: View {
     var body: some View {
         switch Self.catalog {
         case .success(let catalog):
-            VStack(spacing: 10) {
+            VStack(spacing: 8) {
                 // A paged TabView has no intrinsic size: without a definite frame it
-                // collapses and no card appears. Give it the plate's 2:3 shape, bounded so
-                // the strip below stays reachable on a short phone.
+                // collapses and no card appears. Give it the plate's 2:3 shape, sized from
+                // the space the sheet actually has so the controls below stay on screen on
+                // a short phone instead of being pushed under the fold. The sheet already
+                // assigns this row a fixed height, so the floor is only a guard against a
+                // zero-height proposal -- it must not fight the row that owns the height.
                 GeometryReader { proxy in
                     let cardWidth = min(proxy.size.width, 250)
                     pages(catalog)
@@ -48,6 +55,8 @@ struct StockSamplePreview: View {
                 Text(catalog.disclaimer)
                     .font(NitrateTypography.font(.caption2))
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
             }
             .onAppear {
                 if !catalog.scenes.contains(where: { $0.id == sceneID }), let first = catalog.scenes.first {
@@ -71,6 +80,7 @@ struct StockSamplePreview: View {
                           configuration: PreviewConfiguration(stock: stock, gauge: gauge,
                                                               sceneIlluminantKelvin: scene.sceneIlluminantKelvin),
                           isDetail: isDetail,
+                          pushPullStops: pushPullStops,
                           onToggleDetail: { isDetail.toggle() })
                     .padding(.horizontal, 4)
                     .tag(scene.id)
@@ -296,6 +306,8 @@ private struct PlatePage: View {
     let configuration: PreviewConfiguration
     /// Whether the card is showing its magnified crop.
     let isDetail: Bool
+    /// Render push/pull in stops; faked as a brightness shift.
+    let pushPullStops: Int
     let onToggleDetail: () -> Void
 
     /// The magnified crop's factor. Large enough that a shipping grain footprint resolves into
@@ -315,11 +327,20 @@ private struct PlatePage: View {
         .clipShape(RoundedRectangle(cornerRadius: 22))
     }
 
+    /// A stop of development reads as roughly this much display brightness on
+    /// the plate. Faked on purpose: the real push/pull is applied in linear
+    /// light before the cube, which is not worth a second render for a sample
+    /// card, but the direction and relative size have to be visible.
+    private var fakedPushPullBrightness: Double {
+        Double(pushPullStops) * 0.10
+    }
+
     private var plate: some View {
         ZStack {
             Color.white.opacity(0.06)
             if let url {
                 PlateSurface(plate: url, lutName: lutName, configuration: effectiveConfiguration)
+                    .brightness(fakedPushPullBrightness)
             } else {
                 ContentUnavailableView("Preview unavailable", systemImage: "photo",
                                        description: Text("No plate for this scene."))

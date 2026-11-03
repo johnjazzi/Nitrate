@@ -142,4 +142,34 @@ struct PhotoDeliveryMetadataTests {
         // A missing or unreadable DNG path yields no claim instead of throwing.
         #expect(PhotoDeliveryMetadata.capture(fromDNG: URL(fileURLWithPath: "/nonexistent.dng")) == .init())
     }
+
+    /// A still carries the whole card set, not just exposure: the same push/pull
+    /// the take was developed with, plus the lens and aperture the DNG knows.
+    @Test func stillRecordsPushPullLensAndSlate() throws {
+        let config = try config(gauge: .thirtyFiveMillimetre).overridingPushPull(.manual(.pullTwo))
+        let capture = PhotoDeliveryMetadata.StillCapture(exposureSeconds: 1.0 / 500.0, iso: 800,
+            fNumber: 3.99932, lensModel: "iPhone 16 Pro back camera", focalLengthMM: 24)
+        let properties = try writtenProperties(config, capture: capture)
+        let still = try payload(properties)
+
+        #expect(still["push-pull"] == "pulled")
+        #expect(still["push-pull-stops"] == "-2")
+        #expect(still["push-pull-linear-gain"] == "0.25")
+        #expect(still["aperture-f-number"] == "3.99932")
+        #expect(still["lens"] == "iPhone 16 Pro back camera")
+        #expect(still["focal-length-mm"] == "24.0")
+        #expect(still["color-space"] == config.effectiveRecipe.input.transfer)
+        #expect(still["white-balance-kelvin"] == String(Int(config.colorTemperature)))
+        #expect(still["wb-tint"] == "0")
+        #expect(still["reel"] == "1")
+        #expect(still["scene"] == "1")
+        #expect(still["take"] == "1")
+
+        // Photo apps read the aperture from EXIF, not from the payload comment.
+        // The EXIF rational round-trips through single precision, hence the
+        // generous tolerance.
+        let exif = try #require(properties[kCGImagePropertyExifDictionary] as? [CFString: Any])
+        #expect(abs(((exif[kCGImagePropertyExifFNumber] as? NSNumber)?.doubleValue ?? 0) - 3.99932) < 1e-4)
+        #expect(exif[kCGImagePropertyExifLensModel] as? String == "iPhone 16 Pro back camera")
+    }
 }
