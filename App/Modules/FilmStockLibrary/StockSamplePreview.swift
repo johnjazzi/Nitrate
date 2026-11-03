@@ -123,6 +123,10 @@ struct PreviewConfiguration: Equatable {
     let halationRadiusFraction: Float
     /// Per-layer halation contribution weights (red dominant).
     let halationTint: SIMD3<Float>
+    /// Lens diffusion node. Carried so a preview cannot show a look the render
+    /// will not; the radius is authored at a 1080p frame, so it needs no
+    /// rescaling for the smaller preview drawable.
+    let diffusion: DiffusionSettings
     /// Long edge, in pixels, of the render the preview stands in for. Grain is sized in this
     /// frame's pixels so the card shows the grain a full render would, not a magnified copy.
     let referenceLongEdge: Float
@@ -136,6 +140,7 @@ struct PreviewConfiguration: Equatable {
 
     init(footprint: Float, amplitude: Float, whiteBalance: simd_float3x3,
          halationStrength: Float, halationRadiusFraction: Float, halationTint: SIMD3<Float>,
+         diffusion: DiffusionSettings = .disabled,
          referenceLongEdge: Float = PreviewConfiguration.defaultReferenceLongEdge,
          zoom: Float = 1) {
         self.footprint = footprint
@@ -144,6 +149,7 @@ struct PreviewConfiguration: Equatable {
         self.halationStrength = halationStrength
         self.halationRadiusFraction = halationRadiusFraction
         self.halationTint = halationTint
+        self.diffusion = diffusion
         self.referenceLongEdge = referenceLongEdge
         self.zoom = zoom
     }
@@ -163,7 +169,8 @@ struct PreviewConfiguration: Equatable {
                                                        lockedKelvin: stock.colorTemperature),
             halationStrength: stock.halationStrength,
             halationRadiusFraction: stock.halationRadiusFraction,
-            halationTint: stock.halationTint)
+            halationTint: stock.halationTint,
+            diffusion: stock.overridingGauge(effectiveGauge).effectiveDiffusion)
     }
 
     /// The same configuration magnified for the detail view. The grain and the halation are
@@ -172,8 +179,8 @@ struct PreviewConfiguration: Equatable {
         PreviewConfiguration(footprint: footprint, amplitude: amplitude, whiteBalance: whiteBalance,
                              halationStrength: halationStrength,
                              halationRadiusFraction: halationRadiusFraction,
-                             halationTint: halationTint, referenceLongEdge: referenceLongEdge,
-                             zoom: zoom)
+                             halationTint: halationTint, diffusion: diffusion,
+                             referenceLongEdge: referenceLongEdge, zoom: zoom)
     }
 
     var isGrainVisible: Bool { footprint > 0 && amplitude > 0 }
@@ -540,13 +547,16 @@ final class PlatePreviewPipeline: @unchecked Sendable {
         guard commandBuffer.status == .completed else { throw PipelineError.unavailable }
 
         // 2. The production halation stage, on the locked frame, with the stock's own
-        //    parameters. Zero strength returns the prepared frame unchanged.
+        //    parameters. Zero strength returns the prepared frame unchanged. The
+        //    diffusion node is the stock's effective setting (its own, else the
+        //    print gauge's), so a preview cannot show a look the render will not.
         guard let halated = spatialStage.applyHalation(
             source: prepared,
             commandQueue: queue,
             strength: configuration.halationStrength,
             radiusFraction: configuration.halationRadiusFraction,
             layerScale: configuration.halationTint,
+            diffusion: configuration.diffusion,
             width: width,
             height: height
         ) else { throw PipelineError.unavailable }

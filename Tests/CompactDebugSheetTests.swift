@@ -8,7 +8,7 @@ import Testing
 /// the sheet is deliberately not part of that target's compiled sources. These
 /// tests therefore read `DebugFrameSheet.swift` through `TestRepository.root`
 /// and assert the **source contract** only:
-///   * all seven control sections are collapsible and start collapsed,
+///   * all eight control sections are collapsible and start collapsed,
 ///   * no section repeats a disclosure header inside its own content,
 ///   * the preview stays pinned outside the scrolling controls with its height
 ///     formula, aspect policy and zoom/pan/reset gestures intact,
@@ -31,13 +31,13 @@ import Testing
         return remainder
     }
 
-    private static let titles = ["Stock", "Tests", "Grain", "Halation", "Glow",
+    private static let titles = ["Stock", "Tests", "Grain", "Halation", "Diffusion", "Glow",
                                  "Realized", "Debug controls"]
 
     @Test func everyControlSectionIsCollapsible() throws {
         let source = try source()
-        #expect(source.components(separatedBy: "DebugCollapsibleSection(").count - 1 == 7,
-                "all seven sections must be built from the collapsible container")
+        #expect(source.components(separatedBy: "DebugCollapsibleSection(").count - 1 == 8,
+                "all eight sections must be built from the collapsible container")
         for title in Self.titles {
             #expect(source.contains("title: \"\(title)\""),
                     "section \(title) must carry a disclosure header")
@@ -49,7 +49,7 @@ import Testing
     @Test func everySectionStartsCollapsed() throws {
         let source = try source()
         for flag in ["stockExpanded", "hintExpanded", "grainExpanded", "halationExpanded",
-                     "glowExpanded", "realizedExpanded", "debugControlsExpanded"] {
+                     "diffusionExpanded", "glowExpanded", "realizedExpanded", "debugControlsExpanded"] {
             #expect(source.contains("@State private var \(flag) = false"),
                     "\(flag) must default to collapsed")
             #expect(!source.contains("@State private var \(flag) = true"),
@@ -118,7 +118,7 @@ import Testing
     @Test func retainedControlsKeepRangesSelectionAndCallbackRoute() throws {
         let source = try source()
         let halation = try section("halationSection", in: source)
-            .components(separatedBy: "private var glowSection: some View {")[0]
+            .components(separatedBy: "private var diffusionSection: some View {")[0]
         #expect(halation.contains("in: 0...8, step: 0.01"))
         #expect(halation.contains("in: 0.0005...0.0030, step: 0.0001"))
         #expect(halation.components(separatedBy: "in: 0...1, step: 0.01").count == 4,
@@ -126,6 +126,14 @@ import Testing
 
         let glow = try section("glowSection", in: source)
         #expect(glow.contains("glowStrength"))
+
+        // The diffusion section selects a radius preset and blends it, and it
+        // must state that the print gauge owns the setting.
+        let diffusion = try section("diffusionSection", in: source)
+        #expect(diffusion.contains("DiffusionPreset.allCases"))
+        #expect(diffusion.contains("presetBinding"))
+        #expect(diffusion.contains("in: 0...1, step: 0.01"))
+        #expect(diffusion.contains("print gauge"))
 
         let grain = try section("grainSection", in: source)
         #expect(grain.contains("gaugeBinding"))

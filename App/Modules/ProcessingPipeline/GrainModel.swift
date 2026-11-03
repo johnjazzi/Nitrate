@@ -34,6 +34,25 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     /// form, so exported metadata reads "35mm", not "thirtyFiveMillimetre".
     var displayName: String { rawValue }
 
+    /// The lens-diffusion radius this gauge implies.
+    ///
+    /// The print format IS the radius ladder: a smaller negative spreads light
+    /// over a shorter distance, so 8mm/16mm/35mm map to 8/16/35 px at a 1080p
+    /// frame. 75mm is the reference print and is bypassed — a large-format
+    /// negative does not diffuse, and skipping it keeps that gauge free.
+    var diffusionPreset: DiffusionPreset {
+        switch self {
+        case .eightMillimetre: return .radius8
+        case .sixteenMillimetre: return .radius16
+        case .thirtyFiveMillimetre: return .radius35
+        case .seventyFiveMillimetre: return .radius75
+        }
+    }
+
+    /// This gauge's authored diffusion: its radius plus the amount shipped in
+    /// `gauges.json`. A stock may override it; this is the gauge's own setting.
+    var diffusion: DiffusionSettings { GaugeTunings.tuning(for: self).diffusion }
+
     /// Accept both the current short values ("8mm") and the legacy long case
     /// names ("eightMillimetre") that earlier builds persisted. Without this a
     /// stored render queue written before the rename fails to decode and the
@@ -64,10 +83,22 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
 
 // MARK: - Gauge tuning configuration (gauges.json)
 
-/// One print gauge's two grain axes, as shipped in `gauges.json`.
+/// One print gauge's grain axes and its lens diffusion, as shipped in
+/// `gauges.json`.
+///
+/// Diffusion lives here rather than on the stock because it is a property of the
+/// format: the same stock printed at 16mm and at 75mm does not diffuse alike.
+/// The preset is authored per gauge and validated against `PrintGauge`'s own
+/// ladder, so the radius can never drift away from the format it belongs to.
 struct GaugeTuning: Codable, Equatable, Sendable {
     let sizeMultiplier: Float
     let amplitudeMultiplier: Float
+    let diffusionPreset: DiffusionPreset
+    let diffusionAmount: Float
+
+    var diffusion: DiffusionSettings {
+        DiffusionSettings(preset: diffusionPreset, amount: diffusionAmount)
+    }
 }
 
 /// The bundled gauge tuning document: exactly one entry per `PrintGauge`.
@@ -85,6 +116,8 @@ struct GaugeTuningConfig: Codable, Equatable, Sendable {
         let gauge: PrintGauge
         let sizeMultiplier: Float
         let amplitudeMultiplier: Float
+        let diffusionPreset: DiffusionPreset
+        let diffusionAmount: Float
     }
 
     let schemaVersion: Int
@@ -107,8 +140,20 @@ struct GaugeTuningConfig: Codable, Equatable, Sendable {
             }
             try Self.requirePositive(entry.sizeMultiplier, field: "sizeMultiplier", gauge: entry.gauge)
             try Self.requirePositive(entry.amplitudeMultiplier, field: "amplitudeMultiplier", gauge: entry.gauge)
+            // The radius belongs to the format, so an entry whose preset does
+            // not match its gauge is a defect, not a creative choice.
+            guard entry.diffusionPreset == entry.gauge.diffusionPreset else {
+                throw GaugeConfigError.mismatchedDiffusionPreset(
+                    gauge: entry.gauge.rawValue, preset: entry.diffusionPreset.rawValue)
+            }
+            guard entry.diffusionAmount.isFinite, (0...1).contains(entry.diffusionAmount) else {
+                throw GaugeConfigError.invalidDiffusionAmount(gauge: entry.gauge.rawValue,
+                                                              value: entry.diffusionAmount)
+            }
             resolved[entry.gauge] = GaugeTuning(sizeMultiplier: entry.sizeMultiplier,
-                                                amplitudeMultiplier: entry.amplitudeMultiplier)
+                                                amplitudeMultiplier: entry.amplitudeMultiplier,
+                                                diffusionPreset: entry.diffusionPreset,
+                                                diffusionAmount: entry.diffusionAmount)
         }
         let missing = PrintGauge.allCases.filter { resolved[$0] == nil }
         guard missing.isEmpty else {
@@ -130,6 +175,8 @@ enum GaugeConfigError: LocalizedError, Equatable {
     case duplicateGauge(String)
     case missingGauges([String])
     case invalidMultiplier(gauge: String, field: String, value: Float)
+    case mismatchedDiffusionPreset(gauge: String, preset: String)
+    case invalidDiffusionAmount(gauge: String, value: Float)
 
     var errorDescription: String? {
         switch self {
@@ -143,6 +190,10 @@ enum GaugeConfigError: LocalizedError, Equatable {
             return "gauges.json is missing entries for: \(gauges.joined(separator: ", "))."
         case .invalidMultiplier(let gauge, let field, let value):
             return "gauges.json \(gauge).\(field) must be finite and positive, got \(value)."
+        case .mismatchedDiffusionPreset(let gauge, let preset):
+            return "gauges.json \(gauge) must use its own diffusion radius, got \(preset)."
+        case .invalidDiffusionAmount(let gauge, let value):
+            return "gauges.json \(gauge).diffusionAmount must be within 0...1, got \(value)."
         }
     }
 }

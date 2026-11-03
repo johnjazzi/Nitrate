@@ -24,6 +24,12 @@ import simd
 ///    tinted additive composite it always had, applied POST-LUT. Its look is
 ///    deliberately unchanged by the halation work.
 ///
+///  * DIFFUSION is the lens filter and is also PRE-LUT, in scene-linear light.
+///    It softens the scene before the emulsion scatters it: the frame is blended
+///    toward a multi-scale Gaussian blur (`DiffusionPlan`) and the result feeds
+///    halation. It shares halation's decode and its single encode, so enabling
+///    it costs the blur passes and nothing else.
+///
 /// Masks and diffusions are built and blurred at HALF resolution. Halation and
 /// glow are low-frequency by nature, so half-res blurring is visually equivalent
 /// while cutting scratch-texture work and bandwidth by roughly 4x at 4K.
@@ -88,6 +94,9 @@ final class SpatialEffectsStage {
     private let glowCompositePipeline: MTLComputePipelineState
     private let halationMaskPipeline: MTLComputePipelineState
     private let halationApplyPipeline: MTLComputePipelineState
+    private let scenePreparePipeline: MTLComputePipelineState
+    private let diffusionDownsamplePipeline: MTLComputePipelineState
+    private let diffusionBlurPipeline: MTLComputePipelineState
 
     /// Match the old nine-tap kernel's second moment without its detached lobes.
     /// sqrt(2 * sum(weight[i] * offset[i]^2)) = sqrt(7.6260355034).
@@ -107,60 +116,83 @@ final class SpatialEffectsStage {
         self.glowCompositePipeline = try pipeline("spatial_composite")
         self.halationMaskPipeline = try pipeline("spatial_halation_mask")
         self.halationApplyPipeline = try pipeline("spatial_halation_apply")
+        self.scenePreparePipeline = try pipeline("spatial_scene_prepare")
+        self.diffusionDownsamplePipeline = try pipeline("diffusion_downsample")
+        self.diffusionBlurPipeline = try pipeline("diffusion_blur")
     }
 
     // MARK: - Halation (pre-LUT)
 
-    /// Apply physical halation to the UNGRADED Apple Log 2 frame and return a
-    /// new texture carrying the result, still Apple Log 2 encoded, ready to be
-    /// graded by the stock LUT and output contrast. `source` is not mutated.
+    /// Apply physical halation — and, when enabled, the lens diffusion node — to
+    /// the UNGRADED Apple Log 2 frame, and return a new texture carrying the
+    /// result, still Apple Log 2 encoded, ready to be graded by the stock LUT
+    /// and output contrast. `source` is not mutated.
     ///
-    /// `strength` is the stock's halation strength (0 disables the effect, and
-    /// the returned frame then decodes back to the source within rounding).
+    /// `strength` is the stock's halation strength (0 disables halation, and the
+    /// returned frame then decodes back to the source within rounding).
     /// `radiusFraction` is the base diffusion radius as a fraction of the
     /// half-resolution width; `layerScale` weights the three per-layer
     /// contributions. A radius of 0 means no spatial diffusion — the scattered
     /// energy is still added, but locally, over the source's own footprint.
+    ///
+    /// `diffusion` is the lens filter in front of the emulsion. Both effects are
+    /// scene-linear and pre-LUT, so they share ONE decode and ONE encode: the
+    /// prepare pass writes the halation mask and the linear scene together, the
+    /// blur passes run over the linear scene, and the apply pass blends the
+    /// diffusion and adds the halation energy before encoding once. With
+    /// diffusion disabled the frame is byte-for-byte what it was before the
+    /// node existed.
     func applyHalation(
         source: MTLTexture,
         commandQueue: MTLCommandQueue,
         strength: Float,
         radiusFraction: Float,
         layerScale: SIMD3<Float>,
+        diffusion: DiffusionSettings = .disabled,
         width: Int,
         height: Int
     ) -> MTLTexture? {
+        let plan = diffusion.plan(sourceWidth: width)
         // Disabled means byte-for-byte identity, including below-black Log noise.
-        guard strength != 0 else { return source }
+        guard strength != 0 || plan != nil else { return source }
+
         let halfWidth = max(1, (width + 1) / 2)
         let halfHeight = max(1, (height + 1) / 2)
         // At zero diffusion, use a full-resolution mask so down/up-sampling
         // cannot spread a one-pixel source despite the blur being disabled.
-        let maskWidth = radiusFraction <= 0 ? width : halfWidth
-        let maskHeight = radiusFraction <= 0 ? height : halfHeight
+        // Without halation the mask has nothing to carry and stays half-res.
+        let fullResMask = strength != 0 && radiusFraction <= 0
+        let maskWidth = fullResMask ? width : halfWidth
+        let maskHeight = fullResMask ? height : halfHeight
 
         guard let halationMask = makeTexture(width: maskWidth, height: maskHeight),
-              let redDiffusion = radiusFraction > 0 ? makeTexture(width: maskWidth, height: maskHeight) : halationMask,
-              let greenDiffusion = radiusFraction > 0 ? makeTexture(width: maskWidth, height: maskHeight) : halationMask,
-              let blueDiffusion = radiusFraction > 0 ? makeTexture(width: maskWidth, height: maskHeight) : halationMask,
               let output = makeTexture(width: width, height: height, storageMode: .shared),
               let commandBuffer = commandQueue.makeCommandBuffer() else {
             return nil
+        }
+        // The linear scene is the diffusion node's input; without the node it is
+        // never allocated and the mask-only prepare kernel runs instead.
+        var scene: MTLTexture?
+        if plan != nil {
+            guard let linear = makeTexture(width: halfWidth, height: halfHeight) else { return nil }
+            scene = linear
         }
 
         let maskGroups = threadgroups(width: maskWidth, height: maskHeight)
         let fullGroups = threadgroups(width: width, height: height)
 
-        // 1. Halation mask: per-layer superwhite excess, decoded from the
-        //    ungraded frame. Separate from the glow mask because it needs the
-        //    linear scene light the graded image no longer carries.
+        // 1. Prepare: per-layer superwhite excess, and — when the diffusion node
+        //    is on — the scene-linear frame it blurs, from the same decode.
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
             var red = Self.redKnee
             var green = Self.greenKnee
             var blue = Self.blueKnee
-            encoder.setComputePipelineState(halationMaskPipeline)
+            encoder.setComputePipelineState(scene == nil ? halationMaskPipeline : scenePreparePipeline)
             encoder.setTexture(source, index: 0)
             encoder.setTexture(halationMask, index: 1)
+            if let scene {
+                encoder.setTexture(scene, index: 2)
+            }
             encoder.setBytes(&red, length: MemoryLayout<Float>.size, index: 0)
             encoder.setBytes(&green, length: MemoryLayout<Float>.size, index: 1)
             encoder.setBytes(&blue, length: MemoryLayout<Float>.size, index: 2)
@@ -178,34 +210,70 @@ final class SpatialEffectsStage {
         // 2. One blur per emulsion layer: red widest, then green, then blue.
         //    MPSImageGaussianBlur convolves every channel at one sigma, so the
         //    per-layer radii need three passes over the shared mask. A layer
-        //    whose radius is zero is bound the mask itself (no diffusion).
-        let redSource = diffuse(
-            source: halationMask, destination: redDiffusion,
-            radius: baseRadius * Self.redRadiusMultiplier, commandBuffer: commandBuffer
-        )
-        let greenSource = diffuse(
-            source: halationMask, destination: greenDiffusion,
-            radius: baseRadius * Self.greenRadiusMultiplier, commandBuffer: commandBuffer
-        )
-        let blueSource = diffuse(
-            source: halationMask, destination: blueDiffusion,
-            radius: baseRadius * Self.blueRadiusMultiplier, commandBuffer: commandBuffer
-        )
+        //    whose radius is zero is bound the mask itself (no diffusion), and
+        //    with halation disabled the mask is bound directly — its energy is
+        //    already multiplied by a strength of zero.
+        var layerTextures = (red: halationMask, green: halationMask, blue: halationMask)
+        if strength != 0, radiusFraction > 0 {
+            guard let redDiffusion = makeTexture(width: maskWidth, height: maskHeight),
+                  let greenDiffusion = makeTexture(width: maskWidth, height: maskHeight),
+                  let blueDiffusion = makeTexture(width: maskWidth, height: maskHeight) else {
+                return nil
+            }
+            layerTextures.red = diffuse(
+                source: halationMask, destination: redDiffusion,
+                radius: baseRadius * Self.redRadiusMultiplier, commandBuffer: commandBuffer
+            )
+            layerTextures.green = diffuse(
+                source: halationMask, destination: greenDiffusion,
+                radius: baseRadius * Self.greenRadiusMultiplier, commandBuffer: commandBuffer
+            )
+            layerTextures.blue = diffuse(
+                source: halationMask, destination: blueDiffusion,
+                radius: baseRadius * Self.blueRadiusMultiplier, commandBuffer: commandBuffer
+            )
+        }
 
-        // 3. Add the scattered light to the scene-linear source and re-encode.
+        // 3. The lens diffusion ladder: one small separable blur per octave of
+        //    the scene, combined in the apply pass.
+        var diffusionLevels: [MTLTexture] = []
+        var diffusionWeights = SIMD4<Float>(0, 0, 0, 0)
+        if let plan, let scene {
+            guard let pyramid = buildDiffusion(scene: scene, plan: plan, commandBuffer: commandBuffer) else {
+                return nil
+            }
+            diffusionLevels = pyramid.levels
+            diffusionWeights = plan.levelWeights
+        }
+
+        // 4. Blend the diffusion, add the scattered light in scene-linear, and
+        //    re-encode — one full-resolution pass for both effects.
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
             var strength = strength
             var layerScale = layerScale
             var referenceSuperwhite = Self.referenceSuperwhite
+            // Unused level slots are bound to a real, samplable texture rather
+            // than left unbound; their weights are zero, so they contribute
+            // nothing and the blend stays a normalized average.
+            let fallback = diffusionLevels.first ?? layerTextures.red
+            let boundLevels = (0..<4).map { index in
+                index < diffusionLevels.count ? diffusionLevels[index] : fallback
+            }
+            var diffusionAmount = plan == nil ? 0 : diffusion.amount
             encoder.setComputePipelineState(halationApplyPipeline)
             encoder.setTexture(source, index: 0)
-            encoder.setTexture(redSource, index: 1)
-            encoder.setTexture(greenSource, index: 2)
-            encoder.setTexture(blueSource, index: 3)
+            encoder.setTexture(layerTextures.red, index: 1)
+            encoder.setTexture(layerTextures.green, index: 2)
+            encoder.setTexture(layerTextures.blue, index: 3)
             encoder.setTexture(output, index: 4)
+            for (offset, texture) in boundLevels.enumerated() {
+                encoder.setTexture(texture, index: 5 + offset)
+            }
             encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
             encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
             encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
+            encoder.setBytes(&diffusionWeights, length: MemoryLayout<SIMD4<Float>>.size, index: 3)
+            encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 4)
             encoder.dispatchThreadgroups(fullGroups, threadsPerThreadgroup: Self.groupSize)
             encoder.endEncoding()
         }
@@ -213,6 +281,85 @@ final class SpatialEffectsStage {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         return commandBuffer.status == .completed ? output : nil
+    }
+
+    // MARK: - Lens diffusion pyramid
+
+    /// Blur the scene-linear working frame once per ladder level, each level one
+    /// octave smaller than the last, and hand back the blurred textures plus the
+    /// weights the apply pass combines them with.
+    ///
+    /// Every level runs the SAME small kernel (`plan.taps`), because the plan
+    /// divides the target sigma by the ladder depth: the reach comes from
+    /// sampling a coarser level, not from a wider kernel. That is what keeps a
+    /// 35-preset diffuser costing about what a small one does, and what makes the
+    /// cost independent of frame size beyond the linear resolution term.
+    private func buildDiffusion(
+        scene: MTLTexture,
+        plan: DiffusionPlan,
+        commandBuffer: MTLCommandBuffer
+    ) -> (levels: [MTLTexture], weights: SIMD4<Float>)? {
+        var current = scene
+        var blurred: [MTLTexture] = []
+        blurred.reserveCapacity(plan.levels)
+
+        for level in 0..<plan.levels {
+            if level > 0 {
+                let width = DiffusionPlan.levelSize(base: scene.width, level: level)
+                let height = DiffusionPlan.levelSize(base: scene.height, level: level)
+                guard let downsampled = makeTexture(width: width, height: height),
+                      let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                    return nil
+                }
+                encoder.setComputePipelineState(diffusionDownsamplePipeline)
+                encoder.setTexture(current, index: 0)
+                encoder.setTexture(downsampled, index: 1)
+                encoder.dispatchThreadgroups(threadgroups(width: width, height: height),
+                                             threadsPerThreadgroup: Self.groupSize)
+                encoder.endEncoding()
+                current = downsampled
+            }
+
+            guard let horizontal = makeTexture(width: current.width, height: current.height),
+                  let vertical = makeTexture(width: current.width, height: current.height),
+                  encodeBlur(from: current, to: horizontal, horizontal: true,
+                             plan: plan, commandBuffer: commandBuffer),
+                  encodeBlur(from: horizontal, to: vertical, horizontal: false,
+                             plan: plan, commandBuffer: commandBuffer) else {
+                return nil
+            }
+            blurred.append(vertical)
+        }
+
+        return (blurred, plan.levelWeights)
+    }
+
+    /// One axis of the per-level Gaussian. Clamped edges, precomputed normalized
+    /// weights: a uniform field keeps its value at the frame border.
+    private func encodeBlur(
+        from source: MTLTexture,
+        to destination: MTLTexture,
+        horizontal: Bool,
+        plan: DiffusionPlan,
+        commandBuffer: MTLCommandBuffer
+    ) -> Bool {
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return false }
+        var taps = UInt32(plan.taps)
+        var direction = SIMD2<Int32>(horizontal ? 1 : 0, horizontal ? 0 : 1)
+        encoder.setComputePipelineState(diffusionBlurPipeline)
+        encoder.setTexture(source, index: 0)
+        encoder.setTexture(destination, index: 1)
+        plan.weights.withUnsafeBytes { raw in
+            if let base = raw.baseAddress {
+                encoder.setBytes(base, length: raw.count, index: 0)
+            }
+        }
+        encoder.setBytes(&taps, length: MemoryLayout<UInt32>.size, index: 1)
+        encoder.setBytes(&direction, length: MemoryLayout<SIMD2<Int32>>.size, index: 2)
+        encoder.dispatchThreadgroups(threadgroups(width: destination.width, height: destination.height),
+                                     threadsPerThreadgroup: Self.groupSize)
+        encoder.endEncoding()
+        return true
     }
 
     // MARK: - Glow (post-LUT)

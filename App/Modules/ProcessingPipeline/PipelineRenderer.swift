@@ -478,6 +478,9 @@ final class PipelineRenderer: @unchecked Sendable {
         var halationRadiusFraction: Float
         var halationTint: SIMD3<Float>
         var glowStrength: Float
+        /// Lens diffusion node: preset radius ladder plus its blend amount.
+        /// Off by default, so the sheet opens on the stock's shipping look.
+        var diffusion: DiffusionSettings
 
         /// Seed every dial from a stock so the debug sheet opens on the shipping
         /// look for that stock.
@@ -492,13 +495,17 @@ final class PipelineRenderer: @unchecked Sendable {
             self.halationRadiusFraction = config.halationRadiusFraction
             self.halationTint = config.halationTint
             self.glowStrength = config.glowStrength
+            self.diffusion = config.effectiveDiffusion
         }
 
-        /// Re-seed size and presence from a gauge's authored multipliers.
+        /// Re-seed size, presence and diffusion from a gauge's authored values.
+        /// The gauge owns all three, so switching format cannot leave a stale
+        /// radius or amount behind from the previous one.
         mutating func applyGauge(_ gauge: PrintGauge) {
             self.gauge = gauge
             sizeMultiplier = gauge.sizeMultiplier
             presenceMultiplier = gauge.amplitudeMultiplier
+            diffusion = gauge.diffusion
         }
 
         var gaugeAmplitude: Float { presenceMultiplier }
@@ -569,6 +576,7 @@ final class PipelineRenderer: @unchecked Sendable {
                     strength: parameters.halationStrength,
                     radiusFraction: parameters.halationRadiusFraction,
                     layerScale: parameters.halationTint,
+                    diffusion: parameters.diffusion,
                     width: width,
                     height: height
                 ) else { return nil }
@@ -980,6 +988,7 @@ final class PipelineRenderer: @unchecked Sendable {
                             strength: config.halationStrength,
                             radiusFraction: config.halationRadiusFraction,
                             layerScale: config.halationTint,
+                            diffusion: config.effectiveDiffusion,
                             width: width,
                             height: height
                         ) else {

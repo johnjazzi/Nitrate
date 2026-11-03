@@ -182,7 +182,7 @@ struct DebugFrameRenderTests {
         let source = try String(contentsOf: root.appendingPathComponent(
             "App/Modules/CameraCapture/DebugFrameSheet.swift"), encoding: .utf8)
         let section = try #require(source.components(separatedBy: "private var halationSection: some View {").last)
-            .components(separatedBy: "private var glowSection: some View {")[0]
+            .components(separatedBy: "private var diffusionSection: some View {")[0]
         #expect(section.contains("in: 0...8, step: 0.01"), "Halation strength must allow gain above the old ceiling")
         #expect(section.contains("in: 0.0005...0.0030, step: 0.0001"), "Radius tuning must cover the requested fine range and increments")
         #expect(section.components(separatedBy: "in: 0...1, step: 0.01").count == 4,
