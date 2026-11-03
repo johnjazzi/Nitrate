@@ -1688,9 +1688,11 @@ private struct StockSheetView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                 Button { showsGaugeInfo = true } label: {
-                    Image(systemName: "info.circle")
-                        .font(NitrateTypography.font(.caption2))
-                        .foregroundStyle(.secondary)
+                    Image(systemName: "info.circle.fill")
+                        .font(NitrateTypography.font(.footnote))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("stock.gaugeInfo")
