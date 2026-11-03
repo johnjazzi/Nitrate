@@ -758,6 +758,41 @@ class MonitorRunTests(MonitorTestCase):
         self.assertEqual(relationships["pullRequest"]["data"]["id"], "pr-7")
         self.assertNotIn("sourceBranchOrTag", relationships)
 
+    def test_transient_status_failure_is_retried_not_called_an_unknown_launch(self):
+        # App Store Connect returns sporadic 5xx responses. One of them while the
+        # build is RUNNING says nothing about the launch: it must be retried, and
+        # a run that then completes successfully must still pass.
+        http = self.happy_http()
+        http.route("GET", f"/v1/ciBuildRuns/{RUN_ID}",
+                   resp(500, {"errors": [{"title": "An unexpected error occurred"}]}),
+                   resp(200, {"data": run(RUN_ID, 42, "RUNNING", sha=SHA, created=CREATED)}),
+                   resp(200, {"data": run(RUN_ID, 42, "COMPLETE", completion="SUCCEEDED",
+                                          sha=SHA, created=CREATED)}))
+        code = self.run_cli(http, FakeClock())
+        self.assertEqual(code, cm.EXIT_OK)
+        self.assertNotIn("LAUNCH OUTCOME UNKNOWN", self.blob())
+        self.assertIn("transient status read failure", self.blob())
+
+    def test_persistent_status_failure_names_the_known_run(self):
+        # A single 500 is retried; four are not. The job still fails, but it says
+        # which run may be running instead of claiming the launch is unknown.
+        http = self.happy_http()
+        http.route("GET", f"/v1/ciBuildRuns/{RUN_ID}",
+                   resp(500, {"errors": [{"title": "An unexpected error occurred"}]}))
+        code = self.run_cli(http, FakeClock())
+        self.assertEqual(code, cm.EXIT_SHAPE)
+        blob = self.blob()
+        self.assertIn(RUN_ID, blob)
+        self.assertIn("STATUS UNREADABLE", blob)
+        self.assertNotIn("LAUNCH OUTCOME UNKNOWN", blob)
+
+    def test_status_failure_never_mints_a_second_build(self):
+        http = self.happy_http()
+        http.route("GET", f"/v1/ciBuildRuns/{RUN_ID}", resp(500, {"errors": [{"title": "boom"}]}))
+        self.run_cli(http, FakeClock())
+        self.assertEqual(len(http.starts()), 1)
+        http.assert_no_cancel(self)
+
     def test_stale_source_commit_on_a_completed_run_does_not_request_cancel(self):
         # The run already COMPLETED, so there is nothing left to cancel: only
         # the dedicated source-mismatch alert is emitted, with no unknown-launch
@@ -1046,13 +1081,17 @@ class LaunchUncertaintyTests(MonitorTestCase):
         self.assertIn("OUTCOME UNKNOWN", self.blob())
 
     def test_poll_failure_reports_the_known_run_id(self):
+        # The run is already identified here, so a persistent read failure names
+        # the build that may still be running rather than calling the LAUNCH
+        # unknown — the launch succeeded and its id is right there in the alert.
         http = self.happy_http()
         http.route("GET", f"/v1/ciBuildRuns/{RUN_ID}", cm.NetworkError("reset"))
         code = self.run_cli(http, FakeClock())
         self.assertEqual(code, cm.EXIT_SHAPE)
         blob = self.blob()
-        self.assertIn("OUTCOME UNKNOWN", blob)
+        self.assertIn("STATUS UNREADABLE", blob)
         self.assertIn(RUN_ID, blob)
+        self.assertNotIn("LAUNCH OUTCOME UNKNOWN", blob)
 
     def test_config_failure_never_claims_a_launch(self):
         http = FakeHttp()
