@@ -34,6 +34,12 @@ final class DevelopmentPhotoController: @unchecked Sendable {
     private var targetLimited = false
     private var apertureIntent: Float?
     private var apertureDirty = false
+    /// The metered exposure the held aperture is resolved against: the ISO the
+    /// device itself metered, at the iris it metered it at, under the EV target
+    /// installed at that moment. Captured once, before the first custom write,
+    /// so a later aperture or EV change is measured from the scene rather than
+    /// from a value this controller already corrected.
+    private var apertureBaseline: PhotoApertureBaseline?
     private var pinnedISO: Float?
     private var pinnedDuration: CMTime?
     private var traceSequence: UInt64 = 0
@@ -112,8 +118,17 @@ final class DevelopmentPhotoController: @unchecked Sendable {
             CMTime(seconds: min(max($0, shutterRange.lowerBound), shutterRange.upperBound), preferredTimescale: 1_000_000_000)
         }
         ev = min(max(intent.ev, exposureBiasRange.lowerBound), exposureBiasRange.upperBound)
-        apertureIntent = intent.aperture
-        apertureDirty = intent.aperture != nil
+        // The intent travels between lenses, but a stop is the lens's own fact:
+        // an f/4.0 chosen on the wide lens is not a stop the telephoto reports,
+        // and holding it anyway failed the first write after the switch with
+        // `unsupportedMode` — reported as a recording error on a take that was
+        // fine. Hold what this lens can do; Auto when it cannot vary at all.
+        apertureIntent = heldAperture(intent.aperture)
+        apertureDirty = apertureIntent != nil
+        // A restored intent starts a new metering context; the next aperture
+        // write re-seeds the baseline from the device as it stands then.
+        apertureBaseline = nil
+        targetLimited = false
         try submitCurrentIntent()
     }
 
@@ -121,6 +136,10 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue)); try ensureMutable()
         guard value.isFinite, isoRange.contains(value) else { throw Error.invalidValue }
         isoLocked = true; pinnedISO = value
+        // The operator now holds the gain: there is nothing left to resolve
+        // from the old metering, and the target is whatever they set by hand.
+        apertureBaseline = nil
+        targetLimited = false
         try submitCurrentIntent()
     }
 
@@ -147,6 +166,11 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         // the ISO hold leaves custom exposure installed with no control to undo it
         // and the camera never returns to metering.
         if !locked { shutterLocked = false; pinnedDuration = nil }
+        // A released ISO floats again, so the baseline is re-taken from the
+        // exposure the operator is looking at now — the next resolution starts
+        // there instead of from a reading several moves old.
+        apertureBaseline = nil
+        targetLimited = false
         try submitCurrentIntent()
     }
 
@@ -161,8 +185,11 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue))
         try ensureMutable()
         guard aperture.map({ $0.isFinite && $0 > 0 }) ?? true else { throw Error.invalidValue }
-        apertureIntent = aperture
+        apertureIntent = heldAperture(aperture)
         apertureDirty = true
+        // Handing the iris back to the camera returns to native auto exposure,
+        // where there is no resolved gain to keep and no limit to report.
+        if aperture == nil { apertureBaseline = nil; targetLimited = false }
         try submitCurrentIntent()
     }
 
@@ -270,6 +297,15 @@ final class DevelopmentPhotoController: @unchecked Sendable {
     }
     private var exposureBiasRange: ClosedRange<Float> { max(device.minExposureTargetBias, -3)...min(device.maxExposureTargetBias, 3) }
 
+    /// The stop this controller can hold on the device it was built for: the
+    /// nearest stop the active format reports, or Auto when its iris cannot vary.
+    private func heldAperture(_ requested: Float?) -> Float? {
+        guard let requested else { return nil }
+        guard #available(iOS 27.0, *) else { return requested }
+        return CameraAperturePolicy.heldAperture(requested,
+            capability: CameraAperturePolicy.capability(for: device))
+    }
+
     private var usesNativeAutoExposure: Bool {
         PhotoExposurePolicy.usesNativeAutoExposure(isoLocked: isoLocked,
             shutterLocked: shutterLocked, apertureHeld: apertureIntent != nil)
@@ -285,9 +321,54 @@ final class DevelopmentPhotoController: @unchecked Sendable {
     }
 
     private func applyCurrentIntent() throws {
-        let iso = isoLocked ? (pinnedISO ?? device.iso) : device.iso
         let duration = shutterLocked ? (pinnedDuration ?? device.exposureDuration) : device.exposureDuration
+        // The ISO floats while an aperture is held. Re-resolve it from the
+        // metered baseline: re-writing the ISO read before the iris moved pins
+        // the gain the old aperture needed and leaves the meter at the aperture
+        // delta for good — the reported "f/4.0 reads -3.4 EV and never comes
+        // back".
+        if !isoLocked, let aperture = apertureIntent, let iso = resolvedISO(for: aperture) {
+            try applyIntent(iso: iso, duration: duration)
+            return
+        }
+        let iso = isoLocked ? (pinnedISO ?? device.iso) : device.iso
         try applyIntent(iso: iso, duration: duration)
+    }
+
+    /// ISO that puts the held aperture back on the operator's EV target.
+    ///
+    /// The baseline is the device's own last metered reading, taken before the
+    /// first custom write. Everything after that is arithmetic from it, so the
+    /// resolution is one-shot and idempotent: re-running the intent — after a
+    /// lost acknowledgement, say — asks for the same value.
+    ///
+    /// Returns nil when the device has no usable reading to resolve from (it is
+    /// still settling). That is a transient state, not a fault, so the caller
+    /// keeps the value it has instead of refusing the write.
+    private func resolvedISO(for aperture: Float) -> Float? {
+        if apertureBaseline == nil { apertureBaseline = meteredBaseline(fallbackAperture: aperture) }
+        guard let baseline = apertureBaseline,
+              let resolution = PhotoApertureExposurePolicy.resolveISO(
+                baseline: baseline, aperture: aperture, ev: ev, isoRange: isoRange)
+        else {
+            trace("aperture-resolve-unavailable aperture=\(aperture) iso=\(device.iso)")
+            return nil
+        }
+        targetLimited = resolution.targetLimited
+        trace("aperture-resolve aperture=\(aperture) baselineISO=\(baseline.iso) " +
+              "baselineAperture=\(baseline.aperture) baselineEV=\(baseline.ev) " +
+              "ISO=\(resolution.iso) achievedEV=\(resolution.achievedEV) limited=\(resolution.targetLimited)")
+        return resolution.iso
+    }
+
+    /// The device's own metering is the scene's truth, and it is only valid
+    /// before this controller starts writing. `lensAperture` reads 0 while the
+    /// device is still settling, so the requested stop is the fallback.
+    private func meteredBaseline(fallbackAperture: Float) -> PhotoApertureBaseline? {
+        guard device.iso.isFinite, device.iso > 0 else { return nil }
+        let installed = device.lensAperture
+        let meteredAt = installed.isFinite && installed > 0 ? installed : fallbackAperture
+        return PhotoApertureBaseline(iso: device.iso, aperture: meteredAt, ev: ev)
     }
 
     private func submitCurrentIntent() throws {
@@ -454,7 +535,9 @@ final class DevelopmentPhotoController: @unchecked Sendable {
                         try self.capture(rotationAngle: pending.rotationAngle, completion: pending.completion)
                         return
                     }
-                } catch { self.onFailure("Photo exposure update failed: \(error)") }
+                } catch {
+                    self.onFailure((error as? Error)?.reason ?? error.localizedDescription)
+                }
             }
             self.publish()
             self.scheduleAdjustment()
@@ -508,6 +591,20 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         let callbacks = stopWaiters; stopWaiters.removeAll(); callbacks.forEach { $0() }
     }
 
-    private enum Error: Swift.Error { case stopped, invalidDeviceRange, invalidValue, unsupportedMode, notReady }
+    private enum Error: Swift.Error {
+        case stopped, invalidDeviceRange, invalidValue, unsupportedMode, notReady
+
+        /// Why the write was refused, in the operator's terms. The raw case name
+        /// ("unsupportedMode") is not something to put in front of a photographer.
+        var reason: String {
+            switch self {
+            case .stopped: return "the photo camera stopped"
+            case .invalidDeviceRange: return "the lens reported no usable exposure range"
+            case .invalidValue: return "the request was outside the lens's range"
+            case .unsupportedMode: return "this lens does not support that exposure"
+            case .notReady: return "the previous exposure was still settling"
+            }
+        }
+    }
     private struct CaptureFailure: LocalizedError { let message: String; init(_ message: String) { self.message = message }; var errorDescription: String? { message } }
 }

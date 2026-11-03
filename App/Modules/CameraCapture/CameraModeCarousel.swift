@@ -38,6 +38,19 @@ enum CameraModeCarouselGesture {
     }
 }
 
+/// Pure decision for a tap on a mode letter. A blocked row is dimmed, not dead:
+/// the tap is answered with the reason instead of being swallowed, so the
+/// operator never has to read a permanent "you cannot change modes" banner over
+/// a running take to learn why the row is grey.
+enum CameraModeRowTap: Equatable {
+    case select(CameraMode)
+    case refused(CameraMode)
+
+    static func outcome(for mode: CameraMode, enabled: Bool) -> CameraModeRowTap {
+        enabled ? .select(mode) : .refused(mode)
+    }
+}
+
 /// The selected mode stays centered, with its title below and ghosted neighbors.
 /// Slots below 132pt use swipes and accessibility adjustment for the neighbor,
 /// preserving the centered 44pt target. The parent owns the selection.
@@ -47,6 +60,9 @@ struct CameraModeCarousel: View {
     let onSelect: (CameraMode) -> Void
     let rotationDegrees: Double
     var photoAvailable = false
+    /// Called with the tapped letter while the row is blocked, so the refusal
+    /// can be said out loud instead of the row going silent.
+    var onBlockedSelect: ((CameraMode) -> Void)?
     private var visibleModes: [CameraMode] { CameraMode.visibleModes(photoAvailable: photoAvailable) }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -69,12 +85,14 @@ struct CameraModeCarousel: View {
     private let minimumScale: CGFloat = 0.5
 
     init(selected: CameraMode, enabled: Bool, rotationDegrees: Double = 0,
-         onSelect: @escaping (CameraMode) -> Void, photoAvailable: Bool = false) {
+         onSelect: @escaping (CameraMode) -> Void, photoAvailable: Bool = false,
+         onBlockedSelect: ((CameraMode) -> Void)? = nil) {
         self.selected = selected
         self.enabled = enabled
         self.onSelect = onSelect
         self.rotationDegrees = rotationDegrees
         self.photoAvailable = photoAvailable
+        self.onBlockedSelect = onBlockedSelect
     }
 
     var body: some View {
@@ -127,7 +145,6 @@ struct CameraModeCarousel: View {
         .accessibilityIdentifier(selected.accessibilityIdentifier)
         .accessibilityAddTraits(.isSelected)
         .accessibilityAdjustableAction(adjust)
-        .disabled(!enabled)
     }
 
     /// Shifts the centred pair so the selected mode — the leading half when
@@ -178,15 +195,19 @@ struct CameraModeCarousel: View {
         return Group {
             if interactive {
                 Button {
-                    guard enabled else { return }
-                    onSelect(mode)
+                    switch resolvedTap(mode) {
+                    case let .select(mode): onSelect(mode)
+                    case let .refused(mode): onBlockedSelect?(mode)
+                    }
                 } label: {
                     face
                 }
                 .buttonStyle(.plain)
-                .disabled(!enabled)
                 .accessibilityLabel(mode.voiceLabel)
                 .accessibilityIdentifier(mode.accessibilityIdentifier)
+                // The row stays tappable when blocked so the refusal can be
+                // spoken; say the row is unavailable rather than "dimmed".
+                .accessibilityHint(enabled ? "" : "Unavailable right now")
                 .accessibilityAddTraits(mode == selected ? .isSelected : [])
             } else {
                 face.accessibilityHidden(true)
@@ -210,6 +231,10 @@ struct CameraModeCarousel: View {
     }
 
     // MARK: - Swipe
+
+    func resolvedTap(_ mode: CameraMode) -> CameraModeRowTap {
+        CameraModeRowTap.outcome(for: mode, enabled: enabled)
+    }
 
     func resolvedSwipe(_ translation: CGSize) -> CameraModeCarouselGesture.Outcome {
         guard enabled else { return .none }

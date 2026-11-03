@@ -46,14 +46,18 @@ struct StockCarousel: View {
     /// Tracks the snap-aligned card; the single source of scroll truth.
     @State private var scrollPosition: String?
 
-    private let cardWidth: CGFloat = 104
-    private let cardHeight: CGFloat = 132
     private let cardSpacing: CGFloat = 16
 
     var body: some View {
-        VStack(spacing: 12) {
-            GeometryReader { geometry in
-                let sideInset = max(16, (geometry.size.width - cardWidth) / 2)
+        GeometryReader { geometry in
+            // The card follows the quarter the sheet gives the carousel, so a
+            // short sheet keeps the card and its page dot inside the row instead
+            // of letting a fixed 132pt card overflow the controls below.
+            let cardHeight = StockCarouselMetrics.cardHeight(forAvailableHeight: geometry.size.height)
+            let cardWidth = StockCarouselMetrics.cardWidth(forCardHeight: cardHeight)
+            let sideInset = max(16, (geometry.size.width - cardWidth) / 2)
+
+            VStack(spacing: 12) {
                 ScrollView(.horizontal) {
                     LazyHStack(spacing: cardSpacing) {
                         ForEach(stocks, id: \.stockId) { stock in
@@ -70,10 +74,11 @@ struct StockCarousel: View {
                 .scrollIndicators(.hidden)
                 .background(well)
                 .clipShape(RoundedRectangle(cornerRadius: 20))
-            }
-            .frame(height: cardHeight)
+                .frame(height: cardHeight)
 
-            pageDots
+                pageDots
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
         }
         .sensoryFeedback(.selection, trigger: selectedStockId)
         .onAppear { center(onOpen: selectedStockId) }

@@ -33,9 +33,17 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
     /// Print gauge owning grain size and amplitude (m00459/m00581). Optional so
     /// a stocks.json without the key decodes to the neutral 35mm reference.
     var printGauge: PrintGauge? = nil
+    /// Render-time push/pull in fixed stops, applied to the Apple Log 2 code
+    /// before the stock's cube. Defaults to neutral so stocks.json and every
+    /// queue written before the control existed keep rendering unchanged.
+    var pushPull: PushPullExposure? = nil
 
     /// The gauge actually applied to the render: the selected gauge or 35mm.
     var effectivePrintGauge: PrintGauge { printGauge ?? .neutral }
+
+    /// The push/pull actually applied to the render: the chosen setting, or
+    /// neutral when the document/queue predates the control.
+    var effectivePushPull: PushPullExposure { pushPull ?? .neutral }
 
     /// Copy the complete value so per-shot ISO cannot discard recipe or display metadata.
     func overridingISO(_ iso: Float) -> FilmStockConfig {
@@ -49,6 +57,14 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
     func overridingGauge(_ gauge: PrintGauge?) -> FilmStockConfig {
         var copy = self
         copy.printGauge = gauge
+        return copy
+    }
+
+    /// Copy with a per-shot push/pull, so the stop count cannot discard the
+    /// recipe or display metadata (mirrors `overridingISO` / `overridingGauge`).
+    func overridingPushPull(_ pushPull: PushPullExposure) -> FilmStockConfig {
+        var copy = self
+        copy.pushPull = pushPull
         return copy
     }
 
@@ -70,6 +86,8 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
         try require(outputContrast.isFinite && (0.1...2).contains(outputContrast), "outputContrast")
         try require(colorTemperature.isFinite && (2000...10000).contains(colorTemperature), "colorTemperature")
         try require(defaultISO.isFinite && defaultISO > 0 && Double(defaultISO) < Double(Int.max), "ISO")
+        try require(effectivePushPull.meteredOffsetEV?.isFinite ?? true, "pushPull.meteredOffsetEV")
+        try require(PushPullStops.allCases.contains(effectivePushPull.stops), "pushPull.stops")
         try effectiveRecipe.validate(stockID: stockId)
     }
 

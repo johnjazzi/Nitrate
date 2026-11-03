@@ -53,4 +53,29 @@ struct CameraShootingModeGateTests {
         let value = gate(isChangingCaptureProfile: true, isPhotoCaptureBusy: true, isRecording: true)
         #expect(value.reason == "Recording — stop the take to change modes")
     }
+
+    // MARK: - Where the reason is shown
+
+    private func screen() throws -> String {
+        try String(contentsOf: TestRepository.url(for: "App/ContentView.swift"), encoding: .utf8)
+    }
+
+    /// The reason is an answer to a tap, not a label that sits over the take for
+    /// as long as it runs. A running take dims the row for its whole length, so a
+    /// standing banner is a permanent complaint the operator cannot act on.
+    @Test func theReasonIsATapAnswerRatherThanAStandingLabel() throws {
+        let source = try screen()
+        #expect(source.contains("if let notice = modeRefusalNotice"))
+        #expect(!source.contains("shootingModeBlockedReason ?? modeRefusalNotice"),
+                "the blocked gate's reason must not be rendered unconditionally")
+        // The dimmed row still takes the tap and answers from the same gate.
+        #expect(source.contains("onBlockedSelect: { _ in explainBlockedModeTap() }"))
+        #expect(source.contains("cameraViewModel.shootingModeBlockedReason"))
+    }
+
+    /// The row reports a refused tap instead of swallowing it.
+    @Test func aBlockedRowReportsTheTap() {
+        #expect(CameraModeRowTap.outcome(for: .video, enabled: false) == .refused(.video))
+        #expect(CameraModeRowTap.outcome(for: .video, enabled: true) == .select(.video))
+    }
 }

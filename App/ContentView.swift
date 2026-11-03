@@ -176,20 +176,29 @@ struct ContentView: View {
                     horizontalInset: controlBarHorizontalInset(in: geometry)) {
                     CameraModeCarousel(selected: cameraMode.selected, enabled: canChangeCameraMode,
                                        rotationDegrees: statusRotationDegrees, onSelect: selectCameraMode,
-                                       photoAvailable: photoModeAvailable)
+                                       photoAvailable: photoModeAvailable,
+                                       onBlockedSelect: { _ in explainBlockedModeTap() })
                         .frame(width: slot.width, height: slot.height)
                         .position(x: slot.midX, y: slot.midY)
-                        // A dimmed row that cannot say why is the bug, not the
-                        // refusal: the letters are disabled, so they can never
-                        // explain themselves on a tap. The reason is shown while
-                        // the row is blocked, and any refusal the row cannot gate
-                        // shows itself here for a moment.
+                        // The letters are dimmed rather than disabled, so a tap
+                        // can still explain itself — for a moment, where the
+                        // operator is looking. It is not a standing label: a take
+                        // dims this row for its whole length, and a permanent
+                        // "stop the take to change modes" banner over a running
+                        // take is noise the recording status face already covers.
+                        //
+                        // The capsule sits BELOW the row, not above it: at -30 it
+                        // landed under the sensor housing and was clipped
+                        // mid-sentence. It only ever answers a tap, so it cannot
+                        // become a standing label over a take.
                         .overlay(alignment: .top) {
-                            if let reason = cameraViewModel.shootingModeBlockedReason ?? modeRefusalNotice {
-                                modeStatusCapsule(reason)
-                                    .offset(y: -30)
+                            if let notice = modeRefusalNotice {
+                                modeStatusCapsule(notice)
+                                    .offset(y: 44)
                             }
                         }
+                        .accessibilityValue(cameraViewModel.shootingModeBlockedReason
+                            ?? modeRefusalNotice ?? "")
                 }
 
                 if let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
@@ -559,6 +568,14 @@ struct ContentView: View {
             stockId: stock.stockId,
             iso: currentISO,
             gauge: library.lastGauge(for: stock.stockId),
+            // This path renders straight off the camera without passing through
+            // the stock sheet, so it has to resolve the push/pull itself. It used
+            // to omit the argument entirely, which defaulted every clip to
+            // neutral and made push/pull look broken on video while photos — which
+            // do pass a resolved value — worked.
+            pushPull: library.lastPushPull(for: stock.stockId)
+                .resolved(meteredOffsetEV: cameraViewModel.hasExposureMeter
+                    ? cameraViewModel.liveExposureTargetOffset : nil),
             capturePolicy: cameraViewModel.capturePolicy(for: sourceURL)
         )
     }
@@ -1312,8 +1329,18 @@ struct ContentView: View {
         }
     }
 
+    /// A dimmed row is not a dead one: a tap answers from the same gate that dims
+    /// it, so a refusal is never silent and never has to be a standing label.
+    private func explainBlockedModeTap() {
+        showModeRefusal(cameraViewModel.shootingModeBlockedReason
+            ?? "Finish the current action to change modes")
+    }
+
     private func selectCameraMode(_ mode: CameraMode) {
-        guard canChangeCameraMode else { return }
+        guard canChangeCameraMode else {
+            explainBlockedModeTap()
+            return
+        }
         guard CameraMode.visibleModes(photoAvailable: photoModeAvailable).contains(mode),
               mode != cameraMode.selected else { return }
         if mode == .photo {
@@ -1473,6 +1500,8 @@ struct ContentView: View {
             isPresented: $showStockSheet,
             selectedStock: $selectedStock,
             currentISO: $currentISO,
+            meteredOffsetEV: cameraViewModel.hasExposureMeter
+                ? cameraViewModel.liveExposureTargetOffset : nil,
             selectionOnly: isDevelopMode
         )
     }
@@ -1518,42 +1547,66 @@ private struct StockSheetView: View {
     @Binding var isPresented: Bool
     @Binding var selectedStock: FilmStockConfig?
     @Binding var currentISO: Float
+    /// Live metered offset from the operator's EV target (EV, positive = over),
+    /// or nil when the device has no meter reading yet. Auto resolves against
+    /// this snapshot when the sheet renders.
+    var meteredOffsetEV: Float?
     var selectionOnly = false
 
     @State private var stocks: [FilmStockConfig] = []
     @State private var localSelection: FilmStockConfig?
     @State private var gauge: PrintGauge = .thirtyFiveMillimetre
+    /// Auto is checked by default: a stock renders neutral until the meter says
+    /// the scene sits over target. Turning it off hands the ladder to the user.
+    @State private var showsGaugeInfo = false
+    @State private var pushPullAutomatic = true
+    @State private var pushPullStops: PushPullStops = .none
 
     var body: some View {
         NavigationStack {
-            // The example preview is tall, so the sheet scrolls vertically:
-            // a short phone at 320pt can still reach the gauge and Render.
-            GeometryReader { geometry in
-                ScrollView(.vertical) {
-                    VStack(spacing: 20) {
-                        StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge)
+            // Three stacked rows, no vertical scroll. The row heights come from
+            // the height the sheet actually has — half for the preview, a quarter
+            // each for the stock carousel and the gauge + push/pull row — so
+            // every control is on screen on a phone. The preview gives up height
+            // first if the sheet is short; the control rows never scroll away.
+            VStack(spacing: StockSheetLayout.rowSpacing) {
+                GeometryReader { proxy in
+                    let rows = StockSheetLayout.rows(forAvailableHeight: proxy.size.height)
+                    VStack(spacing: StockSheetLayout.rowSpacing) {
+                        StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge,
+                                            pushPullStops: resolvedPushPull.stops.stops)
                             .frame(maxWidth: .infinity)
+                            .frame(height: rows.preview)
+                            .clipped()
 
-                        if !stocks.isEmpty { stockCarousel }
+                        if !stocks.isEmpty {
+                            stockCarousel.frame(height: rows.stocks)
+                        }
 
-                        if localSelection != nil { gaugePicker }
-
-                        if let url = sourceURL, !selectionOnly {
-                            renderButton(sourceURL: url)
-                        } else if !selectionOnly {
-                            Text("Record a video to render.")
-                                .font(NitrateTypography.font(.caption))
-                                .foregroundStyle(.secondary)
+                        if localSelection != nil {
+                            controlRow.frame(height: rows.controls)
                         }
                     }
-                    .padding()
+                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
                 }
+
+                sheetFooter
             }
+            .padding()
             .navigationTitle("Film Stock")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { isPresented = false }
+                }
+                if let url = sourceURL, !selectionOnly {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            performRender(sourceURL: url)
+                        } label: {
+                            Label("Render", systemImage: "play.rectangle.fill")
+                        }
+                    }
                 }
             }
             .onAppear {
@@ -1561,6 +1614,7 @@ private struct StockSheetView: View {
                 if localSelection == nil {
                     localSelection = selectedStock ?? stocks.first
                     gauge = localSelection.flatMap { library.lastGauge(for: $0.stockId) } ?? .thirtyFiveMillimetre
+                    restorePushPull(for: localSelection)
                 }
                 currentISO = localSelection?.defaultISO ?? 400
                 persistPreferences()
@@ -1571,6 +1625,7 @@ private struct StockSheetView: View {
                     currentISO = stock.defaultISO
                     library.setSelectedStock(stock.stockId)
                     library.setGauge(gauge, for: stock.stockId)
+                    library.setPushPull(pushPullPreference, for: stock.stockId)
                 }
             }
             .onChange(of: localSelection) { _, _ in persistPreferences() }
@@ -1578,8 +1633,17 @@ private struct StockSheetView: View {
         }
     }
 
+    // MARK: - Rows
+
+    /// The stock carousel, restored: centred stock cards that scroll sideways,
+    /// one tap to pick a stock. It writes through the same selection binding as
+    /// the sheet, so choosing a card still restores that stock's remembered
+    /// gauge and push/pull through `select`.
     private var stockCarousel: some View {
         StockCarousel(stocks: stocks, selectedStockId: selectedStockIdBinding)
+            .accessibilityIdentifier("stock.carousel")
+            .accessibilityLabel("Film stock")
+            .accessibilityValue(localSelection?.displayName ?? "None")
     }
 
     /// The carousel and the sheet share one selection: the carousel writes the
@@ -1593,6 +1657,147 @@ private struct StockSheetView: View {
                 select(stock)
             }
         )
+    }
+
+    /// The bottom row: the print gauge on the left and the push/pull pill beside
+    /// it on the right. The gauge takes the larger share — four segments have to
+    /// stay legible — and the pill keeps its fixed fifth.
+    private var controlRow: some View {
+        GeometryReader { proxy in
+            let widths = StockSheetLayout.controlWidths(forAvailableWidth: proxy.size.width)
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                // Bottom-aligned: the pill has no caption, so it lines up with
+                // the segmented control rather than with the caption above it.
+                HStack(alignment: .bottom, spacing: StockSheetLayout.controlSpacing) {
+                    gaugeCell.frame(width: widths.gauge)
+                    pushPullPill.frame(width: widths.pushPull)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+    }
+
+    /// Render, or the note that there is nothing to render yet. It keeps its own
+    /// compact row under the three, so the preview/stock/controls split always
+    /// gets the rest of the sheet.
+    @ViewBuilder private var sheetFooter: some View {
+        if sourceURL == nil, !selectionOnly {
+            Text("Record a video to render.")
+                .font(NitrateTypography.font(.caption))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// One cell: a short caption over its control, so the gauge keeps its label
+    /// in the shared bottom row.
+    private func controlCell<Content: View>(_ caption: String,
+                                            @ViewBuilder control: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(caption)
+                .font(NitrateTypography.font(.caption2))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            control()
+        }
+    }
+
+    private var gaugeCell: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Text("Gauge · mm")
+                    .font(NitrateTypography.font(.caption2))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Button { showsGaugeInfo = true } label: {
+                    Image(systemName: "info.circle.fill")
+                        .font(NitrateTypography.font(.footnote))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("stock.gaugeInfo")
+                .accessibilityLabel("What the print gauge changes")
+                Spacer(minLength: 0)
+            }
+            gaugeControl
+        }
+        .sheet(isPresented: $showsGaugeInfo) { gaugeInfoSheet }
+    }
+
+    private var gaugeControl: some View {
+        Group {
+            Picker("Print Gauge", selection: $gauge) {
+                ForEach(PrintGauge.allCases, id: \.self) { gauge in
+                    Text(gaugeShortLabel(gauge)).tag(gauge)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(height: 34)
+            .accessibilityIdentifier("stock.gauge")
+            .accessibilityValue(gauge.displayName)
+        }
+    }
+
+    /// What the gauge actually does, and what it does not. The gauge owns grain
+    /// size and presence; halation and diffusion are the stock's, not the
+    /// gauge's, and saying otherwise here would be a lie the render cannot back.
+    private var gaugeInfoSheet: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    infoSection("Print gauge",
+                        "The film format the stock is printed on. It sets the grain, "
+                        + "nothing else in the look.")
+                    infoSection("8 mm", "Coarsest and loudest. Grain reads as a texture over the frame.")
+                    infoSection("16 mm", "Coarse, about half the footprint of 8 mm.")
+                    infoSection("35 mm", "The standard look, and the middle of the ladder.")
+                    infoSection("75 mm", "Fine and nearly grain-free. The grain is made quiet "
+                        + "by lowering its presence, not by shrinking it out of existence.")
+                    Divider().overlay(Color.white.opacity(0.12))
+                    infoSection("Not changed by the gauge",
+                        "Halation and diffusion belong to the stock, not the gauge: they come "
+                        + "from the emulsion and the print, so switching gauge leaves them alone.")
+                    infoSection("Push / pull",
+                        "Develops the take at -3 to +2 stops before the grade. Pulling holds "
+                        + "the highlights down and darkens the image; pushing lifts it. It does "
+                        + "not change grain size, the gauge, or the halo.")
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .navigationTitle("Print gauge")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { showsGaugeInfo = false }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func infoSection(_ title: String, _ body: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(NitrateTypography.font(.subheadline))
+                .foregroundStyle(.primary)
+            Text(body)
+                .font(NitrateTypography.font(.footnote))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Segment label only: the caption above carries the unit, so four gauges fit
+    /// a third of a 320pt row without truncating.
+    private func gaugeShortLabel(_ gauge: PrintGauge) -> String {
+        gauge.displayName.replacingOccurrences(of: "mm", with: "")
     }
 
     /// Adopt a stock as the local selection. ISO follows the stock; the remembered
@@ -1609,63 +1814,145 @@ private struct StockSheetView: View {
         ) {
             gauge = restored
         }
+        if previous?.stockId != stock.stockId {
+            restorePushPull(for: stock)
+        }
     }
 
     private func persistPreferences() {
         guard let stock = localSelection else { return }
         library.setSelectedStock(stock.stockId)
         library.setGauge(gauge, for: stock.stockId)
+        library.setPushPull(pushPullPreference, for: stock.stockId)
     }
 
-    private var gaugePicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Print Gauge").font(NitrateTypography.font(.headline))
-            Picker("Print Gauge", selection: $gauge) {
-                ForEach(PrintGauge.allCases, id: \.self) { gauge in
-                    Text(gauge.displayName).tag(gauge)
+    // MARK: - Push / Pull
+
+    /// The sheet's live preference: auto, or the manual rung.
+    private var pushPullPreference: PushPullPreference {
+        PushPullPreference(isAutomatic: pushPullAutomatic, manualStops: pushPullStops)
+    }
+
+    /// What the render will actually do, resolved against the meter now.
+    private var resolvedPushPull: PushPullExposure {
+        pushPullPreference.resolved(meteredOffsetEV: meteredOffsetEV)
+    }
+
+    private func restorePushPull(for stock: FilmStockConfig?) {
+        let remembered = stock.map { library.lastPushPull(for: $0.stockId) } ?? .standard
+        pushPullAutomatic = remembered.isAutomatic
+        pushPullStops = remembered.manualStops
+    }
+
+    /// Push/pull as one small pill beside the gauge. Closed, the pill reads the
+    /// effective stops as a single word — PUSH, PULL or 0 — so the state is
+    /// legible without opening it, and auto and a manual 0 never look alike.
+    /// Tapping it opens the full ladder plus Auto; there is no separate toggle.
+    private var pushPullPill: some View {
+        Menu {
+            Button { chooseAutomatic() } label: {
+                if pushPullAutomatic {
+                    Label("Auto from the meter", systemImage: "checkmark")
+                } else {
+                    Text("Auto from the meter")
                 }
             }
-            .pickerStyle(.segmented)
-            Text("Gauge sets grain size and presence (8mm coarse → 75mm near grain-free).")
-                .font(NitrateTypography.font(.caption))
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func renderButton(sourceURL: URL) -> some View {
-        Button {
-            guard let stock = localSelection else {
-                renderQueueViewModel.reportRenderError("Select a film stock first.")
-                return
+            Divider()
+            ForEach(PushPullStops.allCases) { stops in
+                Button { chooseManual(stops) } label: {
+                    if !pushPullAutomatic && pushPullStops == stops {
+                        Label(stops.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(stops.displayName)
+                    }
+                }
             }
-            if let jobId = awaitingStockJobId {
-                // Resume the durable entry created for this take.
-                renderQueueViewModel.assignStock(
-                    jobId: jobId,
-                    stockId: stock.stockId,
-                    iso: stock.defaultISO,
-                    gauge: gauge
-                )
-            } else {
-                renderQueueViewModel.enqueue(
-                    sourceURL: sourceURL,
-                    stockId: stock.stockId,
-                    iso: stock.defaultISO,
-                    gauge: gauge,
-                    capturePolicy: capturePolicy
-                )
-            }
-            isPresented = false
         } label: {
-            HStack {
-                Image(systemName: "play.rectangle.fill")
-                Text("Render with \(localSelection?.displayName ?? "Stock")")
+            VStack(spacing: 2) {
+                // The word is the label above the control; the amount is what the
+                // operator reads at a glance, so it goes in the pill itself.
+                Text(resolvedPushPull.stops.effectWord)
+                    .font(NitrateTypography.font(.caption2))
+                    .fontWeight(.semibold)
+                    .kerning(0.5)
+                    .foregroundStyle(pushPullTint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Text(resolvedPushPull.stops.displayName)
+                    .font(NitrateTypography.font(.caption2).monospacedDigit())
+                    .foregroundStyle(pushPullTint)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 30)
+                    .background(Capsule().fill(pushPullTint.opacity(0.16)))
+                    .overlay { Capsule().stroke(pushPullTint.opacity(0.6), lineWidth: 1) }
+                    .contentShape(Capsule())
             }
             .frame(maxWidth: .infinity)
-            .padding()
-            .background(Color.accentColor)
-            .foregroundStyle(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
         }
+        .accessibilityIdentifier("stock.pushPull")
+        .accessibilityLabel("Push or pull")
+        .accessibilityValue(pushPullAccessibilityValue)
+    }
+
+    private var pushPullTint: Color {
+        let stops = resolvedPushPull.stops.stops
+        if stops > 0 { return .orange }
+        if stops < 0 { return .blue }
+        return .secondary
+    }
+
+    private var pushPullAccessibilityValue: String {
+        let effect = resolvedPushPull.isNeutral
+            ? "normal"
+            : "\(resolvedPushPull.stops.effectName) \(abs(resolvedPushPull.stops.stops)) stops"
+        return pushPullAutomatic
+            ? "\(resolvedPushPull.stops.effectWord), \(effect) from the meter"
+            : "\(resolvedPushPull.stops.effectWord), \(effect) chosen by hand"
+    }
+
+    /// Auto is a state, not a stop: the manual rung is left as dialled, so
+    /// switching back to a hand choice in the same session restores it.
+    private func chooseAutomatic() {
+        withAnimation(.easeOut(duration: 0.15)) { pushPullAutomatic = true }
+        persistPreferences()
+    }
+
+    private func chooseManual(_ stops: PushPullStops) {
+        withAnimation(.easeOut(duration: 0.15)) {
+            pushPullAutomatic = false
+            pushPullStops = stops
+        }
+        persistPreferences()
+    }
+
+    /// Commits the selected stock (and its push/pull) to the take. The sheet's
+    /// toolbar calls this; there is no separate full-width Render bar under the
+    /// cards, which read as a second competing commit action.
+    private func performRender(sourceURL: URL) {
+        guard let stock = localSelection else {
+            renderQueueViewModel.reportRenderError("Select a film stock first.")
+            return
+        }
+        if let jobId = awaitingStockJobId {
+            // Resume the durable entry created for this take.
+            renderQueueViewModel.assignStock(
+                jobId: jobId,
+                stockId: stock.stockId,
+                iso: stock.defaultISO,
+                gauge: gauge,
+                pushPull: resolvedPushPull
+            )
+        } else {
+            renderQueueViewModel.enqueue(
+                sourceURL: sourceURL,
+                stockId: stock.stockId,
+                iso: stock.defaultISO,
+                gauge: gauge,
+                pushPull: resolvedPushPull,
+                capturePolicy: capturePolicy
+            )
+        }
+        isPresented = false
     }
 }

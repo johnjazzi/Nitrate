@@ -15,6 +15,11 @@ struct RenderJob: Codable, Identifiable, Equatable {
     /// Print gauge for this render. Optional so older queue JSON stays readable;
     /// nil means the stock's own gauge (or the neutral 35mm reference).
     var printGauge: PrintGauge?
+    /// Render-time push/pull chosen for this take, with how it was chosen.
+    /// Optional so older queue JSON stays readable; nil renders neutral. The
+    /// value lives here, not in the stock config, so a re-render reads whatever
+    /// is stored now — changing it before Retry changes the next render.
+    var pushPull: PushPullExposure? = nil
     /// Immutable enqueue-time preferences; nil preserves legacy delivery behavior.
     var deliveryPreferences: RenderDeliveryPreferences?
     /// Nil preserves legacy camera jobs. Imported assets never expose playback
@@ -80,6 +85,7 @@ struct RenderJob: Codable, Identifiable, Equatable {
     var capturePolicy: RenderCapturePolicy? = nil
 
     init(sourceURL: URL, stockId: String, iso: Float, printGauge: PrintGauge? = nil,
+         pushPull: PushPullExposure? = nil,
          trimStart: CMTime? = nil, trimEnd: CMTime? = nil,
          sessionId: String? = nil, createdAt: Date = Date(),
          deliveryPreferences: RenderDeliveryPreferences? = nil,
@@ -89,6 +95,7 @@ struct RenderJob: Codable, Identifiable, Equatable {
         self.stockId = stockId
         self.iso = iso
         self.printGauge = printGauge
+        self.pushPull = pushPull
         self.deliveryPreferences = deliveryPreferences
         self.capturePolicy = capturePolicy
         self.trimStartSeconds = trimStart.map { $0.seconds }

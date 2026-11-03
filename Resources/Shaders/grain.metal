@@ -120,8 +120,17 @@ kernel void pass2_grain(
     float3 grain = shared + float3(-1.0f, 0.125f, 1.0f) * (chroma * chromaAmount);
 
     float luminance = dot(base, float3(0.2126f, 0.7152f, 0.0722f));
-    float latitude = smoothstep(0.015f, 0.13f, luminance)
-        * (1.0f - smoothstep(0.78f, 0.98f, luminance));
+    // Asymmetric luma gate. The toe holds at zero through the deepest shadow — from
+    // black up to luma 0.06 nothing is added at all — and only reaches full strength
+    // at 0.24, so grain is not visible in dark areas where a print carries almost no
+    // density variation. Because it starts above zero, a true black input still gets
+    // an exactly zero excursion and the black point cannot be lifted. The highlight shoulder is a
+    // far wider ramp than the old 0.78-0.98 window: it begins at 0.56 so bright tones
+    // clean up earlier, yet only reaches ~3.6% at luma 0.95 and zero at pure white, so
+    // a specular keeps a faint trace instead of being hard-clipped flat.
+    float toe = smoothstep(0.06f, 0.24f, luminance);
+    float shoulder = 1.0f - smoothstep(0.56f, 1.0f, luminance);
+    float latitude = toe * shoulder;
     float amount = 0.55f * gaugeAmplitude * edgeFactor;
     float3 excursion = grain * (amount * latitude);
     excursion += fine * (0.004f * latitude);

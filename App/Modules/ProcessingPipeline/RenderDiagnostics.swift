@@ -302,6 +302,7 @@ enum RenderMovieMetadata {
                              capturePolicy: RenderCapturePolicy? = nil,
                              isImportedSource: Bool = false,
                              sourceNominalFrameRate: Double? = nil,
+                             slate: RenderSlate = .first,
                              overrides: [String: String] = [:],
                              omitting: Set<String> = []) throws -> [String: String] {
         try config.validate()
@@ -325,13 +326,33 @@ enum RenderMovieMetadata {
             "grain-gauge-amplitude": String(config.effectivePrintGauge.amplitudeMultiplier),
             "grain-algorithm": config.effectiveRecipe.grainAlgorithm,
             "grain-edge-boost-multiplier": String(config.effectiveRecipe.edgeBoostMultiplier),
+            // Render-time push/pull. The delivered file states that the take was
+            // pulled or pushed and by how many stops, plus whether the meter or
+            // the operator chose it. A neutral render records "none" so the
+            // absence of a push/pull is evidence, not silence.
+            "push-pull": config.effectivePushPull.stops.effectName,
+            "push-pull-stops": String(config.effectivePushPull.stops.stops),
+            "push-pull-mode": config.effectivePushPull.origin.rawValue,
+            "push-pull-linear-gain": String(PushPullTransfer.linearGain(for: config.effectivePushPull.stops)),
             "shutter-speed": capturePolicy.map { "1/\($0.shutterDenominator)" } ?? "1/48",
             "shutter-angle": "180",
+            // The look the cube was authored for and the white point the camera
+            // was locked to. A still has no frame rate or shutter angle, but it
+            // carries the same colour and balance claims as the take.
+            "color-space": config.effectiveRecipe.input.transfer,
+            "white-balance-kelvin": String(Int(config.colorTemperature)),
+            "wb-tint": "0",
+            // One take today; the slate numbers exist so a delivered file states
+            // them rather than leaving the cards to invent 1/1/1.
+            "reel": String(slate.reel), "scene": String(slate.scene), "take": String(slate.take),
             "encoding-codec": RenderEncodingContract.codec,
             "encoding-bitrate-target": String(bitrate),
             "color-contract-verified": String(config.effectiveRecipe.colorContractVerified),
             "render-settings-schema": "1", "render-settings": json
         ]
+        if let offset = config.effectivePushPull.meteredOffsetEV {
+            metadataValues["push-pull-metered-offset-ev"] = String(offset)
+        }
         if isImportedSource {
             metadataValues["source-origin"] = "photos-import"
             metadataValues["shutter-speed"] = "unknown-or-not-recorded"
