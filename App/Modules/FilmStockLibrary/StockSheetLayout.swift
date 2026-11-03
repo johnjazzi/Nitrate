@@ -5,7 +5,7 @@ import CoreGraphics
 /// The sheet is three stacked rows that together fill the height it is given:
 /// the example preview on top, the stock carousel under it, then the print
 /// gauge and the push/pull pill sharing the bottom row. The rows are arithmetic
-/// shares of that height — a half, then a quarter, then a quarter — not whatever
+/// shares of that height — three quarters, then an eighth, then an eighth — not whatever
 /// the controls negotiate from their intrinsic sizes. Stacked by content, the
 /// preview ate the space the controls needed and the push/pull picker fell below
 /// the fold on a phone, which read as the feature being missing.
@@ -16,18 +16,18 @@ enum StockSheetLayout {
     /// Gap between the three rows.
     static let rowSpacing: CGFloat = 12
     /// Share of the stack the example preview takes.
-    static let previewFraction: CGFloat = 0.5
+    static let previewFraction: CGFloat = 0.75
     /// Share of the stack the stock carousel takes.
-    static let stocksFraction: CGFloat = 0.25
+    static let stocksFraction: CGFloat = 0.125
     /// Share of the stack the gauge + push/pull row takes.
-    static let controlsFraction: CGFloat = 0.25
+    static let controlsFraction: CGFloat = 0.125
 
     /// Smallest carousel that still shows a card with its page dot. A quarter of
     /// a compact sheet clears this; the floor only decides when the sheet is too
     /// short for four quarters of control chrome.
-    static let minimumStocksHeight: CGFloat = 96
+    static let minimumStocksHeight: CGFloat = 64
     /// Gauge caption plus its 34pt segmented control.
-    static let minimumControlsHeight: CGFloat = 54
+    static let minimumControlsHeight: CGFloat = 50
 
     struct Rows: Equatable {
         var preview: CGFloat

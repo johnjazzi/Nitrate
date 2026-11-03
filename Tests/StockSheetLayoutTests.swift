@@ -4,8 +4,8 @@ import Foundation
 import Testing
 
 /// The stock sheet's contract: three stacked rows that fill the sheet — the
-/// example preview on half the height, the stock carousel on a quarter, then the
-/// gauge and the push/pull pill sharing the bottom quarter. The rows are
+/// example preview on three quarters of the height, then the stock carousel and
+/// the gauge + push/pull row sharing the last quarter. The rows are
 /// arithmetic shares of the height the sheet has, not intrinsic sizes, so the
 /// controls are never pushed below the fold or into a scroll.
 struct StockSheetLayoutTests {
@@ -27,15 +27,20 @@ struct StockSheetLayoutTests {
     }
 
     @Test(arguments: phoneHeights)
-    func thePreviewTakesHalfAndEachControlRowAQuarter(height: Double) {
+    func thePreviewTakesThreeQuartersAndTheControlsShareTheRest(height: Double) {
         let rows = StockSheetLayout.rows(forAvailableHeight: CGFloat(height))
         let available = CGFloat(height) - StockSheetLayout.rowSpacing * 2
-        #expect(abs(rows.preview / available - StockSheetLayout.previewFraction) < 0.01,
-                "The preview is the requested half of the sheet at \(height)pt.")
-        #expect(abs(rows.stocks / available - StockSheetLayout.stocksFraction) < 0.01,
-                "The stock carousel is the requested quarter at \(height)pt.")
-        #expect(abs(rows.controls / available - StockSheetLayout.controlsFraction) < 0.01,
-                "The gauge and push/pull row is the requested quarter at \(height)pt.")
+        // The control rows carry minimum heights, so on a short sheet they keep
+        // their floor and the preview takes the remainder: three quarters is the
+        // target, never less than the two thirds a floor can force.
+        #expect(abs(rows.preview / available - StockSheetLayout.previewFraction) < 0.06,
+                "The preview is the requested three quarters of the sheet at \(height)pt.")
+        #expect(rows.preview / available > 0.6,
+                "The preview stays the dominant row at \(height)pt.")
+        #expect(abs(rows.stocks / available - StockSheetLayout.stocksFraction) < 0.06,
+                "The stock carousel is the requested eighth at \(height)pt.")
+        #expect(abs(rows.controls / available - StockSheetLayout.controlsFraction) < 0.03,
+                "The gauge and push/pull row is the requested eighth at \(height)pt.")
     }
 
     @Test(arguments: phoneHeights)
@@ -58,7 +63,8 @@ struct StockSheetLayoutTests {
                 "The carousel keeps its floor at \(height)pt.")
         #expect(rows.controls >= StockSheetLayout.minimumControlsHeight,
                 "The gauge row keeps its floor at \(height)pt.")
-        #expect(rows.preview < rows.stocks,
+        let available = CGFloat(height) - StockSheetLayout.rowSpacing * 2
+        #expect(rows.preview < available * StockSheetLayout.previewFraction,
                 "The preview, not a control, absorbs the shortfall at \(height)pt.")
     }
 

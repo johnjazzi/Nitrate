@@ -1766,20 +1766,27 @@ private struct StockSheetView: View {
                 }
             }
         } label: {
-            // The word sits in a fixed slot: it never widens the pill, so the
-            // cell keeps its fifth of the row whatever the meter resolves to.
-            Text(resolvedPushPull.stops.effectWord)
-                .font(NitrateTypography.font(.caption2))
-                .fontWeight(.semibold)
-                .kerning(0.5)
-                .foregroundStyle(pushPullTint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .frame(maxWidth: .infinity)
-                .frame(height: 34)
-                .background(Capsule().fill(pushPullTint.opacity(0.16)))
-                .overlay { Capsule().stroke(pushPullTint.opacity(0.6), lineWidth: 1) }
-                .contentShape(Capsule())
+            VStack(spacing: 2) {
+                // The word is the label above the control; the amount is what the
+                // operator reads at a glance, so it goes in the pill itself.
+                Text(resolvedPushPull.stops.effectWord)
+                    .font(NitrateTypography.font(.caption2))
+                    .fontWeight(.semibold)
+                    .kerning(0.5)
+                    .foregroundStyle(pushPullTint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Text(resolvedPushPull.stops.displayName)
+                    .font(NitrateTypography.font(.caption2).monospacedDigit())
+                    .foregroundStyle(pushPullTint)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 30)
+                    .background(Capsule().fill(pushPullTint.opacity(0.16)))
+                    .overlay { Capsule().stroke(pushPullTint.opacity(0.6), lineWidth: 1) }
+                    .contentShape(Capsule())
+            }
+            .frame(maxWidth: .infinity)
         }
         .accessibilityIdentifier("stock.pushPull")
         .accessibilityLabel("Push or pull")
