@@ -1,20 +1,32 @@
 #if os(iOS)
 import SwiftUI
 import PhotosUI
+import AVFoundation
+import ImageIO
+import CoreGraphics
 
-/// Inline Develop surface. It is the clip chooser for the D-V mode: it chooses or
-/// changes the selected clip, shows genuine render progress over the whole
-/// supplied frame while a job is pending or processing, and reports completion or
-/// failure.
+/// Inline Develop surface for the D-V mode.
 ///
-/// It deliberately contains no media frames, thumbnails, `AVPlayer`, or stock
-/// samples, and no stock / gauge controls or render button: the parent owns the
-/// stock and gauge controls and the shutter starts the render.
+/// It chooses a clip OR a raw photo, shows an UNGRADED frame of what was picked so
+/// the operator can see they selected the right thing, carries the gauge and
+/// push/pull controls (the shared components the stock sheet presents), shows
+/// genuine render progress while a job is pending or processing, and reports
+/// completion or failure. The parent owns the stock and the shutter starts the
+/// render; the gauge and push/pull here ARE the parent's, bound in.
 struct DevelopPreview: View {
     let model: DevelopVideoModel
     let queue: RenderQueueViewModel
+    @Binding var gauge: PrintGauge
+    @Binding var pushPullAutomatic: Bool
+    @Binding var pushPullStops: PushPullStops
+    /// Called after a change so the parent can persist the preference.
+    var onControlsChanged: () -> Void = {}
+    /// The exposure the parent resolved for this render, shown in the pill.
+    var resolvedPushPull: PushPullExposure = .neutral
+
     @State private var pickerItem: PhotosPickerItem?
     @State private var photoPickerItem: PhotosPickerItem?
+    @State private var preview: CGImage?
 
     var body: some View {
         ZStack {
@@ -39,6 +51,25 @@ struct DevelopPreview: View {
                 photoPickerItem = nil
             }
         }
+        // The ungraded frame follows whatever is selected. Both are decoded from
+        // the file itself, NOT through the render pipeline, so what is shown
+        // before rendering is the file as shot.
+        .task(id: selectedURL) {
+            await loadPreview()
+        }
+    }
+
+    private var selectedURL: URL? {
+        model.video?.url ?? model.photo?.url
+    }
+
+    private func loadPreview() async {
+        guard let url = selectedURL else {
+            preview = nil
+            return
+        }
+        let isPhoto = model.photo != nil
+        preview = await DevelopPreviewLoader.image(for: url, isPhoto: isPhoto)
     }
 
     // MARK: - Derived state
@@ -86,6 +117,14 @@ struct DevelopPreview: View {
                 clipPicker(model.video == nil && model.photo == nil ? "Select Video" : "Change Video")
                 photoPicker(model.video == nil && model.photo == nil ? "Select Photo" : "Change Photo")
             }
+            // The picker shows every image, because Photos cannot filter by file
+            // type. Say up front which ones the pipeline can develop.
+            Text("Video: Apple Log 2 only. Photo: raw files (DNG) only. "
+                 + "Anything else is refused before it is copied.")
+                .font(NitrateTypography.font(.caption2))
+                .foregroundStyle(DevelopPreviewChrome.muted)
+                .multilineTextAlignment(.center)
+                .accessibilityIdentifier("develop.entryHint")
             if let video = model.video {
                 identity(title: Self.videoTitle(video), detail: Self.videoDetail(video))
             } else if let photo = model.photo {
@@ -95,7 +134,41 @@ struct DevelopPreview: View {
                     .font(NitrateTypography.font(.footnote))
                     .foregroundStyle(DevelopPreviewChrome.muted)
             }
+
+            if let preview {
+                VStack(spacing: 6) {
+                    Image(decorative: preview, scale: 1)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxHeight: 220)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    // Say plainly that this is the file, not the look: the grade
+                    // only exists after the render.
+                    Text("Ungraded · as shot")
+                        .font(NitrateTypography.font(.caption2))
+                        .foregroundStyle(DevelopPreviewChrome.muted)
+                }
+                .accessibilityIdentifier("develop.preview")
+            }
+
+            if selectedURL != nil {
+                controlRow
+            }
         }
+    }
+
+    /// The same gauge and push/pull controls the stock sheet presents, bound to
+    /// the parent's state so the render applies exactly what is shown here.
+    private var controlRow: some View {
+        HStack(alignment: .bottom, spacing: StockSheetLayout.controlSpacing) {
+            GaugeControl(gauge: $gauge)
+            PushPullControl(resolved: resolvedPushPull,
+                            isAutomatic: $pushPullAutomatic,
+                            manualStops: $pushPullStops,
+                            onChange: onControlsChanged)
+                .frame(maxWidth: 74)
+        }
+        .accessibilityIdentifier("develop.controls")
     }
 
     /// The identity of what was picked. A capture date and the media's own
@@ -206,6 +279,38 @@ struct DevelopPreview: View {
 
     static func photoTitle(_ photo: ImportedPhoto) -> String {
         photo.capturedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Selected photo"
+    }
+}
+
+/// Decodes the picked file's own first frame / thumbnail, with NO stock applied.
+///
+/// The grade only exists after the render, so the pre-render preview must not
+/// pretend to it: this reads the file through AVFoundation or ImageIO and never
+/// touches the render pipeline, the LUT or the film stages.
+enum DevelopPreviewLoader {
+    static let maxPixelSize: CGFloat = 1600
+
+    static func image(for url: URL, isPhoto: Bool) async -> CGImage? {
+        if isPhoto { return thumbnail(for: url) }
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: maxPixelSize, height: maxPixelSize)
+        // Frame 1 rather than 0: some encoders write a black first sample.
+        generator.requestedTimeToleranceBefore = .positiveInfinity
+        generator.requestedTimeToleranceAfter = .positiveInfinity
+        return try? await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)).image
+    }
+
+    static func thumbnail(for url: URL) -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        // A raw's embedded preview is enough to identify the shot and is far
+        // cheaper than developing it before the render.
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 }
 

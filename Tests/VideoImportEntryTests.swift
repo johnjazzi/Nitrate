@@ -18,7 +18,10 @@ struct VideoImportEntryTests {
     @Test func cameraHasADirectDevelopModeWithoutOpeningTheQueue() throws {
         let screen = try source("App/ContentView.swift")
         #expect(screen.contains("CameraModeCarousel(selected: cameraMode.selected"))
-        #expect(screen.contains("DevelopPreview(model: developModel, queue: renderQueueViewModel)"))
+        // Inline in the camera screen, not a modal sheet. The panel now also takes
+        // the gauge and push/pull bindings it presents, so match the call, not the
+        // whole argument list.
+        #expect(screen.contains("DevelopPreview(model: developModel, queue: renderQueueViewModel,"))
         #expect(!screen.contains(".sheet(isPresented: developPresented"))
         #expect(screen.contains("developModel.leaveDevelop()"))
         #expect(screen.contains("isDevelopMode: isDevelopMode"))

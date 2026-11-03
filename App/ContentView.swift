@@ -75,6 +75,12 @@ struct ContentView: View {
     /// Pinch-zoom baseline (ISO/EV controls live in `CameraControlBar`).
     @State private var pinchIsActive = false
     @State private var pinchFocalLength = 24.0
+    /// Develop's own gauge and push/pull. The panel presents those controls and
+    /// the render reads exactly this state, so what is on screen is what is
+    /// applied. Seeded from the stock's remembered preference when Develop opens.
+    @State private var developGauge: PrintGauge = .neutral
+    @State private var developPushPullAutomatic = true
+    @State private var developPushPullStops: PushPullStops = .none
 
     /// Physical orientation source for the `.cameraUpright()` chrome modifier.
     /// Every icon/text glyph in the camera UI rotates to stay readable in
@@ -151,10 +157,19 @@ struct ContentView: View {
 
                 if isDevelopMode {
                     let rect = previewRect(in: geometry)
-                    DevelopPreview(model: developModel, queue: renderQueueViewModel)
+                    DevelopPreview(model: developModel, queue: renderQueueViewModel,
+                                   gauge: $developGauge,
+                                   pushPullAutomatic: $developPushPullAutomatic,
+                                   pushPullStops: $developPushPullStops,
+                                   onControlsChanged: persistDevelopControls,
+                                   resolvedPushPull: developPushPull)
                         .frame(width: rect.width, height: rect.height)
                         .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
                         .position(x: rect.midX, y: rect.midY)
+                        // Entering Develop lands on the stock's remembered gauge
+                        // and push/pull, exactly like the stock sheet does.
+                        .onAppear { restoreDevelopControls() }
+                        .onChange(of: selectedStock?.stockId) { _, _ in restoreDevelopControls() }
                 }
 
                 VStack(spacing: 0) {
@@ -1225,10 +1240,10 @@ struct ContentView: View {
             developIsBusy: developIsBusy,
             onDevelopRender: {
                 guard let stock = selectedStock else { return }
-                let gauge = library.lastGauge(for: stock.stockId) ?? .neutral
-                // No meter on a developed import, so the queue resolves the
-                // stock's persisted manual pull (or neutral) for the job.
-                _ = developModel.render(stock: stock, iso: currentISO, gauge: gauge,
+                // The panel's controls ARE the render settings: no second read of
+                // the library at render time, so what is on screen is applied.
+                _ = developModel.render(stock: stock, iso: currentISO, gauge: developGauge,
+                                        pushPull: developPushPull,
                                         queue: renderQueueViewModel)
             },
             isPhotoMode: isPhotoMode,
@@ -1314,6 +1329,31 @@ struct ContentView: View {
 
     private var isPhotoMode: Bool { cameraMode.selected == .photo }
     private var isDevelopMode: Bool { cameraMode.selected == .develop }
+
+    /// The exposure the pill shows for a developed import. There is no meter on a
+    /// file, so an automatic choice resolves neutral; a manual rung still applies.
+    private var developPushPull: PushPullExposure {
+        PushPullPreference(isAutomatic: developPushPullAutomatic,
+                           manualStops: developPushPullStops)
+            .resolved(meteredOffsetEV: nil)
+    }
+
+    /// Seed Develop's controls from the chosen stock's remembered preference.
+    private func restoreDevelopControls() {
+        guard let stock = selectedStock else { return }
+        developGauge = library.lastGauge(for: stock.stockId) ?? .neutral
+        let remembered = library.lastPushPull(for: stock.stockId)
+        developPushPullAutomatic = remembered.isAutomatic
+        developPushPullStops = remembered.manualStops
+    }
+
+    private func persistDevelopControls() {
+        guard let stock = selectedStock else { return }
+        library.setGauge(developGauge, for: stock.stockId)
+        library.setPushPull(PushPullPreference(isAutomatic: developPushPullAutomatic,
+                                               manualStops: developPushPullStops),
+                            for: stock.stockId)
+    }
 
     private var developIsBusy: Bool {
         guard let id = developModel.activeJobID,
