@@ -1533,6 +1533,7 @@ private struct StockSheetView: View {
     @State private var gauge: PrintGauge = .thirtyFiveMillimetre
     /// Auto is checked by default: a stock renders neutral until the meter says
     /// the scene sits over target. Turning it off hands the ladder to the user.
+    @State private var showsGaugeInfo = false
     @State private var pushPullAutomatic = true
     @State private var pushPullStops: PushPullStops = .none
 
@@ -1679,7 +1680,30 @@ private struct StockSheetView: View {
     }
 
     private var gaugeCell: some View {
-        controlCell("Gauge · mm") {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Text("Gauge · mm")
+                    .font(NitrateTypography.font(.caption2))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Button { showsGaugeInfo = true } label: {
+                    Image(systemName: "info.circle")
+                        .font(NitrateTypography.font(.caption2))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("stock.gaugeInfo")
+                .accessibilityLabel("What the print gauge changes")
+                Spacer(minLength: 0)
+            }
+            gaugeControl
+        }
+        .sheet(isPresented: $showsGaugeInfo) { gaugeInfoSheet }
+    }
+
+    private var gaugeControl: some View {
+        Group {
             Picker("Print Gauge", selection: $gauge) {
                 ForEach(PrintGauge.allCases, id: \.self) { gauge in
                     Text(gaugeShortLabel(gauge)).tag(gauge)
@@ -1690,6 +1714,56 @@ private struct StockSheetView: View {
             .frame(height: 34)
             .accessibilityIdentifier("stock.gauge")
             .accessibilityValue(gauge.displayName)
+        }
+    }
+
+    /// What the gauge actually does, and what it does not. The gauge owns grain
+    /// size and presence; halation and diffusion are the stock's, not the
+    /// gauge's, and saying otherwise here would be a lie the render cannot back.
+    private var gaugeInfoSheet: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    infoSection("Print gauge",
+                        "The film format the stock is printed on. It sets the grain, "
+                        + "nothing else in the look.")
+                    infoSection("8 mm", "Coarsest and loudest. Grain reads as a texture over the frame.")
+                    infoSection("16 mm", "Coarse, about half the footprint of 8 mm.")
+                    infoSection("35 mm", "The standard look, and the middle of the ladder.")
+                    infoSection("75 mm", "Fine and nearly grain-free. The grain is made quiet "
+                        + "by lowering its presence, not by shrinking it out of existence.")
+                    Divider().overlay(Color.white.opacity(0.12))
+                    infoSection("Not changed by the gauge",
+                        "Halation and diffusion belong to the stock, not the gauge: they come "
+                        + "from the emulsion and the print, so switching gauge leaves them alone.")
+                    infoSection("Push / pull",
+                        "Develops the take at -3 to +2 stops before the grade. Pulling holds "
+                        + "the highlights down and darkens the image; pushing lifts it. It does "
+                        + "not change grain size, the gauge, or the halo.")
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .navigationTitle("Print gauge")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { showsGaugeInfo = false }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func infoSection(_ title: String, _ body: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(NitrateTypography.font(.subheadline))
+                .foregroundStyle(.primary)
+            Text(body)
+                .font(NitrateTypography.font(.footnote))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
