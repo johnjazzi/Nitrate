@@ -78,6 +78,44 @@ struct MetadataCardsTests {
         #expect(cell(cards, "Push / Pull")?.value == "PUSH +1")
     }
 
+    /// Diffusion is a technical setting: it belongs in the render record, not in
+    /// the at-a-glance cards, which must stay the same four cards.
+    @Test func diffusionStaysOutOfTheCompactCards() {
+        let cards = ReceiptMetadataCards.make(job: job(metadata: [
+            "com.filmemulation.diffusion-preset": "radius35",
+            "com.filmemulation.diffusion-amount": "0.5"
+        ]))
+        #expect(cell(cards, "Diffusion") == nil, "the cards must not grow a diffusion row")
+        #expect(cards.map(\.id) == ["file", "exposure", "color", "lens"])
+    }
+
+    /// The render record's value: the delivered preset and amount, with
+    /// bypassed, silent and unrecorded kept distinct — 75 renders nothing by
+    /// design, amount 0 renders nothing by choice, and a legacy file never said.
+    @Test func diffusionRecordValueStatesWhatTheFileRendered() {
+        func value(_ metadata: [String: String], job: RenderJob? = nil) -> String {
+            ReceiptMetadataCards.diffusionValue(metadata, job: job ?? self.job(metadata: metadata))
+        }
+        #expect(value(["com.filmemulation.diffusion-preset": "radius35",
+                       "com.filmemulation.diffusion-amount": "0.5"]) == "35px · 0.50")
+        #expect(value(["com.filmemulation.diffusion-preset": "radius75",
+                       "com.filmemulation.diffusion-amount": "0.5"]) == "Off")
+        #expect(value(["com.filmemulation.diffusion-preset": "radius8",
+                       "com.filmemulation.diffusion-amount": "0"]) == "Off")
+        #expect(value([:]) == ReceiptMetadataCards.missing)
+
+        // A job that has not delivered yet states what its gauge will render.
+        var queued = RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/take"), stockId: "kodak5219",
+                               iso: 500, printGauge: .sixteenMillimetre)
+        queued.receipt = nil
+        #expect(ReceiptMetadataCards.diffusionValue([:], job: queued) == "16px · 0.30")
+
+        var bypassed = RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/take"), stockId: "kodak5219",
+                                 iso: 500, printGauge: .seventyFiveMillimetre)
+        bypassed.receipt = nil
+        #expect(ReceiptMetadataCards.diffusionValue([:], job: bypassed) == "Off")
+    }
+
     @Test func missingEvidenceStaysBlank() {
         var empty = RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/take"), stockId: "", iso: 0)
         empty.receipt = nil

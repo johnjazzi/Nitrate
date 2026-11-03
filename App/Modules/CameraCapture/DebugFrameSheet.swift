@@ -67,6 +67,9 @@ final class DebugFrameViewModel: Identifiable {
     private(set) var message: String?
 
     private let frame: CVPixelBuffer
+    /// Source width, so the sheet can report the diffusion preset's realized
+    /// radius at THIS frame's size instead of the authored 1080p number.
+    let sourceWidth: Int
     private let renderer: PipelineRenderer?
     private let quarterTurns: Int
     private var renderTask: Task<Void, Never>?
@@ -74,6 +77,7 @@ final class DebugFrameViewModel: Identifiable {
     init(frame: CVPixelBuffer, config: FilmStockConfig, stocks: [FilmStockConfig] = []) {
         self.frame = frame
         self.quarterTurns = CameraFrozenFrameOrientationPolicy.quarterTurns(in: frame)
+        self.sourceWidth = CVPixelBufferGetWidth(frame)
         self.config = config
         self.stocks = stocks.isEmpty ? [config] : stocks
         self.parameters = PipelineRenderer.DebugFrameParameters(config: config)
@@ -173,6 +177,7 @@ struct DebugFrameSheet: View {
     @State private var hintExpanded = false
     @State private var grainExpanded = false
     @State private var halationExpanded = false
+    @State private var diffusionExpanded = false
     @State private var glowExpanded = false
     @State private var realizedExpanded = false
     @State private var debugControlsExpanded = false
@@ -209,6 +214,7 @@ struct DebugFrameSheet: View {
                             stockSection
                             grainSection
                             halationSection
+                            diffusionSection
                             glowSection
                             realizedValues
                             debugControlsSection
@@ -353,7 +359,7 @@ struct DebugFrameSheet: View {
             // Truthful statement of the render order this sheet drives: halation
             // is added to the scene-linear source and re-encoded to Apple Log 2
             // BEFORE the stock LUT; glow is a post-LUT graded-luminance bloom.
-            Text("Order: halation (scene-linear, pre-LUT) → LUT + contrast → glow → grain")
+            Text("Order: diffusion → halation (scene-linear, pre-LUT) → LUT + contrast → glow → grain")
                 .font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
             if let message = viewModel.message {
                 Text(message).font(NitrateTypography.font(.caption)).foregroundStyle(.red)
@@ -472,6 +478,61 @@ struct DebugFrameSheet: View {
                 }
             }
         }
+    }
+
+    /// Lens diffusion node: the radius ladder plus the blend amount, with the
+    /// resolved blur reported at THIS frame's width so the pixel figures mean
+    /// something on a 4K capture as well as on a 1080p one.
+    private var diffusionSection: some View {
+        DebugCollapsibleSection(title: "Diffusion", isExpanded: $diffusionExpanded) {
+            labelled("Radius preset — 75 is bypassed for speed") {
+                Picker("Radius", selection: presetBinding) {
+                    ForEach(DiffusionPreset.allCases) { preset in
+                        Text(preset.title).tag(preset)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            labelled(String(format: "Amount %.2f", viewModel.parameters.diffusion.amount)) {
+                Slider(value: float({ viewModel.parameters.diffusion.amount },
+                                    { viewModel.parameters.diffusion.amount = $0 }),
+                       in: 0...1, step: 0.01)
+            }
+            Text(diffusionReadout)
+                .font(NitrateTypography.font(.caption).monospacedDigit())
+            Text("Each print gauge owns its radius and amount; this section re-seeds from the gauge.")
+            Text("Amount = share of scene light taken from the diffused copy (linear mix, so "
+                 + "0.50 halves contrast). Radius = how far it spreads, σ = radius / 2.")
+            Text("Scene-linear, pre-LUT: softens the light before halation and the stock LUT.")
+                .font(NitrateTypography.font(.caption2))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var presetBinding: Binding<DiffusionPreset> {
+        Binding(
+            get: { viewModel.parameters.diffusion.preset },
+            set: { preset in
+                viewModel.parameters.diffusion.preset = preset
+                viewModel.scheduleRender()
+            }
+        )
+    }
+
+    /// What the preset resolves to on this frame. Computed, not measured — the
+    /// sheet's total render time already reports the measured cost.
+    private var diffusionReadout: String {
+        let settings = viewModel.parameters.diffusion
+        guard settings.preset.radiusPixels != nil else {
+            return settings.preset == .radius75 ? "75 · bypassed, nothing rendered" : "off"
+        }
+        guard let plan = settings.plan(sourceWidth: viewModel.sourceWidth) else {
+            return "amount 0 · node disabled"
+        }
+        let sigma = plan.sigmaPixels(atSourceWidth: viewModel.sourceWidth)
+        let radius = plan.radiusPixels(atSourceWidth: viewModel.sourceWidth)
+        return String(format: "%.0f px radius · σ %.2f px · %d level%@ · %d taps/axis",
+                      radius, sigma, plan.levels, plan.levels == 1 ? "" : "s", plan.taps)
     }
 
     private var glowSection: some View {

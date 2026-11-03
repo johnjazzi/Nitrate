@@ -330,6 +330,15 @@ enum RenderMovieMetadata {
             // pulled or pushed and by how many stops, plus whether the meter or
             // the operator chose it. A neutral render records "none" so the
             // absence of a push/pull is evidence, not silence.
+            // Lens diffusion. The radius belongs to the print gauge, so the
+            // file records which preset rendered and how far the scene was
+            // blended toward it. A bypassed node records "off" AND the selected
+            // preset, so "no diffusion" is evidence rather than silence.
+            "diffusion": config.effectiveDiffusion.isEnabled
+                ? "\(config.effectiveDiffusion.preset.title)px" : "off",
+            "diffusion-preset": config.effectiveDiffusion.preset.rawValue,
+            "diffusion-amount": String(config.effectiveDiffusion.amount),
+            "diffusion-radius-px-1080p": String(config.effectiveDiffusion.preset.radiusPixels ?? 0),
             "push-pull": config.effectivePushPull.stops.effectName,
             "push-pull-stops": String(config.effectivePushPull.stops.stops),
             "push-pull-mode": config.effectivePushPull.origin.rawValue,

@@ -167,6 +167,7 @@ struct QueueReceiptMetadataView: View {
             ("Stock", value("stock-name")),
             ("Selected render ISO", QueueReceiptPresentation.numericMetadata(metadata, "iso")),
             ("Print gauge", value("print-gauge")),
+            ("Diffusion", ReceiptMetadataCards.diffusionValue(metadata, job: job)),
             ("Push / pull", ReceiptMetadataCards.pushPullValue(metadata, job: job)),
             ("Recipe version", value("recipe-version")),
             ("Halation level", QueueReceiptPresentation.numericMetadata(metadata, "halation-level")),

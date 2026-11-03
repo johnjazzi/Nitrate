@@ -179,6 +179,30 @@ enum ReceiptMetadataCards {
         return job.receipt == nil ? "0" : missing
     }
 
+    /// "35px · 0.40" for a live node, "Off" when the file says it was bypassed,
+    /// and a blank for a legacy file that never recorded the node at all.
+    ///
+    /// Read by the render record rather than the compact cards: diffusion is a
+    /// technical setting, so it belongs with the gauge and effect levels, not in
+    /// the at-a-glance card row.
+    static func diffusionValue(_ metadata: [String: String], job: RenderJob) -> String {
+        if let raw = metadata["com.filmemulation.diffusion-preset"],
+           let preset = DiffusionPreset(rawValue: raw) {
+            let amount = metadata["com.filmemulation.diffusion-amount"].flatMap(Float.init) ?? 0
+            guard preset.radiusPixels != nil, amount > 0 else { return "Off" }
+            return "\(preset.title)px · \(String(format: "%.2f", amount))"
+        }
+        // A job that has not delivered yet will render its gauge's setting; a
+        // delivered receipt that omits the key is a legacy file whose state is
+        // unknown, so it stays blank rather than guessing today's catalog.
+        if job.receipt == nil, let gauge = job.printGauge {
+            let settings = gauge.diffusion
+            guard settings.isEnabled else { return "Off" }
+            return "\(settings.preset.title)px · \(String(format: "%.2f", settings.amount))"
+        }
+        return missing
+    }
+
     static func createdDate(_ receipt: RenderReceipt?, job: RenderJob) -> String {
         (receipt?.recordedAt ?? job.createdAt).formatted(date: .long, time: .shortened)
     }

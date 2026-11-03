@@ -173,12 +173,14 @@ struct SpatialEffectsTests {
         return sum / divisor
     }
 
-    /// Compile `Resources/Shaders/spatial.metal` at runtime so the test exercises
-    /// the shader that actually ships.
+    /// Compile the shipped spatial and diffusion shaders at runtime so the test
+    /// exercises the kernels that actually ship. `SpatialEffectsStage` resolves
+    /// its diffusion pipeline states at init, so the library has to carry both
+    /// files even for a halation-only test.
     private static func shaderLibrary(device: MTLDevice) throws -> MTLLibrary {
-        let shaderURL = TestRepository.root
-            .appendingPathComponent("Resources/Shaders/spatial.metal")
-        let source = try String(contentsOf: shaderURL, encoding: .utf8)
+        let source = try ["Resources/Shaders/spatial.metal", "Resources/Shaders/diffusion.metal"]
+            .map { try String(contentsOf: TestRepository.root.appendingPathComponent($0), encoding: .utf8) }
+            .joined(separator: "\n")
         return try device.makeLibrary(source: source, options: nil)
     }
 
@@ -600,15 +602,25 @@ struct SpatialEffectsTests {
         var strength: Float = 1.0
         var layerScale = SIMD3<Float>(1, 1, 1)
         var referenceSuperwhite: Float = 8
+        // Diffusion disabled: zero amount, zero weights. The level slots still
+        // have to be bound to samplable textures, so the red layer doubles for
+        // them and contributes nothing.
+        var diffusionWeights = SIMD4<Float>(0, 0, 0, 0)
+        var diffusionAmount: Float = 0
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(sourceTexture, index: 0)
         encoder.setTexture(red, index: 1)
         encoder.setTexture(green, index: 2)
         encoder.setTexture(blue, index: 3)
         encoder.setTexture(output, index: 4)
+        for index in 5...8 {
+            encoder.setTexture(red, index: index)
+        }
         encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
         encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
+        encoder.setBytes(&diffusionWeights, length: MemoryLayout<SIMD4<Float>>.size, index: 3)
+        encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 4)
         encoder.dispatchThreadgroups(
             MTLSize(width: 1, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: side, height: side, depth: 1)

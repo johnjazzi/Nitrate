@@ -92,10 +92,10 @@ struct GrainModelTests {
 
         // A gauge listed twice — the same id, and its legacy long spelling.
         #expect(throws: GaugeConfigError.duplicateGauge("8mm")) {
-            _ = try decode(Self.document(shipped + [("8mm", "2.0", "0.55")]))
+            _ = try decode(Self.document(shipped + [("8mm", "2.0", "0.55", "radius35", "0.5")]))
         }
         #expect(throws: GaugeConfigError.duplicateGauge("8mm")) {
-            _ = try decode(Self.document(shipped + [("eightMillimetre", "2.0", "0.55")]))
+            _ = try decode(Self.document(shipped + [("eightMillimetre", "2.0", "0.55", "radius35", "0.5")]))
         }
         // A gauge with no entry at all.
         #expect(throws: GaugeConfigError.missingGauges(["75mm"])) {
@@ -118,7 +118,7 @@ struct GrainModelTests {
         // Unknown gauge identifiers, a non-finite number and a missing field all
         // fail to decode rather than falling back to a default entry.
         #expect(throws: (any Error).self) {
-            _ = try decode(Self.document(shipped + [("9mm", "1.0", "0.2")]))
+            _ = try decode(Self.document(shipped + [("9mm", "1.0", "0.2", "radius35", "0")]))
         }
         #expect(throws: (any Error).self) {
             _ = try decode(Self.document(Self.replacing(shipped, gauge: "8mm", size: "1e400")))
@@ -126,6 +126,25 @@ struct GrainModelTests {
         #expect(throws: (any Error).self) {
             _ = try decode("""
             {"schemaVersion": 1, "gauges": [{"gauge": "8mm", "sizeMultiplier": 2.0}]}
+            """)
+        }
+        // The diffusion setting is part of the gauge document: the radius must
+        // belong to the format it is listed under, and the amount must be usable.
+        #expect(throws: GaugeConfigError.mismatchedDiffusionPreset(gauge: "16mm", preset: "radius35")) {
+            _ = try decode(Self.document(Self.replacing(shipped, gauge: "16mm", preset: "radius35")))
+        }
+        #expect(throws: GaugeConfigError.invalidDiffusionAmount(gauge: "8mm", value: 1.5)) {
+            _ = try decode(Self.document(Self.replacing(shipped, gauge: "8mm", amount: "1.5")))
+        }
+        #expect(throws: GaugeConfigError.invalidDiffusionAmount(gauge: "8mm", value: -0.2)) {
+            _ = try decode(Self.document(Self.replacing(shipped, gauge: "8mm", amount: "-0.2")))
+        }
+        // A gauge entry missing its diffusion keys fails to decode rather than
+        // silently rendering no diffusion.
+        #expect(throws: (any Error).self) {
+            _ = try decode("""
+            {"schemaVersion": 1, "gauges": [{"gauge": "8mm", "sizeMultiplier": 4.0,
+              "amplitudeMultiplier": 0.55, "diffusionAmount": 0}]}
             """)
         }
     }
@@ -241,18 +260,20 @@ struct GrainModelTests {
 
     // MARK: - Document builders
 
-    private typealias Entry = (gauge: String, size: String, amplitude: String)
+    /// One gauge entry: the two grain axes plus the gauge's own diffusion.
+    private typealias Entry = (gauge: String, size: String, amplitude: String,
+                               preset: String, amount: String)
 
     private static let shippedEntries: [Entry] = [
-        ("8mm", "4.0", "0.55"),
-        ("16mm", "2.025", "0.396"),
-        ("35mm", "0.9", "0.36"),
-        ("75mm", "0.5", "0.165")
+        ("8mm", "4.0", "0.55", "radius35", "0.5"),
+        ("16mm", "2.025", "0.396", "radius16", "0.4"),
+        ("35mm", "0.9", "0.36", "radius4", "0.2"),
+        ("75mm", "0.5", "0.165", "radius75", "0")
     ]
 
     private static func document(_ entries: [Entry], schemaVersion: Int = 1) -> String {
         let body = entries.map {
-            #"{"gauge": "\#($0.gauge)", "sizeMultiplier": \#($0.size), "amplitudeMultiplier": \#($0.amplitude)}"#
+            #"{"gauge": "\#($0.gauge)", "sizeMultiplier": \#($0.size), "amplitudeMultiplier": \#($0.amplitude), "diffusionPreset": "\#($0.preset)", "diffusionAmount": \#($0.amount)}"#
         }.joined(separator: ",\n    ")
         return """
         {
@@ -266,10 +287,13 @@ struct GrainModelTests {
 
     private static func replacing(_ entries: [Entry], gauge: String,
                                  size: String? = nil,
-                                 amplitude: String? = nil) -> [Entry] {
+                                 amplitude: String? = nil,
+                                 preset: String? = nil,
+                                 amount: String? = nil) -> [Entry] {
         entries.map {
             guard $0.gauge == gauge else { return $0 }
-            return ($0.gauge, size ?? $0.size, amplitude ?? $0.amplitude)
+            return ($0.gauge, size ?? $0.size, amplitude ?? $0.amplitude,
+                    preset ?? $0.preset, amount ?? $0.amount)
         }
     }
 }
