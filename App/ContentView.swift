@@ -1578,6 +1578,15 @@ private struct StockSheetView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { isPresented = false }
                 }
+                if let url = sourceURL, !selectionOnly {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            performRender(sourceURL: url)
+                        } label: {
+                            Label("Render", systemImage: "play.rectangle.fill")
+                        }
+                    }
+                }
             }
             .onAppear {
                 stocks = library.videoStocks()
@@ -1653,9 +1662,7 @@ private struct StockSheetView: View {
     /// compact row under the three, so the preview/stock/controls split always
     /// gets the rest of the sheet.
     @ViewBuilder private var sheetFooter: some View {
-        if let url = sourceURL, !selectionOnly {
-            renderButton(sourceURL: url)
-        } else if !selectionOnly {
+        if sourceURL == nil, !selectionOnly {
             Text("Record a video to render.")
                 .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
@@ -1816,45 +1823,33 @@ private struct StockSheetView: View {
         persistPreferences()
     }
 
-    private func renderButton(sourceURL: URL) -> some View {
-        Button {
-            guard let stock = localSelection else {
-                renderQueueViewModel.reportRenderError("Select a film stock first.")
-                return
-            }
-            if let jobId = awaitingStockJobId {
-                // Resume the durable entry created for this take.
-                renderQueueViewModel.assignStock(
-                    jobId: jobId,
-                    stockId: stock.stockId,
-                    iso: stock.defaultISO,
-                    gauge: gauge,
-                    pushPull: resolvedPushPull
-                )
-            } else {
-                renderQueueViewModel.enqueue(
-                    sourceURL: sourceURL,
-                    stockId: stock.stockId,
-                    iso: stock.defaultISO,
-                    gauge: gauge,
-                    pushPull: resolvedPushPull,
-                    capturePolicy: capturePolicy
-                )
-            }
-            isPresented = false
-        } label: {
-            HStack {
-                Image(systemName: "play.rectangle.fill")
-                Text("Render with \(localSelection?.displayName ?? "Stock")")
-                if !resolvedPushPull.isNeutral {
-                    Text(resolvedPushPull.stops.displayName).fontWeight(.semibold)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding()
-            .background(Color.accentColor)
-            .foregroundStyle(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+    /// Commits the selected stock (and its push/pull) to the take. The sheet's
+    /// toolbar calls this; there is no separate full-width Render bar under the
+    /// cards, which read as a second competing commit action.
+    private func performRender(sourceURL: URL) {
+        guard let stock = localSelection else {
+            renderQueueViewModel.reportRenderError("Select a film stock first.")
+            return
         }
+        if let jobId = awaitingStockJobId {
+            // Resume the durable entry created for this take.
+            renderQueueViewModel.assignStock(
+                jobId: jobId,
+                stockId: stock.stockId,
+                iso: stock.defaultISO,
+                gauge: gauge,
+                pushPull: resolvedPushPull
+            )
+        } else {
+            renderQueueViewModel.enqueue(
+                sourceURL: sourceURL,
+                stockId: stock.stockId,
+                iso: stock.defaultISO,
+                gauge: gauge,
+                pushPull: resolvedPushPull,
+                capturePolicy: capturePolicy
+            )
+        }
+        isPresented = false
     }
 }

@@ -41,12 +41,12 @@ struct StockSamplePreview: View {
                 // assigns this row a fixed height, so the floor is only a guard against a
                 // zero-height proposal -- it must not fight the row that owns the height.
                 GeometryReader { proxy in
-                    let cardWidth = max(60, min(proxy.size.width, proxy.size.height / 1.5, 250))
+                    let cardWidth = min(proxy.size.width, 250)
                     pages(catalog)
                         .frame(width: cardWidth, height: cardWidth * 1.5)
                         .frame(maxWidth: .infinity)
                 }
-                .frame(minHeight: 60, maxHeight: .infinity)
+                .frame(height: 375)
                 sceneDots(catalog)
                 Text(catalog.disclaimer)
                     .font(NitrateTypography.font(.caption2))
