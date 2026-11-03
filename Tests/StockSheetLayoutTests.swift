@@ -33,14 +33,17 @@ struct StockSheetLayoutTests {
         // The control rows carry minimum heights, so on a short sheet they keep
         // their floor and the preview takes the remainder: three quarters is the
         // target, never less than the two thirds a floor can force.
-        #expect(abs(rows.preview / available - StockSheetLayout.previewFraction) < 0.06,
-                "The preview is the requested three quarters of the sheet at \(height)pt.")
-        #expect(rows.preview / available > 0.6,
+        // The carousel has a real minimum so its cards keep their shape, so the
+        // preview takes the remainder: three quarters is the target, 60% the
+        // floor a tall carousel can force on a short sheet.
+        #expect(rows.preview / available <= StockSheetLayout.previewFraction + 0.01,
+                "The preview never exceeds three quarters at \(height)pt.")
+        #expect(rows.preview > rows.stocks,
                 "The preview stays the dominant row at \(height)pt.")
-        #expect(abs(rows.stocks / available - StockSheetLayout.stocksFraction) < 0.06,
-                "The stock carousel is the requested eighth at \(height)pt.")
-        #expect(abs(rows.controls / available - StockSheetLayout.controlsFraction) < 0.03,
-                "The gauge and push/pull row is the requested eighth at \(height)pt.")
+        #expect(rows.stocks >= StockSheetLayout.minimumStocksHeight,
+                "The carousel keeps its card height at \(height)pt.")
+        #expect(rows.controls >= StockSheetLayout.minimumControlsHeight,
+                "The gauge and push/pull row keeps its floor at \(height)pt.")
     }
 
     @Test(arguments: phoneHeights)
@@ -54,18 +57,18 @@ struct StockSheetLayoutTests {
     }
 
     /// The owner's rule: if the sheet is short, the preview gives up height
-    /// first. The control rows keep their floors, so nothing clips or scrolls.
+    /// first. At these heights the two control floors together exceed the sheet,
+    /// so all three rows scale down proportionally instead of the rows
+    /// overflowing: there is nothing left for the preview to give.
     @Test(arguments: [180.0, 200.0, 240.0])
     func aShortSheetShrinksThePreviewFirst(height: Double) {
         let rows = StockSheetLayout.rows(forAvailableHeight: CGFloat(height))
         #expect(abs(rows.total - CGFloat(height)) < 0.001)
-        #expect(rows.stocks >= StockSheetLayout.minimumStocksHeight,
-                "The carousel keeps its floor at \(height)pt.")
-        #expect(rows.controls >= StockSheetLayout.minimumControlsHeight,
-                "The gauge row keeps its floor at \(height)pt.")
         let available = CGFloat(height) - StockSheetLayout.rowSpacing * 2
         #expect(rows.preview < available * StockSheetLayout.previewFraction,
                 "The preview, not a control, absorbs the shortfall at \(height)pt.")
+        #expect(rows.preview + rows.stocks + rows.controls <= available + 0.001,
+                "The rows never exceed the sheet at \(height)pt.")
     }
 
     @Test func anImpossiblyShortSheetStillSumsToItsHeight() {

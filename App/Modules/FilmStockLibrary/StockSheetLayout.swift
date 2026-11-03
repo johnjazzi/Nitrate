@@ -22,10 +22,11 @@ enum StockSheetLayout {
     /// Share of the stack the gauge + push/pull row takes.
     static let controlsFraction: CGFloat = 0.125
 
-    /// Smallest carousel that still shows a card with its page dot. A quarter of
-    /// a compact sheet clears this; the floor only decides when the sheet is too
-    /// short for four quarters of control chrome.
-    static let minimumStocksHeight: CGFloat = 64
+    /// Smallest carousel that still shows its card at the shape it had before the
+    /// sheet was restacked: a 132pt card plus its chrome and page dot. The floor
+    /// is a real minimum, not a nicety — below it the cards go squat, which is
+    /// what a bare eighth of the sheet produced.
+    static let minimumStocksHeight: CGFloat = 150
     /// Gauge caption plus its 34pt segmented control.
     static let minimumControlsHeight: CGFloat = 50
 
