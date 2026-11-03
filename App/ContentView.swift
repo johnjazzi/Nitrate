@@ -179,17 +179,15 @@ struct ContentView: View {
                                        photoAvailable: photoModeAvailable)
                         .frame(width: slot.width, height: slot.height)
                         .position(x: slot.midX, y: slot.midY)
-                        // A dimmed row that cannot say why is the bug, not the
-                        // refusal: the letters are disabled, so they can never
-                        // explain themselves on a tap. The reason is shown while
-                        // the row is blocked, and any refusal the row cannot gate
-                        // shows itself here for a moment.
-                        .overlay(alignment: .top) {
-                            if let reason = cameraViewModel.shootingModeBlockedReason ?? modeRefusalNotice {
-                                modeStatusCapsule(reason)
-                                    .offset(y: -30)
-                            }
-                        }
+                        // No visual reason capsule here. It was offset -30 from
+                        // the mode row, which put it under the Dynamic Island
+                        // where the sensor housing clipped it mid-sentence, and
+                        // nothing but an error or a warning is allowed to put
+                        // words on screen during a take. The row is already
+                        // dimmed and disabled, and the reason stays on its
+                        // accessibility value for VoiceOver.
+                        .accessibilityValue(cameraViewModel.shootingModeBlockedReason
+                            ?? modeRefusalNotice ?? "")
                 }
 
                 if let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
@@ -1408,11 +1406,7 @@ struct ContentView: View {
         }
     }
 
-    /// The mode row's own status face, the same capsule the photo strip uses.
-    private func modeStatusCapsule(_ status: String) -> some View {
-        statusCapsule(status, identifier: "camera.modeStatus")
-    }
-
+    /// The capsule the photo strip uses for its own status.
     private func statusCapsule(_ status: String, identifier: String) -> some View {
         Text(status)
             .foregroundStyle(.white)
