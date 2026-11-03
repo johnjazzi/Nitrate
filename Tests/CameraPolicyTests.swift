@@ -86,6 +86,28 @@ struct CameraPolicyTests {
         #expect(CameraAperturePolicy.reconcile(2, with: .unavailable) == nil)
     }
 
+    /// The reported failure: f/4.0 chosen on one lens, then a lens switch. The
+    /// new lens does not report that stop, so the restored intent asked for it,
+    /// the write threw `unsupportedMode`, and the take showed a recording error
+    /// banner. A carried-over stop is held at the nearest stop the lens has.
+    @Test func carriedOverApertureIsHeldAtTheNearestStopTheNewLensReports() {
+        let telephoto: CameraAperturePolicy.Capability = .variable([2.8, 4, 5.6])
+        #expect(CameraAperturePolicy.heldAperture(4.0, capability: telephoto) == 4.0)
+        let wide: CameraAperturePolicy.Capability = .variable([1.8, 2.2])
+        #expect(CameraAperturePolicy.heldAperture(4.0, capability: wide) == 2.2)
+        // Auto stays Auto.
+        #expect(CameraAperturePolicy.heldAperture(nil, capability: telephoto) == nil)
+    }
+
+    /// A lens whose iris cannot vary has nothing to hold, so the intent falls back
+    /// to the device's own auto exposure instead of pinning custom exposure at a
+    /// stop the operator never chose. Same rule the session already applied.
+    @Test func aFixedOrAbsentIrisHoldsNothing() {
+        #expect(CameraAperturePolicy.heldAperture(4.0, capability: .fixed(2.2)) == nil)
+        #expect(CameraAperturePolicy.heldAperture(4.0, capability: .unavailable) == nil)
+        #expect(CameraAperturePolicy.heldAperture(nil, capability: .fixed(2.2)) == nil)
+    }
+
     @Test func apertureExposureCompositionPreservesManualISOAndAutomaticISO() {
         let duration = CMTime(value: 1, timescale: 48)
         let shutterPriority = CameraAperturePolicy.exposureParameters(

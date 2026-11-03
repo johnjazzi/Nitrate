@@ -112,8 +112,13 @@ final class DevelopmentPhotoController: @unchecked Sendable {
             CMTime(seconds: min(max($0, shutterRange.lowerBound), shutterRange.upperBound), preferredTimescale: 1_000_000_000)
         }
         ev = min(max(intent.ev, exposureBiasRange.lowerBound), exposureBiasRange.upperBound)
-        apertureIntent = intent.aperture
-        apertureDirty = intent.aperture != nil
+        // The intent travels between lenses, but a stop is the lens's own fact:
+        // an f/4.0 chosen on the wide lens is not a stop the telephoto reports,
+        // and holding it anyway failed the first write after the switch with
+        // `unsupportedMode` — reported as a recording error on a take that was
+        // fine. Hold what this lens can do; Auto when it cannot vary at all.
+        apertureIntent = heldAperture(intent.aperture)
+        apertureDirty = apertureIntent != nil
         try submitCurrentIntent()
     }
 
@@ -161,7 +166,7 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue))
         try ensureMutable()
         guard aperture.map({ $0.isFinite && $0 > 0 }) ?? true else { throw Error.invalidValue }
-        apertureIntent = aperture
+        apertureIntent = heldAperture(aperture)
         apertureDirty = true
         try submitCurrentIntent()
     }
@@ -269,6 +274,15 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         return lower...max(lower, upper)
     }
     private var exposureBiasRange: ClosedRange<Float> { max(device.minExposureTargetBias, -3)...min(device.maxExposureTargetBias, 3) }
+
+    /// The stop this controller can hold on the device it was built for: the
+    /// nearest stop the active format reports, or Auto when its iris cannot vary.
+    private func heldAperture(_ requested: Float?) -> Float? {
+        guard let requested else { return nil }
+        guard #available(iOS 27.0, *) else { return requested }
+        return CameraAperturePolicy.heldAperture(requested,
+            capability: CameraAperturePolicy.capability(for: device))
+    }
 
     private var usesNativeAutoExposure: Bool {
         PhotoExposurePolicy.usesNativeAutoExposure(isoLocked: isoLocked,
@@ -454,7 +468,9 @@ final class DevelopmentPhotoController: @unchecked Sendable {
                         try self.capture(rotationAngle: pending.rotationAngle, completion: pending.completion)
                         return
                     }
-                } catch { self.onFailure("Photo exposure update failed: \(error)") }
+                } catch {
+                    self.onFailure((error as? Error)?.reason ?? error.localizedDescription)
+                }
             }
             self.publish()
             self.scheduleAdjustment()
@@ -508,6 +524,20 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         let callbacks = stopWaiters; stopWaiters.removeAll(); callbacks.forEach { $0() }
     }
 
-    private enum Error: Swift.Error { case stopped, invalidDeviceRange, invalidValue, unsupportedMode, notReady }
+    private enum Error: Swift.Error {
+        case stopped, invalidDeviceRange, invalidValue, unsupportedMode, notReady
+
+        /// Why the write was refused, in the operator's terms. The raw case name
+        /// ("unsupportedMode") is not something to put in front of a photographer.
+        var reason: String {
+            switch self {
+            case .stopped: return "the photo camera stopped"
+            case .invalidDeviceRange: return "the lens reported no usable exposure range"
+            case .invalidValue: return "the request was outside the lens's range"
+            case .unsupportedMode: return "this lens does not support that exposure"
+            case .notReady: return "the previous exposure was still settling"
+            }
+        }
+    }
     private struct CaptureFailure: LocalizedError { let message: String; init(_ message: String) { self.message = message }; var errorDescription: String? { message } }
 }
