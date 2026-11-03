@@ -27,6 +27,10 @@ struct DevelopPreview: View {
     @State private var pickerItem: PhotosPickerItem?
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var preview: CGImage?
+    /// The delivered render, decoded from the file the queue wrote. Separate
+    /// from `preview` so the pre-render frame and the graded result can never be
+    /// confused: one is the file as shot, the other is the stock applied to it.
+    @State private var renderedPreview: CGImage?
 
     var body: some View {
         ZStack {
@@ -57,6 +61,39 @@ struct DevelopPreview: View {
         .task(id: selectedURL) {
             await loadPreview()
         }
+        // The finished render is shown from the queue's own output file, so what
+        // is on screen is the delivered artifact and not a re-render done for the
+        // preview. A file that has already been cleaned up shows nothing.
+        .task(id: renderedKey) {
+            await loadRenderedPreview()
+        }
+    }
+
+    private var renderedKey: String {
+        guard let job = activeJob else { return "none" }
+        // Receipt thumbnail size is part of the key: the durable thumbnail can
+        // arrive after the file is gone, and the preview must then refresh.
+        return "\(job.id)-\(job.status)-\(job.receipt?.thumbnailJPEG?.count ?? 0)"
+            + "-\(job.outputURL?.path ?? "-")"
+    }
+
+    private func loadRenderedPreview() async {
+        guard let job = activeJob, job.status == .completed else {
+            renderedPreview = nil
+            return
+        }
+        // The receipt's thumbnail is durable — it survives the local output being
+        // cleaned up after delivery — so it is preferred over the file itself.
+        if let receipt = job.receipt?.thumbnailJPEG,
+           let image = DevelopPreviewLoader.thumbnail(from: receipt) {
+            renderedPreview = image
+            return
+        }
+        guard let url = job.outputURL else {
+            renderedPreview = nil
+            return
+        }
+        renderedPreview = await DevelopPreviewLoader.image(for: url, isPhoto: job.isPhoto == true)
     }
 
     private var selectedURL: URL? {
@@ -207,9 +244,23 @@ struct DevelopPreview: View {
 
     private var completedState: some View {
         VStack(spacing: 14) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 40))
-                .foregroundStyle(DevelopPreviewChrome.orange)
+            if let renderedPreview {
+                VStack(spacing: 6) {
+                    Image(decorative: renderedPreview, scale: 1)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxHeight: 260)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    Text("Graded · delivered file")
+                        .font(NitrateTypography.font(.caption2))
+                        .foregroundStyle(DevelopPreviewChrome.muted)
+                }
+                .accessibilityIdentifier("develop.renderedPreview")
+            } else {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 40))
+                    .foregroundStyle(DevelopPreviewChrome.orange)
+            }
             Text("Saved to Photos")
                 .font(NitrateTypography.font(.headline))
                 .foregroundStyle(.white)
@@ -315,6 +366,13 @@ enum DevelopPreviewLoader {
         generator.requestedTimeToleranceBefore = .positiveInfinity
         generator.requestedTimeToleranceAfter = .positiveInfinity
         return try? await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)).image
+    }
+
+    /// Decode the receipt's stored thumbnail, so the finished render is still
+    /// visible after the local output file has been cleaned up.
+    static func thumbnail(from data: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 
     static func thumbnail(for url: URL) -> CGImage? {

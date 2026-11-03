@@ -96,6 +96,8 @@ enum PhotoDeliveryMetadata {
         if let sceneLiftStops, sceneLiftStops.isFinite, sceneLiftStops != 0 {
             overrides["halation-scene-lift-ev"] = String(format: "%.2f", sceneLiftStops)
         }
+        // The share of the stock's halation strength the still render applied.
+        overrides["halation-still-scale"] = String(format: "%.2f", config.effectiveStillHalationScale)
         if let whiteLevel = raw?.usableWhiteLevel {
             overrides["raw-white-level"] = String(format: "%.0f", whiteLevel)
         }

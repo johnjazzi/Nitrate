@@ -41,6 +41,24 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
     /// before the stock's cube. Defaults to neutral so stocks.json and every
     /// queue written before the control existed keep rendering unchanged.
     var pushPull: PushPullExposure? = nil
+    /// How much of `halationStrength` the STILL render applies.
+    ///
+    /// A developed photo and a recorded take are measured in the same scene
+    /// light, but they do not read alike: a take's halo is masked by motion and
+    /// a 24th-of-a-second of it is spent on each frame, while a still is held in
+    /// front of the viewer with the halo at full size next to unrelated detail.
+    /// Measured on a ProRAW the two are numerically equivalent and the still
+    /// still reads hot, so a still gets a smaller share of the same physical
+    /// model rather than a second, separate model.
+    ///
+    /// Optional, and resolved to 1 when absent: synthesized `Codable` requires a
+    /// key for every non-optional property, and every other optional knob in this
+    /// struct exists for exactly that reason — a stocks.json written before the
+    /// key existed must still decode and still render the take's strength.
+    var stillHalationScale: Float? = nil
+
+    /// The still share actually applied to a photo render.
+    var effectiveStillHalationScale: Float { stillHalationScale ?? 1 }
 
     /// The gauge actually applied to the render: the selected gauge or 35mm.
     var effectivePrintGauge: PrintGauge { printGauge ?? .neutral }
@@ -87,6 +105,10 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
         try require(halationStrength.isFinite && (0...8).contains(halationStrength), "halationStrength")
         try require(glowStrength.isFinite && (0...1).contains(glowStrength), "glowStrength")
         try require(grainSize.isFinite && grainSize > 0, "grainSize")
+        if let stillHalationScale {
+            try require(stillHalationScale.isFinite && (0...1).contains(stillHalationScale),
+                        "stillHalationScale")
+        }
         try require(halationRadiusFraction.isFinite && halationRadiusFraction > 0
             && halationRadiusFraction <= 0.5, "halationRadiusFraction")
         // Full-scale red is the documented contract (see the field comment): a
