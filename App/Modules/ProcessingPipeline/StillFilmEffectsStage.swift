@@ -30,9 +30,18 @@ final class StillFilmEffectsStage {
     }
 
     /// Shared physical halation entry point. Source is Apple Log 2 RGBA16Float.
-    /// `sceneLiftStops` is how far the RAW decode lifted this frame. Halation
-    /// measures excess above diffuse white, so a lifted still has to be measured
-    /// against lifted knees; see `SpatialEffectsStage.halationKnees`.
+    ///
+    /// Two things arrive with the source and both matter:
+    ///
+    ///  * `sceneLiftStops` is how far the RAW decode lifted this frame.
+    ///    Halation measures excess above diffuse white, so a lifted still has to
+    ///    be measured against lifted knees; see
+    ///    `SpatialEffectsStage.halationKnees`.
+    ///  * the lens diffusion node is passed in the same call, so a still gets
+    ///    the same scene-linear diffusion as a video frame: same code path, same
+    ///    decode/encode, same order in front of the emulsion. Stills previously
+    ///    took the stage's `.disabled` default, which meant a photo's embedded
+    ///    metadata could claim a diffusion the render never applied.
     func applyHalation(source: MTLTexture, commandQueue: MTLCommandQueue,
                        config: FilmStockConfig, sceneLiftStops: Float = 0) -> MTLTexture? {
         guard source.pixelFormat == .rgba16Float else { return nil }
@@ -40,6 +49,7 @@ final class StillFilmEffectsStage {
                                      strength: config.halationStrength * config.effectiveStillHalationScale,
                                      radiusFraction: config.halationRadiusFraction,
                                      layerScale: config.halationTint,
+                                     diffusion: config.effectiveDiffusion,
                                      sceneLiftStops: sceneLiftStops,
                                      width: source.width, height: source.height)
     }

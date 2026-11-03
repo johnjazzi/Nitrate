@@ -209,6 +209,57 @@ struct PhotoDevelopmentPipelineTests {
         return (pixels, rms, lag)
     }
 
+    /// A still gets the SAME scene-linear diffusion node as a video frame, and
+    /// the node's absence or presence is what changes the picture — nothing
+    /// else. The comparison pins the wiring at the level the photo renderer
+    /// actually calls: same stock, same gauge, same seed, diffusion off vs on.
+    @Test func stillPhotoAppliesTheDiffusionNode() throws {
+        // A hard step edge: diffusion widens the transition and lifts the dark
+        // side. Grain alone cannot do that at this scale.
+        // Wide enough for the widest rung to actually spread: at 512 px the
+        // 8mm gauge's 35 px radius is ~5 full-resolution pixels of sigma.
+        let width = 512, height = 128
+        let step = CIImage(color: CIColor(red: 0.05, green: 0.05, blue: 0.05))
+            .cropped(to: CGRect(x: 0, y: 0, width: width / 2, height: height))
+            .composited(over: CIImage(color: CIColor(red: 0.9, green: 0.9, blue: 0.9))
+                .cropped(to: CGRect(x: width / 2, y: 0, width: width / 2, height: height)))
+            .cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
+
+        func render(diffusion: DiffusionSettings??, gauge: PrintGauge) throws -> [Double] {
+            let film = try StillFilmRenderResources(stockID: "kodak5219", gauge: gauge, seed: 7,
+                bundle: Bundle(for: BundleToken.self), diffusion: diffusion)
+            let developed = try DevelopmentPhotoRenderer.develop(linearImage: step, film: film)
+            var bytes = [UInt8](repeating: 0, count: width * height * 4)
+            film.context.render(developed, toBitmap: &bytes, rowBytes: width * 4,
+                bounds: step.extent, format: .RGBA8,
+                colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!)
+            // Mean red of rows across the middle, so grain noise averages out.
+            return (0..<width).map { x in
+                var total = 0.0
+                for y in (height / 4)..<(3 * height / 4) {
+                    total += Double(bytes[(y * width + x) * 4 + 2])
+                }
+                return total / Double(height / 2)
+            }
+        }
+
+        let off = try render(diffusion: .some(nil), gauge: .eightMillimetre)
+        let on = try render(diffusion: nil, gauge: .eightMillimetre)
+        #expect(off != on, "the still renderer must pass the gauge's diffusion through")
+
+        // The dark side of the edge gains light from the bright side.
+        let darkBand = 8..<(width / 2 - 8)
+        let darkOff = darkBand.map { off[$0] }.reduce(0, +) / Double(darkBand.count)
+        let darkOn = darkBand.map { on[$0] }.reduce(0, +) / Double(darkBand.count)
+        #expect(darkOn > darkOff + 0.5,
+                "diffusion must lift the dark side of the edge (\(darkOff) -> \(darkOn))")
+
+        // And a bypassed gauge is still a true pass-through of the node itself.
+        let bypass = try render(diffusion: nil, gauge: .seventyFiveMillimetre)
+        let bypassOff = try render(diffusion: .some(nil), gauge: .seventyFiveMillimetre)
+        #expect(bypass == bypassOff, "75mm must render no diffusion at all")
+    }
+
     @Test func productionStillKernelDistinguishesAllFourGaugeFootprintsAndPresence() throws {
         var measurements: [(gauge: PrintGauge, rms: Double, lag: Double)] = []
         var outputs = [[Float16]]()

@@ -20,6 +20,7 @@ final class StillFilmRenderResources {
     /// Keep this fixed with stock/gauge/seed when comparing candidate renders.
     init(stockID: String, gauge: PrintGauge, seed: UInt32, bundle: Bundle = .main,
          pushPull: PushPullExposure = .neutral,
+         diffusion: DiffusionSettings?? = nil,
          stillPresenceGain: Float? = nil) throws {
         if let stillPresenceGain, !stillPresenceGain.isFinite || stillPresenceGain < 0 {
             throw DevelopmentPhotoRenderer.RenderError.decode("Invalid still grain presence gain")
@@ -38,7 +39,15 @@ final class StillFilmRenderResources {
             throw DevelopmentPhotoRenderer.RenderError.unsupportedStock(stockID)
         }
         // One resolved recipe drives both GPU parameters and delivered metadata.
-        let config = template.overridingGauge(gauge).overridingPushPull(pushPull)
+        // `diffusion` is double-optional on purpose: `nil` keeps the gauge's own
+        // setting, `.some(.disabled)` (or `.some(nil)`) renders the same stock and
+        // gauge with the node off, for A/B. Note that a plain `nil` INSIDE the
+        // override would mean "no override" to `effectiveDiffusion`, so it is
+        // resolved to `.disabled` here instead of silently falling back.
+        var config = template.overridingGauge(gauge).overridingPushPull(pushPull)
+        if let diffusion {
+            config = config.overridingDiffusion(diffusion ?? .disabled)
+        }
         try config.validate()
         let bytes = try Data(contentsOf: grain)
         let n = 128
