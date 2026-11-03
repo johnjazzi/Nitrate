@@ -1561,7 +1561,6 @@ private struct StockSheetView: View {
     @State private var gauge: PrintGauge = .thirtyFiveMillimetre
     /// Auto is checked by default: a stock renders neutral until the meter says
     /// the scene sits over target. Turning it off hands the ladder to the user.
-    @State private var showsGaugeInfo = false
     @State private var pushPullAutomatic = true
     @State private var pushPullStops: PushPullStops = .none
 
@@ -1707,100 +1706,10 @@ private struct StockSheetView: View {
         }
     }
 
+    /// The shared gauge control (caption, info sheet, segmented picker). Develop
+    /// presents the same view, so the two surfaces cannot drift apart.
     private var gaugeCell: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
-                Text("Gauge · mm")
-                    .font(NitrateTypography.font(.caption2))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Button { showsGaugeInfo = true } label: {
-                    Image(systemName: "info.circle.fill")
-                        .font(NitrateTypography.font(.footnote))
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("stock.gaugeInfo")
-                .accessibilityLabel("What the print gauge changes")
-                Spacer(minLength: 0)
-            }
-            gaugeControl
-        }
-        .sheet(isPresented: $showsGaugeInfo) { gaugeInfoSheet }
-    }
-
-    private var gaugeControl: some View {
-        Group {
-            Picker("Print Gauge", selection: $gauge) {
-                ForEach(PrintGauge.allCases, id: \.self) { gauge in
-                    Text(gaugeShortLabel(gauge)).tag(gauge)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(height: 34)
-            .accessibilityIdentifier("stock.gauge")
-            .accessibilityValue(gauge.displayName)
-        }
-    }
-
-    /// What the gauge actually does, and what it does not. The gauge owns grain
-    /// size and presence; halation and diffusion are the stock's, not the
-    /// gauge's, and saying otherwise here would be a lie the render cannot back.
-    private var gaugeInfoSheet: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    infoSection("Print gauge",
-                        "The film format the stock is printed on. It sets the grain, "
-                        + "nothing else in the look.")
-                    infoSection("8 mm", "Coarsest and loudest. Grain reads as a texture over the frame.")
-                    infoSection("16 mm", "Coarse, about half the footprint of 8 mm.")
-                    infoSection("35 mm", "The standard look, and the middle of the ladder.")
-                    infoSection("75 mm", "Fine and nearly grain-free. The grain is made quiet "
-                        + "by lowering its presence, not by shrinking it out of existence.")
-                    Divider().overlay(Color.white.opacity(0.12))
-                    infoSection("Not changed by the gauge",
-                        "Halation and diffusion belong to the stock, not the gauge: they come "
-                        + "from the emulsion and the print, so switching gauge leaves them alone.")
-                    infoSection("Push / pull",
-                        "Develops the take at -3 to +2 stops before the grade. Pulling holds "
-                        + "the highlights down and darkens the image; pushing lifts it. It does "
-                        + "not change grain size, the gauge, or the halo.")
-                }
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .navigationTitle("Print gauge")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { showsGaugeInfo = false }
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    private func infoSection(_ title: String, _ body: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(NitrateTypography.font(.subheadline))
-                .foregroundStyle(.primary)
-            Text(body)
-                .font(NitrateTypography.font(.footnote))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    /// Segment label only: the caption above carries the unit, so four gauges fit
-    /// a third of a 320pt row without truncating.
-    private func gaugeShortLabel(_ gauge: PrintGauge) -> String {
-        gauge.displayName.replacingOccurrences(of: "mm", with: "")
+        GaugeControl(gauge: $gauge)
     }
 
     /// Adopt a stock as the local selection. ISO follows the stock; the remembered
@@ -1847,86 +1756,13 @@ private struct StockSheetView: View {
         pushPullStops = remembered.manualStops
     }
 
-    /// Push/pull as one small pill beside the gauge. Closed, the pill reads the
-    /// effective stops as a single word — PUSH, PULL or 0 — so the state is
-    /// legible without opening it, and auto and a manual 0 never look alike.
-    /// Tapping it opens the full ladder plus Auto; there is no separate toggle.
+    /// The shared push/pull pill. Develop presents the same view, so the ladder,
+    /// the Auto entry and the accessibility contract exist once.
     private var pushPullPill: some View {
-        Menu {
-            Button { chooseAutomatic() } label: {
-                if pushPullAutomatic {
-                    Label("Auto from the meter", systemImage: "checkmark")
-                } else {
-                    Text("Auto from the meter")
-                }
-            }
-            Divider()
-            ForEach(PushPullStops.allCases) { stops in
-                Button { chooseManual(stops) } label: {
-                    if !pushPullAutomatic && pushPullStops == stops {
-                        Label(stops.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(stops.displayName)
-                    }
-                }
-            }
-        } label: {
-            VStack(spacing: 2) {
-                // The word is the label above the control; the amount is what the
-                // operator reads at a glance, so it goes in the pill itself.
-                Text(resolvedPushPull.stops.effectWord)
-                    .font(NitrateTypography.font(.caption2))
-                    .fontWeight(.semibold)
-                    .kerning(0.5)
-                    .foregroundStyle(pushPullTint)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Text(resolvedPushPull.stops.displayName)
-                    .font(NitrateTypography.font(.caption2).monospacedDigit())
-                    .foregroundStyle(pushPullTint)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 30)
-                    .background(Capsule().fill(pushPullTint.opacity(0.16)))
-                    .overlay { Capsule().stroke(pushPullTint.opacity(0.6), lineWidth: 1) }
-                    .contentShape(Capsule())
-            }
-            .frame(maxWidth: .infinity)
-        }
-        .accessibilityIdentifier("stock.pushPull")
-        .accessibilityLabel("Push or pull")
-        .accessibilityValue(pushPullAccessibilityValue)
-    }
-
-    private var pushPullTint: Color {
-        let stops = resolvedPushPull.stops.stops
-        if stops > 0 { return .orange }
-        if stops < 0 { return .blue }
-        return .secondary
-    }
-
-    private var pushPullAccessibilityValue: String {
-        let effect = resolvedPushPull.isNeutral
-            ? "normal"
-            : "\(resolvedPushPull.stops.effectName) \(abs(resolvedPushPull.stops.stops)) stops"
-        return pushPullAutomatic
-            ? "\(resolvedPushPull.stops.effectWord), \(effect) from the meter"
-            : "\(resolvedPushPull.stops.effectWord), \(effect) chosen by hand"
-    }
-
-    /// Auto is a state, not a stop: the manual rung is left as dialled, so
-    /// switching back to a hand choice in the same session restores it.
-    private func chooseAutomatic() {
-        withAnimation(.easeOut(duration: 0.15)) { pushPullAutomatic = true }
-        persistPreferences()
-    }
-
-    private func chooseManual(_ stops: PushPullStops) {
-        withAnimation(.easeOut(duration: 0.15)) {
-            pushPullAutomatic = false
-            pushPullStops = stops
-        }
-        persistPreferences()
+        PushPullControl(resolved: resolvedPushPull,
+                        isAutomatic: $pushPullAutomatic,
+                        manualStops: $pushPullStops,
+                        onChange: persistPreferences)
     }
 
     /// Commits the selected stock (and its push/pull) to the take. The sheet's

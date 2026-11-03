@@ -61,6 +61,8 @@ FILE_FIXTURES: tuple[str, ...] = (
     "Resources/Shaders/pipeline.metal",
     "Resources/Shaders/spatial.metal",
     "Resources/Shaders/diffusion.metal",
+    "App/Modules/FilmStockLibrary/GaugeControl.swift",
+    "App/Modules/FilmStockLibrary/PushPullControl.swift",
     "Resources/gauges.json",
     "App/Resources/stocks.json",
     "App/Resources/gauges.json",
