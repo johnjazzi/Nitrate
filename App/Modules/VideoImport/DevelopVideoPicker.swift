@@ -32,8 +32,13 @@ struct DevelopPickedPhoto: Transferable, Sendable {
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(importedContentType: .image) { received in
             try await PhotoImportService.validateRaw(at: received.file)
+            // Keep the file's own extension. A NEF renamed to .dng would lie
+            // about the container and about which decoder opened it; the render
+            // path reads raw by capability, not by name.
+            let receivedExtension = received.file.pathExtension.lowercased()
             let url = try await VideoImportService.copyToOwnedStorage(
-                from: received.file, prefix: "photo_import", fileExtension: "dng")
+                from: received.file, prefix: "photo_import",
+                fileExtension: receivedExtension.isEmpty ? "dng" : receivedExtension)
             return DevelopPickedPhoto(transfer: DevelopVideoModel.DevelopPhotoTransfer(
                 lease: VideoImportFileLease(url: url),
                 originalFilename: received.file.lastPathComponent))

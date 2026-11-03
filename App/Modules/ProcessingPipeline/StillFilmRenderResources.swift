@@ -142,9 +142,10 @@ final class StillFilmRenderResources {
         return try image(output)
     }
 
-    func halation(_ source: CIImage) throws -> CIImage {
+    func halation(_ source: CIImage, sceneLiftStops: Float = 0) throws -> CIImage {
         let input = try texture(source)
-        guard let result = effects.applyHalation(source: input, commandQueue: queue, config: config) else {
+        guard let result = effects.applyHalation(source: input, commandQueue: queue, config: config,
+                                                 sceneLiftStops: sceneLiftStops) else {
             throw RenderError.stageFailed("photo-halation", "Still halation failed")
         }
         return try image(result)

@@ -1,4 +1,6 @@
 import Foundation
+import CoreGraphics
+import ImageIO
 import Testing
 
 @MainActor
@@ -346,6 +348,43 @@ struct DevelopPhotoSelectionTests {
         let message = model.errorMessage ?? ""
         #expect(message.contains("not a raw photo"), "the refusal must name the problem: \(message)")
         #expect(message.contains("JPEG"), "the refusal must name what it found: \(message)")
+    }
+
+    /// The gate answers "can the system's RAW pipeline develop this", not "is
+    /// the extension familiar": a JPEG carrying a raw name is refused, which a
+    /// name or UTI list alone would have waved through.
+    @Test func rawNamesDoNotCarryAJPEGPastTheGate() async throws {
+        let nefNamed = Self.jpeg(at: "IMG_0001.NEF")
+        let dngNamed = Self.jpeg(at: "IMG_0002.dng")
+        defer {
+            try? FileManager.default.removeItem(at: nefNamed)
+            try? FileManager.default.removeItem(at: dngNamed)
+        }
+        #expect(!PhotoImportService.canDevelop(nefNamed), "a JPEG named .NEF must be refused")
+        #expect(!PhotoImportService.canDevelop(dngNamed), "a JPEG named .dng must be refused")
+        #expect(PhotoImportService.canDevelop(URL(fileURLWithPath: "/nonexistent.dng")) == false)
+
+        // And the picker's gate throws the named refusal rather than copying it.
+        await #expect(throws: PhotoImportError.self) {
+            try await PhotoImportService.validateRaw(at: nefNamed)
+        }
+    }
+
+    /// A 1x1 JPEG on disk, under whatever name the test needs.
+    private static func jpeg(at name: String) -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString)-\(name)")
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        let context = CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8,
+                                bytesPerRow: 0, space: colorSpace,
+                                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        context.setFillColor(CGColor(gray: 0.5, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+        let image = context.makeImage()!
+        let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.jpeg" as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, image, nil)
+        _ = CGImageDestinationFinalize(destination)
+        return url
     }
 
     @Test func developedPhotoGrainSeedIsStablePerFile() {

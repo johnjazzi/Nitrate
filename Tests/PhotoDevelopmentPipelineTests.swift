@@ -10,6 +10,40 @@ struct PhotoDevelopmentPipelineTests {
     private final class BundleToken {}
     private final class Counter: @unchecked Sendable { var value = 0 }
 
+    /// A still that the RAW decode lifted by N stops must be measured against
+    /// knees lifted by the same factor.
+    ///
+    /// This is the bug behind "raw gets more halation than video": a ProRAW
+    /// carrying BaselineExposure +2.99 EV put an indoor wall at ~2x white, so an
+    /// ordinary lit surface cleared red's knee (1.0) and green's (2.0) on every
+    /// pixel and the whole frame bloomed orange. The fix is a knee scale, not a
+    /// weaker stock, so the halo around a true specular is unchanged.
+    @Test func liftedStillsMeasureAgainstLiftedKnees() {
+        let unlifted = SpatialEffectsStage.halationKnees(sceneLiftStops: 0)
+        #expect(unlifted == SIMD3<Float>(1, 2, 4), "video and unlifted stills keep the authored knees")
+
+        let lifted = SpatialEffectsStage.halationKnees(sceneLiftStops: 2.988)
+        let scale = pow(Float(2), Float(2.988))
+        for channel in 0..<3 {
+            #expect(abs(lifted[channel] - unlifted[channel] * scale) < 0.001)
+        }
+
+        // The measurement that matters: a wall the lift put at 2x white must not
+        // read as superwhite once the knees follow the lift.
+        let wall: Float = 2.0
+        #expect(max(0, wall - unlifted.x) > 0, "unlifted knees call a 2x wall superwhite")
+        #expect(max(0, wall - lifted.x) == 0, "lifted knees do not")
+
+        // A genuine specular still clears every layer, so the halo does not vanish.
+        let specular: Float = lifted.z * 1.5
+        #expect(specular - lifted.z > 0)
+
+        // Out-of-range and non-finite lifts cannot produce a nonsense knee.
+        #expect(SpatialEffectsStage.halationKnees(sceneLiftStops: -.infinity) == SIMD3<Float>(1, 2, 4))
+        let extreme = SpatialEffectsStage.halationKnees(sceneLiftStops: 99)
+        #expect(extreme.x.isFinite && extreme.x > 0)
+    }
+
     @Test func rawDestinationIsWritableAndPreservesLinearSamples() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())

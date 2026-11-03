@@ -11,6 +11,12 @@ final class RAWPhotoDecoder {
         let nativeSize: CGSize
         let orientedExtent: CGRect
         let settings: [String: String]
+        /// Stops of lift this decode kept from the capture (`BaselineExposure`).
+        /// The film stages need it: halation measures excess above diffuse
+        /// white, and a lifted frame's diffuse white no longer sits at 1.0.
+        let baselineExposure: Float
+        /// The file's own sensor numbers, when it is a DNG.
+        let metadata: DNGMetadata?
     }
 
     private let device: MTLDevice
@@ -105,7 +111,10 @@ final class RAWPhotoDecoder {
         settings["alpha"] = "opaque RAW"
         settings["nativeWidth"] = String(Double(raw.nativeSize.width))
         settings["nativeHeight"] = String(Double(raw.nativeSize.height))
-        return Decoded(texture: texture, linearImage: normalized, nativeSize: raw.nativeSize, orientedExtent: CGRect(origin: .zero, size: CGSize(width: extent.width, height: extent.height)), settings: settings)
+        return Decoded(texture: texture, linearImage: normalized, nativeSize: raw.nativeSize,
+                       orientedExtent: CGRect(origin: .zero, size: CGSize(width: extent.width, height: extent.height)),
+                       settings: settings, baselineExposure: dngBaselineExposure,
+                       metadata: DNGMetadata.read(url))
     }
 
     /// Shared render destination for RAW and numerical handoff regressions.

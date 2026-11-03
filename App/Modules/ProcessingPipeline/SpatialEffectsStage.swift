@@ -89,6 +89,25 @@ final class SpatialEffectsStage {
     /// letting an 11x specular swamp the graded image.
     private static let referenceSuperwhite: Float = 8.0
 
+    /// The knees above, expressed in the light a caller actually hands in.
+    ///
+    /// The knees are authored for Apple Log 2, where decoded 1.0 is 100 % scene
+    /// reflection. A still that the RAW decoder lifted by N stops is N stops
+    /// brighter in every pixel, so measuring its excess against the un-lifted
+    /// knees reports ordinary lit surfaces as superwhite: measured on a ProRAW
+    /// carrying BaselineExposure +2.99 EV, an indoor wall sat at ~2x white, so
+    /// it cleared the red AND green knees on every pixel and the whole frame
+    /// bloomed orange. Scaling the knees by the same lift measures the same
+    /// quantity the video path measures.
+    ///
+    /// `sceneLiftStops` is zero for every video frame and for any still whose
+    /// decode was not lifted, in which case this is exactly `(1, 2, 4)`.
+    static func halationKnees(sceneLiftStops: Float) -> SIMD3<Float> {
+        let lift = sceneLiftStops.isFinite ? max(-8, min(8, sceneLiftStops)) : 0
+        let scale = pow(2, lift)
+        return SIMD3(redKnee, greenKnee, blueKnee) * scale
+    }
+
     private let device: MTLDevice
     private let glowMaskPipeline: MTLComputePipelineState
     private let glowCompositePipeline: MTLComputePipelineState
@@ -149,6 +168,7 @@ final class SpatialEffectsStage {
         radiusFraction: Float,
         layerScale: SIMD3<Float>,
         diffusion: DiffusionSettings = .disabled,
+        sceneLiftStops: Float = 0,
         width: Int,
         height: Int
     ) -> MTLTexture? {
@@ -189,9 +209,10 @@ final class SpatialEffectsStage {
         // 1. Prepare: per-layer superwhite excess, and — when the diffusion node
         //    is on — the scene-linear frame it blurs, from the same decode.
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
-            var red = Self.redKnee
-            var green = Self.greenKnee
-            var blue = Self.blueKnee
+            let knees = Self.halationKnees(sceneLiftStops: sceneLiftStops)
+            var red = knees.x
+            var green = knees.y
+            var blue = knees.z
             encoder.setComputePipelineState(scene == nil ? halationMaskPipeline : scenePreparePipeline)
             encoder.setTexture(source, index: 0)
             encoder.setTexture(halationMask, index: 1)

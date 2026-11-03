@@ -119,8 +119,8 @@ struct DevelopPreview: View {
             }
             // The picker shows every image, because Photos cannot filter by file
             // type. Say up front which ones the pipeline can develop.
-            Text("Video: Apple Log 2 only. Photo: raw files (DNG) only. "
-                 + "Anything else is refused before it is copied.")
+            Text("Video: Apple Log 2 only. Photo: raw files only — DNG, NEF, ARW, "
+                 + "CR2/CR3, RAF, ORF, RW2. Anything else is refused before it is copied.")
                 .font(NitrateTypography.font(.caption2))
                 .foregroundStyle(DevelopPreviewChrome.muted)
                 .multilineTextAlignment(.center)
