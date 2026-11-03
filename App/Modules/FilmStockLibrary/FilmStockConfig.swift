@@ -81,6 +81,15 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
         return copy
     }
 
+    /// Copy with an explicit diffusion override, so one render can be compared
+    /// against the same stock and gauge with the node off. Mirrors the other
+    /// `overriding*` copies: it never discards the recipe or display metadata.
+    func overridingDiffusion(_ diffusion: DiffusionSettings?) -> FilmStockConfig {
+        var copy = self
+        copy.diffusion = diffusion
+        return copy
+    }
+
     /// Copy with a print-gauge override, so a per-shot gauge cannot discard the
     /// recipe or display metadata (mirrors `overridingISO`).
     func overridingGauge(_ gauge: PrintGauge?) -> FilmStockConfig {
