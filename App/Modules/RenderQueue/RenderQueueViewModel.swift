@@ -226,6 +226,7 @@ final class RenderQueueViewModel {
     @discardableResult
     func enqueuePhoto(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge,
                       cropZoom: Double, seed: UInt32,
+                      pushPull: PushPullExposure? = nil,
                       preferences: RenderDeliveryPreferences? = nil) -> UUID? {
         guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
         guard Self.isUsableFile(sourceURL), sourceURL.pathExtension.lowercased() == "dng",
@@ -236,8 +237,12 @@ final class RenderQueueViewModel {
         if let existing = jobs.first(where: { $0.sourceURL.standardizedFileURL == sourceURL.standardizedFileURL }) {
             return existing.isPhoto == true ? existing.id : nil
         }
+        // A still is one exposure, so an automatic pull has no meter reading to
+        // act on; the stock's persisted manual pull still applies. The resolved
+        // value is stored on the job and is what the render applies.
+        let resolvedPushPull = pushPull ?? library?.lastPushPull(for: stockId).resolved(meteredOffsetEV: nil) ?? .neutral
         var photo = RenderJob(sourceURL: sourceURL, stockId: stockId, iso: iso,
-                              printGauge: gauge, sessionId: sessionId,
+                              printGauge: gauge, pushPull: resolvedPushPull, sessionId: sessionId,
                               deliveryPreferences: preferences ?? DeliverySettings.renderPreferences())
         photo.isPhoto = true
         photo.photoCropZoom = cropZoom
@@ -612,12 +617,17 @@ final class RenderQueueViewModel {
     }
 
     private func captureReceipt(_ id: UUID, url: URL, elapsed: Double?) async -> RenderReceipt {
-        let imported = job(id)?.isImportedVideo == true
+        let job = job(id)
+        let imported = job?.isImportedVideo == true
+        // The original is read here, before delivery cleanup removes it, so the
+        // "Original" row of the metadata cards has real evidence.
+        let original = job.map { $0.sourceURL.isFileURL && Self.isUsableFile($0.sourceURL) ? $0.sourceURL : nil } ?? nil
         var receipt: RenderReceipt
         if let receiptOperation {
             receipt = await receiptOperation(url, elapsed)
         } else {
-            receipt = await RenderReceiptService.capture(url: url, renderDurationSeconds: elapsed,
+            receipt = await RenderReceiptService.capture(url: url, originalURL: original,
+                                                         renderDurationSeconds: elapsed,
                                                          includeThumbnail: !imported)
         }
         if imported { receipt.thumbnailJPEG = nil }
@@ -846,7 +856,7 @@ final class RenderQueueViewModel {
             return try await Task.detached(priority: .userInitiated) {
                 try DevelopmentPhotoRenderer.render(originalDNG: job.sourceURL, stockID: job.stockId,
                     gauge: job.printGauge ?? .neutral, seed: job.photoGrainSeed ?? 0,
-                    cropZoom: job.photoCropZoom ?? 1)
+                    cropZoom: job.photoCropZoom ?? 1, pushPull: job.pushPull ?? .neutral)
             }.value
         }
         guard let renderer else {

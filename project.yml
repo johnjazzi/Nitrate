@@ -383,6 +383,7 @@ targets:
       - path: App/Modules/RenderQueue/RenderJob.swift
       - path: App/Modules/RenderQueue/RenderReceipt.swift
       - path: App/Modules/RenderQueue/RenderReceiptService.swift
+      - path: App/Modules/RenderQueue/MetadataCardModel.swift
       - path: App/Modules/RenderQueue/RenderMediaCleanup.swift
       - path: App/Modules/RenderQueue/QueueReceiptPresentation.swift
       - path: App/Modules/RenderQueue/QueuePersister.swift

@@ -59,3 +59,18 @@ struct RenderCapturePolicy: Codable, Equatable, Sendable {
         }
     }
 }
+
+/// The slate a take belongs to: reel, scene and take number.
+///
+/// Nitrate records one take per recording today, so the shipped value is always
+/// 1/1/1. It lives here, with the capture policy, because the movie and still
+/// metadata writers both read it and neither compiles the render queue.
+struct RenderSlate: Codable, Equatable, Sendable {
+    var reel: Int
+    var scene: Int
+    var take: Int
+
+    /// The only slate the app writes: the first take of the first scene on reel
+    /// one. Stated as fact in the delivered file, never inferred by a reader.
+    static let first = RenderSlate(reel: 1, scene: 1, take: 1)
+}

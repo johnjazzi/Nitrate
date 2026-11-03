@@ -13,7 +13,15 @@ enum RenderReceiptService {
         "shutter-speed", "shutter-angle", "capture-frame-rate",
         "encoding-codec", "encoding-bitrate-target",
         "color-contract-verified", "render-settings-schema", "render-settings",
-        "source-color-validation", "capture-color-space", "source-color-test-bypass"
+        "source-color-validation", "capture-color-space", "source-color-test-bypass",
+        // Push/pull is written by the movie and still writers alike; the receipt
+        // must read it back so the metadata cards state what the file states.
+        "push-pull", "push-pull-stops", "push-pull-mode", "push-pull-linear-gain",
+        "push-pull-metered-offset-ev",
+        // Colour, balance, lens and slate cards.
+        "color-space", "white-balance-kelvin", "wb-tint",
+        "aperture-f-number", "lens", "focal-length-mm",
+        "reel", "scene", "take"
     ].map { "com.filmemulation." + $0 })
 
     private static let keyPrefix = "com.filmemulation."
@@ -23,12 +31,17 @@ enum RenderReceiptService {
     /// keeps a malformed or hostile comment from being parsed at arbitrary size.
     private static let maximumPayloadBytes = 65_536
 
-    static func capture(url: URL, renderDurationSeconds: Double?,
+    static func capture(url: URL, originalURL: URL? = nil, renderDurationSeconds: Double?,
                         includeThumbnail: Bool = true) async -> RenderReceipt {
         var receipt = RenderReceipt(renderDurationSeconds: renderDurationSeconds)
         receipt.appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         receipt.appBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
         receipt.fileSizeBytes = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map(Int64.init)
+        // Read the original while it is still on disk: cleanup removes it after
+        // delivery, and a cleaned-up job must not later invent these values.
+        if let originalURL, let original = await originalProperties(at: originalURL) {
+            receipt.original = original
+        }
         if let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
            let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any] {
             receipt.pixelWidth = properties[kCGImagePropertyPixelWidth] as? Int
@@ -87,6 +100,44 @@ enum RenderReceiptService {
             receipt.thumbnailJPEG = jpeg(result.image)
         }
         return receipt
+    }
+
+    /// The source file's own properties: the "Original Video" row of the
+    /// metadata cards. A still source (DNG/JPEG) answers from ImageIO, a movie
+    /// from its video track. Unreadable sources return nil rather than a guess.
+    static func originalProperties(at url: URL) async -> RenderReceipt.Original? {
+        guard let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size > 0 else {
+            return nil
+        }
+        var original = RenderReceipt.Original(fileSizeBytes: Int64(size))
+        if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] {
+            original.codec = CGImageSourceGetType(source) as String?
+            original.pixelWidth = properties[kCGImagePropertyPixelWidth] as? Int
+            original.pixelHeight = properties[kCGImagePropertyPixelHeight] as? Int
+            return original.codec != nil ? original : nil
+        }
+        let asset = AVURLAsset(url: url)
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first else { return nil }
+        if let natural = try? await track.load(.naturalSize),
+           let transform = try? await track.load(.preferredTransform) {
+            let upright = CGRect(origin: .zero, size: natural).applying(transform)
+            if upright.width.isFinite, upright.height.isFinite,
+               abs(upright.width) > 0, abs(upright.height) > 0 {
+                original.pixelWidth = Int(abs(upright.width).rounded())
+                original.pixelHeight = Int(abs(upright.height).rounded())
+            }
+        }
+        if let fps = try? await track.load(.nominalFrameRate), fps.isFinite, fps > 0 {
+            original.framesPerSecond = Double(fps)
+        }
+        if let description = try? await track.load(.formatDescriptions).first {
+            let code = CMFormatDescriptionGetMediaSubType(description)
+            let bytes = [UInt8((code >> 24) & 255), UInt8((code >> 16) & 255),
+                         UInt8((code >> 8) & 255), UInt8(code & 255)]
+            original.codec = String(bytes: bytes, encoding: .ascii)
+        }
+        return original
     }
 
     /// The shared recipe a delivered still states in EXIF UserComment, keyed the
