@@ -34,7 +34,13 @@ enum DevelopmentPhotoRenderer {
         }
         let oriented = decoded.cropped(to: crop).transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
         let inputSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
-        let finished = try develop(linearImage: oriented, film: film, resourcesURL: resourcesURL)
+        // The decode keeps the capture's BaselineExposure so the still matches
+        // the brightness of the Log 2 take from the same shot. Halation has to
+        // know about that lift, or every lit surface in the frame reads as
+        // superwhite and the whole photo blooms (measured: +2.99 EV on ProRAW).
+        let finished = try develop(linearImage: oriented, film: film,
+                                   sceneLiftStops: decodedRAW.baselineExposure,
+                                   resourcesURL: resourcesURL)
         // LUT output is Rec.709 gamma 2.4. Decode it before the final sRGB encoding.
         let linear709 = try FilmOutputDisplayConverter.linearImage(fromGamma24: finished)
         guard let srgb = CGColorSpace(name: CGColorSpace.sRGB) else { throw RenderError.decode("sRGB unavailable") }
@@ -52,7 +58,8 @@ enum DevelopmentPhotoRenderer {
         var properties: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.94]
         for (key, value) in try PhotoDeliveryMetadata.properties(
             config: film.config, capture: capture,
-            deliveredSize: CGSize(width: cg.width, height: cg.height)) {
+            deliveredSize: CGSize(width: cg.width, height: cg.height),
+            raw: decodedRAW.metadata, sceneLiftStops: decodedRAW.baselineExposure) {
             properties[key] = value
         }
         CGImageDestinationAddImage(sink, cg, properties as CFDictionary)
@@ -69,9 +76,10 @@ enum DevelopmentPhotoRenderer {
     }
 
     /// The same stages used by DNG delivery, exposed to actual GPU regressions.
-    static func develop(linearImage: CIImage, film: StillFilmRenderResources, resourcesURL: URL? = nil) throws -> CIImage {
+    static func develop(linearImage: CIImage, film: StillFilmRenderResources,
+                        sceneLiftStops: Float = 0, resourcesURL: URL? = nil) throws -> CIImage {
         let prepared = try RAWToLog2Stage.apply(linearImage)
-        let halated = try film.halation(prepared)
+        let halated = try film.halation(prepared, sceneLiftStops: sceneLiftStops)
         let graded = try film.grade(halated, resourcesURL: resourcesURL)
         return try film.glowAndGrain(graded)
     }

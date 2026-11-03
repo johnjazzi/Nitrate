@@ -63,8 +63,15 @@ enum PhotoDeliveryMetadata {
 
     /// ImageIO properties for the delivered JPEG, merged over the encoder's own
     /// compression settings by the caller.
+    /// - Parameter raw: the DNG's own sensor numbers, when the delivered file
+    ///   came from one. Reported only; nothing branches on them.
+    /// - Parameter sceneLiftStops: how far the decode lifted this frame, which
+    ///   is also the factor the halation knees were scaled by. Recorded so a
+    ///   render can be audited instead of trusted.
     static func properties(config: FilmStockConfig, capture: StillCapture,
-                           deliveredSize: CGSize) throws -> [CFString: Any] {
+                           deliveredSize: CGSize,
+                           raw: DNGMetadata? = nil,
+                           sceneLiftStops: Float? = nil) throws -> [CFString: Any] {
         let orientation = RenderDeliveryOrientation.from(naturalSize: deliveredSize,
                                                         preferredTransform: .identity)
         let caption = RenderConsumerMetadata.caption(stockName: config.displayName,
@@ -85,6 +92,17 @@ enum PhotoDeliveryMetadata {
         }
         if let focalLength = capture.focalLengthMM, focalLength.isFinite, focalLength > 0 {
             overrides["focal-length-mm"] = String(focalLength)
+        }
+        if let sceneLiftStops, sceneLiftStops.isFinite, sceneLiftStops != 0 {
+            overrides["halation-scene-lift-ev"] = String(format: "%.2f", sceneLiftStops)
+        }
+        // The share of the stock's halation strength the still render applied.
+        overrides["halation-still-scale"] = String(format: "%.2f", config.effectiveStillHalationScale)
+        if let whiteLevel = raw?.usableWhiteLevel {
+            overrides["raw-white-level"] = String(format: "%.0f", whiteLevel)
+        }
+        if let model = raw?.model ?? raw?.uniqueCameraModel {
+            overrides["raw-camera-model"] = model
         }
         let values = try RenderMovieMetadata.recipeValues(config: config,
             overrides: overrides, omitting: movieOnlyKeys)

@@ -30,8 +30,21 @@ final class DevelopVideoModel {
     /// Validates a transferred clip. Injected at init so tests drive the inspect
     /// transition without a real Apple Log movie.
     typealias InspectOperation = @MainActor (_ url: URL, _ originalFilename: String) async throws -> ImportedVideo
+    /// Moves a picked photo into app-owned storage, and validates it.
+    typealias PhotoTransferOperation = @MainActor () async throws -> DevelopPhotoTransfer
+    typealias PhotoInspectOperation = @MainActor (_ url: URL, _ originalFilename: String) async throws -> ImportedPhoto
+
+    /// A picked photo moved into app-owned storage, the counterpart of `video`.
+    /// Exactly one of the two is set.
+    struct DevelopPhotoTransfer: Sendable {
+        let lease: VideoImportFileLease
+        let originalFilename: String
+
+        var url: URL { lease.url }
+    }
 
     private(set) var video: ImportedVideo?
+    private(set) var photo: ImportedPhoto?
     private(set) var isLoading = false
     private(set) var errorMessage: String?
     /// The accepted render job. Survives a new selection while it is pending or
@@ -40,18 +53,24 @@ final class DevelopVideoModel {
 
     private let queue: RenderQueueViewModel
     private let inspect: InspectOperation
+    private let inspectPhoto: PhotoInspectOperation
     @ObservationIgnored private var lease: VideoImportFileLease?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var transferProgress: Progress?
     @ObservationIgnored private var selectionTask: Task<Void, Never>?
     @ObservationIgnored private var pendingTransfer: (token: UUID, operation: TransferOperation)?
+    @ObservationIgnored private var pendingPhotoTransfer: (token: UUID, operation: PhotoTransferOperation)?
 
     init(queue: RenderQueueViewModel,
          inspect: @escaping InspectOperation = { url, originalFilename in
              try await VideoImportService.inspect(url: url, originalFilename: originalFilename)
+         },
+         inspectPhoto: @escaping PhotoInspectOperation = { url, originalFilename in
+             try await PhotoImportService.inspect(url: url, originalFilename: originalFilename)
          }) {
         self.queue = queue
         self.inspect = inspect
+        self.inspectPhoto = inspectPhoto
     }
 
     // MARK: - Selection
@@ -80,6 +99,22 @@ final class DevelopVideoModel {
         }
     }
 
+    /// The photo half of the same seam: pick, transfer, validate, accept. The
+    /// picked image is only accepted once it is a raw file the still renderer can
+    /// develop, and only then is it copied into app storage.
+    func selectPhoto(transfer: @escaping PhotoTransferOperation) {
+        clearSettledJobReference()
+        cancelSelection()
+        let token = generation
+        photo = nil
+        errorMessage = nil
+        isLoading = true
+        pendingPhotoTransfer = (token, transfer)
+        selectionTask = Task { @MainActor [weak self] in
+            await self?.runPhotoSelection(token: token)
+        }
+    }
+
     /// Cancel the in-flight transfer / inspection. The unqueued file is released
     /// by its lease; an already accepted queue job is never touched.
     func cancelSelection() {
@@ -87,6 +122,7 @@ final class DevelopVideoModel {
         selectionTask?.cancel()
         selectionTask = nil
         pendingTransfer = nil
+        pendingPhotoTransfer = nil
         transferProgress?.cancel()
         transferProgress = nil
         lease = nil
@@ -98,7 +134,31 @@ final class DevelopVideoModel {
     func leaveDevelop() {
         cancelSelection()
         video = nil
+        photo = nil
         errorMessage = nil
+    }
+
+    private func runPhotoSelection(token: UUID) async {
+        guard let pending = pendingPhotoTransfer, pending.token == token else { return }
+        let transfer = pending.operation
+        do {
+            let picked = try await transfer()
+            guard token == generation else { return }
+            let inspected = try await inspectPhoto(picked.url, picked.originalFilename)
+            guard token == generation else { return }
+            lease = picked.lease
+            photo = inspected
+            isLoading = false
+            finish(token)
+        } catch {
+            guard token == generation else { return }
+            lease = nil
+            photo = nil
+            isLoading = false
+            errorMessage = (error as? LocalizedError)?.errorDescription
+                ?? "Choose a raw photo that can be developed."
+            finish(token)
+        }
     }
 
     private func runSelection(token: UUID) async {
@@ -145,7 +205,9 @@ final class DevelopVideoModel {
     /// active. Prevents a duplicate active render.
     func canRender(stock: FilmStockConfig?, queue: RenderQueueViewModel) -> Bool {
         guard let stock, !stock.stockId.isEmpty else { return false }
-        guard !isLoading, let video, lease?.url == video.url else { return false }
+        guard !isLoading else { return false }
+        let selected = video?.url ?? photo?.url
+        guard let selected, lease?.url == selected else { return false }
         return !isRenderActive(in: queue)
     }
 
@@ -160,7 +222,26 @@ final class DevelopVideoModel {
     func render(stock: FilmStockConfig, iso: Float, gauge: PrintGauge,
                 pushPull: PushPullExposure? = nil,
                 queue: RenderQueueViewModel) -> UUID? {
-        guard canRender(stock: stock, queue: queue), let video else { return nil }
+        guard canRender(stock: stock, queue: queue) else { return nil }
+        if let photo {
+            // A developed raw keeps its own exposure index when the file carries
+            // one: the DNG recorded it, so the render states what was shot rather
+            // than the stock's default.
+            guard let id = queue.enqueuePhoto(sourceURL: photo.url, stockId: stock.stockId,
+                                              iso: photo.iso ?? stock.defaultISO, gauge: gauge,
+                                              cropZoom: 1, seed: Self.grainSeed(for: photo),
+                                              pushPull: pushPull) else {
+                errorMessage = queue.rendererErrorMessage ?? "Could not queue the photo. Try again."
+                return nil
+            }
+            lease?.transferToQueue()
+            lease = nil
+            self.photo = nil
+            errorMessage = nil
+            activeJobID = id
+            return id
+        }
+        guard let video else { return nil }
         guard let id = queue.enqueueImportedVideo(sourceURL: video.url, stockId: stock.stockId,
                                                   iso: iso, gauge: gauge, pushPull: pushPull) else {
             errorMessage = queue.rendererErrorMessage ?? "Could not queue the video. Try again."
@@ -172,6 +253,18 @@ final class DevelopVideoModel {
         errorMessage = nil
         activeJobID = id
         return id
+    }
+
+    /// A stable grain seed per imported photo, so re-developing the same file
+    /// reproduces the same grain instead of reshuffling it. Pure arithmetic, so
+    /// it is not actor-isolated with the model.
+    nonisolated static func grainSeed(for photo: ImportedPhoto) -> UInt32 {
+        var hash: UInt32 = 2_166_136_261
+        for byte in photo.url.lastPathComponent.utf8 {
+            hash ^= UInt32(byte)
+            hash = hash &* 16_777_619
+        }
+        return hash
     }
 
     private func isRenderActive(in queue: RenderQueueViewModel) -> Bool {

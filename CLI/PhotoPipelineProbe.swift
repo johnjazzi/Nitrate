@@ -31,6 +31,21 @@ enum PhotoPipelineProbe {
         if let nativeRAW = CIRAWFilter(imageURL: input), let nativeImage = nativeRAW.outputImage {
             try inspect("00-native-raw", nativeImage)
         }
+        if let metadata = decoded.metadata {
+            print(String(format: "RAW-DNG version=%@ make=%@ model=%@ white=%@ black=%@ baseline=%@ usableWhite=%@",
+                         metadata.dngVersion ?? "-", metadata.make ?? "-", metadata.model ?? "-",
+                         metadata.whiteLevel.map { String(format: "%.0f", $0) } ?? "-",
+                         metadata.blackLevel.map { String(format: "%.1f", $0) }.joined(separator: ","),
+                         metadata.baselineExposure.map { String(format: "%.3f", $0) } ?? "-",
+                         metadata.usableWhiteLevel.map { String(format: "%.0f", $0) } ?? "-"))
+        } else {
+            print("RAW-DNG not a DNG container (CIRAWFilter paths only)")
+        }
+        print(String(format: "RAW-LIFT baselineExposure=%.3f halationKnees=%.2f/%.2f/%.2f",
+                     decoded.baselineExposure,
+                     SpatialEffectsStage.halationKnees(sceneLiftStops: decoded.baselineExposure).x,
+                     SpatialEffectsStage.halationKnees(sceneLiftStops: decoded.baselineExposure).y,
+                     SpatialEffectsStage.halationKnees(sceneLiftStops: decoded.baselineExposure).z))
         print("RAW settings: \(decoded.settings)")
         try inspect("00-configured-raw", decoded.linearImage)
         try inspect("01-raw", raw)
@@ -46,7 +61,7 @@ enum PhotoPipelineProbe {
             print(String(format: "PHOTO-NOISE linear: chromaSigma %.5f lumaSigma %.5f detail %.5f mean %.4f",
                          stats.chroma, stats.luma, stats.detail, stats.mean))
         }
-        let halation = try film.halation(log)
+        let halation = try film.halation(log, sceneLiftStops: decoded.baselineExposure)
         try inspect("03-halation", halation)
         let graded = try film.grade(halation)
         try inspect("04-graded", graded)

@@ -30,13 +30,17 @@ final class StillFilmEffectsStage {
     }
 
     /// Shared physical halation entry point. Source is Apple Log 2 RGBA16Float.
+    /// `sceneLiftStops` is how far the RAW decode lifted this frame. Halation
+    /// measures excess above diffuse white, so a lifted still has to be measured
+    /// against lifted knees; see `SpatialEffectsStage.halationKnees`.
     func applyHalation(source: MTLTexture, commandQueue: MTLCommandQueue,
-                       config: FilmStockConfig) -> MTLTexture? {
+                       config: FilmStockConfig, sceneLiftStops: Float = 0) -> MTLTexture? {
         guard source.pixelFormat == .rgba16Float else { return nil }
         return spatial.applyHalation(source: source, commandQueue: commandQueue,
-                                     strength: config.halationStrength,
+                                     strength: config.halationStrength * config.effectiveStillHalationScale,
                                      radiusFraction: config.halationRadiusFraction,
                                      layerScale: config.halationTint,
+                                     sceneLiftStops: sceneLiftStops,
                                      width: source.width, height: source.height)
     }
 

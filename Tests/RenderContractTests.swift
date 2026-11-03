@@ -214,6 +214,49 @@ struct RenderContractTests {
         }
     }
 
+    /// A still gets a smaller share of the same halation model than a take.
+    ///
+    /// Both are measured in the same scene light now that the knees follow the
+    /// RAW decode's lift, and the still still read hot: a take spends a 24th of
+    /// a second with the halo next to motion, while a still is held in front of
+    /// the viewer. The share is catalog data, not a second code path, and the
+    /// take's own strength must be untouched by it.
+    @Test func shippedStocksGiveStillsASmallerShareOfTheSameHalation() throws {
+        for path in ["App/Resources/stocks.json", "Resources/stocks.json"] {
+            for stock in try stocks(path) {
+                #expect(stock.effectiveStillHalationScale == 0.5,
+                        "\(stock.stockId): the still share ships at 0.5")
+                #expect(stock.halationStrength == 2.52,
+                        "\(stock.stockId): the take's strength is not the lever")
+            }
+        }
+        // A document written before the key existed keeps the take's strength:
+        // take a shipped stock, drop the key, and decode it again.
+        let shipped = try Data(contentsOf: TestRepository.root
+            .appendingPathComponent("App/Resources/stocks.json"))
+        var document = try #require(try JSONSerialization.jsonObject(with: shipped) as? [String: Any])
+        var list = try #require(document["stocks"] as? [[String: Any]])
+        list = list.map { stock in
+            var copy = stock
+            copy.removeValue(forKey: "stillHalationScale")
+            return copy
+        }
+        document["stocks"] = list
+        struct Container: Decodable { let stocks: [FilmStockConfig] }
+        let legacy = try #require(try JSONSerialization.data(withJSONObject: document) as Data?)
+        let decoded = try JSONDecoder().decode(Container.self, from: legacy)
+        for stock in decoded.stocks {
+            #expect(stock.stillHalationScale == nil)
+            #expect(stock.effectiveStillHalationScale == 1,
+                    "\(stock.stockId): an absent key means the take's full strength")
+        }
+
+        // Out of range is refused rather than silently clamping a look.
+        var broken = try #require(try stocks("App/Resources/stocks.json").first)
+        broken.stillHalationScale = 1.5
+        #expect(throws: (any Error).self) { try broken.validate() }
+    }
+
     /// The requested 30% reduction applies to halation TOTAL AMOUNT only, and only in the
     /// catalogs: the radius (0.001), the layer weights and every glow/grain/contrast setting
     /// are untouched, and no code path reapplies the reduction. The preview and the renderer

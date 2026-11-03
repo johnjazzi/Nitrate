@@ -203,7 +203,9 @@ struct StockSheetLayoutTests {
 
     @Test func theClosedPillIsOneWordInItsFixedSlot() throws {
         let body = try sheetBody()
-        #expect(body.contains("resolvedPushPull.stops.effectWord"),
+        // The shared component reads the exposure its caller resolved, so auto
+        // still tracks the meter.
+        #expect(body.contains("resolved.stops.effectWord"),
                 "The pill must read the effective stops, so auto tracks the meter.")
         #expect(body.contains("pushPullPill.frame(width: widths.pushPull)"),
                 "The pill keeps its fixed fifth of the row instead of sizing to the word.")
@@ -211,8 +213,20 @@ struct StockSheetLayoutTests {
 
     // MARK: - Source helpers
 
+    /// The gauge and push/pull surfaces are shared components now, so their
+    /// identifiers, menu and labels live in their own files. The contract is
+    /// about the surface, not about which file hosts it: read all three.
+    private func sharedSurface() throws -> String {
+        let paths = ["App/ContentView.swift",
+                     "App/Modules/FilmStockLibrary/GaugeControl.swift",
+                     "App/Modules/FilmStockLibrary/PushPullControl.swift"]
+        return try paths.map {
+            try String(contentsOf: TestRepository.url(for: $0), encoding: .utf8)
+        }.joined(separator: "\n")
+    }
+
     private func sheetBody() throws -> String {
-        let source = try String(contentsOf: TestRepository.url(for: "App/ContentView.swift"), encoding: .utf8)
+        let source = try sharedSurface()
         let sheet = try #require(source.range(of: "private struct StockSheetView"))
         return String(source[sheet.lowerBound...])
     }

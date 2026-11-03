@@ -53,9 +53,9 @@ jobs:
   xcode:
     name: Xcode build and tests
     runs-on: ubuntu-latest
-    # Longer than the 600 s alert deadline so the monitor's own deadline failure
+    # Longer than the alert deadline below so the monitor's own deadline failure
     # fires before the runner is killed.
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       XCODE_CLOUD_WORKFLOW_ID: ${{ vars.XCODE_CLOUD_TEST_WORKFLOW_ID }}
       APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
@@ -118,4 +118,4 @@ jobs:
             --role test \
             --expected-sha "$CLOUD_EXPECTED_SHA" \
             --branch "$CLOUD_BRANCH" \
-            --alert-deadline 600
+            --alert-deadline 1080

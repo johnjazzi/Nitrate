@@ -7,11 +7,13 @@ name: Xcode Cloud monitor
 # release archive is a deliberate, human-started delivery step and because the
 # App Store Connect API has NO cancel endpoint and NO timeout field (verified
 # against the official OpenAPI 4.5.1 spec: 0 of 1303 operations cancel;
-# /v1/ciBuildRuns/{id} is GET only). At the 600 s alert deadline it fails loudly
-# and asks a human to cancel in App Store Connect; the Actions job failure is the
-# notification channel. No email is promised. The job timeout (15 min) is
-# deliberately longer than the 600 s alert so the alert fires before the runner
-# is killed.
+# /v1/ciBuildRuns/{id} is GET only). At the alert deadline it fails loudly and
+# asks a human to cancel in App Store Connect; the Actions job failure is the
+# notification channel. No email is promised. The deadline is 18 minutes because
+# the macOS test run itself takes about ten: a 600 s deadline fired on a healthy
+# run whose only sin was queuing, so it now leaves room for the queue instead of
+# reporting a false alarm. The job timeout (25 min) is deliberately longer than
+# the deadline so the alert fires before the runner is killed.
 #
 # The TEST (RenderCLI) role no longer lives here. The automatic test monitor is
 # `.github/workflows/xcode.yml`, which preserves the required "Xcode build and
@@ -70,7 +72,7 @@ jobs:
   main-archive:
     name: Cloud main archive monitor
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       XCODE_CLOUD_WORKFLOW_ID: ${{ inputs.workflow_id != '' && inputs.workflow_id || vars.XCODE_CLOUD_RELEASE_WORKFLOW_ID }}
       APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
@@ -100,7 +102,7 @@ jobs:
         env:
           APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
         run: |
-          args=(start --role "$CLOUD_ROLE" --expected-sha "$CLOUD_EXPECTED_SHA" --alert-deadline 600)
+          args=(start --role "$CLOUD_ROLE" --expected-sha "$CLOUD_EXPECTED_SHA" --alert-deadline 1080)
           if [ -n "$CLOUD_PULL_REQUEST" ]; then
             args+=(--pull-request "$CLOUD_PULL_REQUEST")
           else

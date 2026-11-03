@@ -236,9 +236,11 @@ final class RenderQueueViewModel {
                       pushPull: PushPullExposure? = nil,
                       preferences: RenderDeliveryPreferences? = nil) -> UUID? {
         guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
-        guard Self.isUsableFile(sourceURL), sourceURL.pathExtension.lowercased() == "dng",
+        // Any raw the still renderer can develop, not only a DNG: the importer
+        // already proved the file opens through the system RAW pipeline.
+        guard Self.isUsableFile(sourceURL), PhotoImportService.isRaw(sourceURL),
               iso.isFinite, iso > 0, cropZoom.isFinite, cropZoom >= 1 else {
-            reportRenderError("The captured photo or its settings could not be read. Original DNG kept locally.")
+            reportRenderError("The captured photo or its settings could not be read. Original kept locally.")
             return nil
         }
         if let existing = jobs.first(where: { $0.sourceURL.standardizedFileURL == sourceURL.standardizedFileURL }) {
