@@ -1547,7 +1547,8 @@ private struct StockSheetView: View {
                 GeometryReader { proxy in
                     let rows = StockSheetLayout.rows(forAvailableHeight: proxy.size.height)
                     VStack(spacing: StockSheetLayout.rowSpacing) {
-                        StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge)
+                        StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge,
+                                            pushPullStops: resolvedPushPull.stops.stops)
                             .frame(maxWidth: .infinity)
                             .frame(height: rows.preview)
                             .clipped()
