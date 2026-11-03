@@ -75,11 +75,6 @@ enum ReceiptMetadataCards {
                          value: pushPullValue(metadata, job: job))
         ])
 
-        let diffusion = MetadataRow(id: "diffusion", cells: [
-            MetadataCell(id: "diffusion-value", label: "Diffusion",
-                         value: diffusionValue(metadata, job: job))
-        ])
-
         let colorSpace = MetadataRow(id: "color-space", cells: [
             MetadataCell(id: "color-space-value", label: "Color Space", value: text(metadata["com.filmemulation.color-space"]))
         ])
@@ -96,7 +91,7 @@ enum ReceiptMetadataCards {
 
         return [
             MetadataCard(id: "file", rows: [delivered, original, created]),
-            MetadataCard(id: "exposure", rows: [exposure, pushPull, diffusion]),
+            MetadataCard(id: "exposure", rows: [exposure, pushPull]),
             MetadataCard(id: "color", rows: [colorSpace]),
             MetadataCard(id: "lens", rows: [lens, slate]),
             // No notes card: the owner does not want a free-text field here.
@@ -186,6 +181,10 @@ enum ReceiptMetadataCards {
 
     /// "35px · 0.40" for a live node, "Off" when the file says it was bypassed,
     /// and a blank for a legacy file that never recorded the node at all.
+    ///
+    /// Read by the render record rather than the compact cards: diffusion is a
+    /// technical setting, so it belongs with the gauge and effect levels, not in
+    /// the at-a-glance card row.
     static func diffusionValue(_ metadata: [String: String], job: RenderJob) -> String {
         if let raw = metadata["com.filmemulation.diffusion-preset"],
            let preset = DiffusionPreset(rawValue: raw) {
