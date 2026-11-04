@@ -53,6 +53,9 @@ final class DevelopVideoModel {
     /// Files held before rendering, so one set of settings can be chosen for all
     /// of them.
     private(set) var bulk = BulkStaging()
+    /// A file loaded back from the queue for re-development. It has no lease —
+    /// the queue already owns it — so it must satisfy `canRender` another way.
+    private(set) var adoptedURL: URL?
 
     private let queue: RenderQueueViewModel
     private let inspect: InspectOperation
@@ -243,6 +246,7 @@ final class DevelopVideoModel {
             guard token == generation else { return }
             photo = inspected
             video = nil
+            adoptedURL = url
             isLoading = false
             finish(token)
         } catch {
@@ -259,6 +263,7 @@ final class DevelopVideoModel {
     /// by its lease; an already accepted queue job is never touched.
     func cancelSelection() {
         generation = UUID()
+        adoptedURL = nil
         selectionTask?.cancel()
         selectionTask = nil
         pendingTransfer = nil
@@ -347,7 +352,11 @@ final class DevelopVideoModel {
         guard let stock, !stock.stockId.isEmpty else { return false }
         guard !isLoading else { return false }
         let selected = video?.url ?? photo?.url
-        guard let selected, lease?.url == selected else { return false }
+        guard let selected else { return false }
+        // A freshly picked file must still hold its lease, or it may have been
+        // discarded. An ADOPTED file (re-develop) is owned by the queue instead,
+        // and that is why this used to leave Develop's button disabled.
+        guard lease?.url == selected || adoptedURL == selected else { return false }
         return !isRenderActive(in: queue)
     }
 
@@ -364,6 +373,20 @@ final class DevelopVideoModel {
                 queue: RenderQueueViewModel) -> UUID? {
         guard canRender(stock: stock, queue: queue) else { return nil }
         if let photo {
+            // A re-developed file already has a job, and enqueueing it again would
+            // just hand back that job and render nothing. Re-render it in place
+            // with the settings chosen now.
+            if let existing = queue.jobs.first(where: {
+                $0.sourceURL.standardizedFileURL == photo.url.standardizedFileURL
+            }), existing.status == .completed || existing.status == .failed {
+                queue.redevelopPhotos(jobIds: [existing.id], stockId: stock.stockId,
+                                      gauge: gauge, pushPull: pushPull)
+                self.photo = nil
+                adoptedURL = nil
+                errorMessage = nil
+                activeJobID = existing.id
+                return existing.id
+            }
             // A developed raw keeps its own exposure index when the file carries
             // one: the DNG recorded it, so the render states what was shot rather
             // than the stock's default.

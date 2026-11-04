@@ -308,6 +308,54 @@ struct DevelopPhotoSelectionTests {
         }
     }
 
+    /// A re-developed file must leave Develop's button ENABLED and must actually
+    /// render again — the adopted file has no lease (the queue owns it), and the
+    /// job already exists, so both the enable check and the enqueue used to
+    /// silently do nothing.
+    @MainActor @Test func readoptingAPhotoEnablesDevelopAndRendersAgain() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("readopt-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("photo_import_A.dng")
+        try Data([1]).write(to: source)
+
+        let queue = RenderQueueViewModel(persistenceURL: folder.appendingPathComponent("q.json"),
+            render: { _ in
+                let out = folder.appendingPathComponent("out-\(UUID().uuidString).jpg")
+                try Data([2]).write(to: out)
+                return out
+            }, save: { _ in })
+        let model = DevelopVideoModel(queue: queue, inspectPhoto: { url, _ in Self.photo(url) })
+        let stock = FilmStockConfig(stockId: "kodak5207", displayName: "5207", category: .video,
+                                    lutName: "x.cube", halationStrength: 2.52, glowStrength: 0.1,
+                                    grainSize: 1, defaultISO: 250)
+
+        // Develop it once.
+        let first = try #require(queue.enqueuePhoto(sourceURL: source, stockId: stock.stockId,
+                                                    iso: 250, gauge: .neutral, cropZoom: 1,
+                                                    seed: 1, isImported: true))
+        for _ in 0..<400 where queue.jobs.first?.status != .completed {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(queue.jobs.first?.status == .completed)
+
+        // Re-develop: back to step one with the same file.
+        await model.adoptExistingPhoto(url: source, originalFilename: "A.dng")
+        #expect(model.photo?.url == source)
+        #expect(model.canRender(stock: stock, queue: queue),
+                "an adopted file has no lease; the button must still be enabled")
+
+        // Pressing Develop renders again instead of returning the finished job.
+        let id = try #require(model.render(stock: stock, iso: 250, gauge: .eightMillimetre, queue: queue))
+        #expect(id == first, "the same job is re-rendered, not duplicated")
+        for _ in 0..<400 where queue.jobs.first?.printGauge != .eightMillimetre {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(queue.jobs.first?.printGauge == .eightMillimetre,
+                "the re-develop applies the settings chosen on the second visit")
+    }
+
     /// The refusal must not wait for a decode: a picked JPEG or HEIC is named in
     /// its first bytes, and a raw container is a TIFF.
     @Test func renderedImagesAreRecognisedWithoutADecoder() throws {
