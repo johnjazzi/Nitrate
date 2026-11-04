@@ -378,8 +378,14 @@ struct PhotoDevelopmentPipelineTests {
         let on = try render(diffusion: nil, gauge: .eightMillimetre)
         #expect(off != on, "the still renderer must pass the gauge's diffusion through")
 
-        // The dark side of the edge gains light from the bright side.
-        let darkBand = 8..<(width / 2 - 8)
+        // The dark side of the edge gains light from the bright side — and it
+        // gains it WHERE the scatter lands. A ~4.7 px sigma at this width puts
+        // the scattered light within a few pixels of the edge; an average lift
+        // spread evenly across the whole dark side is not a diffuser, it is the
+        // unphysical skirt a coarse ladder level puts around a highlight (see
+        // DiffusionHighlightProfileTests, which pins the radial shape). Measured
+        // over the band that actually receives the light.
+        let darkBand = (width / 2 - 10)..<(width / 2 - 2)
         let darkOff = darkBand.map { off[$0] }.reduce(0, +) / Double(darkBand.count)
         let darkOn = darkBand.map { on[$0] }.reduce(0, +) / Double(darkBand.count)
         // Shipped stills mix half the take's amount (`stillDiffusionScale` 0.5),

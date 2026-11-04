@@ -193,6 +193,14 @@ struct DiffusionSettings: Equatable, Sendable, Codable {
 ///    Gaussian's, which is what makes the result behave like one wide blur
 ///    rather than the sum of unrelated blurs.
 ///
+/// A level is only a blur if that kernel spans MORE THAN ONE of the level's own
+/// texels (see `minLevelKernelSigma`). Narrower than that and the separable
+/// pass is a nearest filter: the level returns its texel grid, the bilinear
+/// upsample turns each texel into a flat plateau, and the "blur" the ladder
+/// delivers is a stack of texel-sized boxes with hard edges — which is exactly
+/// what a diffuser never does. The depth is therefore bounded by the kernel as
+/// well as by the tap budget.
+///
 /// The small radii therefore run as a single direct separable pass, and the wide
 /// ones reach through the pyramid — the hybrid the two halves of the ladder each
 /// want.
@@ -202,6 +210,17 @@ struct DiffusionPlan: Equatable, Sendable {
     static let maxLevels = 4
     /// Hard cap on taps per axis per pass; the kernel truncates and renormalizes.
     static let maxTaps = 33
+    /// Least kernel sigma, in a level's OWN texels, that still reads as a blur.
+    ///
+    /// Every level runs the same kernel, so a level only averages its own grid
+    /// if that kernel spans more than a texel of it. Below one texel the
+    /// separable pass is a nearest filter: the level hands its texel grid back
+    /// unchanged, bilinear upsampling turns each texel into a flat plateau with
+    /// a hard edge, and the summed ladder answers an isolated highlight with a
+    /// stack of blocky discs instead of a smooth radial scatter. The ladder is
+    /// therefore only allowed to reach as deep as this permits — a deeper one
+    /// that cannot afford a real kernel is not cheaper, it is wrong.
+    static let minLevelKernelSigma: Float = 1.25
     /// Width the authored radii are expressed at.
     static let referenceWidth: Float = 1920
 
@@ -243,6 +262,10 @@ struct DiffusionPlan: Equatable, Sendable {
             }
             let correction = 1 / variance.squareRoot()
             let kernelSigma = correction * target / powf(2, Float(levels - 1))
+            // A level whose kernel is narrower than its own texel is not a
+            // blur at all; see `minLevelKernelSigma`. The depth is bounded by
+            // that, not by the tap count.
+            guard kernelSigma >= minLevelKernelSigma else { continue }
             let taps = tapCount(for: kernelSigma)
             let cost = perPixelCost(taps: taps, levels: levels)
             if cost < chosen.cost {

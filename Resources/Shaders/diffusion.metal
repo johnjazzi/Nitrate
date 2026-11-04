@@ -17,6 +17,14 @@ using namespace metal;
 /// reach comes from the pyramid, so the tap count is a constant bounded by
 /// `DiffusionPlan.maxTaps` no matter how wide the filter is.
 ///
+/// The ladder is only an approximation of ONE smooth spread, and it stops being
+/// one when a level cannot afford a real kernel: below about a texel the
+/// separable pass is a nearest filter, so the level hands its texel grid back,
+/// bilinear upsampling turns each texel into a flat plateau, and the summed
+/// result is a hard-edged disc around every highlight instead of a halo.
+/// `DiffusionPlan` bounds the depth for that reason — these kernels assume every
+/// level they run on is genuinely blurred.
+///
 /// The three kernels here are the whole cost:
 ///   `diffusion_downsample` - 3x3 tent, one octave down (clamped edges),
 ///   `diffusion_blur`       - one separable pass, at most `maxTaps` taps,

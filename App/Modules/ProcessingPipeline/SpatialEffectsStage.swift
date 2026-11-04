@@ -335,6 +335,11 @@ final class SpatialEffectsStage {
     /// sampling a coarser level, not from a wider kernel. That is what keeps a
     /// 35-preset diffuser costing about what a small one does, and what makes the
     /// cost independent of frame size beyond the linear resolution term.
+    ///
+    /// The plan only returns a depth whose kernel is wider than a texel at
+    /// every level (`DiffusionPlan.minLevelKernelSigma`). A shallower level
+    /// would be a nearest filter here — it would reproject the texel grid, and
+    /// the apply pass would upsample that grid into a flat-topped disc.
     private func buildDiffusion(
         scene: MTLTexture,
         plan: DiffusionPlan,
