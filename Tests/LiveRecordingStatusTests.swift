@@ -136,7 +136,7 @@ struct LiveRecordingStatusTests {
         #expect(screen.contains("CameraTopPanel(statusInToolbar: abs(statusRotationDegrees) != 90)"))
         #expect(screen.contains("RecordingStatusOverlay(viewport: geometry.size"))
         // The rightmost slot is measured, never hardcoded to the old 84pt reserve.
-        #expect(layout.contains("lensSize: subviews[2].sizeThatFits(.unspecified)"))
+        #expect(layout.contains("lensSize: subviews[3].sizeThatFits(.unspecified)"))
         #expect(!layout.contains("width: 84"))
         // The lens switch is hidden from the tap, in both holds, so it never
         // collides with the optimistic timer that now shares the empty slot.

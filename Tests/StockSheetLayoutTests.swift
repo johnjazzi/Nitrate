@@ -80,10 +80,29 @@ struct StockSheetLayoutTests {
     // MARK: - The shared bottom row
 
     @Test(arguments: phoneWidths)
-    func theGaugeAndPillFillTheBottomRowWithoutOverflowing(width: Double) {
+    func theGaugeAndPillsFillTheBottomRowWithoutOverflowing(width: Double) {
         let widths = StockSheetLayout.controlWidths(forAvailableWidth: CGFloat(width))
         #expect(abs(widths.total - CGFloat(width)) < 0.001,
                 "The bottom row must neither overflow nor leave a gap at \(width)pt.")
+        // Three cells and two gaps now: the same arithmetic must still add up,
+        // or a cell gets clipped off the trailing edge of the sheet.
+        #expect(widths.flash >= StockSheetLayout.minimumFlashWidth)
+        #expect(widths.gauge + widths.pushPull + widths.flash
+                + StockSheetLayout.controlSpacing * 2 == widths.total)
+    }
+
+    /// A camera with no lamp hides the cell, and the row then splits exactly as
+    /// it did before the control existed: the third cell must not leave a gap.
+    @Test(arguments: phoneWidths)
+    func withoutALampTheRowSplitsAsItDidBeforeTheControlExisted(width: Double) {
+        let widths = StockSheetLayout.controlWidths(forAvailableWidth: CGFloat(width),
+                                                    includesFlash: false)
+        #expect(widths.flash == 0)
+        #expect(abs(widths.total - CGFloat(width)) < 0.001,
+                "A hidden cell must not leave a gap at \(width)pt.")
+        // The pre-lamp split: one gap, the pill a fixed fifth, the gauge the rest.
+        #expect(widths.pushPull == CGFloat(width) * StockSheetLayout.pushPullFraction)
+        #expect(widths.gauge == CGFloat(width) - widths.pushPull - StockSheetLayout.controlSpacing)
     }
 
     @Test(arguments: phoneWidths)
@@ -101,10 +120,25 @@ struct StockSheetLayoutTests {
     @Test(arguments: phoneWidths)
     func theGaugeIsTheLargerShareAndKeepsFourLegibleSegments(width: Double) {
         let widths = StockSheetLayout.controlWidths(forAvailableWidth: CGFloat(width))
-        #expect(widths.gauge > widths.pushPull * 3,
+        #expect(widths.gauge > widths.pushPull,
                 "The gauge takes the larger share of the bottom row at \(width)pt.")
+        #expect(widths.gauge > widths.flash,
+                "Both pills are fifths; the gauge keeps the rest at \(width)pt.")
         let segments = widths.gauge / CGFloat(PrintGauge.allCases.count)
         #expect(segments >= 28, "A gauge segment needs ~28pt for a two-digit label at \(width)pt.")
+    }
+
+    /// The third cell's closed reading is `OFF` or a percentage. `100%` is the
+    /// widest thing it ever has to show, so it decides whether the fifth is
+    /// honest on the narrowest phone.
+    @Test func theWidestFlashReadingFitsTheNarrowestCell() {
+        let narrowest = StockSheetLayout.controlWidths(forAvailableWidth: 288).flash
+        let font = CTFontCreateWithName(NitrateTypography.postScriptName as CFString, 11, nil)
+        for reading in ["OFF", "5%", "40%", "100%"] {
+            let width = Self.width(of: reading, font: font)
+            #expect(width + 8 <= narrowest,
+                    "\(reading) renders \(width)pt wide; the cell is \(narrowest)pt.")
+        }
     }
 
     /// The pill shows one word, so it must not need to shrink to fit its fifth.
@@ -174,15 +208,44 @@ struct StockSheetLayoutTests {
                 "The gauge identifier stays as it was.")
     }
 
-    @Test func theGaugeAndThePillShareTheBottomRow() throws {
+    @Test func theGaugeAndThePillsShareTheBottomRow() throws {
         let row = try controlRowBody()
         #expect(row.contains("gaugeCell.frame(width: widths.gauge)"),
                 "The gauge is the left cell of the bottom row.")
         #expect(row.contains("pushPullPill.frame(width: widths.pushPull)"),
                 "The pill keeps its fixed fifth beside the gauge.")
+        #expect(!row.contains("flashPill"),
+                "The lamp lives in the top bar now, not in the sheet's bottom row.")
+        #expect(row.contains("includesFlash: false"),
+                "Two cells, so the width split reserves no gap for a lamp key that is not here.")
         #expect(row.contains("StockSheetLayout.controlWidths(forAvailableWidth:"),
                 "The bottom row splits the width arithmetically.")
         #expect(!row.contains("stockCell"), "Stock is in its own row now, not in the bottom one.")
+    }
+
+    @Test func theLampKeyLivesInTheTopBarAndTicksOnEveryPress() throws {
+        let source = try sharedSurface()
+        #expect(source.contains("} flash: {\n            LampControl("),
+                "The lamp key is its own top-bar slot, immediately left of the lens selector.")
+        #expect(source.contains("accessibilityIdentifier(\"camera.flash\")"),
+                "UI tests need a stable identifier for the lamp key.")
+        #expect(source.contains(".onTapGesture { toggle() }"),
+                "A short press switches the lamp on or off.")
+        #expect(source.contains(".onLongPressGesture(minimumDuration: 0.4)"),
+                "A long press opens the lamp's controls and closes them again.")
+        #expect(source.contains(".sensoryFeedback(.impact(weight: .medium), trigger: hapticTick)"),
+                "Every press ticks.")
+        #expect(source.contains("slider(\"Flash\""),
+                "Video has one level, and it is called flash.")
+        #expect(!source.contains("Fire the lamp"),
+                "There is no second switch: intensity zero is off.")
+        #expect(source.contains("slider(\"Intensity\""))
+        #expect(source.contains("slider(\"Duration\""))
+        #expect(source.contains(".disabled(shapingReason != nil)"),
+                "Below the shaping floor the duration control is disabled, not silently inert.")
+        for guidance in ["distance", "metres away", "m away", "\\(distance)"] {
+            #expect(!source.contains(guidance), "No distance guidance ships in the UI.")
+        }
     }
 
     @Test func pushPullKeepsItsLadderAndItsAutoEntry() throws {
@@ -219,7 +282,8 @@ struct StockSheetLayoutTests {
     private func sharedSurface() throws -> String {
         let paths = ["App/ContentView.swift",
                      "App/Modules/FilmStockLibrary/GaugeControl.swift",
-                     "App/Modules/FilmStockLibrary/PushPullControl.swift"]
+                     "App/Modules/FilmStockLibrary/PushPullControl.swift",
+                     "App/Modules/CameraCapture/LampControl.swift"]
         return try paths.map {
             try String(contentsOf: TestRepository.url(for: $0), encoding: .utf8)
         }.joined(separator: "\n")

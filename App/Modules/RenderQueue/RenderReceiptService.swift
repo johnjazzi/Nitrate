@@ -18,6 +18,9 @@ enum RenderReceiptService {
         // must read it back so the metadata cards state what the file states.
         "push-pull", "push-pull-stops", "push-pull-mode", "push-pull-linear-gain",
         "push-pull-metered-offset-ev",
+        // The lamp: the receipt must read the same capture facts the file states.
+        "flash-mode", "flash-intensity-percent", "flash-duration-percent",
+        "flash-exposure-seconds", "flash-refused", "flash-refused-reason",
         // Colour, balance, lens and slate cards.
         "color-space", "white-balance-kelvin", "wb-tint",
         "aperture-f-number", "lens", "focal-length-mm",

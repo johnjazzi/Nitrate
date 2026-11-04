@@ -3,6 +3,9 @@ import SwiftUI
 struct CameraTopPanelGeometry {
     let settings: CGRect
     let manual: CGRect
+    /// The lamp key sits immediately left of the lens selector in landscape and
+    /// on the free right edge in portrait, where the lens slot collapses.
+    let flash: CGRect
     let lens: CGRect
     let status: CGRect
     let diagnostics: CGRect
@@ -34,11 +37,16 @@ struct CameraTopPanelGeometry {
         if toolbarStatusSize == .zero {
             lens = CGRect(x: width - lensSize.width, y: (44 - lensSize.height) / 2,
                           width: lensSize.width, height: lensSize.height)
+            flash = CGRect(x: max(manual.maxX + 12, lens.minX - 56), y: 0, width: 44, height: 44)
             status = .zero
         } else {
             // Portrait: horizontally screen-centered, independent of the keys
             // to its left and right, at its own measured size.
             lens = .zero
+            // Portrait hides the lens selector, so the lamp takes the free right
+            // edge rather than a third key on the left: at x=112 it collided with
+            // the screen-centred timer on a 358pt toolbar.
+            flash = CGRect(x: width - 44, y: 0, width: 44, height: 44)
             status = CGRect(x: (width - toolbarStatusSize.width) / 2, y: (44 - toolbarStatusSize.height) / 2,
                             width: toolbarStatusSize.width, height: toolbarStatusSize.height)
         }
@@ -53,21 +61,22 @@ struct CameraTopPanelGeometry {
 /// Ordered children: settings, manual, lens, complete status face, diagnostic rail.
 struct CameraTopPanelLayout: Layout {
     private func geometry(width: CGFloat, subviews: Subviews) -> CameraTopPanelGeometry {
-        CameraTopPanelGeometry(width: width, statusSize: subviews[3].sizeThatFits(.unspecified),
-                               lensSize: subviews[2].sizeThatFits(.unspecified),
-                               diagnosticsHeight: subviews[4].sizeThatFits(ProposedViewSize(width: 64, height: nil)).height)
+        CameraTopPanelGeometry(width: width, statusSize: subviews[4].sizeThatFits(.unspecified),
+                               lensSize: subviews[3].sizeThatFits(.unspecified),
+                               diagnosticsHeight: subviews[5].sizeThatFits(ProposedViewSize(width: 64, height: nil)).height)
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        guard subviews.count == 5 else { return .zero }
+        guard subviews.count == 6 else { return .zero }
         let width = proposal.width ?? 288
         return CGSize(width: width, height: geometry(width: width, subviews: subviews).height)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        guard subviews.count == 5 else { return }
+        guard subviews.count == 6 else { return }
         let geometry = geometry(width: bounds.width, subviews: subviews)
-        let frames = [geometry.settings, geometry.manual, geometry.lens, geometry.status, geometry.diagnostics]
+        let frames = [geometry.settings, geometry.manual, geometry.flash, geometry.lens,
+                      geometry.status, geometry.diagnostics]
         for (subview, frame) in zip(subviews, frames) {
             subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
                           anchor: .topLeading, proposal: ProposedViewSize(frame.size))

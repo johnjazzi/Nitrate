@@ -56,6 +56,17 @@ final class CameraViewModel {
         session.observeHardwareControlValues { [weak self] adjustment, value, revision in
             self?.applyCameraHardwareControlValue(adjustment, value, revision: revision)
         }
+        session.onFlashRefused = { [weak self] reason in
+            self?.presentFlashRefusal(reason)
+        }
+    }
+
+    /// A refused lamp level is a warning, not a failure: the take or the photo
+    /// still happens, and the operator is told why the scene is darker than the
+    /// level they asked for. It is shown where the operator is looking.
+    private func presentFlashRefusal(_ reason: String) {
+        if isDevelopmentPhotoMode { recordPhotoShutterNotice(reason) }
+        else { recordingWarning = reason }
     }
 
     // MARK: - Observable State
@@ -259,6 +270,9 @@ final class CameraViewModel {
     private var availableLensTiers: [CameraFocalZoomLensTier] = []
     private var apertureCommandGeneration: UInt64 = 0
     private let originalStorage = CameraOriginalStorage()
+    /// The lamp settings. One app-wide store: the video level is global and is
+    /// not remembered per stock, and it does not travel with push/pull.
+    private let flashStore = FlashSettingsStore()
     /// Marks a take before capture and is acknowledged once the render queue has
     /// durably accepted it. If the app dies in between, the file is reconciled at
     /// next launch as an original-only rescue rather than being lost.
@@ -311,6 +325,8 @@ final class CameraViewModel {
 
     func onSceneInactive() {
         trace("scene-inactive-enter")
+        // The screen is going away: the lamp goes out with it.
+        session.endTakeFlash()
         endSlowZoom()
         guard lifecycleGate.isActive else { return }
         lifecycleGate.deactivate()
@@ -936,6 +952,13 @@ final class CameraViewModel {
         }
     }
 
+    /// Whether the active camera has a lamp. The flash control is hidden
+    /// entirely on a device without one — never shown disabled.
+    var hasLamp: Bool {
+        guard let device = session.activeDevice else { return false }
+        return device.hasTorch && device.isTorchModeSupported(.on)
+    }
+
     func startRecording() {
         // A frame-rate transition owns the device configuration and exposure;
         // do not start a take on a rate that is still changing.
@@ -973,6 +996,10 @@ final class CameraViewModel {
         // writer may not confirm that for another two seconds.
         recordingTimerOrigin = RecordButtonTimingPolicy.timerOrigin(tapAt: Date())
         recordingStoppedAt = nil
+        // The level is read once, here, and handed to the take. Moving the
+        // slider during the take changes nothing: the value that lit the take is
+        // the value its metadata records.
+        session.applyTakeFlash(level: flashStore.settings.videoLevel)
         do {
             let outputURL = try originalStorage.makeDestination()
             // Bind policy to the actual destination before any async work.
@@ -995,6 +1022,8 @@ final class CameraViewModel {
                 self.isStartingRecording = false
                 self.refreshRecordingStabilization()
                 if let error {
+                    // A take that never started must not leave the lamp lit.
+                    self.session.endTakeFlash()
                     self.isRecording = false
                     self.invalidateRecordingTimers()
                     self.errorMessage = "Failed to start recording: \(error.localizedDescription)"
@@ -1010,12 +1039,16 @@ final class CameraViewModel {
                 self.startSpacePolling()
             }
         } catch {
+            session.endTakeFlash()
             isStartingRecording = false
             errorMessage = "Failed to prepare recording: \(error.localizedDescription)"
         }
     }
 
     func stopRecording() {
+        // The lamp belongs to the take, and the take is over. This is the first
+        // thing the stop does, before any bookkeeping that could return early.
+        session.endTakeFlash()
         // The take owns the device; any queued pinch gesture is now stale.
         focalEngine.invalidate()
         let wasStarting = isStartingRecording
@@ -1480,7 +1513,8 @@ final class CameraViewModel {
         // Freeze the physical hold at the tap. The capture can queue behind an
         // exposure write, and a turn during that wait must not re-orient the still.
         let frozenOrientation = CameraOrientationObserver.shared.deliveryOrientation
-        session.captureDevelopmentPhoto(frozenOrientation: frozenOrientation) { [weak self] result in
+        session.captureDevelopmentPhoto(frozenOrientation: frozenOrientation,
+                                        flash: flashStore.settings) { [weak self] result in
             guard let self else { return }
             guard self.photoGeneration == generation, self.photoResults.finish(captureToken) else {
                 self.trace("photo-capture-completion stale token=\(captureToken)")

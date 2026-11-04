@@ -143,20 +143,22 @@ struct RecordingStatusFace: View {
 
 /// Primary keys and status use separate measured rows. DEBUG/FAULT have their
 /// own left rail, never squeezed into the lens/status touch bounds on small phones.
-struct CameraTopPanel<Settings: View, Manual: View, Lens: View, Status: View, Diagnostics: View>: View {
+struct CameraTopPanel<Settings: View, Manual: View, Flash: View, Lens: View, Status: View, Diagnostics: View>: View {
     var statusInToolbar = true
     @ViewBuilder var settings: () -> Settings
     @ViewBuilder var manual: () -> Manual
+    @ViewBuilder var flash: () -> Flash
     @ViewBuilder var lens: () -> Lens
     @ViewBuilder var status: () -> Status
     @ViewBuilder var diagnostics: () -> Diagnostics
 
     var body: some View {
         CameraTopPanelLayout() {
-            // Layout requires five stable slots. Group/EmptyView flatten their
+            // Layout requires six stable slots. Group/EmptyView flatten their
             // children, so an absent timer must live in a concrete container.
             ZStack { settings() }
             ZStack { manual() }
+            ZStack { flash() }
             ZStack { lens() }
             ZStack {
                 if statusInToolbar { status() }
@@ -165,6 +167,26 @@ struct CameraTopPanel<Settings: View, Manual: View, Lens: View, Status: View, Di
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
+    }
+}
+
+/// Surfaces without a lamp (and every existing call site) keep the old five
+/// slots: the flash slot collapses into an EmptyView and the layout still
+/// reserves it, so the lens never shifts between builds.
+extension CameraTopPanel where Flash == EmptyView {
+    init(statusInToolbar: Bool = true,
+         @ViewBuilder settings: @escaping () -> Settings,
+         @ViewBuilder manual: @escaping () -> Manual,
+         @ViewBuilder lens: @escaping () -> Lens,
+         @ViewBuilder status: @escaping () -> Status,
+         @ViewBuilder diagnostics: @escaping () -> Diagnostics) {
+        self.init(statusInToolbar: statusInToolbar,
+                  settings: settings,
+                  manual: manual,
+                  flash: { EmptyView() },
+                  lens: lens,
+                  status: status,
+                  diagnostics: diagnostics)
     }
 }
 

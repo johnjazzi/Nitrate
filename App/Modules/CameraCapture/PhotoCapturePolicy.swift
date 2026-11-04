@@ -188,6 +188,9 @@ enum PhotoCaptureRotationPolicy {
 /// operator saw, instead of re-reading the device after the phone has moved.
 struct PendingPhotoCaptureRequest: Sendable {
     let rotationAngle: CGFloat?
+    /// The lamp settings read at the shutter tap, held with the waiting tap so a
+    /// slide after the tap cannot change the photo that is already committed.
+    var flash: FlashSettings = .standard
     let completion: @MainActor @Sendable (Result<URL, Swift.Error>) -> Void
 }
 

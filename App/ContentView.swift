@@ -958,6 +958,9 @@ struct ContentView: View {
             settingsButton
         } manual: {
             manualButton
+        } flash: {
+            LampControl(photoMode: cameraMode.selected == .photo,
+                        appliedShutterSeconds: cameraViewModel.photoExposureSnapshot?.durationSeconds ?? 0)
         } lens: {
             // The lens keeps the rightmost first-row slot except while a take is
             // live: the timer then owns that row in portrait — but centered on
@@ -1545,7 +1548,11 @@ struct ContentView: View {
             currentISO: $currentISO,
             meteredOffsetEV: cameraViewModel.hasExposureMeter
                 ? cameraViewModel.liveExposureTargetOffset : nil,
-            selectionOnly: isDevelopMode
+            selectionOnly: isDevelopMode,
+            photoMode: cameraViewModel.isDevelopmentPhotoMode,
+            appliedShutterSeconds: cameraViewModel.photoExposureSnapshot?.durationSeconds
+                ?? cameraViewModel.liveShutterSeconds,
+            lampAvailable: cameraViewModel.hasLamp
         )
     }
 
@@ -1595,6 +1602,15 @@ private struct StockSheetView: View {
     /// this snapshot when the sheet renders.
     var meteredOffsetEV: Float?
     var selectionOnly = false
+    /// Photo mode reads its own lamp controls: intensity and the duration of the
+    /// exposure the lamp covers. Video has one level and no window to shape.
+    var photoMode = false
+    /// The exposure the still will actually be taken at, read back from the
+    /// device. The duration control is honest only against this value.
+    var appliedShutterSeconds: Double = 0
+    /// A camera with no lamp hides the cell entirely: a disabled lamp control
+    /// would imply a hardware fault the operator cannot fix.
+    var lampAvailable = false
 
     @State private var stocks: [FilmStockConfig] = []
     @State private var localSelection: FilmStockConfig?
@@ -1603,6 +1619,8 @@ private struct StockSheetView: View {
     /// the scene sits over target. Turning it off hands the ladder to the user.
     @State private var pushPullAutomatic = true
     @State private var pushPullStops: PushPullStops = .none
+    /// The lamp settings, read from and written straight to the one global store
+    /// so the camera records exactly what this sheet shows.
 
     var body: some View {
         NavigationStack {
@@ -1706,7 +1724,8 @@ private struct StockSheetView: View {
     /// stay legible — and the pill keeps its fixed fifth.
     private var controlRow: some View {
         GeometryReader { proxy in
-            let widths = StockSheetLayout.controlWidths(forAvailableWidth: proxy.size.width)
+            let widths = StockSheetLayout.controlWidths(forAvailableWidth: proxy.size.width,
+                                                        includesFlash: false)
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
                 // Bottom-aligned: the pill has no caption, so it lines up with

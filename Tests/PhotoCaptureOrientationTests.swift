@@ -102,8 +102,10 @@ struct PhotoCaptureOrientationTests {
         let viewModel = try source("App/Modules/CameraCapture/CameraViewModel.swift")
         #expect(viewModel.contains("CameraOrientationObserver.shared.deliveryOrientation"),
                 "the shutter tap must freeze the physical hold through the existing observer")
-        #expect(viewModel.contains("session.captureDevelopmentPhoto(frozenOrientation: frozenOrientation)"),
+        #expect(viewModel.contains("session.captureDevelopmentPhoto(frozenOrientation: frozenOrientation,"),
                 "the frozen orientation must reach the session")
+        #expect(viewModel.contains("flash: flashStore.settings"),
+                "the shutter tap is where the still's lamp settings are read")
         // Smoke/debug callers keep their existing no-argument form.
         #expect(viewModel.components(separatedBy: "session.captureDevelopmentPhoto {").count - 1 >= 2,
                 "debug smoke capture callers must keep the default optional orientation")
