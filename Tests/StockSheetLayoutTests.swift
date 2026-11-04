@@ -214,29 +214,35 @@ struct StockSheetLayoutTests {
                 "The gauge is the left cell of the bottom row.")
         #expect(row.contains("pushPullPill.frame(width: widths.pushPull)"),
                 "The pill keeps its fixed fifth beside the gauge.")
-        #expect(row.contains("flashPill.frame(width: widths.flash)"),
-                "The lamp is the third cell of the same row.")
-        #expect(row.contains("includesFlash: lampAvailable"),
-                "A camera with no lamp must drop the cell, not widen the gauge around a gap.")
+        #expect(!row.contains("flashPill"),
+                "The lamp lives in the top bar now, not in the sheet's bottom row.")
+        #expect(row.contains("includesFlash: false"),
+                "Two cells, so the width split reserves no gap for a lamp key that is not here.")
         #expect(row.contains("StockSheetLayout.controlWidths(forAvailableWidth:"),
                 "The bottom row splits the width arithmetically.")
         #expect(!row.contains("stockCell"), "Stock is in its own row now, not in the bottom one.")
     }
 
-    @Test func theLampCellIsAPillWithItsOwnPopoverAndNoDistanceAdvice() throws {
-        let body = try sheetBody()
-        #expect(body.contains("accessibilityIdentifier(\"stock.flash\")"),
-                "UI tests need a stable identifier for the lamp.")
-        #expect(body.contains("flashSettings.pillText(photoMode: photoMode)"),
-                "The pill reads OFF or the number that matters, from the settings.")
-        #expect(body.contains("flashSlider(\"Lamp\""),
+    @Test func theLampKeyLivesInTheTopBarAndTicksOnEveryPress() throws {
+        let source = try sharedSurface()
+        #expect(source.contains("} flash: {\n            LampControl("),
+                "The lamp key is its own top-bar slot, immediately left of the lens selector.")
+        #expect(source.contains("accessibilityIdentifier(\"camera.flash\")"),
+                "UI tests need a stable identifier for the lamp key.")
+        #expect(source.contains(".onTapGesture { toggle() }"),
+                "A short press switches the lamp on or off.")
+        #expect(source.contains(".onLongPressGesture(minimumDuration: 0.4)"),
+                "A long press opens the lamp's controls and closes them again.")
+        #expect(source.contains(".sensoryFeedback(.impact(weight: .medium), trigger: hapticTick)"),
+                "Every press ticks.")
+        #expect(source.contains("slider(\"Lamp\""),
                 "Video has one level, and it is called a lamp.")
-        #expect(body.contains("flashSlider(\"Intensity\""))
-        #expect(body.contains("flashSlider(\"Duration\""))
-        #expect(body.contains(".disabled(flashShapingReason != nil)"),
+        #expect(source.contains("slider(\"Intensity\""))
+        #expect(source.contains("slider(\"Duration\""))
+        #expect(source.contains(".disabled(shapingReason != nil)"),
                 "Below the shaping floor the duration control is disabled, not silently inert.")
         for guidance in ["distance", "metres away", "m away", "\\(distance)"] {
-            #expect(!body.contains(guidance), "No distance guidance ships in the UI.")
+            #expect(!source.contains(guidance), "No distance guidance ships in the UI.")
         }
     }
 
@@ -274,7 +280,8 @@ struct StockSheetLayoutTests {
     private func sharedSurface() throws -> String {
         let paths = ["App/ContentView.swift",
                      "App/Modules/FilmStockLibrary/GaugeControl.swift",
-                     "App/Modules/FilmStockLibrary/PushPullControl.swift"]
+                     "App/Modules/FilmStockLibrary/PushPullControl.swift",
+                     "App/Modules/CameraCapture/LampControl.swift"]
         return try paths.map {
             try String(contentsOf: TestRepository.url(for: $0), encoding: .utf8)
         }.joined(separator: "\n")

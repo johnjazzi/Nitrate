@@ -111,6 +111,7 @@ FILE_FIXTURES: tuple[str, ...] = (
     # The lamp: its model is tested directly and its torch controller is scanned
     # for the "only one place touches the LED" rule.
     "App/Modules/CameraCapture/FlashControl.swift",
+    "App/Modules/CameraCapture/LampControl.swift",
     "App/Modules/CameraCapture/FlashTorchController.swift",
     "App/Modules/CameraCapture/DevelopmentPhotoController.swift",
     "App/Modules/CameraCapture/CameraView.swift",
