@@ -61,8 +61,11 @@ class PhotoFieldWiringTests(unittest.TestCase):
         self.assertIn('controller.capture(rotationAngle: rotationAngle', session)
         view_model = (ROOT / 'App/Modules/CameraCapture/CameraViewModel.swift').read_text()
         self.assertIn('CameraOrientationObserver.shared.deliveryOrientation', view_model)
-        self.assertIn('session.captureDevelopmentPhoto(frozenOrientation: frozenOrientation)',
+        self.assertIn('session.captureDevelopmentPhoto(frozenOrientation: frozenOrientation,',
                       view_model)
+        # The shutter tap is where the still's lamp settings are read: the lamp is
+        # part of the same request as the frozen angle, not a second call.
+        self.assertIn('flash: flashStore.settings', view_model)
 
     def test_every_pending_still_resume_carries_the_frozen_angle(self):
         controller = (ROOT / 'App/Modules/CameraCapture/DevelopmentPhotoController.swift').read_text()

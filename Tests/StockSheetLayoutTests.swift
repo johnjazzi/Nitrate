@@ -80,10 +80,29 @@ struct StockSheetLayoutTests {
     // MARK: - The shared bottom row
 
     @Test(arguments: phoneWidths)
-    func theGaugeAndPillFillTheBottomRowWithoutOverflowing(width: Double) {
+    func theGaugeAndPillsFillTheBottomRowWithoutOverflowing(width: Double) {
         let widths = StockSheetLayout.controlWidths(forAvailableWidth: CGFloat(width))
         #expect(abs(widths.total - CGFloat(width)) < 0.001,
                 "The bottom row must neither overflow nor leave a gap at \(width)pt.")
+        // Three cells and two gaps now: the same arithmetic must still add up,
+        // or a cell gets clipped off the trailing edge of the sheet.
+        #expect(widths.flash >= StockSheetLayout.minimumFlashWidth)
+        #expect(widths.gauge + widths.pushPull + widths.flash
+                + StockSheetLayout.controlSpacing * 2 == widths.total)
+    }
+
+    /// A camera with no lamp hides the cell, and the row then splits exactly as
+    /// it did before the control existed: the third cell must not leave a gap.
+    @Test(arguments: phoneWidths)
+    func withoutALampTheRowSplitsAsItDidBeforeTheControlExisted(width: Double) {
+        let widths = StockSheetLayout.controlWidths(forAvailableWidth: CGFloat(width),
+                                                    includesFlash: false)
+        #expect(widths.flash == 0)
+        #expect(abs(widths.total - CGFloat(width)) < 0.001,
+                "A hidden cell must not leave a gap at \(width)pt.")
+        // The pre-lamp split: one gap, the pill a fixed fifth, the gauge the rest.
+        #expect(widths.pushPull == CGFloat(width) * StockSheetLayout.pushPullFraction)
+        #expect(widths.gauge == CGFloat(width) - widths.pushPull - StockSheetLayout.controlSpacing)
     }
 
     @Test(arguments: phoneWidths)
@@ -101,10 +120,25 @@ struct StockSheetLayoutTests {
     @Test(arguments: phoneWidths)
     func theGaugeIsTheLargerShareAndKeepsFourLegibleSegments(width: Double) {
         let widths = StockSheetLayout.controlWidths(forAvailableWidth: CGFloat(width))
-        #expect(widths.gauge > widths.pushPull * 3,
+        #expect(widths.gauge > widths.pushPull,
                 "The gauge takes the larger share of the bottom row at \(width)pt.")
+        #expect(widths.gauge > widths.flash,
+                "Both pills are fifths; the gauge keeps the rest at \(width)pt.")
         let segments = widths.gauge / CGFloat(PrintGauge.allCases.count)
         #expect(segments >= 28, "A gauge segment needs ~28pt for a two-digit label at \(width)pt.")
+    }
+
+    /// The third cell's closed reading is `OFF` or a percentage. `100%` is the
+    /// widest thing it ever has to show, so it decides whether the fifth is
+    /// honest on the narrowest phone.
+    @Test func theWidestFlashReadingFitsTheNarrowestCell() {
+        let narrowest = StockSheetLayout.controlWidths(forAvailableWidth: 288).flash
+        let font = CTFontCreateWithName(NitrateTypography.postScriptName as CFString, 11, nil)
+        for reading in ["OFF", "5%", "40%", "100%"] {
+            let width = Self.width(of: reading, font: font)
+            #expect(width + 8 <= narrowest,
+                    "\(reading) renders \(width)pt wide; the cell is \(narrowest)pt.")
+        }
     }
 
     /// The pill shows one word, so it must not need to shrink to fit its fifth.
@@ -174,15 +208,36 @@ struct StockSheetLayoutTests {
                 "The gauge identifier stays as it was.")
     }
 
-    @Test func theGaugeAndThePillShareTheBottomRow() throws {
+    @Test func theGaugeAndThePillsShareTheBottomRow() throws {
         let row = try controlRowBody()
         #expect(row.contains("gaugeCell.frame(width: widths.gauge)"),
                 "The gauge is the left cell of the bottom row.")
         #expect(row.contains("pushPullPill.frame(width: widths.pushPull)"),
                 "The pill keeps its fixed fifth beside the gauge.")
+        #expect(row.contains("flashPill.frame(width: widths.flash)"),
+                "The lamp is the third cell of the same row.")
+        #expect(row.contains("includesFlash: lampAvailable"),
+                "A camera with no lamp must drop the cell, not widen the gauge around a gap.")
         #expect(row.contains("StockSheetLayout.controlWidths(forAvailableWidth:"),
                 "The bottom row splits the width arithmetically.")
         #expect(!row.contains("stockCell"), "Stock is in its own row now, not in the bottom one.")
+    }
+
+    @Test func theLampCellIsAPillWithItsOwnPopoverAndNoDistanceAdvice() throws {
+        let body = try sheetBody()
+        #expect(body.contains("accessibilityIdentifier(\"stock.flash\")"),
+                "UI tests need a stable identifier for the lamp.")
+        #expect(body.contains("flashSettings.pillText(photoMode: photoMode)"),
+                "The pill reads OFF or the number that matters, from the settings.")
+        #expect(body.contains("flashSlider(\"Lamp\""),
+                "Video has one level, and it is called a lamp.")
+        #expect(body.contains("flashSlider(\"Intensity\""))
+        #expect(body.contains("flashSlider(\"Duration\""))
+        #expect(body.contains(".disabled(flashShapingReason != nil)"),
+                "Below the shaping floor the duration control is disabled, not silently inert.")
+        for guidance in ["distance", "metres away", "m away", "\\(distance)"] {
+            #expect(!body.contains(guidance), "No distance guidance ships in the UI.")
+        }
     }
 
     @Test func pushPullKeepsItsLadderAndItsAutoEntry() throws {

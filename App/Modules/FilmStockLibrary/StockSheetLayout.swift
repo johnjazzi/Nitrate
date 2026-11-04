@@ -59,31 +59,49 @@ enum StockSheetLayout {
 
     // MARK: - Bottom row
 
-    /// Gap between the gauge and the push/pull pill.
+    /// Gap between the cells of the bottom row.
     static let controlSpacing: CGFloat = 8
     /// Share of the bottom row the push/pull pill takes.
     static let pushPullFraction: CGFloat = 0.2
+    /// Share of the bottom row the flash pill takes. The same fifth as push/pull:
+    /// both are one short reading, and the gauge keeps the rest.
+    static let flashFraction: CGFloat = 0.2
     /// Pill floor. A fifth of a 288pt row is 57.6pt, which already clears this,
     /// so the fraction — not the floor — decides every phone width.
     static let minimumPushPullWidth: CGFloat = 56
+    /// `OFF` and `100%` both fit this at caption2 on the narrowest phone.
+    static let minimumFlashWidth: CGFloat = 52
     /// Gauge floor: four segments at 30pt still read "35".
     static let minimumGaugeWidth: CGFloat = 120
 
     struct ControlWidths: Equatable {
         var gauge: CGFloat
         var pushPull: CGFloat
+        /// Zero when the device has no lamp and the cell is not shown at all.
+        var flash: CGFloat
 
-        /// What the two cells plus their gap occupy.
-        var total: CGFloat { gauge + pushPull + StockSheetLayout.controlSpacing }
+        /// What the cells plus their gaps occupy.
+        var total: CGFloat {
+            let cells = flash > 0 ? 3 : 2
+            return gauge + pushPull + flash + StockSheetLayout.controlSpacing * CGFloat(cells - 1)
+        }
     }
 
-    /// Split `width` into the gauge and the pill. The pill is pinned to a fifth
-    /// so its one word never widens it; the gauge takes everything else, which
-    /// is the larger share its four-segment ladder needs.
-    static func controlWidths(forAvailableWidth width: CGFloat) -> ControlWidths {
-        let available = max(width, minimumGaugeWidth + minimumPushPullWidth + controlSpacing)
+    /// Split `width` into the gauge and the pills. Each pill is pinned to a fifth
+    /// so its short reading never widens it; the gauge takes everything else,
+    /// which is the larger share its four-segment ladder needs.
+    ///
+    /// `includesFlash` is false on a camera with no lamp: that cell is hidden
+    /// rather than disabled, and the row must then split exactly as it did
+    /// before the control existed.
+    static func controlWidths(forAvailableWidth width: CGFloat,
+                              includesFlash: Bool = true) -> ControlWidths {
+        let flash = includesFlash ? max(width * flashFraction, minimumFlashWidth) : 0
+        let gaps = controlSpacing * (includesFlash ? 2 : 1)
+        let available = max(width, minimumGaugeWidth + minimumPushPullWidth + flash + gaps)
         let pushPull = max(available * pushPullFraction, minimumPushPullWidth)
-        return ControlWidths(gauge: available - pushPull - controlSpacing, pushPull: pushPull)
+        return ControlWidths(gauge: available - pushPull - flash - gaps,
+                             pushPull: pushPull, flash: flash)
     }
 }
 

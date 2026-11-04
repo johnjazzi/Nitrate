@@ -170,6 +170,18 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
     private var onRecordingFinished: (@MainActor @Sendable (Result<RecordingCompletion, Error>) -> Void)?
     private var onCameraError: (@MainActor @Sendable (Error, CameraLens) -> Void)?
+    /// A refused lamp level (thermal, most often). The take still runs; the
+    /// operator is told why the scene is darker than the level asked for.
+    var onFlashRefused: (@MainActor @Sendable (String) -> Void)?
+    /// The lamp as the take actually ran, resolved once at take start and read
+    /// back by `captureMetadataItems()`. Never rewritten while the take runs, so
+    /// moving the level mid-take cannot relabel a take it did not light.
+    private var takeFlash: FlashRecord?
+    /// Session-queue confined. The only handle the take has on the LED.
+    private var takeFlashTorch: FlashTorchController?
+    /// The level the next take will run at, latched when the record button is
+    /// pressed and consumed when the recording exposure begins.
+    private var pendingTakeFlashLevel: Double = 0
     private var meterGeneration = CameraMeteringGeneration()
     /// The exposure currently pinned by the shutter-priority path, used to
     /// decide whether a re-meter is worth taking at all. Cleared whenever the
@@ -3230,6 +3242,58 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
     }
 
+    // MARK: - Lamp
+
+    /// Hand the take its locked lamp level.
+    ///
+    /// Called once, before `startRecording`. The value is latched now and the
+    /// LED is driven when the recording exposure actually begins, so a take that
+    /// is refused before it starts never lights the lamp at all. The level is a
+    /// request — a refusal is recorded and reported, and the take runs dark
+    /// rather than at some dimmer substitute.
+    func applyTakeFlash(level: Double) {
+        sessionQueue.async { [weak self] in
+            self?.pendingTakeFlashLevel = level
+        }
+    }
+
+    /// Guarantee the lamp is dark: take stop, take failure, capture completion,
+    /// view disappear, teardown. Idempotent — a stuck torch is a dead battery.
+    func endTakeFlash() {
+        sessionQueue.async { [weak self] in
+            self?.extinguishTakeFlash()
+        }
+    }
+
+    private func beginTakeFlash(level: Double) {
+        extinguishTakeFlash()
+        guard let device = activeDevice else {
+            takeFlash = .off
+            return
+        }
+        let torch = FlashTorchController(device: device)
+        takeFlashTorch = torch
+        guard torch.isAvailable else {
+            // No lamp: nothing to record and nothing to refuse.
+            takeFlash = .off
+            return
+        }
+        let exposure = device.exposureDuration.seconds
+        let result = level > 0 ? torch.setLevel(level) : .off
+        let record = FlashRecord.video(level: level, exposureSeconds: exposure,
+                                       refusalReason: result.refusalReason)
+        takeFlash = record
+        if let reason = record.refusalReason {
+            let handler = onFlashRefused
+            DispatchQueue.main.async { MainActor.assumeIsolated { handler?(reason) } }
+        }
+    }
+
+    private func extinguishTakeFlash() {
+        takeFlashTorch?.turnOff()
+        takeFlashTorch = nil
+    }
+
     // MARK: - Recording
 
     func startRecording(to url: URL, completion: @escaping @MainActor @Sendable (Error?) -> Void) {
@@ -3477,6 +3541,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
             return
         }
         let callbackContext = CameraSessionRecorderCallbackContext(session: self, queue: sessionQueue)
+        // The recording exposure begins here, so this is where the take's lamp
+        // is applied and recorded. `captureMetadataItems()` below reads the same
+        // record, so the file states the level that actually lit it.
+        beginTakeFlash(level: pendingTakeFlashLevel)
 #if DEBUG
         let preservationProbeEnabled = debugSmokeURL == url
 #else
@@ -3525,6 +3593,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
     fileprivate func recorderFinishedOnSessionQueue(_ result: Result<URL, Error>, generation: UInt64) {
         guard let shouldNotifyForEpoch = recorderCompletionBridge.consumeTerminal(epoch: generation) else { return }
+        // Terminal, however it ended: the lamp does not outlive the take.
+        extinguishTakeFlash()
         let hadStarted = recordingActive
         let shouldNotifyFinish = shouldNotifyForEpoch && hadStarted && recordingGeneration == generation
         recordingActive = false
@@ -3589,6 +3659,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
     }
 
     private func failPendingStart(_ error: Error) {
+        // A take that never started must not leave the lamp lit.
+        extinguishTakeFlash()
         recordingStartPending = false
 #if DEBUG
         startPhases = StartPhases()
@@ -3639,7 +3711,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         let shutterSeconds = device.exposureDuration.seconds
         let angle = Int((shutterSeconds * Double(frameRate.fps) * 360.0).rounded())
         let speed = shutterSeconds > 0 ? Self.fractionString(seconds: shutterSeconds) : "auto"
-        return [
+        var items = [
             Self.captureItem("shutter-speed", speed),
             Self.captureItem("shutter-angle", "\(angle)"),
             Self.captureItem("capture-iso", "\(Int(device.iso))"),
@@ -3647,6 +3719,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
             Self.captureItem("capture-format", Self.captureFormatLabel(device)),
             Self.captureItem("capture-codec", acceptedVideoSettings[AVVideoCodecKey] as? String ?? "unknown")
         ]
+        // The lamp as the take actually ran, not as the slider reads now. A take
+        // recorded before the control existed carries no flash key at all, which
+        // is a different statement from "off".
+        if let flash = takeFlash {
+            items += flash.metadataValues.sorted { $0.key < $1.key }
+                .map { Self.captureItem($0.key, $0.value) }
+        }
+        return items
     }
 
     private static func captureColorSpaceLabel(_ device: AVCaptureDevice) -> String {
@@ -3678,6 +3758,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
     func stopRecording() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            // The lamp belongs to the take. It goes out at the stop request, not
+            // when the writer has finished draining: the frames are captured by
+            // then, and a torch left burning for the drain is the failure mode
+            // this control must never have.
+            self.extinguishTakeFlash()
             self.invalidateMetering()
             if self.sharedIdleEnabled {
                 self.sharedGraph.request(.idle)
@@ -3880,6 +3965,12 @@ final class CameraSession: NSObject, @unchecked Sendable {
             queue: sessionQueue, onUpdate: delivery) { [weak self] message in
                 self?.reportDevelopmentPhotoError(CameraError.photoExposureUnavailable(message))
             }
+        // A refused lamp on a still is a warning: the photo still happens.
+        controller.onFlashRefused = { [weak self] reason in
+            guard let self else { return }
+            let handler = self.onFlashRefused
+            DispatchQueue.main.async { MainActor.assumeIsolated { handler?(reason) } }
+        }
         developmentPhotoController = controller
         try controller.start()
         developmentPhotoDirectory = directory
@@ -4075,6 +4166,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// (the `.unknown` mapping never invents a new one).
     func captureDevelopmentPhoto(
         frozenOrientation: CameraSampleValidationPolicy.DeliveryOrientation? = nil,
+        flash: FlashSettings = .standard,
         completion: @escaping @MainActor @Sendable (Result<URL, Error>) -> Void
     ) {
         sessionQueue.async { [weak self] in
@@ -4088,7 +4180,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 self.configureCaptureRotation(for: device)
             }
             let rotationAngle = self.captureRotationAngle(for: frozenOrientation ?? .unknown)
-            do { try controller.capture(rotationAngle: rotationAngle, completion: completion) }
+            do { try controller.capture(rotationAngle: rotationAngle, flash: flash, completion: completion) }
             catch { DispatchQueue.main.async { completion(.failure(error)) } }
         }
     }
@@ -4921,6 +5013,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
     }
 
     deinit {
+        // Last line of defence: a torch still on when the session goes away is a
+        // dead battery and a hot phone. Every other path turns it off first.
+        takeFlashTorch?.turnOff()
         for observer in sessionObservers { NotificationCenter.default.removeObserver(observer) }
     }
 
@@ -4967,6 +5062,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
     func stop() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            // Teardown: nothing may leave the lamp lit behind a stopped graph.
+            self.extinguishTakeFlash()
             // The system control must not outlive the graph it drives.
             self.hardwareControlRequest = nil
             self.hardwareControls.uninstall()

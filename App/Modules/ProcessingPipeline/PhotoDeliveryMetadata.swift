@@ -28,6 +28,11 @@ enum PhotoDeliveryMetadata {
         /// orientation the DNG itself reports; `CIRAWFilter` uprights it on
         /// decode and the renderer must not rotate again.
         var orientation: Int = 1
+        /// The lamp as it ran, read from the capture manifest written beside the
+        /// DNG at shutter time. Nil for a still taken before the control existed
+        /// or after cleanup dropped the manifest, which is why it is optional:
+        /// an absent record is not the same statement as "the lamp was off".
+        var flash: FlashRecord? = nil
 
         /// `1/500` from 0.002 s. Nil for a missing or non-finite value.
         var shutterDenominator: Int? {
@@ -67,7 +72,22 @@ enum PhotoDeliveryMetadata {
         let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
         return StillCapture(exposureSeconds: exposure, iso: iso,
                             fNumber: fNumber, lensModel: lens.flatMap { $0.isEmpty ? nil : $0 },
-                            focalLengthMM: focalLength, orientation: orientation)
+                            focalLengthMM: focalLength, orientation: orientation,
+                            flash: flashRecord(besideDNG: url))
+    }
+
+    /// The lamp evidence the capture wrote next to the DNG.
+    ///
+    /// The DNG cannot carry our keys (a Bayer RAW's tags are fixed by the
+    /// capture), so the capture manifest beside it is where the still's flash
+    /// record lives — the same file the DNG's own validation evidence uses.
+    private static func flashRecord(besideDNG url: URL) -> FlashRecord? {
+        let manifest = url.deletingLastPathComponent().appendingPathComponent("capture.json")
+        guard let data = try? Data(contentsOf: manifest),
+              let values = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
+            return nil
+        }
+        return FlashRecord.decode(values)
     }
 
     /// ImageIO properties for the delivered JPEG, merged over the encoder's own
@@ -116,6 +136,11 @@ enum PhotoDeliveryMetadata {
         if let model = raw?.model ?? raw?.uniqueCameraModel {
             overrides["raw-camera-model"] = model
         }
+        // The lamp is a capture fact like the shutter and the ISO: it is written
+        // into the same payload, from what the hardware actually did.
+        if let flash = capture.flash {
+            overrides.merge(flash.metadataValues) { _, measured in measured }
+        }
         let values = try RenderMovieMetadata.recipeValues(config: config,
             overrides: overrides, omitting: movieOnlyKeys)
         let payload = try JSONSerialization.data(withJSONObject: values, options: [.sortedKeys])
@@ -136,6 +161,11 @@ enum PhotoDeliveryMetadata {
         }
         if let focalLength = capture.focalLengthMM, focalLength.isFinite, focalLength > 0 {
             exif[kCGImagePropertyExifFocalLength] = focalLength
+        }
+        // EXIF Flash is the one field a photo app reads about the light. It says
+        // fired or did not fire; the level and timing live in the payload above.
+        if let flash = capture.flash {
+            exif[kCGImagePropertyExifFlash] = flash.didFire ? 1 : 0
         }
         return [
             kCGImagePropertyIPTCDictionary: [

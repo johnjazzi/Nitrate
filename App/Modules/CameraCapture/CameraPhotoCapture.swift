@@ -39,6 +39,10 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
     init(output: AVCapturePhotoOutput, pixelFormat: OSType,
          dimensions: CMVideoDimensions, directory: URL, queue: DispatchQueue,
          rotationAngle: CGFloat? = nil,
+         /// The lamp as it ran, recorded beside the DNG so the delivered still can
+         /// state it. Never derived from the request: the controller hands over
+         /// what the hardware accepted.
+         flash: FlashRecord = .off,
          timeoutInterval: TimeInterval = PhotoExposureCadence.captureTransactionTimeout,
          onTerminal: @escaping @Sendable (CameraPhotoCaptureResult) -> Void) throws {
         guard timeoutInterval.isFinite, timeoutInterval > 0 else { throw CaptureError.invalidSettings }
@@ -70,13 +74,21 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
               raw.maxPhotoDimensions.height == dimensions.height,
               raw.photoQualityPrioritization == .speed,
               raw.rawPhotoPixelFormatType == pixelFormat, raw.rawFileType == .dng else { throw CaptureError.invalidSettings }
+        // Custom flash is torch-only. The framework's own flash and our torch
+        // drive the same LED, so the request must carry no flash of its own: a
+        // settings object that asked for one would fight the lamp we light.
+        guard raw.flashMode == .off else { throw CaptureError.invalidSettings }
         settings = raw
         transaction = PhotoCaptureTransactionState(uniqueID: raw.uniqueID)
-        evidence = ["status": "prepared", "rawPixelFormat": String(pixelFormat),
+        var evidence = ["status": "prepared", "rawPixelFormat": String(pixelFormat),
                     "requestedWidth": String(dimensions.width), "requestedHeight": String(dimensions.height),
                     "qualityPrioritization": "speed", "transactionID": String(raw.uniqueID),
                     "exposure": "unrecorded", "iso": "unrecorded", "whiteBalance": "unrecorded",
                     "orientation": "unrecorded", "rawType": "Bayer", "fileType": "DNG"]
+        // The still's flash evidence travels with the capture manifest, which is
+        // the sidecar the delivered JPEG is later tagged from.
+        evidence.merge(flash.metadataValues) { _, measured in measured }
+        self.evidence = evidence
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try writeManifest()
     }
@@ -325,7 +337,11 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
                            "pixelBufferWidth", "pixelBufferHeight", "dngBytes", "dngReadable",
                            "resolvedRawWidth", "resolvedRawHeight", "actualFileType", "actualRawPixelFormat",
                            "asShotNeutral", "activeArea", "rotationAngleRequested", "rotationAngleApplied",
-                           "rotationAngleSupported"])
+                           "rotationAngleSupported",
+                           // Lamp evidence, merged from the capture's FlashRecord.
+                           FlashRecord.modeKey, FlashRecord.intensityKey, FlashRecord.durationKey,
+                           FlashRecord.exposureKey, FlashRecord.refusedKey,
+                           FlashRecord.refusedReasonKey])
         var manifest = evidence.filter { allowed.contains($0.key) }
         if let failure { manifest["failure"] = String(failure.prefix(240)) }
         if manifest["dng"] == nil { manifest["dng"] = dngURL == nil ? "missing" : "capture.dng" }

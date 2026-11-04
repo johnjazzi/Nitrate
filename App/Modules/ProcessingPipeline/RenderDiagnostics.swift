@@ -303,6 +303,7 @@ enum RenderMovieMetadata {
                              isImportedSource: Bool = false,
                              sourceNominalFrameRate: Double? = nil,
                              slate: RenderSlate = .first,
+                             flash: FlashRecord? = nil,
                              overrides: [String: String] = [:],
                              omitting: Set<String> = []) throws -> [String: String] {
         try config.validate()
@@ -362,6 +363,11 @@ enum RenderMovieMetadata {
         if let offset = config.effectivePushPull.meteredOffsetEV {
             metadataValues["push-pull-metered-offset-ev"] = String(offset)
         }
+        // The lamp, as the capture reported it. Push/pull is a different fact —
+        // what the lab did to the film — so the two never share a key.
+        if let flash {
+            metadataValues.merge(flash.metadataValues) { _, measured in measured }
+        }
         if isImportedSource {
             metadataValues["source-origin"] = "photos-import"
             metadataValues["shutter-speed"] = "unknown-or-not-recorded"
@@ -397,10 +403,12 @@ enum RenderMovieMetadata {
                      orientation: RenderDeliveryOrientation? = nil,
                      capturePolicy: RenderCapturePolicy? = nil,
                      isImportedSource: Bool = false,
-                     sourceNominalFrameRate: Double? = nil) throws -> [AVMetadataItem] {
+                     sourceNominalFrameRate: Double? = nil,
+                     flash: FlashRecord? = nil) throws -> [AVMetadataItem] {
         let metadataValues = try recipeValues(config: config, bitrate: bitrate,
             sourceColorProvenance: sourceColorProvenance, capturePolicy: capturePolicy,
-            isImportedSource: isImportedSource, sourceNominalFrameRate: sourceNominalFrameRate)
+            isImportedSource: isImportedSource, sourceNominalFrameRate: sourceNominalFrameRate,
+            flash: flash)
         var items: [AVMutableMetadataItem] = metadataValues.sorted { $0.key < $1.key }.map { key, value in
             let item = AVMutableMetadataItem()
             item.keySpace = .quickTimeMetadata

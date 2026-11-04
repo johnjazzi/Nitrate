@@ -114,6 +114,20 @@ final class PipelineRenderer: @unchecked Sendable {
                                     progress: progress)).outputURL
     }
 
+    /// The take's lamp record, read from the source movie's own tags. Nil for a
+    /// source recorded before the control existed, which is not the same
+    /// statement as "the lamp was off".
+    private static func flashRecord(from asset: AVAsset) async throws -> FlashRecord? {
+        var values: [String: String] = [:]
+        for item in try await asset.load(.metadata) {
+            guard let key = item.key as? String,
+                  key.hasPrefix("com.filmemulation.flash-"),
+                  let value = try await item.load(.stringValue) else { continue }
+            values[String(key.dropFirst("com.filmemulation.".count))] = value
+        }
+        return FlashRecord.decode(values)
+    }
+
     private static func captureColorSpace(from asset: AVAsset) async throws -> String? {
         for item in try await asset.load(.metadata) {
             guard let key = item.key as? String,
@@ -147,6 +161,9 @@ final class PipelineRenderer: @unchecked Sendable {
 
         let formatDescriptions = try await videoTrack.load(.formatDescriptions)
         let captureColorSpace = try await Self.captureColorSpace(from: asset)
+        // The lamp is a fact about the take, not about the render: read it back
+        // from the source so the delivered movie states the light that made it.
+        let flash = try await Self.flashRecord(from: asset)
         let sourceColorProvenance: RenderInputColorProvenance
         if allowsSyntheticInputForTests {
             sourceColorProvenance = .syntheticTestBypass(formatDescriptions, captureColorSpace: captureColorSpace)
@@ -289,7 +306,8 @@ final class PipelineRenderer: @unchecked Sendable {
         writer.metadata = try RenderMovieMetadata.make(
             config: config, bitrate: bitrate, sourceColorProvenance: sourceColorProvenance,
             orientation: deliveryOrientation, capturePolicy: capturePolicy,
-            isImportedSource: isImportedSource, sourceNominalFrameRate: Double(nominalFrameRate)
+            isImportedSource: isImportedSource, sourceNominalFrameRate: Double(nominalFrameRate),
+            flash: flash
         )
 
         // Audio passthrough writer input

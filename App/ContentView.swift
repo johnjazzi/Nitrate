@@ -1545,7 +1545,11 @@ struct ContentView: View {
             currentISO: $currentISO,
             meteredOffsetEV: cameraViewModel.hasExposureMeter
                 ? cameraViewModel.liveExposureTargetOffset : nil,
-            selectionOnly: isDevelopMode
+            selectionOnly: isDevelopMode,
+            photoMode: cameraViewModel.isDevelopmentPhotoMode,
+            appliedShutterSeconds: cameraViewModel.photoExposureSnapshot?.durationSeconds
+                ?? cameraViewModel.liveShutterSeconds,
+            lampAvailable: cameraViewModel.hasLamp
         )
     }
 
@@ -1595,6 +1599,15 @@ private struct StockSheetView: View {
     /// this snapshot when the sheet renders.
     var meteredOffsetEV: Float?
     var selectionOnly = false
+    /// Photo mode reads its own lamp controls: intensity and the duration of the
+    /// exposure the lamp covers. Video has one level and no window to shape.
+    var photoMode = false
+    /// The exposure the still will actually be taken at, read back from the
+    /// device. The duration control is honest only against this value.
+    var appliedShutterSeconds: Double = 0
+    /// A camera with no lamp hides the cell entirely: a disabled lamp control
+    /// would imply a hardware fault the operator cannot fix.
+    var lampAvailable = false
 
     @State private var stocks: [FilmStockConfig] = []
     @State private var localSelection: FilmStockConfig?
@@ -1603,6 +1616,10 @@ private struct StockSheetView: View {
     /// the scene sits over target. Turning it off hands the ladder to the user.
     @State private var pushPullAutomatic = true
     @State private var pushPullStops: PushPullStops = .none
+    /// The lamp settings, read from and written straight to the one global store
+    /// so the camera records exactly what this sheet shows.
+    @State private var flashSettings = FlashSettingsStore().settings
+    @State private var showsFlash = false
 
     var body: some View {
         NavigationStack {
@@ -1706,7 +1723,8 @@ private struct StockSheetView: View {
     /// stay legible — and the pill keeps its fixed fifth.
     private var controlRow: some View {
         GeometryReader { proxy in
-            let widths = StockSheetLayout.controlWidths(forAvailableWidth: proxy.size.width)
+            let widths = StockSheetLayout.controlWidths(forAvailableWidth: proxy.size.width,
+                                                        includesFlash: lampAvailable)
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
                 // Bottom-aligned: the pill has no caption, so it lines up with
@@ -1714,6 +1732,9 @@ private struct StockSheetView: View {
                 HStack(alignment: .bottom, spacing: StockSheetLayout.controlSpacing) {
                     gaugeCell.frame(width: widths.gauge)
                     pushPullPill.frame(width: widths.pushPull)
+                    if lampAvailable {
+                        flashPill.frame(width: widths.flash)
+                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -1803,6 +1824,113 @@ private struct StockSheetView: View {
                         isAutomatic: $pushPullAutomatic,
                         manualStops: $pushPullStops,
                         onChange: persistPreferences)
+    }
+
+    private var flashPill: some View {
+        Button { showsFlash = true } label: {
+            VStack(spacing: 2) {
+                // The word is the label; the number is what the operator reads at
+                // a glance, so it goes in the pill itself.
+                Text("LAMP")
+                    .font(NitrateTypography.font(.caption2))
+                    .fontWeight(.semibold)
+                    .kerning(0.5)
+                    .foregroundStyle(flashTint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Text(flashSettings.pillText(photoMode: photoMode))
+                    .font(NitrateTypography.font(.caption2).monospacedDigit())
+                    .foregroundStyle(flashTint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 30)
+                    .background(Capsule().fill(flashTint.opacity(0.16)))
+                    .overlay { Capsule().stroke(flashTint.opacity(0.6), lineWidth: 1) }
+                    .contentShape(Capsule())
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("stock.flash")
+        .accessibilityLabel("Lamp")
+        .accessibilityValue(flashSettings.accessibilityValue(photoMode: photoMode))
+        .popover(isPresented: $showsFlash, arrowEdge: .bottom) {
+            flashPopover.presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private var flashTint: Color {
+        let isOn = photoMode ? flashSettings.isPhotoLampOn : flashSettings.isVideoLampOn
+        return isOn ? .yellow : .secondary
+    }
+
+    /// The applied shutter is too fast for the lamp to be shaped at all. The
+    /// duration control says why and is disabled: a control that silently does
+    /// nothing is worse than one that is visibly unavailable. Below the floor the
+    /// lamp still fires, for the whole exposure, at the requested intensity.
+    private var flashShapingReason: String? {
+        guard photoMode, flashSettings.isPhotoLampOn else { return nil }
+        switch FlashTimingPolicy.timing(exposure: appliedShutterSeconds,
+                                        durationPercent: flashSettings.photoDurationPercent,
+                                        sync: .front) {
+        case .unshapable(let reason): return reason
+        case .lit: return nil
+        }
+    }
+
+    /// One control per mode. Video has a level and nothing else to say; a photo
+    /// has the intensity and the fraction of the exposure the lamp covers.
+    private var flashPopover: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Lamp")
+                .font(NitrateTypography.font(.subheadline))
+                .foregroundStyle(.primary)
+            if photoMode {
+                Toggle("Fire the lamp", isOn: $flashSettings.photoEnabled)
+                    .font(NitrateTypography.font(.footnote))
+                flashSlider("Intensity", value: $flashSettings.photoIntensity,
+                            range: FlashSettings.intensityRange,
+                            readout: flashSettings.isPhotoLampOn ? "\(flashSettings.photoPercent)%" : "OFF")
+                flashSlider("Duration", value: $flashSettings.photoDurationPercent,
+                            range: FlashSettings.durationRange,
+                            readout: "\(flashSettings.durationPercent)%")
+                    .disabled(flashShapingReason != nil)
+                    .opacity(flashShapingReason == nil ? 1 : 0.45)
+                if let reason = flashShapingReason {
+                    Text(reason)
+                        .font(NitrateTypography.font(.caption2))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                flashSlider("Lamp", value: $flashSettings.videoLevel,
+                            range: FlashSettings.intensityRange,
+                            readout: flashSettings.isVideoLampOn ? "\(flashSettings.videoPercent)%" : "OFF")
+            }
+        }
+        .padding(16)
+        .frame(width: 280)
+        .onChange(of: flashSettings) { _, value in
+            // One global store: a take reads it at the record tap, a still at the
+            // shutter tap, and neither is remembered per stock.
+            FlashSettingsStore().settings = value
+        }
+    }
+
+    private func flashSlider(_ caption: String, value: Binding<Double>,
+                             range: ClosedRange<Double>, readout: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 0) {
+                Text(caption)
+                Spacer(minLength: 0)
+                Text(readout)
+                    .monospacedDigit()
+            }
+            .font(NitrateTypography.font(.caption))
+            .foregroundStyle(.secondary)
+            Slider(value: value, in: range, step: 0.05)
+        }
     }
 
     /// Commits the selected stock (and its push/pull) to the take. The sheet's
