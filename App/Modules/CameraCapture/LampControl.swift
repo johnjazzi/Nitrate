@@ -41,7 +41,10 @@ struct LampControl: View {
             tick()
         }
         .sensoryFeedback(.impact(weight: .medium), trigger: hapticTick)
-        .popover(isPresented: $showsControls, arrowEdge: .bottom) {
+        // .top puts the card BELOW the key. The arrow edge names the side of
+        // the popover the arrow leaves from, so .bottom anchored the card above
+        // a key that already sits at the top of the screen and pushed it off.
+        .popover(isPresented: $showsControls, arrowEdge: .top) {
             controls.presentationCompactAdaptation(.popover)
         }
         .accessibilityIdentifier("camera.flash")
