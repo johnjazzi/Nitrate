@@ -346,8 +346,11 @@ struct DevelopPhotoSelectionTests {
 
         #expect(model.photo == nil)
         let message = model.errorMessage ?? ""
-        #expect(message.contains("not a raw photo"), "the refusal must name the problem: \(message)")
+        // One clause on screen: what it is, and that it is not developable. The
+        // supported formats moved into the About panel behind "Why?".
+        #expect(message.contains("Not a raw photo"), "the refusal must name the problem: \(message)")
         #expect(message.contains("JPEG"), "the refusal must name what it found: \(message)")
+        #expect(!message.contains("DNG"), "the format list belongs in the help sheet: \(message)")
     }
 
     /// The gate answers "can the system's RAW pipeline develop this", not "is

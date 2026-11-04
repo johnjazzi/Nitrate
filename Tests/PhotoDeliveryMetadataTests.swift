@@ -87,7 +87,11 @@ struct PhotoDeliveryMetadataTests {
     }
 
     @Test func stillPayloadMatchesTheMoviePayloadKeyForKey() throws {
-        let config = try config(gauge: .sixteenMillimetre)
+        // The hand-built stock carries no catalog shares, so state the ones a
+        // shipped stock has; the payload must then report the still's own values.
+        var config = try config(gauge: .sixteenMillimetre)
+        config.stillHalationScale = 0.5
+        config.stillDiffusionScale = 0.5
         let movieItems = try RenderMovieMetadata.make(config: config)
         var movie: [String: String] = [:]
         for item in movieItems where item.keySpace == .quickTimeMetadata {
@@ -97,12 +101,22 @@ struct PhotoDeliveryMetadataTests {
         }
         let still = try payload(try writtenProperties(config, capture: .init()))
 
-        // Everything the movie states about the recipe the still states too.
-        let shared = movie.keys.filter { !PhotoDeliveryMetadata.movieOnlyKeys.contains($0) }
+        // Everything the movie states about the recipe the still states too —
+        // except the keys that describe how the STILL was rendered. A photo mix
+        // is a smaller share of the same model and states its own values, so
+        // `diffusion-amount` and the scene lift are expected to differ.
+        let stillApplied = PhotoDeliveryMetadata.stillAppliedKeys
+        let shared = movie.keys.filter {
+            !PhotoDeliveryMetadata.movieOnlyKeys.contains($0) && !stillApplied.contains($0)
+        }
         #expect(!shared.isEmpty)
         for key in shared where key != "encoding-codec" {
             #expect(still[key] == movie[key], "still \(key) must match the movie: \(still[key] ?? "nil") vs \(movie[key] ?? "nil")")
         }
+        // The still's own claims are present and describe the still.
+        #expect(still["diffusion-still-scale"] == "0.50")
+        #expect(still["halation-still-scale"] == "0.50")
+        #expect(still["diffusion-amount"] == "0.15", "16mm 0.30 at the still share")
         // Movie-only claims are dropped, and the codec tells the truth.
         for key in PhotoDeliveryMetadata.movieOnlyKeys {
             #expect(still[key] == nil, "\(key) describes a take, not a still")

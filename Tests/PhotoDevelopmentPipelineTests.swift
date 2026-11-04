@@ -44,6 +44,27 @@ struct PhotoDevelopmentPipelineTests {
         #expect(extreme.x.isFinite && extreme.x > 0)
     }
 
+    /// A DNG offers the DNG-tagged decoder version; a NEF, ARW or CR2 offers its
+    /// own and never "8.dng". Requiring the tagged one refused every non-DNG raw
+    /// at the first line of the decode, which is what a Nikon file hit.
+    @Test func decoderVersionFollowsTheFileInsteadOfDemandingDNG() {
+        let dng = CIRAWDecoderVersion(rawValue: "8.dng")
+        #expect(RAWPhotoDecoder.preferredDecoderVersion(from: [dng]) == dng)
+        // A DNG that also offers a newer numbered version still pins 8.dng.
+        #expect(RAWPhotoDecoder.preferredDecoderVersion(
+            from: [CIRAWDecoderVersion(rawValue: "9.0"), dng]) == dng)
+
+        // A maker's own raw: no DNG tag, so the newest supported version wins.
+        let maker = ["6.0", "8.0", "9.0"].map { CIRAWDecoderVersion(rawValue: $0) }
+        #expect(RAWPhotoDecoder.preferredDecoderVersion(from: maker)?.rawValue == "9.0")
+        // Natural order, so 10.0 is not below 9.0.
+        let wide = ["9.0", "10.0"].map { CIRAWDecoderVersion(rawValue: $0) }
+        #expect(RAWPhotoDecoder.preferredDecoderVersion(from: wide)?.rawValue == "10.0")
+
+        // A file that offers nothing cannot be developed, and says so.
+        #expect(RAWPhotoDecoder.preferredDecoderVersion(from: []) == nil)
+    }
+
     @Test func rawDestinationIsWritableAndPreservesLinearSamples() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
@@ -251,7 +272,10 @@ struct PhotoDevelopmentPipelineTests {
         let darkBand = 8..<(width / 2 - 8)
         let darkOff = darkBand.map { off[$0] }.reduce(0, +) / Double(darkBand.count)
         let darkOn = darkBand.map { on[$0] }.reduce(0, +) / Double(darkBand.count)
-        #expect(darkOn > darkOff + 0.5,
+        // Shipped stills mix half the take's amount (`stillDiffusionScale` 0.5),
+        // so 8mm arrives at 0.25 rather than 0.5 and the lift is about half the
+        // one a video frame gets at the same gauge.
+        #expect(darkOn > darkOff + 0.2,
                 "diffusion must lift the dark side of the edge (\(darkOff) -> \(darkOn))")
 
         // And a bypassed gauge is still a true pass-through of the node itself.

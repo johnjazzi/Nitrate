@@ -38,10 +38,11 @@ enum PhotoImportError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .unsupported(let found):
-            return "This image is not a raw photo the pipeline can develop "
-                + "(found \(found)). Choose a raw (DNG, NEF, ARW, CR2/CR3, RAF, ORF, RW2…)."
+            // One clause: what it is, and that it cannot be developed. The
+            // formats it *could* have been live behind the info sheet.
+            return "Not a raw photo — found \(found)."
         case .unreadable:
-            return "This photo could not be read. Try selecting it again."
+            return "Could not read this photo. Try again."
         }
     }
 }
@@ -61,15 +62,25 @@ enum PhotoImportService {
         "rw2", "pef", "srw", "3fr", "fff", "iiq", "x3f"
     ]
 
-    /// True for a raw file the still renderer is expected to decode.
-    static func isRaw(_ url: URL) -> Bool {
-        let ext = url.pathExtension.lowercased()
-        if rawExtensions.contains(ext) { return true }
+    private static let rawType = UTType("public.camera-raw-image")
+
+    /// The file's own type, or nil when ImageIO cannot identify it at all.
+    private static func contentType(_ url: URL) -> UTType? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let type = CGImageSourceGetType(source) as String? else { return false }
-        return UTType(type)?.conforms(to: UTType("public.camera-raw-image") ?? .image) == true
-            && UTType(type)?.identifier != UTType.heic.identifier
-            && UTType(type)?.identifier != UTType.jpeg.identifier
+              let identifier = CGImageSourceGetType(source) as String? else { return nil }
+        return UTType(identifier)
+    }
+
+    /// True for a raw file the still renderer is expected to decode.
+    ///
+    /// CONTENT decides, and the name is only a fallback for a file ImageIO
+    /// cannot identify: a JPEG renamed `.nef` is a JPEG, and a name check alone
+    /// would carry it into a decode that cannot honour it.
+    static func isRaw(_ url: URL) -> Bool {
+        if let type = contentType(url), let rawType {
+            return type.conforms(to: rawType)
+        }
+        return rawExtensions.contains(url.pathExtension.lowercased())
     }
 
     /// The gate that actually decides: can this machine's RAW pipeline develop
@@ -86,13 +97,15 @@ enum PhotoImportService {
     /// passes here is a file the pipeline can actually develop — not merely one
     /// with a known extension.
     static func canDevelop(_ url: URL) -> Bool {
+        // Content first: `CIRAWFilter` will open plenty of non-raw images, so
+        // "it opened" is not the test.
+        guard isRaw(url) else { return false }
         guard let raw = CIRAWFilter(imageURL: url) else { return false }
-        // The decoder version is what RAWPhotoDecoder pins; a file the filter
-        // opens but cannot serve at that version would fail deeper in the
-        // render, so it is refused here where the reason can be reported.
-        let version = CIRAWDecoderVersion(rawValue: "8.dng")
-        guard raw.supportedDecoderVersions.contains(version) else { return false }
-        return raw.outputImage != nil
+        // Any decoder version will do — a NEF offers its own set and never
+        // "8.dng" — but a file that offers none cannot be developed at all.
+        guard RAWPhotoDecoder.preferredDecoderVersion(from: raw.supportedDecoderVersions) != nil,
+              raw.outputImage != nil else { return false }
+        return true
     }
 
     /// The gate the picker runs BEFORE copying the file into app storage: a

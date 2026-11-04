@@ -17,6 +17,66 @@ import simd
 ///    pyramid artefacts), and a bypassed preset is a true pass-through.
 struct DiffusionTests {
 
+    // MARK: - Stills
+
+    /// A still keeps the gauge's RADIUS and mixes a smaller share of it.
+    ///
+    /// Radius is the physical spread, so it is not a taste knob; the amount is
+    /// the mix, and a held frame reads softer than a moving one at the same
+    /// amount. 16mm therefore stays 16 px and drops 0.30 to 0.15.
+    @Test
+    func stillShareKeepsTheRadiusAndMixesLess() throws {
+        var stock = FilmStockConfig(stockId: "kokak", displayName: "s", category: .video,
+                                    lutName: "x.cube", halationStrength: 2.52, glowStrength: 0.1,
+                                    grainSize: 1, defaultISO: 250)
+        stock.printGauge = .sixteenMillimetre
+        stock.stillDiffusionScale = 0.5
+
+        let take = stock.effectiveDiffusion
+        let still = stock.effectiveStillDiffusion
+        #expect(take.preset == .radius16)
+        #expect(take.amount == 0.3)
+        #expect(still.preset == take.preset, "the radius is physical and must not move")
+        #expect(abs(still.amount - 0.15) < 0.0001)
+
+        // A stock with no still share keeps the take's amount exactly.
+        stock.stillDiffusionScale = nil
+        #expect(stock.effectiveStillDiffusion == take)
+    }
+
+    /// The share must not resurrect a node that was meant to be off, and must
+    /// not soften a bypassed gauge into an allocation.
+    @Test
+    func stillShareNeverEnablesABypassedNode() {
+        for gauge in [PrintGauge.seventyFiveMillimetre] {
+            var stock = FilmStockConfig(stockId: "k", displayName: "s", category: .video,
+                                        lutName: "x.cube", halationStrength: 2.52, glowStrength: 0.1,
+                                        grainSize: 1, defaultISO: 250)
+            stock.printGauge = gauge
+            stock.stillDiffusionScale = 0.5
+            #expect(!stock.effectiveStillDiffusion.isEnabled)
+            #expect(stock.effectiveStillDiffusion.plan(sourceWidth: 1920) == nil)
+        }
+    }
+
+    /// Both shipped catalogs hold the stills back by the same share, and the
+    /// take's own amount is untouched.
+    @Test
+    func shippedStocksHoldDiffusionBackOnStills() throws {
+        for path in ["App/Resources/stocks.json", "Resources/stocks.json"] {
+            let url = TestRepository.root.appendingPathComponent(path)
+            struct Container: Decodable { let stocks: [FilmStockConfig] }
+            let stocks = try JSONDecoder().decode(Container.self, from: Data(contentsOf: url)).stocks
+            for stock in stocks {
+                #expect(stock.effectiveStillDiffusionScale == 0.5,
+                        "\(stock.stockId): stills take half the diffusion amount")
+                #expect(stock.effectiveStillDiffusion.amount
+                        == stock.effectiveDiffusion.amount * 0.5,
+                        "\(stock.stockId): the share scales the amount, not the radius")
+            }
+        }
+    }
+
     // MARK: - Plan (no GPU)
 
     @Test

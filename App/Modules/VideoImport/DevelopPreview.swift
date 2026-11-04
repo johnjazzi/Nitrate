@@ -31,6 +31,8 @@ struct DevelopPreview: View {
     /// from `preview` so the pre-render frame and the graded result can never be
     /// confused: one is the file as shot, the other is the stock applied to it.
     @State private var renderedPreview: CGImage?
+    @State private var showHelp = false
+    @State private var helpRefusal: String?
 
     var body: some View {
         ZStack {
@@ -66,6 +68,9 @@ struct DevelopPreview: View {
         // preview. A file that has already been cleaned up shows nothing.
         .task(id: renderedKey) {
             await loadRenderedPreview()
+        }
+        .sheet(isPresented: $showHelp) {
+            DevelopMediaHelp(refusal: helpRefusal)
         }
     }
 
@@ -135,11 +140,24 @@ struct DevelopPreview: View {
                 clipSelection
             }
             if let message = model.errorMessage, !model.isLoading {
-                Text(message)
+                // Short on screen, detailed behind Why?. A refusal is the moment
+                // the operator is most likely to give up, so it names the file
+                // type and offers the way out in the same breath.
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(message)
+                        .font(NitrateTypography.font(.footnote))
+                        .foregroundStyle(DevelopPreviewChrome.warning)
+                        .multilineTextAlignment(.center)
+                        .accessibilityIdentifier("develop.error")
+                    Button("Why?") {
+                        helpRefusal = message
+                        showHelp = true
+                    }
                     .font(NitrateTypography.font(.footnote))
-                    .foregroundStyle(DevelopPreviewChrome.warning)
-                    .multilineTextAlignment(.center)
-                    .accessibilityIdentifier("develop.error")
+                    .foregroundStyle(DevelopPreviewChrome.orange)
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("develop.error.why")
+                }
             }
         }
         .padding(24)
@@ -154,20 +172,33 @@ struct DevelopPreview: View {
                 clipPicker(model.video == nil && model.photo == nil ? "Select Video" : "Change Video")
                 photoPicker(model.video == nil && model.photo == nil ? "Select Photo" : "Change Photo")
             }
-            // The picker shows every image, because Photos cannot filter by file
-            // type. Say up front which ones the pipeline can develop.
-            Text("Video: Apple Log 2 only. Photo: raw files only — DNG, NEF, ARW, "
-                 + "CR2/CR3, RAF, ORF, RW2. Anything else is refused before it is copied.")
-                .font(NitrateTypography.font(.caption2))
-                .foregroundStyle(DevelopPreviewChrome.muted)
-                .multilineTextAlignment(.center)
-                .accessibilityIdentifier("develop.entryHint")
+            // One line, and a way in to the rest. The picker cannot filter by
+            // file type, so the rule is stated here rather than discovered after
+            // a refusal, but a paragraph above the buttons pushes them off a
+            // small screen.
+            HStack(spacing: 6) {
+                Text("Apple Log 2 · raw")
+                    .font(NitrateTypography.font(.caption2))
+                    .foregroundStyle(DevelopPreviewChrome.muted)
+                Button {
+                    helpRefusal = nil
+                    showHelp = true
+                } label: {
+                    Image(systemName: "info.circle")
+                        .font(.caption2)
+                        .foregroundStyle(DevelopPreviewChrome.muted)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("develop.help")
+                .accessibilityLabel("What can I develop?")
+            }
+            .accessibilityIdentifier("develop.entryHint")
             if let video = model.video {
                 identity(title: Self.videoTitle(video), detail: Self.videoDetail(video))
             } else if let photo = model.photo {
                 identity(title: Self.photoTitle(photo), detail: photo.detailSummary)
             } else {
-                Text("Choose an Apple Log 2 clip or a raw photo to develop.")
+                Text("Choose a clip or a raw photo.")
                     .font(NitrateTypography.font(.footnote))
                     .foregroundStyle(DevelopPreviewChrome.muted)
             }
@@ -389,7 +420,7 @@ enum DevelopPreviewLoader {
 }
 
 /// Understated white/orange chrome shared with the rest of the app.
-private enum DevelopPreviewChrome {
+enum DevelopPreviewChrome {
     static let orange = SettingsControlChrome.halationOrange
     static let muted = Color.white.opacity(0.65)
     static let warning = Color(red: 1.0, green: 0.62, blue: 0.40)
