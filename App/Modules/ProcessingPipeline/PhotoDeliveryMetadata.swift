@@ -125,6 +125,9 @@ enum PhotoDeliveryMetadata {
         if let sceneLiftStops, sceneLiftStops.isFinite, sceneLiftStops != 0 {
             overrides["halation-scene-lift-ev"] = String(format: "%.2f", sceneLiftStops)
         }
+        // The base exposure every still gets, so a delivered file says what it
+        // was lifted by rather than leaving it to be inferred.
+        overrides["photo-exposure-ev"] = String(format: "%.2f", RAWPhotoDecoder.baseExposureEV)
         // The shares the still render applied, and the amount actually mixed:
         // the recipe's keys describe the take, so a photo states its own.
         overrides["halation-still-scale"] = String(format: "%.2f", config.effectiveStillHalationScale)

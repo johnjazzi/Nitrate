@@ -41,11 +41,13 @@ enum PhotoPipelineProbe {
         } else {
             print("RAW-DNG not a DNG container (CIRAWFilter paths only)")
         }
-        print(String(format: "RAW-LIFT baselineExposure=%.3f halationKnees=%.2f/%.2f/%.2f",
-                     decoded.baselineExposure,
-                     SpatialEffectsStage.halationKnees(sceneLiftStops: decoded.baselineExposure).x,
-                     SpatialEffectsStage.halationKnees(sceneLiftStops: decoded.baselineExposure).y,
-                     SpatialEffectsStage.halationKnees(sceneLiftStops: decoded.baselineExposure).z))
+        print(String(format: "RAW-REF referenceSuperwhite=%.2f",
+                     SpatialEffectsStage.halationReferenceSuperwhite(sceneLiftStops: decoded.sceneLiftStops)))
+        print(String(format: "RAW-LIFT baseline=%.3f stillBase=%.2f sceneLift=%.3f knees=%.2f/%.2f/%.2f",
+                     decoded.baselineExposure, RAWPhotoDecoder.baseExposureEV, decoded.sceneLiftStops,
+                     SpatialEffectsStage.halationKnees(sceneLiftStops: decoded.sceneLiftStops).x,
+                     SpatialEffectsStage.halationKnees(sceneLiftStops: decoded.sceneLiftStops).y,
+                     SpatialEffectsStage.halationKnees(sceneLiftStops: decoded.sceneLiftStops).z))
         print("RAW settings: \(decoded.settings)")
         try inspect("00-configured-raw", decoded.linearImage)
         try inspect("01-raw", raw)
@@ -61,7 +63,7 @@ enum PhotoPipelineProbe {
             print(String(format: "PHOTO-NOISE linear: chromaSigma %.5f lumaSigma %.5f detail %.5f mean %.4f",
                          stats.chroma, stats.luma, stats.detail, stats.mean))
         }
-        let halation = try film.halation(log, sceneLiftStops: decoded.baselineExposure)
+        let halation = try film.halation(log, sceneLiftStops: decoded.sceneLiftStops)
         try inspect("03-halation", halation)
         let graded = try film.grade(halation)
         try inspect("04-graded", graded)

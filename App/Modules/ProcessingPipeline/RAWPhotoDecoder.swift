@@ -17,6 +17,30 @@ final class RAWPhotoDecoder {
         let baselineExposure: Float
         /// The file's own sensor numbers, when it is a DNG.
         let metadata: DNGMetadata?
+
+        /// Total stops this frame was lifted by before the film stages: the
+        /// capture's baseline plus the still base exposure.
+        var sceneLiftStops: Float {
+            RAWPhotoDecoder.sceneLiftStops(baselineExposure: baselineExposure)
+        }
+    }
+
+    /// Base exposure every still gets before the film stages.
+    ///
+    /// The RAW pipeline's neutral rendering sits low: a develop came out about a
+    /// stop under what the same capture looks like in Photos, consistently, on
+    /// both ProRAW and maker raws. This is the single number that fixes the base
+    /// rather than leaving every photo to be corrected by hand with push/pull.
+    ///
+    /// It is a LIFT, so it also counts toward the halation scene lift (see
+    /// `sceneLiftStops`) — a frame lifted here must not be measured against
+    /// un-lifted knees, which is the bug that made raw blooms orange.
+    static let baseExposureEV: Float = 1
+
+    /// Total stops the film stages see this frame lifted by: the capture's own
+    /// `BaselineExposure` plus the still base exposure above.
+    static func sceneLiftStops(baselineExposure: Float) -> Float {
+        baselineExposure + baseExposureEV
     }
 
     /// The decoder version to pin for a file: the DNG-tagged one when the file
@@ -69,7 +93,7 @@ final class RAWPhotoDecoder {
         guard let version else { throw DecodeError.unsupported("no supported decoder version") }
         raw.decoderVersion = version
         raw.scaleFactor = 1
-        raw.exposure = 0
+        raw.exposure = Self.baseExposureEV
         // `baselineExposure` is deliberately NOT zeroed: the DNG's BaselineExposure
         // is the capture's exposure compensation (measured +0.98 EV and +2.49 EV on
         // real captures). Forcing it to 0 developed every photo ~2–5x darker than
@@ -84,7 +108,8 @@ final class RAWPhotoDecoder {
         raw.neutralTint = tint
 
         var settings: [String: String] = [
-            "decoderVersion": raw.decoderVersion.rawValue, "scaleFactor": "1", "exposure": "0",
+            "decoderVersion": raw.decoderVersion.rawValue, "scaleFactor": "1",
+            "exposure": String(format: "%.2f (still base)", Self.baseExposureEV),
             "baselineExposure": String(format: "%.3f (DNG-provided)", dngBaselineExposure), "shadowBias": "0",
             "boostAmount": "0", "boostShadowAmount": "0", "gamutMappingEnabled": "false",
             "extendedDynamicRangeAmount": "1", "neutralTemperature": String(raw.neutralTemperature),

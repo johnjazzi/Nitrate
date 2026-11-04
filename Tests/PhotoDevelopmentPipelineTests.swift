@@ -90,6 +90,21 @@ struct PhotoDevelopmentPipelineTests {
         }
     }
 
+    /// The still base exposure is a lift, so it must count toward the scene lift
+    /// the halation knees are scaled by — otherwise the one-stop fix reintroduces
+    /// the orange bloom it took a whole investigation to remove.
+    @Test func stillBaseExposureCountsTowardTheHalationSceneLift() {
+        #expect(RAWPhotoDecoder.baseExposureEV == 1)
+        #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 0) == 1)
+        #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 2.988) == 3.988)
+
+        // A 2x wall stays below the lifted red knee once both lifts are counted.
+        let lifted = SpatialEffectsStage.halationKnees(
+            sceneLiftStops: RAWPhotoDecoder.sceneLiftStops(baselineExposure: 2.988))
+        let wallAtTwoStopsLift: Float = 2
+        #expect(max(0, wallAtTwoStopsLift - lifted.x) == 0)
+    }
+
     /// A DNG offers the DNG-tagged decoder version; a NEF, ARW or CR2 offers its
     /// own and never "8.dng". Requiring the tagged one refused every non-DNG raw
     /// at the first line of the decode, which is what a Nikon file hit.

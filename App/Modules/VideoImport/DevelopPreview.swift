@@ -174,7 +174,8 @@ struct DevelopPreview: View {
     // MARK: - Content
 
     private var chooser: some View {
-        VStack(spacing: 18) {
+        ScrollView(.vertical, showsIndicators: false) {
+        VStack(spacing: 14) {
             if model.isLoading {
                 transferState
             } else if let job = activeJob, job.status == .completed {
@@ -204,8 +205,11 @@ struct DevelopPreview: View {
                     .accessibilityIdentifier("develop.error.why")
                 }
             }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity)
         }
-        .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -250,10 +254,16 @@ struct DevelopPreview: View {
 
             if let preview {
                 VStack(spacing: 6) {
+                    // Fill the panel's width and crop the overflow. Sizing by
+                    // height (`aspectRatio: .fit`) collapsed a portrait photo to
+                    // a narrow column in a wide panel, which is what made this
+                    // read as compressed.
                     Image(decorative: preview, scale: 1)
                         .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxHeight: 220)
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 196)
+                        .clipped()
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                     // Say plainly that this is the file, not the look: the grade
                     // only exists after the render.
@@ -332,8 +342,10 @@ struct DevelopPreview: View {
                 VStack(spacing: 6) {
                     Image(decorative: renderedPreview, scale: 1)
                         .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxHeight: 260)
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 224)
+                        .clipped()
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                     Text("Graded · delivered file")
                         .font(NitrateTypography.font(.caption2))
