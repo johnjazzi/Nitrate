@@ -40,6 +40,9 @@ struct DevelopMediaHelp: View {
                     row("Photo", "Raw files only",
                         "DNG (including ProRAW), NEF, ARW, CR2/CR3, RAF, ORF, RW2 — any raw "
                         + "this iPhone's decoder can open.")
+                    row("If a raw is refused", "Check the copy",
+                        "Photos can hand over a converted JPEG instead of the original. Turn on "
+                        + "Settings → Photos → Keep Originals, then pick the file again.")
                     Text("Anything else is refused before it is copied, so it never lands in storage.")
                         .font(NitrateTypography.font(.caption))
                         .foregroundStyle(DevelopPreviewChrome.muted)

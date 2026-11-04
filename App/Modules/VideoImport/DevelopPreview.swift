@@ -316,6 +316,14 @@ struct DevelopPreview: View {
         }
     }
 
+    /// "Reading 2 of 3…" while a batch is being taken in, so a slow pick of large
+    /// raws is not an anonymous spinner.
+    private var bulkReadingText: String? {
+        guard model.isLoading, model.bulk.total > 0 else { return nil }
+        let current = min(model.bulk.read + 1, model.bulk.total)
+        return "Reading \(current) of \(model.bulk.total)…"
+    }
+
     private var batchJobs: [RenderJob] {
         model.batchJobIDs.compactMap { id in queue.jobs.first { $0.id == id } }
     }
@@ -366,9 +374,19 @@ struct DevelopPreview: View {
                 .multilineTextAlignment(.center)
                 .accessibilityIdentifier("develop.bulkCount")
             if !model.bulk.skipped.isEmpty {
-                Text("\(model.bulk.skipped.count) skipped")
-                    .font(NitrateTypography.font(.caption2))
-                    .foregroundStyle(DevelopPreviewChrome.warning)
+                VStack(spacing: 2) {
+                    Text("\(model.bulk.skipped.count) skipped")
+                        .font(NitrateTypography.font(.caption2))
+                        .foregroundStyle(DevelopPreviewChrome.warning)
+                    if let reason = model.bulk.skipped.first {
+                        Text(reason)
+                            .font(NitrateTypography.font(.caption2))
+                            .foregroundStyle(DevelopPreviewChrome.muted)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                    }
+                }
+                .accessibilityIdentifier("develop.bulkSkipped")
             }
             stockMenu
             controlRow
@@ -536,7 +554,7 @@ struct DevelopPreview: View {
     private var transferState: some View {
         VStack(spacing: 14) {
             ProgressView().tint(DevelopPreviewChrome.orange)
-            Text("Preparing clip…")
+            Text(bulkReadingText ?? "Preparing clip…")
                 .font(NitrateTypography.font(.callout))
                 .foregroundStyle(.white)
             Button("Cancel") {

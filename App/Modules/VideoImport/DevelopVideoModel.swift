@@ -140,6 +140,10 @@ final class DevelopVideoModel {
         var photos: [ImportedPhoto] = []
         var videos: [ImportedVideo] = []
         var skipped: [String] = []
+        /// Files in this pick, and how many have been read so far, so a slow
+        /// batch says "reading 2 of 3" instead of spinning anonymously.
+        var total = 0
+        var read = 0
         @ObservationIgnored var photoLeases: [VideoImportFileLease] = []
         @ObservationIgnored var videoLeases: [VideoImportFileLease] = []
 
@@ -157,8 +161,10 @@ final class DevelopVideoModel {
         cancelSelection()
         let token = generation
         isLoading = true
+        bulk.total = transfers.count
         for transfer in transfers {
             if Task.isCancelled || token != generation { break }
+            bulk.read += 1
             do {
                 let clip = try await transfer()
                 let inspected = try await inspect(clip.url, clip.originalFilename)
@@ -171,6 +177,18 @@ final class DevelopVideoModel {
         }
         guard token == generation else { return }
         isLoading = false
+        reportStagingIfEmpty()
+    }
+
+    /// Say WHY a staged pick produced nothing.
+    ///
+    /// The reasons live in `bulk.skipped`, which the staging view shows — and the
+    /// staging view is exactly what does not appear when every file was refused,
+    /// so a three-NEF pick spun, stopped, and explained nothing.
+    private func reportStagingIfEmpty() {
+        guard bulk.isEmpty, let first = bulk.skipped.first else { return }
+        let count = bulk.skipped.count
+        errorMessage = count == 1 ? first : "\(count) files could not be added. \(first)"
     }
 
     /// The photo half of the same staging.
@@ -179,8 +197,10 @@ final class DevelopVideoModel {
         cancelSelection()
         let token = generation
         isLoading = true
+        bulk.total = transfers.count
         for transfer in transfers {
             if Task.isCancelled || token != generation { break }
+            bulk.read += 1
             do {
                 let picked = try await transfer()
                 let inspected = try await inspectPhoto(picked.url, picked.originalFilename)
@@ -193,6 +213,7 @@ final class DevelopVideoModel {
         }
         guard token == generation else { return }
         isLoading = false
+        reportStagingIfEmpty()
     }
 
     /// Queue everything staged, with the settings chosen while it waited.

@@ -356,6 +356,34 @@ struct DevelopPhotoSelectionTests {
                 "the re-develop applies the settings chosen on the second visit")
     }
 
+    /// A pick where EVERY file is refused must say why. The reasons used to live
+    /// only in the staging view, which never appears when nothing staged — three
+    /// NEFs spun, stopped, and explained nothing.
+    @MainActor @Test func aFullyRefusedPickReportsTheReason() async throws {
+        let queue = RenderQueueViewModel()
+        let model = DevelopVideoModel(queue: queue, inspectPhoto: { _, _ in
+            throw PhotoImportError.unsupported(found: "JPEG")
+        })
+        func transfer() -> DevelopVideoModel.PhotoTransferOperation {
+            {
+                let url = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("refused_\(UUID().uuidString).nef")
+                try Data([1]).write(to: url)
+                return DevelopVideoModel.DevelopPhotoTransfer(
+                    lease: VideoImportFileLease(url: url), originalFilename: "DSC_4800.NEF")
+            }
+        }
+
+        await model.stagePhotos(transfers: [transfer(), transfer(), transfer()])
+
+        #expect(model.bulk.isEmpty, "nothing staged")
+        #expect(queue.jobs.isEmpty, "nothing queued")
+        let message = try #require(model.errorMessage)
+        #expect(message.contains("3 files could not be added"), "the count must show: \(message)")
+        #expect(message.contains("Not a raw photo"), "the reason must show: \(message)")
+        #expect(message.contains("JPEG"), "what it found must show: \(message)")
+    }
+
     /// The refusal must not wait for a decode: a picked JPEG or HEIC is named in
     /// its first bytes, and a raw container is a TIFF.
     @Test func renderedImagesAreRecognisedWithoutADecoder() throws {
