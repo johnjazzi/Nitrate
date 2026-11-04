@@ -157,15 +157,7 @@ struct ContentView: View {
 
                 if isDevelopMode {
                     let rect = previewRect(in: geometry)
-                    DevelopPreview(model: developModel, queue: renderQueueViewModel,
-                                   stock: selectedStock,
-                                   stockOptions: library.videoStocks(),
-                                   onSelectStock: { selectedStock = $0 },
-                                   gauge: $developGauge,
-                                   pushPullAutomatic: $developPushPullAutomatic,
-                                   pushPullStops: $developPushPullStops,
-                                   onControlsChanged: persistDevelopControls,
-                                   resolvedPushPull: developPushPull)
+                    developPanel
                         .frame(width: rect.width, height: rect.height)
                         .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
                         .position(x: rect.midX, y: rect.midY)
@@ -1342,6 +1334,27 @@ struct ContentView: View {
         PushPullPreference(isAutomatic: developPushPullAutomatic,
                            manualStops: developPushPullStops)
             .resolved(meteredOffsetEV: nil)
+    }
+
+    /// The Develop panel, built in its own property.
+    ///
+    /// It carries three closures and four bindings; left inline, the type checker
+    /// gave up on the surrounding ZStack ("unable to type-check in reasonable
+    /// time").
+    private var developPanel: some View {
+        DevelopPreview(
+            model: developModel,
+            queue: renderQueueViewModel,
+            stock: selectedStock,
+            stockOptions: library.videoStocks(),
+            onSelectStock: { stock in selectedStock = stock },
+            onOpenResults: { showQueueSheet = true },
+            gauge: $developGauge,
+            pushPullAutomatic: $developPushPullAutomatic,
+            pushPullStops: $developPushPullStops,
+            onControlsChanged: persistDevelopControls,
+            resolvedPushPull: developPushPull
+        )
     }
 
     /// Return a finished develop to step one: same file, back in the panel with

@@ -56,6 +56,9 @@ final class DevelopVideoModel {
     /// A file loaded back from the queue for re-development. It has no lease —
     /// the queue already owns it — so it must satisfy `canRender` another way.
     private(set) var adoptedURL: URL?
+    /// The jobs one bulk commit created, so the panel can show them rendering
+    /// and then point at the results. Empty outside a batch.
+    private(set) var batchJobIDs: [UUID] = []
 
     private let queue: RenderQueueViewModel
     private let inspect: InspectOperation
@@ -197,11 +200,13 @@ final class DevelopVideoModel {
     func commitBulk(stock: FilmStockConfig, gauge: PrintGauge, pushPull: PushPullExposure?,
                     queue: RenderQueueViewModel) -> BulkDevelopResult {
         var result = BulkDevelopResult(skipped: bulk.skipped)
+        var queuedIDs: [UUID] = []
         for (index, photo) in bulk.photos.enumerated() {
-            if queue.enqueuePhoto(sourceURL: photo.url, stockId: stock.stockId,
-                                  iso: photo.iso ?? stock.defaultISO, gauge: gauge,
-                                  cropZoom: 1, seed: Self.grainSeed(for: photo),
-                                  pushPull: pushPull, isImported: true) != nil {
+            if let id = queue.enqueuePhoto(sourceURL: photo.url, stockId: stock.stockId,
+                                           iso: photo.iso ?? stock.defaultISO, gauge: gauge,
+                                           cropZoom: 1, seed: Self.grainSeed(for: photo),
+                                           pushPull: pushPull, isImported: true) {
+                queuedIDs.append(id)
                 if index < bulk.photoLeases.count { bulk.photoLeases[index].transferToQueue() }
                 result.queued += 1
             } else {
@@ -209,9 +214,10 @@ final class DevelopVideoModel {
             }
         }
         for (index, video) in bulk.videos.enumerated() {
-            if queue.enqueueImportedVideo(sourceURL: video.url, stockId: stock.stockId,
-                                          iso: stock.defaultISO, gauge: gauge,
-                                          pushPull: pushPull) != nil {
+            if let id = queue.enqueueImportedVideo(sourceURL: video.url, stockId: stock.stockId,
+                                                   iso: stock.defaultISO, gauge: gauge,
+                                                   pushPull: pushPull) {
+                queuedIDs.append(id)
                 if index < bulk.videoLeases.count { bulk.videoLeases[index].transferToQueue() }
                 result.queued += 1
             } else {
@@ -221,12 +227,19 @@ final class DevelopVideoModel {
         // Everything staged has been handed over; leases that were not
         // transferred discard their files when the staging value is cleared.
         bulk = BulkStaging()
+        batchJobIDs = queuedIDs
         return result
     }
 
     /// Drop the staged files without rendering them.
     func clearBulk() {
         bulk = BulkStaging()
+        batchJobIDs = []
+    }
+
+    /// Leave the batch summary and start another.
+    func dismissBatch() {
+        batchJobIDs = []
     }
 
     /// Load a file the queue already owns back into the panel.

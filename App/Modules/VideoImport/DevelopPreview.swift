@@ -22,6 +22,8 @@ struct DevelopPreview: View {
     /// a different stock than the camera is set to.
     var stockOptions: [FilmStockConfig] = []
     var onSelectStock: (FilmStockConfig) -> Void = { _ in }
+    /// Opens the queue, so a finished batch can be looked at straight away.
+    var onOpenResults: () -> Void = {}
     @Binding var gauge: PrintGauge
     @Binding var pushPullAutomatic: Bool
     @Binding var pushPullStops: PushPullStops
@@ -34,6 +36,7 @@ struct DevelopPreview: View {
     @State private var photoPickerItems: [PhotosPickerItem] = []
     /// What a bulk pick is doing, so a multi-select is not silent.
     @State private var bulkStatus: String?
+    @State private var batchPreview: CGImage?
     @State private var preview: CGImage?
     /// The delivered render, decoded from the file the queue wrote. Separate
     /// from `preview` so the pre-render frame and the graded result can never be
@@ -80,9 +83,35 @@ struct DevelopPreview: View {
         .task(id: renderedKey) {
             await loadRenderedPreview()
         }
+        // The batch preview follows the first result that lands, so "Done!" is
+        // shown with the picture that proves it.
+        .task(id: batchPreviewKey) {
+            await loadBatchPreview()
+        }
         .sheet(isPresented: $showHelp) {
             DevelopMediaHelp(refusal: helpRefusal)
         }
+    }
+
+    private var batchPreviewKey: String {
+        guard !model.batchJobIDs.isEmpty else { return "none" }
+        let completed = batchJobs.filter { $0.status == .completed }
+        return "\(model.batchJobIDs.count)-\(completed.count)-\(completed.first?.receipt?.thumbnailJPEG?.count ?? 0)"
+    }
+
+    private func loadBatchPreview() async {
+        guard !model.batchJobIDs.isEmpty else {
+            batchPreview = nil
+            return
+        }
+        guard let job = batchJobs.first(where: { $0.status == .completed }) else { return }
+        if let data = job.receipt?.thumbnailJPEG,
+           let image = DevelopPreviewLoader.thumbnail(from: data) {
+            batchPreview = image
+            return
+        }
+        guard let url = job.outputURL else { return }
+        batchPreview = await DevelopPreviewLoader.image(for: url, isPhoto: job.isPhoto == true)
     }
 
     private var renderedKey: String {
@@ -191,6 +220,8 @@ struct DevelopPreview: View {
                 transferState
             } else if !model.bulk.isEmpty {
                 bulkState
+            } else if !model.batchJobIDs.isEmpty {
+                batchState
             } else if let job = activeJob, job.status == .completed {
                 completedState
             } else if let job = activeJob, job.status == .failed {
@@ -224,6 +255,84 @@ struct DevelopPreview: View {
             .frame(maxWidth: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The batch after Develop N: what is rendering, then what finished.
+    ///
+    /// A bulk develop is several jobs the panel did not open, so it reports their
+    /// progress here rather than through the single-job overlay, and when they
+    /// settle it offers the results instead of only counting them.
+    private var batchState: some View {
+        VStack(spacing: 14) {
+            if let batchPreview {
+                Image(decorative: batchPreview, scale: 1)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 180)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .accessibilityIdentifier("develop.batchPreview")
+            }
+            if batchSettled {
+                Text(batchDoneTitle)
+                    .font(NitrateTypography.font(.headline))
+                    .foregroundStyle(.white)
+                    .accessibilityIdentifier("develop.batchDone")
+                if batchFailed > 0 {
+                    Text("\(batchFailed) failed — open the queue to retry")
+                        .font(NitrateTypography.font(.caption2))
+                        .foregroundStyle(DevelopPreviewChrome.warning)
+                        .multilineTextAlignment(.center)
+                }
+                Button(action: onOpenResults) {
+                    Text("See results")
+                        .font(NitrateTypography.font(.headline))
+                        .foregroundStyle(.black)
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                        .background(DevelopPreviewChrome.orange, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("develop.batchResults")
+                Button("Develop more") { model.dismissBatch(); batchPreview = nil }
+                    .font(NitrateTypography.font(.callout))
+                    .foregroundStyle(DevelopPreviewChrome.muted)
+                    .accessibilityIdentifier("develop.batchAgain")
+            } else {
+                // The bar is the animation: it moves as jobs finish, so a batch of
+                // eight does not sit silent for a minute.
+                ProgressView(value: Double(batchSettledCount), total: Double(max(batchTotal, 1)))
+                    .progressViewStyle(.linear)
+                    .tint(DevelopPreviewChrome.orange)
+                    .animation(.easeInOut(duration: 0.35), value: batchSettledCount)
+                    .accessibilityIdentifier("develop.batchProgress")
+                Text("Developing \(batchSettledCount) of \(batchTotal)…")
+                    .font(NitrateTypography.font(.callout))
+                    .foregroundStyle(.white)
+                    .contentTransition(.numericText())
+                    .animation(.default, value: batchSettledCount)
+                    .accessibilityIdentifier("develop.batchCount")
+            }
+        }
+    }
+
+    private var batchJobs: [RenderJob] {
+        model.batchJobIDs.compactMap { id in queue.jobs.first { $0.id == id } }
+    }
+
+    private var batchTotal: Int { model.batchJobIDs.count }
+
+    private var batchSettledCount: Int {
+        batchJobs.filter { $0.status == .completed || $0.status == .failed }.count
+    }
+
+    private var batchFailed: Int { batchJobs.filter { $0.status == .failed }.count }
+
+    private var batchSettled: Bool { batchTotal > 0 && batchSettledCount == batchTotal }
+
+    private var batchDoneTitle: String {
+        let done = batchJobs.filter { $0.status == .completed }.count
+        return done == 1 ? "Done! 1 develop" : "Done! \(done) develops"
     }
 
     /// Everything picked in bulk, held before any of it renders.

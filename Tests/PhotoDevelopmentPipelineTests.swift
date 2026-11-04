@@ -394,6 +394,64 @@ struct PhotoDevelopmentPipelineTests {
         #expect(bypass == bypassOff, "75mm must render no diffusion at all")
     }
 
+    /// Spread must scale with the FRAME, not stay a fixed pixel count.
+    ///
+    /// A still from the phone and a 45MP raw have to bloom and diffuse by the
+    /// same fraction of the picture, or one looks blown out and the other
+    /// invisible. Measured here as the radius, in units of frame width, at which
+    /// the effect has fallen to a small fraction of its peak.
+    @Test func halationAndDiffusionSpreadScalesWithFrameWidth() throws {
+        func spread(width: Int, height: Int, apply: (StillFilmRenderResources, CIImage) throws -> CIImage) throws -> Double {
+            // A single bright dot on black: its halo is the thing being measured.
+            let dot = CIImage(color: CIColor(red: 6, green: 6, blue: 6))
+                .cropped(to: CGRect(x: 0, y: 0, width: max(2, width / 128), height: max(2, height / 128)))
+                .composited(over: CIImage(color: .black).cropped(to: CGRect(x: 0, y: 0, width: width, height: height)))
+            let film = try StillFilmRenderResources(stockID: "kodak5219", gauge: .sixteenMillimetre,
+                                                     seed: 1, bundle: Bundle(for: BundleToken.self))
+            let out = try apply(film, dot)
+
+            // Scale to a fixed sample grid FIRST: rendering the full extent into
+            // a narrow bitmap mismatches rowBytes and reads garbage.
+            let sampleWidth = 256
+            let scale = Float(sampleWidth) / Float(width)
+            let sampled = out.transformed(by: CGAffineTransform(scaleX: CGFloat(scale), y: CGFloat(scale)))
+                .cropped(to: CGRect(x: 0, y: 0, width: sampleWidth, height: sampleWidth))
+            var pixels = [UInt8](repeating: 0, count: sampleWidth * 4)
+            film.context.render(sampled, toBitmap: &pixels, rowBytes: sampleWidth * 4,
+                                bounds: CGRect(x: 0, y: 0, width: sampleWidth, height: 1), format: .RGBA8,
+                                colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!)
+            let values = (0..<sampleWidth).map { Double(pixels[$0 * 4]) }
+            let peak = values.max() ?? 0
+            guard peak > 1 else { return 0 }
+            // First sample under 10% of peak, as a fraction of the frame.
+            let index = values.firstIndex { $0 < peak * 0.1 } ?? sampleWidth
+            return Double(index) / Double(sampleWidth)
+        }
+
+        let small = 512, large = 2048
+        // Halation: the whole frame is the halo of one dot.
+        let halationSmall = try spread(width: small, height: small) { film, image in
+            try film.halation(RAWToLog2Stage.apply(image), sceneLiftStops: 1)
+        }
+        let halationLarge = try spread(width: large, height: large) { film, image in
+            try film.halation(RAWToLog2Stage.apply(image), sceneLiftStops: 1)
+        }
+        // Same fraction of the frame within a generous band.
+        #expect(halationLarge > halationSmall * 0.6 && halationLarge < halationSmall * 1.6,
+                "halation spread should be frame-relative: small \(halationSmall) large \(halationLarge)")
+
+        let diffusionSmall = try spread(width: small, height: small) { film, image in
+            try DevelopmentPhotoRenderer.develop(linearImage: image, film: film,
+                                                 sceneLiftStops: 1)
+        }
+        let diffusionLarge = try spread(width: large, height: large) { film, image in
+            try DevelopmentPhotoRenderer.develop(linearImage: image, film: film,
+                                                 sceneLiftStops: 1)
+        }
+        #expect(diffusionLarge > diffusionSmall * 0.5 && diffusionLarge < diffusionSmall * 1.8,
+                "diffusion spread should be frame-relative: small \(diffusionSmall) large \(diffusionLarge)")
+    }
+
     @Test func productionStillKernelDistinguishesAllFourGaugeFootprintsAndPresence() throws {
         var measurements: [(gauge: PrintGauge, rms: Double, lag: Double)] = []
         var outputs = [[Float16]]()
