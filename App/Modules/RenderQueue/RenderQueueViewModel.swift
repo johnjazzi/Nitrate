@@ -425,6 +425,50 @@ final class RenderQueueViewModel {
         processNext()
     }
 
+    /// Re-develop several finished photos at once with one set of settings.
+    ///
+    /// This is the bulk form of returning to step one: each selected job takes
+    /// the stock, gauge and push/pull being handed in, drops its delivered output,
+    /// and goes back to pending. Jobs whose original is gone, or that never
+    /// developed a photo, are skipped rather than failed — a bulk action must not
+    /// fail the whole selection because one file was cleaned up.
+    ///
+    /// - Returns: how many jobs went back to pending.
+    @discardableResult
+    func redevelopPhotos(jobIds: [UUID], stockId: String? = nil, gauge: PrintGauge? = nil,
+                         pushPull: PushPullExposure? = nil) -> Int {
+        guard !isPersistenceBlocked else { publishQueueMessage(); return 0 }
+        var requeued = 0
+        for jobId in jobIds {
+            guard let index = jobs.firstIndex(where: { $0.id == jobId }),
+                  jobs[index].isPhoto == true,
+                  jobs[index].hasRedevelopableOriginal,
+                  jobs[index].status == .completed || jobs[index].status == .failed else { continue }
+            if let stockId { jobs[index].stockId = stockId }
+            if let gauge { jobs[index].printGauge = gauge }
+            if let pushPull { jobs[index].pushPull = pushPull }
+            if let stale = jobs[index].outputURL {
+                try? FileManager.default.removeItem(at: stale)
+            }
+            jobs[index].status = .pending
+            jobs[index].outputURL = nil
+            jobs[index].receipt = nil
+            jobs[index].outputSavedToPhotos = nil
+            jobs[index].errorMessage = nil
+            jobs[index].sessionId = sessionId
+            clearProgress(jobId: jobId)
+            requeued += 1
+        }
+        guard requeued > 0 else { return 0 }
+        guard persistJobs() else {
+            isPersistenceBlocked = true
+            publishQueueMessage()
+            return 0
+        }
+        processNext()
+        return requeued
+    }
+
     func retry(jobId: UUID) {
         guard let index = jobs.firstIndex(where: { $0.id == jobId }), jobs[index].status == .failed else { return }
         if failureAlert?.jobId == jobId {

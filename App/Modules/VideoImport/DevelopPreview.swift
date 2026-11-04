@@ -16,6 +16,8 @@ import CoreGraphics
 struct DevelopPreview: View {
     let model: DevelopVideoModel
     let queue: RenderQueueViewModel
+    /// The stock a bulk pick queues with; nil disables bulk (no target stock).
+    var stock: FilmStockConfig? = nil
     @Binding var gauge: PrintGauge
     @Binding var pushPullAutomatic: Bool
     @Binding var pushPullStops: PushPullStops
@@ -24,8 +26,10 @@ struct DevelopPreview: View {
     /// The exposure the parent resolved for this render, shown in the pill.
     var resolvedPushPull: PushPullExposure = .neutral
 
-    @State private var pickerItem: PhotosPickerItem?
-    @State private var photoPickerItem: PhotosPickerItem?
+    @State private var pickerItems: [PhotosPickerItem] = []
+    @State private var photoPickerItems: [PhotosPickerItem] = []
+    /// What a bulk pick is doing, so a multi-select is not silent.
+    @State private var bulkStatus: String?
     @State private var preview: CGImage?
     /// The delivered render, decoded from the file the queue wrote. Separate
     /// from `preview` so the pre-render frame and the graded result can never be
@@ -45,17 +49,20 @@ struct DevelopPreview: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(DevelopPreviewChrome.surface)
-        .onChange(of: pickerItem) { _, item in
-            if let item {
-                model.select(item)
-                pickerItem = nil
-            }
+        // One pick keeps the old step-one flow — preview, gauge, push/pull. More
+        // than one skips the preview (there is only one panel to show it in) and
+        // queues them all with what is selected now.
+        .onChange(of: pickerItems) { _, items in
+            guard !items.isEmpty else { return }
+            let picked = items
+            pickerItems = []
+            if picked.count == 1 { model.select(picked[0]) } else { enqueueAllClips(picked) }
         }
-        .onChange(of: photoPickerItem) { _, item in
-            if let item {
-                model.selectPhoto(item)
-                photoPickerItem = nil
-            }
+        .onChange(of: photoPickerItems) { _, items in
+            guard !items.isEmpty else { return }
+            let picked = items
+            photoPickerItems = []
+            if picked.count == 1 { model.selectPhoto(picked[0]) } else { enqueueAllPhotos(picked) }
         }
         // The ungraded frame follows whatever is selected. Both are decoded from
         // the file itself, NOT through the render pipeline, so what is shown
@@ -99,6 +106,44 @@ struct DevelopPreview: View {
             return
         }
         renderedPreview = await DevelopPreviewLoader.image(for: url, isPhoto: job.isPhoto == true)
+    }
+
+    private func enqueueAllClips(_ items: [PhotosPickerItem]) {
+        guard let stock else { return }
+        bulkStatus = "Queueing \(items.count) clips…"
+        Task { @MainActor in
+            // Typed explicitly: these cross into the model as @MainActor
+            // closures, and an untyped literal is not Sendable.
+            let transfers: [DevelopVideoModel.TransferOperation] = items.map { item in
+                { @MainActor in try await model.loadClip(from: item) }
+            }
+            let result = await model.enqueueAllVideos(transfers: transfers, stock: stock,
+                                                      gauge: gauge, pushPull: resolvedPushPull,
+                                                      queue: queue)
+            bulkStatus = Self.bulkSummary(result)
+        }
+    }
+
+    private func enqueueAllPhotos(_ items: [PhotosPickerItem]) {
+        guard let stock else { return }
+        bulkStatus = "Queueing \(items.count) photos…"
+        Task { @MainActor in
+            let transfers: [DevelopVideoModel.PhotoTransferOperation] = items.map { item in
+                { @MainActor in try await model.loadPhoto(from: item) }
+            }
+            let result = await model.enqueueAllPhotos(transfers: transfers, stock: stock,
+                                                      gauge: gauge, pushPull: resolvedPushPull,
+                                                      queue: queue)
+            bulkStatus = Self.bulkSummary(result)
+        }
+    }
+
+    /// "Queued 5" or "Queued 4 · 1 skipped", because a bulk action that silently
+    /// drops a file is worse than one that refuses them all.
+    static func bulkSummary(_ result: DevelopVideoModel.BulkDevelopResult) -> String {
+        let queued = "\(result.queued) added"
+        guard !result.skipped.isEmpty else { return queued }
+        return queued + " · \(result.skipped.count) skipped"
     }
 
     private var selectedURL: URL? {
@@ -219,6 +264,13 @@ struct DevelopPreview: View {
                 .accessibilityIdentifier("develop.preview")
             }
 
+            if let bulkStatus {
+                Text(bulkStatus)
+                    .font(NitrateTypography.font(.caption))
+                    .foregroundStyle(DevelopPreviewChrome.muted)
+                    .accessibilityIdentifier("develop.bulkStatus")
+            }
+
             if selectedURL != nil {
                 controlRow
             }
@@ -264,7 +316,8 @@ struct DevelopPreview: View {
                 .foregroundStyle(.white)
             Button("Cancel") {
                 model.cancelSelection()
-                pickerItem = nil
+                pickerItems = []
+                photoPickerItems = []
             }
             .font(NitrateTypography.font(.callout))
             .foregroundStyle(DevelopPreviewChrome.orange)
@@ -337,7 +390,8 @@ struct DevelopPreview: View {
     }
 
     private func clipPicker(_ title: String) -> some View {
-        PhotosPicker(selection: $pickerItem, matching: .videos, preferredItemEncoding: .current) {
+        PhotosPicker(selection: $pickerItems, maxSelectionCount: 0, matching: .videos,
+                     preferredItemEncoding: .current) {
             Label(title, systemImage: "photo.on.rectangle")
                 .font(NitrateTypography.font(.headline))
                 .foregroundStyle(.white)
@@ -350,7 +404,7 @@ struct DevelopPreview: View {
     }
 
     private func photoPicker(_ title: String) -> some View {
-        PhotosPicker(selection: $photoPickerItem, matching: .images,
+        PhotosPicker(selection: $photoPickerItems, maxSelectionCount: 0, matching: .images,
                      preferredItemEncoding: .current) {
             Label(title, systemImage: "camera.aperture")
                 .font(NitrateTypography.font(.headline))

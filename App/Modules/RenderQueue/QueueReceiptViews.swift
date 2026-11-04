@@ -135,9 +135,9 @@ struct QueueReceiptCard: View {
         }
         if job.hasRedevelopableOriginal, let redevelop {
             Button(action: redevelop) {
-                Label("Re-render photo", systemImage: "arrow.clockwise").frame(minHeight: 44)
+                Label("Re-develop", systemImage: "slider.horizontal.3").frame(minHeight: 44)
             }.buttonStyle(.borderless)
-            .accessibilityHint("Develops the photo again from the saved original.")
+            .accessibilityHint("Returns the photo to Develop so you can choose a new gauge and push/pull.")
             .accessibilityIdentifier("queue.redevelopPhoto")
         }
     }

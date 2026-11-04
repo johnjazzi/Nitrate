@@ -194,6 +194,55 @@ struct PhotoDevelopmentPipelineTests {
         #expect(FileManager.default.fileExists(atPath: source.path))
     }
 
+    /// Bulk re-develop is the same return-to-step-one applied to a selection,
+    /// with one set of settings, and it must not fail the whole selection because
+    /// one job's original was cleaned up.
+    @Test @MainActor func bulkRedevelopAppliesOneSetOfSettingsToTheSelection() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let renders = Counter()
+        let model = RenderQueueViewModel(persistenceURL: folder.appendingPathComponent("queue.json"),
+            render: { _ in
+                renders.value += 1
+                let output = folder.appendingPathComponent("out-\(renders.value).jpg")
+                try CIContext().writeJPEGRepresentation(of: CIImage(color: CIColor(red: 0.2, green: 0.3, blue: 0.4))
+                    .cropped(to: CGRect(x: 0, y: 0, width: 16, height: 16)), to: output,
+                    colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+                return output
+            }, save: { _ in })
+
+        func queuedPhoto(_ name: String) throws -> UUID {
+            let source = folder.appendingPathComponent(name)
+            try Data([1]).write(to: source)
+            return try #require(model.enqueuePhoto(sourceURL: source, stockId: "kodak5219", iso: 500,
+                gauge: .neutral, cropZoom: 1, seed: 3, isImported: true))
+        }
+        let one = try queuedPhoto("a.dng")
+        let two = try queuedPhoto("b.dng")
+        for _ in 0..<400 where model.jobs.contains(where: { $0.status != .completed }) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        // A third job whose original is gone must be skipped, not fatal.
+        let gone = folder.appendingPathComponent("gone.dng")
+        try Data([1]).write(to: gone)
+        let three = try #require(model.enqueuePhoto(sourceURL: gone, stockId: "kodak5219", iso: 500,
+            gauge: .neutral, cropZoom: 1, seed: 4, isImported: true))
+        for _ in 0..<400 where model.jobs.contains(where: { $0.status != .completed }) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try FileManager.default.removeItem(at: gone)
+
+        let requeued = model.redevelopPhotos(jobIds: [one, two, three],
+                                             stockId: "kodak5207", gauge: .eightMillimetre,
+                                             pushPull: .neutral)
+        #expect(requeued == 2, "the job without its original is skipped")
+        let refreshed = model.jobs.filter { [one, two].contains($0.id) }
+        #expect(refreshed.allSatisfy { $0.stockId == "kodak5207" })
+        #expect(refreshed.allSatisfy { $0.printGauge == .eightMillimetre })
+    }
+
     @Test func shippingPhotoStagesApplyStockAndGaugeAndRepeatTheSameSeed() throws {
         let input = CIImage(color: CIColor(red: 0.18, green: 0.10, blue: 0.06))
             .cropped(to: CGRect(x: 0, y: 0, width: 96, height: 64))

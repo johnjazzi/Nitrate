@@ -8,6 +8,13 @@ struct QueueSheetView: View {
     @State var viewModel: RenderQueueViewModel
     let cameraViewModel: CameraViewModel
     @Binding var isPresented: Bool
+    /// Load one finished develop back into the Develop panel, at step one, with
+    /// the gauge and push/pull controls — the operator picks a new look there.
+    var onRedevelop: (RenderJob) -> Void = { _ in }
+    /// Re-develop several at once with the settings currently selected.
+    var onBulkRedevelop: (Set<UUID>) -> Void = { _ in }
+    @State private var selection: Set<UUID> = []
+    @State private var isSelecting = false
     @State private var showAll = false
     @State private var shareTarget: RenderJob?
     @State private var playbackJob: RenderJob?
@@ -130,7 +137,12 @@ struct QueueSheetView: View {
                         Section("History (\(visibleHistory.count))") {
                             ForEach(visibleHistory) { job in
                                 if job.status == .completed {
-                                    receiptCard(for: job)
+                                    HStack(spacing: 10) {
+                                        if isSelecting, job.isPhoto == true, job.hasRedevelopableOriginal {
+                                            selectionToggle(for: job)
+                                        }
+                                        receiptCard(for: job)
+                                    }
                                 } else {
                                     VStack(alignment: .leading, spacing: 4) {
                                         JobRow(job: job)
@@ -154,10 +166,45 @@ struct QueueSheetView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button(showAll ? "This session" : "Show all") { showAll.toggle() }
+                    if isSelecting {
+                        Button("Cancel") {
+                            isSelecting = false
+                            selection.removeAll()
+                        }
+                    } else {
+                        Button(showAll ? "This session" : "Show all") { showAll.toggle() }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { isPresented = false }
+                    if isSelecting {
+                        Text("\(selection.count) selected")
+                            .font(NitrateTypography.font(.footnote))
+                            .foregroundStyle(.secondary)
+                    } else if visibleHistory.contains(where: { $0.isPhoto == true && $0.hasRedevelopableOriginal }) {
+                        Button("Select") { isSelecting = true }
+                            .accessibilityIdentifier("queue.select")
+                    } else {
+                        Button("Done") { isPresented = false }
+                    }
+                }
+            }
+            // Bulk action lives at the bottom, where a thumb is, and only while
+            // something is selected: a disabled bar would be permanent chrome.
+            .safeAreaInset(edge: .bottom) {
+                if isSelecting, !selection.isEmpty {
+                    Button {
+                        onBulkRedevelop(selection)
+                        isSelecting = false
+                        selection.removeAll()
+                    } label: {
+                        Text("Re-develop \(selection.count)")
+                            .font(NitrateTypography.font(.headline))
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+                    .accessibilityIdentifier("queue.bulkRedevelop")
                 }
             }
             .sheet(item: $shareTarget) { job in
@@ -226,7 +273,22 @@ struct QueueSheetView: View {
                              guard job.isImportedVideo != true, job.retainedOutputURL != nil else { return }
                              playbackJob = job
                          }, shareLocal: { shareVideo(job) },
-                         redevelop: job.isPhoto == true ? { viewModel.redevelopPhoto(jobId: job.id) } : nil)
+                         redevelop: job.isPhoto == true ? { onRedevelop(job) } : nil)
+    }
+
+    /// Tap target that adds or removes a finished develop from the bulk selection.
+    private func selectionToggle(for job: RenderJob) -> some View {
+        Button {
+            if selection.contains(job.id) { selection.remove(job.id) } else { selection.insert(job.id) }
+        } label: {
+            Image(systemName: selection.contains(job.id) ? "checkmark.circle.fill" : "circle")
+                .font(.title3)
+                .foregroundStyle(selection.contains(job.id) ? .primary : .secondary)
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(selection.contains(job.id) ? "Deselect" : "Select")
+        .accessibilityIdentifier("queue.selectRow")
     }
 
     private func openPhotos() {
