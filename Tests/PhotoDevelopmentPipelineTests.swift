@@ -44,6 +44,26 @@ struct PhotoDevelopmentPipelineTests {
         #expect(extreme.x.isFinite && extreme.x > 0)
     }
 
+    /// The delivery switch still governs a photo this app CAPTURED; only an
+    /// import is exempt. Kept as a pair so the exemption cannot quietly widen.
+    @Test func capturedPhotosStillHonourTheOriginalSwitchButImportsDoNot() {
+        var job = RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/capture.dng"),
+                            stockId: "kodak5219", iso: 400)
+        job.isPhoto = true
+        job.deliveryPreferences = RenderDeliveryPreferences(saveOriginalRAWToPhotos: true)
+        #expect(job.shouldSaveOriginal, "a capture returns its raw when asked")
+
+        job.isImportedPhoto = true
+        #expect(!job.shouldSaveOriginal, "a develop has nothing to return")
+
+        // And an imported video keeps its existing exemption.
+        var movie = RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/clip.mov"),
+                              stockId: "kodak5219", iso: 400)
+        movie.isImportedVideo = true
+        movie.deliveryPreferences = RenderDeliveryPreferences(saveOriginalLog: true)
+        #expect(!movie.shouldSaveOriginal)
+    }
+
     /// The original-save guard must accept every file the pipeline develops.
     ///
     /// It allowed only `dng`, so an imported Nikon NEF — developed and delivered

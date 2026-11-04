@@ -308,6 +308,34 @@ struct DevelopPhotoSelectionTests {
         }
     }
 
+    /// A develop delivers the develop and nothing else.
+    ///
+    /// The raw came from the library, so "save the original" would either
+    /// duplicate something already there or — for a maker's raw Photos will not
+    /// store — fail a render that succeeded. The job carries the flag, so this
+    /// does not depend on the delivery switch the camera uses.
+    @MainActor @Test func developingAnImportedRawNeverQueuesAnOriginalSave() async throws {
+        let queue = RenderQueueViewModel()
+        let model = DevelopVideoModel(queue: queue, inspectPhoto: { url, _ in Self.photo(url) })
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("photo_import_\(UUID().uuidString).nef")
+        try Data(repeating: 1, count: 32).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        model.selectPhoto { DevelopVideoModel.DevelopPhotoTransfer(
+            lease: VideoImportFileLease(url: url), originalFilename: "DSC_4800.NEF") }
+        await Self.waitUntil { !model.isLoading }
+        let stock = FilmStockConfig(stockId: "kodak5207", displayName: "5207", category: .video,
+                                    lutName: "x.cube", halationStrength: 2.52, glowStrength: 0.1,
+                                    grainSize: 1, defaultISO: 250)
+        let id = try #require(model.render(stock: stock, iso: 400, gauge: .neutral, queue: queue))
+        let job = try #require(queue.jobs.first { $0.id == id })
+        #expect(job.isPhoto == true)
+        #expect(job.isImportedPhoto == true)
+        #expect(job.shouldSaveOriginal == false,
+                "an imported raw has no original to deliver")
+    }
+
     @MainActor @Test func selectingAPhotoAcceptsItAndClearsAnyClip() async throws {
         let queue = RenderQueueViewModel()
         var inspected: URL?

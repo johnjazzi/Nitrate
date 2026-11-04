@@ -227,10 +227,14 @@ final class DevelopVideoModel {
             // A developed raw keeps its own exposure index when the file carries
             // one: the DNG recorded it, so the render states what was shot rather
             // than the stock's default.
+            // `isImported: true` — this raw came from the operator's library, so
+            // the job delivers the develop and nothing else. Saving an
+            // "original" would duplicate what is already there, and for a maker's
+            // raw the library will not take, it failed a render that succeeded.
             guard let id = queue.enqueuePhoto(sourceURL: photo.url, stockId: stock.stockId,
                                               iso: photo.iso ?? stock.defaultISO, gauge: gauge,
                                               cropZoom: 1, seed: Self.grainSeed(for: photo),
-                                              pushPull: pushPull) else {
+                                              pushPull: pushPull, isImported: true) else {
                 errorMessage = queue.rendererErrorMessage ?? "Could not queue the photo. Try again."
                 return nil
             }
