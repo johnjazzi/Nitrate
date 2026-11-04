@@ -11,7 +11,9 @@ actor DevelopmentPhotoLibrarySaver {
     }
 
     enum SaveError: Error, LocalizedError {
-        case invalidDNG
+        /// The file cannot be handed to Photos at all: empty, missing, or a type
+        /// the photo library will not store.
+        case unsupportedFile
         case authorizationDenied
         case alreadySaved(localIdentifier: String)
         case previousAttemptUncertain
@@ -20,7 +22,7 @@ actor DevelopmentPhotoLibrarySaver {
 
         var errorDescription: String? {
             switch self {
-            case .invalidDNG: return "The photo resource is missing, empty, or not a supported image file."
+            case .unsupportedFile: return "Photos could not take this file."
             case .authorizationDenied: return "Photo Library add-only access was not granted."
             case .alreadySaved: return "This capture was already saved to Photos."
             case .previousAttemptUncertain: return "A previous save may have completed; automatic retry was prevented."
@@ -53,10 +55,14 @@ actor DevelopmentPhotoLibrarySaver {
 
     /// Returns only evidence from the Photos creation completion; local media remains in place.
     func save(originalDNG url: URL) async -> Result<SaveEvidence, SaveError> {
-        guard ["dng", "jpg", "jpeg"].contains(url.pathExtension.lowercased()),
+        // Any file the pipeline develops, plus a JPEG. This guard used to allow
+        // only `dng`, so an imported NEF — already developed, already saved —
+        // was refused here with "not a supported image file" and reported as a
+        // failed delivery. The original was fine; the guard was wrong.
+        guard Self.isStorable(url),
               let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attributes[.size] as? NSNumber, size.intValue > 0 else {
-            return .failure(.invalidDNG)
+            return .failure(.unsupportedFile)
         }
 
         let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
@@ -106,6 +112,17 @@ actor DevelopmentPhotoLibrarySaver {
             // Keep pending after submission: completion may be ambiguous and retry could duplicate.
             return .failure(.photoLibrary(error))
         }
+    }
+
+    /// A JPEG, or any raw container the still renderer develops. Content decides
+    /// when ImageIO can tell, with the extension as the fallback.
+    ///
+    /// Internal and static so the rule is testable: this guard refusing a NEF
+    /// after a successful develop is exactly the bug it exists to prevent.
+    static func isStorable(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        if ext == "jpg" || ext == "jpeg" { return true }
+        return RawPhotoType.isRaw(url)
     }
 
     private func createAsset(from url: URL) async throws -> String {

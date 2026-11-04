@@ -44,6 +44,32 @@ struct PhotoDevelopmentPipelineTests {
         #expect(extreme.x.isFinite && extreme.x > 0)
     }
 
+    /// The original-save guard must accept every file the pipeline develops.
+    ///
+    /// It allowed only `dng`, so an imported Nikon NEF — developed and delivered
+    /// fine — was refused here and reported as a failed delivery.
+    @Test func originalSaveAcceptsEveryDevelopableRaw() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("saver-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        func file(_ name: String) throws -> URL {
+            let url = directory.appendingPathComponent(name)
+            // Bytes ImageIO cannot type at all — the case the name fallback
+            // exists for. (A sequential 0..63 pattern sniffs as TGA, which is a
+            // rendered image and is correctly refused.)
+            try Data(repeating: 0, count: 64).write(to: url)
+            return url
+        }
+
+        for name in ["DSC_4800.NEF", "shot.ARW", "IMG_0001.CR3", "frame.RAF", "pro.cr2",
+                     "capture.DNG", "developed.JPG", "developed.jpeg"] {
+            #expect(DevelopmentPhotoLibrarySaver.isStorable(try file(name)),
+                    "\(name) must be storable — the renderer develops it")
+        }
+    }
+
     /// A DNG offers the DNG-tagged decoder version; a NEF, ARW or CR2 offers its
     /// own and never "8.dng". Requiring the tagged one refused every non-DNG raw
     /// at the first line of the decode, which is what a Nikon file hit.
@@ -579,9 +605,10 @@ struct PhotoOriginalDeliveryTests {
         #expect(failed.outputURL == files.output)
         #expect(failed.status == .failed)
         let message = try #require(failed.errorMessage)
-        #expect(message.contains("Developed photo saved to Photos"))
-        #expect(message.contains("original DNG could not be saved"))
-        #expect(message.contains("Retry saves only the original"))
+        // Short on screen: what happened, then what Retry does.
+        #expect(message.contains("Developed photo saved."))
+        #expect(message.contains("Original not added to Photos"))
+        #expect(message.contains("Retry tries only that"))
         #expect(!message.contains("Apple Log"))
 
         failOriginal = false

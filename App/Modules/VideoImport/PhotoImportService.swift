@@ -54,34 +54,13 @@ enum PhotoImportError: LocalizedError, Equatable {
 /// is only copied into app storage once it is a raw file the still renderer can
 /// decode.
 enum PhotoImportService {
-    /// Raw extensions Apple ProRAW and the common camera makers write. The
-    /// renderer decodes with Core Image's RAW pipeline, so the gate is "is this
-    /// a raw file", not "is this one specific camera's".
-    static let rawExtensions: Set<String> = [
-        "dng", "cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf",
-        "rw2", "pef", "srw", "3fr", "fff", "iiq", "x3f"
-    ]
+    /// Raw extensions, from the one shared definition (`RawPhotoType`).
+    static let rawExtensions: Set<String> = RawPhotoType.extensions
 
-    private static let rawType = UTType("public.camera-raw-image")
-
-    /// The file's own type, or nil when ImageIO cannot identify it at all.
-    private static func contentType(_ url: URL) -> UTType? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let identifier = CGImageSourceGetType(source) as String? else { return nil }
-        return UTType(identifier)
-    }
-
-    /// True for a raw file the still renderer is expected to decode.
-    ///
-    /// CONTENT decides, and the name is only a fallback for a file ImageIO
-    /// cannot identify: a JPEG renamed `.nef` is a JPEG, and a name check alone
-    /// would carry it into a decode that cannot honour it.
-    static func isRaw(_ url: URL) -> Bool {
-        if let type = contentType(url), let rawType {
-            return type.conforms(to: rawType)
-        }
-        return rawExtensions.contains(url.pathExtension.lowercased())
-    }
+    /// True for a raw file the still renderer is expected to decode. The rule
+    /// lives in `RawPhotoType` so the importer, the queue and the Photos saver
+    /// cannot drift apart on it.
+    static func isRaw(_ url: URL) -> Bool { RawPhotoType.isRaw(url) }
 
     /// The gate that actually decides: can this machine's RAW pipeline develop
     /// the file?

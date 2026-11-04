@@ -592,7 +592,9 @@ struct RenderQueueReliabilityTests {
         #expect(failed.status == .failed)
         #expect(failed.outputSavedToPhotos == true)
         #expect(failed.sourceSavedToPhotos == false)
-        #expect(failed.errorMessage?.contains("Rendered movie saved to Photos") == true)
+        // Two short lines: what was saved, then what Retry does.
+        #expect(failed.errorMessage?.contains("Movie saved.") == true)
+        #expect(failed.errorMessage?.contains("Original not added to Photos") == true)
         #expect(failed.outputURL == files.output)
         #expect(failed.sourceURL == files.source)
         let roundTrip = try #require(try QueuePersister(storageURL: files.persistence).load().first)
