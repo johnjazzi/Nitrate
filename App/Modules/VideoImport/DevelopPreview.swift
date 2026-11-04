@@ -18,6 +18,10 @@ struct DevelopPreview: View {
     let queue: RenderQueueViewModel
     /// The stock a bulk pick queues with; nil disables bulk (no target stock).
     var stock: FilmStockConfig? = nil
+    /// Stocks offered in the bulk staging view, so a batch can be developed with
+    /// a different stock than the camera is set to.
+    var stockOptions: [FilmStockConfig] = []
+    var onSelectStock: (FilmStockConfig) -> Void = { _ in }
     @Binding var gauge: PrintGauge
     @Binding var pushPullAutomatic: Bool
     @Binding var pushPullStops: PushPullStops
@@ -56,13 +60,13 @@ struct DevelopPreview: View {
             guard !items.isEmpty else { return }
             let picked = items
             pickerItems = []
-            if picked.count == 1 { model.select(picked[0]) } else { enqueueAllClips(picked) }
+            if picked.count == 1 { model.select(picked[0]) } else { stageClips(picked) }
         }
         .onChange(of: photoPickerItems) { _, items in
             guard !items.isEmpty else { return }
             let picked = items
             photoPickerItems = []
-            if picked.count == 1 { model.selectPhoto(picked[0]) } else { enqueueAllPhotos(picked) }
+            if picked.count == 1 { model.selectPhoto(picked[0]) } else { stagePhotos(picked) }
         }
         // The ungraded frame follows whatever is selected. Both are decoded from
         // the file itself, NOT through the render pipeline, so what is shown
@@ -108,34 +112,41 @@ struct DevelopPreview: View {
         renderedPreview = await DevelopPreviewLoader.image(for: url, isPhoto: job.isPhoto == true)
     }
 
-    private func enqueueAllClips(_ items: [PhotosPickerItem]) {
-        guard let stock else { return }
-        bulkStatus = "Queueing \(items.count) clips…"
+    /// A multi-pick STAGES the files. Nothing renders until the operator has
+    /// seen them and chosen a stock, gauge and push/pull for the batch.
+    private func stageClips(_ items: [PhotosPickerItem]) {
+        bulkStatus = nil
         Task { @MainActor in
-            // Typed explicitly: these cross into the model as @MainActor
-            // closures, and an untyped literal is not Sendable.
             let transfers: [DevelopVideoModel.TransferOperation] = items.map { item in
                 { @MainActor in try await model.loadClip(from: item) }
             }
-            let result = await model.enqueueAllVideos(transfers: transfers, stock: stock,
-                                                      gauge: gauge, pushPull: resolvedPushPull,
-                                                      queue: queue)
-            bulkStatus = Self.bulkSummary(result)
+            await model.stageVideos(transfers: transfers)
+            await loadBulkPreview()
         }
     }
 
-    private func enqueueAllPhotos(_ items: [PhotosPickerItem]) {
-        guard let stock else { return }
-        bulkStatus = "Queueing \(items.count) photos…"
+    private func stagePhotos(_ items: [PhotosPickerItem]) {
+        bulkStatus = nil
         Task { @MainActor in
             let transfers: [DevelopVideoModel.PhotoTransferOperation] = items.map { item in
                 { @MainActor in try await model.loadPhoto(from: item) }
             }
-            let result = await model.enqueueAllPhotos(transfers: transfers, stock: stock,
-                                                      gauge: gauge, pushPull: resolvedPushPull,
-                                                      queue: queue)
-            bulkStatus = Self.bulkSummary(result)
+            await model.stagePhotos(transfers: transfers)
+            await loadBulkPreview()
         }
+    }
+
+    private func commitBulk() {
+        guard let stock else { return }
+        let result = model.commitBulk(stock: stock, gauge: gauge,
+                                      pushPull: resolvedPushPull, queue: queue)
+        bulkStatus = Self.bulkSummary(result)
+        preview = nil
+    }
+
+    private func loadBulkPreview() async {
+        guard let url = model.bulk.previewURL else { return }
+        preview = await DevelopPreviewLoader.image(for: url, isPhoto: model.bulk.isPhotoStaging)
     }
 
     /// "Queued 5" or "Queued 4 · 1 skipped", because a bulk action that silently
@@ -178,6 +189,8 @@ struct DevelopPreview: View {
         VStack(spacing: 14) {
             if model.isLoading {
                 transferState
+            } else if !model.bulk.isEmpty {
+                bulkState
             } else if let job = activeJob, job.status == .completed {
                 completedState
             } else if let job = activeJob, job.status == .failed {
@@ -211,6 +224,99 @@ struct DevelopPreview: View {
             .frame(maxWidth: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Everything picked in bulk, held before any of it renders.
+    ///
+    /// The same gauge and push/pull controls the single-file flow uses, plus the
+    /// stock, so one deliberate choice covers the batch. Files that were refused
+    /// are counted here rather than dropped silently.
+    private var bulkState: some View {
+        VStack(spacing: 12) {
+            if let preview {
+                Image(decorative: preview, scale: 1)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 150)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(alignment: .bottomTrailing) {
+                        Text("\(model.bulk.count) files")
+                            .font(NitrateTypography.font(.caption2))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.black.opacity(0.6), in: Capsule())
+                            .padding(8)
+                    }
+                    .accessibilityIdentifier("develop.bulkPreview")
+            }
+            Text(bulkHeadline)
+                .font(NitrateTypography.font(.callout))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .accessibilityIdentifier("develop.bulkCount")
+            if !model.bulk.skipped.isEmpty {
+                Text("\(model.bulk.skipped.count) skipped")
+                    .font(NitrateTypography.font(.caption2))
+                    .foregroundStyle(DevelopPreviewChrome.warning)
+            }
+            stockMenu
+            controlRow
+            Button(action: commitBulk) {
+                Text("Develop \(model.bulk.count)")
+                    .font(NitrateTypography.font(.headline))
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity, minHeight: 50)
+                    .background(DevelopPreviewChrome.orange, in: RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            .disabled(stock == nil || model.bulk.isEmpty)
+            .accessibilityIdentifier("develop.bulkCommit")
+            Button("Cancel") { model.clearBulk(); preview = nil }
+                .font(NitrateTypography.font(.callout))
+                .foregroundStyle(DevelopPreviewChrome.muted)
+                .accessibilityIdentifier("develop.bulkCancel")
+        }
+    }
+
+    private var bulkHeadline: String {
+        let photos = model.bulk.photos.count
+        let videos = model.bulk.videos.count
+        switch (photos, videos) {
+        case (let p, 0): return "\(p) photo\(p == 1 ? "" : "s") ready"
+        case (0, let v): return "\(v) clip\(v == 1 ? "" : "s") ready"
+        default: return "\(photos) photos · \(videos) clips ready"
+        }
+    }
+
+    /// Stock choice for the batch, so a staged set is not locked to whatever the
+    /// camera happens to be set to.
+    private var stockMenu: some View {
+        Menu {
+            ForEach(stockOptions, id: \.stockId) { option in
+                Button {
+                    onSelectStock(option)
+                } label: {
+                    if option.stockId == stock?.stockId {
+                        Label(option.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(option.displayName)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(stock?.displayName ?? "Choose a stock")
+                    .font(NitrateTypography.font(.subheadline))
+                Image(systemName: "chevron.up.chevron.down").font(.caption2)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(DevelopPreviewChrome.control, in: Capsule())
+        }
+        .accessibilityIdentifier("develop.bulkStock")
     }
 
     private var clipSelection: some View {

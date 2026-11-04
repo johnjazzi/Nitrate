@@ -370,14 +370,17 @@ struct DevelopPhotoSelectionTests {
             }
         }
 
-        let result = await model.enqueueAllPhotos(
-            transfers: [transfer("A.dng"), transfer("B.JPG"), transfer("C.nef")],
-            stock: stock, gauge: .neutral, pushPull: nil, queue: queue)
+        // Staging holds them; nothing is queued until the settings are chosen.
+        await model.stagePhotos(transfers: [transfer("A.dng"), transfer("B.JPG"), transfer("C.nef")])
+        #expect(model.bulk.count == 2, "the two developable raws are staged")
+        #expect(model.bulk.skipped.count == 1, "the JPEG is reported, not staged")
+        #expect(queue.jobs.isEmpty, "staging must not render anything")
 
+        let result = model.commitBulk(stock: stock, gauge: .neutral, pushPull: nil, queue: queue)
         #expect(result.queued == 2, "two developable raws go to the queue")
-        #expect(result.skipped.count == 1, "the JPEG is reported, not queued")
         #expect(queue.jobs.count == 2)
         #expect(queue.jobs.allSatisfy { $0.isImportedPhoto == true })
+        #expect(model.bulk.isEmpty, "the staging area is cleared once handed over")
     }
 
     /// A develop delivers the develop and nothing else.

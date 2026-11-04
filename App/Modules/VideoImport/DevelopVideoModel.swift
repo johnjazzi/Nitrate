@@ -50,6 +50,9 @@ final class DevelopVideoModel {
     /// The accepted render job. Survives a new selection while it is pending or
     /// processing, so the preview keeps showing genuine render progress.
     private(set) var activeJobID: UUID?
+    /// Files held before rendering, so one set of settings can be chosen for all
+    /// of them.
+    private(set) var bulk = BulkStaging()
 
     private let queue: RenderQueueViewModel
     private let inspect: InspectOperation
@@ -122,61 +125,105 @@ final class DevelopVideoModel {
         var skipped: [String] = []
     }
 
-    /// Queue several picked clips with one set of settings.
+    /// Files picked in bulk, held UNQUEUED so the stock, gauge and push/pull can
+    /// be chosen before any of them starts rendering.
     ///
-    /// The panel shows a single preview and one gauge/push/pull pair, so a bulk
-    /// pick skips the step-one preview entirely: it validates and queues each
-    /// file in turn and reports what did not make it.
-    func enqueueAllVideos(transfers: [TransferOperation], stock: FilmStockConfig,
-                          gauge: PrintGauge, pushPull: PushPullExposure?,
-                          queue: RenderQueueViewModel) async -> BulkDevelopResult {
-        var result = BulkDevelopResult()
+    /// Nothing here is in the queue yet, and each file keeps its lease: clearing
+    /// the staging area discards the copies instead of leaving them behind.
+    struct BulkStaging {
+        var photos: [ImportedPhoto] = []
+        var videos: [ImportedVideo] = []
+        var skipped: [String] = []
+        @ObservationIgnored var photoLeases: [VideoImportFileLease] = []
+        @ObservationIgnored var videoLeases: [VideoImportFileLease] = []
+
+        var count: Int { photos.count + videos.count }
+        var isEmpty: Bool { count == 0 }
+        /// The file the panel previews: the first one staged.
+        var previewURL: URL? { photos.first?.url ?? videos.first?.url }
+        var isPhotoStaging: Bool { videos.isEmpty && !photos.isEmpty }
+    }
+
+    /// Stage several picked clips. Nothing renders yet: the files wait in
+    /// `bulk` so the stock, gauge and push/pull can be chosen for all of them.
+    func stageVideos(transfers: [TransferOperation]) async {
+        clearBulk()
+        cancelSelection()
+        let token = generation
+        isLoading = true
         for transfer in transfers {
-            if Task.isCancelled { break }
+            if Task.isCancelled || token != generation { break }
             do {
                 let clip = try await transfer()
                 let inspected = try await inspect(clip.url, clip.originalFilename)
-                if queue.enqueueImportedVideo(sourceURL: inspected.url, stockId: stock.stockId,
-                                              iso: stock.defaultISO, gauge: gauge,
-                                              pushPull: pushPull) != nil {
-                    clip.lease.transferToQueue()
-                    result.queued += 1
-                } else {
-                    result.skipped.append(inspected.originalFilename)
-                }
+                bulk.videos.append(inspected)
+                bulk.videoLeases.append(clip.lease)
             } catch {
-                result.skipped.append((error as? LocalizedError)?.errorDescription
-                                      ?? "One clip could not be read.")
+                bulk.skipped.append((error as? LocalizedError)?.errorDescription
+                                    ?? "One clip could not be read.")
             }
         }
-        return result
+        guard token == generation else { return }
+        isLoading = false
     }
 
-    /// The photo half of a bulk pick.
-    func enqueueAllPhotos(transfers: [PhotoTransferOperation], stock: FilmStockConfig,
-                          gauge: PrintGauge, pushPull: PushPullExposure?,
-                          queue: RenderQueueViewModel) async -> BulkDevelopResult {
-        var result = BulkDevelopResult()
+    /// The photo half of the same staging.
+    func stagePhotos(transfers: [PhotoTransferOperation]) async {
+        clearBulk()
+        cancelSelection()
+        let token = generation
+        isLoading = true
         for transfer in transfers {
-            if Task.isCancelled { break }
+            if Task.isCancelled || token != generation { break }
             do {
                 let picked = try await transfer()
                 let inspected = try await inspectPhoto(picked.url, picked.originalFilename)
-                if queue.enqueuePhoto(sourceURL: inspected.url, stockId: stock.stockId,
-                                      iso: inspected.iso ?? stock.defaultISO, gauge: gauge,
-                                      cropZoom: 1, seed: Self.grainSeed(for: inspected),
-                                      pushPull: pushPull, isImported: true) != nil {
-                    picked.lease.transferToQueue()
-                    result.queued += 1
-                } else {
-                    result.skipped.append(inspected.originalFilename)
-                }
+                bulk.photos.append(inspected)
+                bulk.photoLeases.append(picked.lease)
             } catch {
-                result.skipped.append((error as? LocalizedError)?.errorDescription
-                                      ?? "One photo could not be read.")
+                bulk.skipped.append((error as? LocalizedError)?.errorDescription
+                                    ?? "One photo could not be read.")
             }
         }
+        guard token == generation else { return }
+        isLoading = false
+    }
+
+    /// Queue everything staged, with the settings chosen while it waited.
+    @discardableResult
+    func commitBulk(stock: FilmStockConfig, gauge: PrintGauge, pushPull: PushPullExposure?,
+                    queue: RenderQueueViewModel) -> BulkDevelopResult {
+        var result = BulkDevelopResult(skipped: bulk.skipped)
+        for (index, photo) in bulk.photos.enumerated() {
+            if queue.enqueuePhoto(sourceURL: photo.url, stockId: stock.stockId,
+                                  iso: photo.iso ?? stock.defaultISO, gauge: gauge,
+                                  cropZoom: 1, seed: Self.grainSeed(for: photo),
+                                  pushPull: pushPull, isImported: true) != nil {
+                if index < bulk.photoLeases.count { bulk.photoLeases[index].transferToQueue() }
+                result.queued += 1
+            } else {
+                result.skipped.append(photo.detailSummary)
+            }
+        }
+        for (index, video) in bulk.videos.enumerated() {
+            if queue.enqueueImportedVideo(sourceURL: video.url, stockId: stock.stockId,
+                                          iso: stock.defaultISO, gauge: gauge,
+                                          pushPull: pushPull) != nil {
+                if index < bulk.videoLeases.count { bulk.videoLeases[index].transferToQueue() }
+                result.queued += 1
+            } else {
+                result.skipped.append(video.originalFilename)
+            }
+        }
+        // Everything staged has been handed over; leases that were not
+        // transferred discard their files when the staging value is cleared.
+        bulk = BulkStaging()
         return result
+    }
+
+    /// Drop the staged files without rendering them.
+    func clearBulk() {
+        bulk = BulkStaging()
     }
 
     /// Load a file the queue already owns back into the panel.

@@ -159,6 +159,8 @@ struct ContentView: View {
                     let rect = previewRect(in: geometry)
                     DevelopPreview(model: developModel, queue: renderQueueViewModel,
                                    stock: selectedStock,
+                                   stockOptions: library.videoStocks(),
+                                   onSelectStock: { selectedStock = $0 },
                                    gauge: $developGauge,
                                    pushPullAutomatic: $developPushPullAutomatic,
                                    pushPullStops: $developPushPullStops,
