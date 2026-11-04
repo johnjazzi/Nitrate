@@ -402,6 +402,16 @@ final class DevelopVideoModel {
     /// durable acceptance returns an id; a failed enqueue keeps the selection so
     /// the user can retry.
     @discardableResult
+    /// The push/pull a develop should carry, from what the panel's pill shows.
+    ///
+    /// Shared and tested rather than inlined in the view: the pill's value once
+    /// sat in a stored property that defaulted to `.neutral`, so every import
+    /// developed two stops away from what was chosen. An import has no meter, so
+    /// automatic resolves neutral instead of guessing.
+    nonisolated static func resolvedPushPull(automatic: Bool, stops: PushPullStops) -> PushPullExposure {
+        automatic ? .automatic(meteredOffsetEV: nil) : .manual(stops)
+    }
+
     /// `pushPull` is the exposure the develop applies to the file's Apple Log 2
     /// code. A nil value falls back to the stock's persisted manual pull, so a
     /// developed import matches the camera's current setting rather than

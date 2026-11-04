@@ -30,7 +30,13 @@ struct DevelopPreview: View {
     /// Called after a change so the parent can persist the preference.
     var onControlsChanged: () -> Void = {}
     /// The exposure the parent resolved for this render, shown in the pill.
-    var resolvedPushPull: PushPullExposure = .neutral
+    /// Derived from the pill the panel actually shows. This used to be a stored
+    /// property defaulting to `.neutral`, so the chosen push/pull never reached
+    /// the render and every import developed two stops away from what was picked.
+    /// An import has no meter, so automatic resolves neutral here (never a guess).
+    private var resolvedPushPull: PushPullExposure {
+        DevelopVideoModel.resolvedPushPull(automatic: pushPullAutomatic, stops: pushPullStops)
+    }
 
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var photoPickerItems: [PhotosPickerItem] = []

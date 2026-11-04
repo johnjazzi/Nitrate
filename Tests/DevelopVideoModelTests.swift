@@ -360,6 +360,20 @@ struct DevelopPhotoSelectionTests {
                 "the re-develop applies the settings chosen on the second visit")
     }
 
+    /// The pill's choice must survive to the render. It once did not: the value
+    /// sat in a stored property defaulting to neutral, and an import chosen at
+    /// -2 stops developed at 0.
+    @Test func theChosenPullReachesTheDevelop() {
+        let pulled = DevelopVideoModel.resolvedPushPull(automatic: false, stops: .pullTwo)
+        #expect(pulled.stops == .pullTwo)
+        #expect(pulled.origin == .manual)
+        #expect(pulled == .manual(.pullTwo), "a manual choice must not be neutral")
+
+        // An import has no meter, so automatic cannot invent a pull.
+        let automatic = DevelopVideoModel.resolvedPushPull(automatic: true, stops: .none)
+        #expect(automatic.stops == .none)
+    }
+
     /// A pick where EVERY file is refused must say why. The reasons used to live
     /// only in the staging view, which never appears when nothing staged — three
     /// NEFs spun, stopped, and explained nothing.
