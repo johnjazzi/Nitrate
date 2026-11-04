@@ -81,9 +81,8 @@ struct FlashControlTests {
     @Test func settingsDefaultToALampThatIsOff() {
         let standard = FlashSettings.standard
         #expect(standard.videoLevel == 0)
-        #expect(standard.photoIntensity == 1.0)
+        #expect(standard.photoIntensity == 0)
         #expect(standard.photoDurationPercent == 100)
-        #expect(standard.photoEnabled == false)
         #expect(!standard.isVideoLampOn)
         #expect(!standard.isPhotoLampOn)
         #expect(standard.pillText(photoMode: false) == "OFF")
@@ -91,22 +90,20 @@ struct FlashControlTests {
     }
 
     @Test func settingsClampEveryValueIntoItsRange() {
-        let low = FlashSettings(videoLevel: -3, photoIntensity: -1, photoDurationPercent: 1,
-                                photoEnabled: true)
+        let low = FlashSettings(videoLevel: -3, photoIntensity: -1, photoDurationPercent: 1)
         #expect(low.videoLevel == 0)
         #expect(low.photoIntensity == 0)
         #expect(low.photoDurationPercent == 5)
-        let high = FlashSettings(videoLevel: 4, photoIntensity: 9, photoDurationPercent: 400,
-                                 photoEnabled: true)
+        let high = FlashSettings(videoLevel: 4, photoIntensity: 9, photoDurationPercent: 400)
         #expect(high.videoLevel == 1)
         #expect(high.photoIntensity == 1)
         #expect(high.photoDurationPercent == 100)
         // A non-finite value falls back to the setting's own default rather than
         // to an edge of the range, so a corrupt read cannot become full power.
         let nan = FlashSettings(videoLevel: .nan, photoIntensity: .infinity,
-                                photoDurationPercent: .nan, photoEnabled: true)
+                                photoDurationPercent: .nan)
         #expect(nan.videoLevel == 0)
-        #expect(nan.photoIntensity == 1)
+        #expect(nan.photoIntensity == 0)
         #expect(nan.photoDurationPercent == 100)
     }
 
@@ -114,12 +111,12 @@ struct FlashControlTests {
         let video = FlashSettings(videoLevel: 0.4)
         #expect(video.pillText(photoMode: false) == "40%")
         #expect(video.pillText(photoMode: true) == "OFF")
-        let photo = FlashSettings(photoIntensity: 0.5, photoDurationPercent: 25, photoEnabled: true)
+        let photo = FlashSettings(photoIntensity: 0.5, photoDurationPercent: 25)
         #expect(photo.pillText(photoMode: true) == "25%", "the duration is the number that matters")
         #expect(photo.pillText(photoMode: false) == "OFF", "a photo setting cannot light a take")
-        // Full intensity with the lamp switched off is still off.
-        let disabled = FlashSettings(photoIntensity: 1, photoDurationPercent: 40, photoEnabled: false)
-        #expect(disabled.pillText(photoMode: true) == "OFF")
+        // Intensity zero is the switch: nothing fires and the pill says so.
+        let off = FlashSettings(photoIntensity: 0, photoDurationPercent: 40)
+        #expect(off.pillText(photoMode: true) == "OFF")
     }
 
     // MARK: - Persistence
@@ -130,7 +127,7 @@ struct FlashControlTests {
         #expect(store.settings == .standard, "an empty store is the standard setting, never a guess")
 
         let chosen = FlashSettings(videoLevel: 0.35, photoIntensity: 0.6,
-                                   photoDurationPercent: 40, photoEnabled: true)
+                                   photoDurationPercent: 40)
         store.settings = chosen
         #expect(store.settings == chosen, "a fresh read must return exactly what was written")
         // A second store over the same domain reads the same value: this is one
@@ -174,7 +171,7 @@ struct FlashControlTests {
     }
 
     @Test func aPhotoRecordsFrontWithTheDurationItActuallyCovered() {
-        let settings = FlashSettings(photoIntensity: 0.4, photoDurationPercent: 40, photoEnabled: true)
+        let settings = FlashSettings(photoIntensity: 0.4, photoDurationPercent: 40)
         let timing = FlashTimingPolicy.timing(exposure: 0.25, durationPercent: 40, sync: .front)
         let record = FlashRecord.photo(settings: settings, timing: timing,
                                        exposureSeconds: 0.25, refusalReason: nil)
@@ -186,7 +183,7 @@ struct FlashControlTests {
     }
 
     @Test func belowTheFloorAPhotoRecordsTheWholeWindowBecauseThatIsWhatHappened() {
-        let settings = FlashSettings(photoIntensity: 0.4, photoDurationPercent: 40, photoEnabled: true)
+        let settings = FlashSettings(photoIntensity: 0.4, photoDurationPercent: 40)
         let timing = FlashTimingPolicy.timing(exposure: 1.0 / 500.0, durationPercent: 40, sync: .front)
         // The controller holds the lamp for the whole exposure in this case and
         // passes `durationPercent: 100`; the record must agree with the light.

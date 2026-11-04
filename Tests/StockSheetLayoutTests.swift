@@ -235,8 +235,10 @@ struct StockSheetLayoutTests {
                 "A long press opens the lamp's controls and closes them again.")
         #expect(source.contains(".sensoryFeedback(.impact(weight: .medium), trigger: hapticTick)"),
                 "Every press ticks.")
-        #expect(source.contains("slider(\"Lamp\""),
-                "Video has one level, and it is called a lamp.")
+        #expect(source.contains("slider(\"Flash\""),
+                "Video has one level, and it is called flash.")
+        #expect(!source.contains("Fire the lamp"),
+                "There is no second switch: intensity zero is off.")
         #expect(source.contains("slider(\"Intensity\""))
         #expect(source.contains("slider(\"Duration\""))
         #expect(source.contains(".disabled(shapingReason != nil)"),

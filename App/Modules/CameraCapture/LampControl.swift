@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The lamp key for the camera's top bar.
+/// The flash key for the camera's top bar.
 ///
 /// A short press is the switch: on at the remembered level, off again. A long
 /// press is the tooltip: it opens the lamp's controls, and a second long press
@@ -18,6 +18,7 @@ struct LampControl: View {
     /// The level the switch returns to. Zero is off, so the key needs to know
     /// what "on" meant last time rather than guessing full power.
     @State private var lastVideoLevel: Double = 0.5
+    @State private var lastPhotoIntensity: Double = 0.5
     @State private var hapticTick = 0
 
     var body: some View {
@@ -48,7 +49,7 @@ struct LampControl: View {
             controls.presentationCompactAdaptation(.popover)
         }
         .accessibilityIdentifier("camera.flash")
-        .accessibilityLabel("Lamp")
+        .accessibilityLabel("Flash")
         .accessibilityValue(settings.accessibilityValue(photoMode: photoMode))
         .accessibilityAddTraits(.isButton)
         .onChange(of: settings) { _, value in
@@ -69,7 +70,12 @@ struct LampControl: View {
     /// last level the operator actually dialled.
     private func toggle() {
         if photoMode {
-            settings.photoEnabled.toggle()
+            if settings.photoIntensity > 0 {
+                lastPhotoIntensity = settings.photoIntensity
+                settings.photoIntensity = 0
+            } else {
+                settings.photoIntensity = max(lastPhotoIntensity, FlashSettings.intensityRange.lowerBound + 0.25)
+            }
         } else if settings.videoLevel > 0 {
             lastVideoLevel = settings.videoLevel
             settings.videoLevel = 0
@@ -102,12 +108,10 @@ struct LampControl: View {
     /// has the intensity and the fraction of the exposure the lamp covers.
     private var controls: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Lamp")
+            Text("Flash")
                 .font(NitrateTypography.font(.subheadline))
                 .foregroundStyle(.primary)
             if photoMode {
-                Toggle("Fire the lamp", isOn: $settings.photoEnabled)
-                    .font(NitrateTypography.font(.footnote))
                 slider("Intensity", value: $settings.photoIntensity,
                        range: FlashSettings.intensityRange,
                        readout: settings.isPhotoLampOn ? "\(settings.photoPercent)%" : "OFF")
@@ -123,7 +127,7 @@ struct LampControl: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                slider("Lamp", value: $settings.videoLevel,
+                slider("Flash", value: $settings.videoLevel,
                        range: FlashSettings.intensityRange,
                        readout: settings.isVideoLampOn ? "\(settings.videoPercent)%" : "OFF")
             }

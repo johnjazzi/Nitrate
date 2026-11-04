@@ -31,9 +31,6 @@ struct FlashSettings: Codable, Equatable, Sendable {
     var photoIntensity: Double
     /// Photo: how much of the exposure window the lamp covers, 5...100.
     var photoDurationPercent: Double
-    /// Photo: whether the lamp fires at all. Separate from intensity so a level
-    /// can be dialled and left while the lamp stays off.
-    var photoEnabled: Bool
 
     static let intensityRange: ClosedRange<Double> = 0...1
     static let durationRange: ClosedRange<Double> = 5...100
@@ -42,13 +39,12 @@ struct FlashSettings: Codable, Equatable, Sendable {
     /// is the photo this app took before the control existed.
     static let standard = FlashSettings()
 
-    init(videoLevel: Double = 0, photoIntensity: Double = 1,
-         photoDurationPercent: Double = 100, photoEnabled: Bool = false) {
+    init(videoLevel: Double = 0, photoIntensity: Double = 0,
+         photoDurationPercent: Double = 100) {
         self.videoLevel = Self.clamped(videoLevel, to: Self.intensityRange, fallback: 0)
-        self.photoIntensity = Self.clamped(photoIntensity, to: Self.intensityRange, fallback: 1)
+        self.photoIntensity = Self.clamped(photoIntensity, to: Self.intensityRange, fallback: 0)
         self.photoDurationPercent = Self.clamped(photoDurationPercent, to: Self.durationRange,
                                                  fallback: 100)
-        self.photoEnabled = photoEnabled
     }
 
     /// A non-finite request is not a value. It falls back to this setting's own
@@ -62,7 +58,7 @@ struct FlashSettings: Codable, Equatable, Sendable {
 
     var isVideoLampOn: Bool { videoLevel > 0 }
 
-    var isPhotoLampOn: Bool { photoEnabled && photoIntensity > 0 }
+    var isPhotoLampOn: Bool { photoIntensity > 0 }
 
     /// Whole percent: the unit the control shows and the metadata records.
     var videoPercent: Int { Int((videoLevel * 100).rounded()) }
@@ -302,7 +298,6 @@ final class FlashSettingsStore: @unchecked Sendable {
         static let videoLevel = "camera.flash.video-level"
         static let photoIntensity = "camera.flash.photo-intensity"
         static let photoDurationPercent = "camera.flash.photo-duration-percent"
-        static let photoEnabled = "camera.flash.photo-enabled"
     }
 
     private let defaults: UserDefaults
@@ -319,15 +314,13 @@ final class FlashSettingsStore: @unchecked Sendable {
             return FlashSettings(
                 videoLevel: number(Key.videoLevel) ?? standard.videoLevel,
                 photoIntensity: number(Key.photoIntensity) ?? standard.photoIntensity,
-                photoDurationPercent: number(Key.photoDurationPercent) ?? standard.photoDurationPercent,
-                photoEnabled: defaults.object(forKey: Key.photoEnabled) as? Bool ?? standard.photoEnabled
+                photoDurationPercent: number(Key.photoDurationPercent) ?? standard.photoDurationPercent
             )
         }
         set {
             defaults.set(newValue.videoLevel, forKey: Key.videoLevel)
             defaults.set(newValue.photoIntensity, forKey: Key.photoIntensity)
             defaults.set(newValue.photoDurationPercent, forKey: Key.photoDurationPercent)
-            defaults.set(newValue.photoEnabled, forKey: Key.photoEnabled)
         }
     }
 
