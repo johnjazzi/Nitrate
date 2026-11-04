@@ -65,7 +65,7 @@ extension DevelopVideoModel {
         })
     }
 
-    private func loadPhoto(from item: PhotosPickerItem) async throws -> DevelopPhotoTransfer {
+    func loadPhoto(from item: PhotosPickerItem) async throws -> DevelopPhotoTransfer {
         try await withCheckedThrowingContinuation { continuation in
             let progress = item.loadTransferable(type: DevelopPickedPhoto.self) { result in
                 switch result {
@@ -78,7 +78,7 @@ extension DevelopVideoModel {
         }
     }
 
-    private func loadClip(from item: PhotosPickerItem) async throws -> DevelopClipTransfer {
+    func loadClip(from item: PhotosPickerItem) async throws -> DevelopClipTransfer {
         try await withCheckedThrowingContinuation { continuation in
             let progress = item.loadTransferable(type: DevelopPickedVideo.self) { result in
                 switch result {

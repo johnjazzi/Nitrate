@@ -90,6 +90,21 @@ struct PhotoDevelopmentPipelineTests {
         }
     }
 
+    /// The still base exposure is a lift, so it must count toward the scene lift
+    /// the halation knees are scaled by — otherwise the one-stop fix reintroduces
+    /// the orange bloom it took a whole investigation to remove.
+    @Test func stillBaseExposureCountsTowardTheHalationSceneLift() {
+        #expect(RAWPhotoDecoder.baseExposureEV == 1)
+        #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 0) == 1)
+        #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 2.988) == 3.988)
+
+        // A 2x wall stays below the lifted red knee once both lifts are counted.
+        let lifted = SpatialEffectsStage.halationKnees(
+            sceneLiftStops: RAWPhotoDecoder.sceneLiftStops(baselineExposure: 2.988))
+        let wallAtTwoStopsLift: Float = 2
+        #expect(max(0, wallAtTwoStopsLift - lifted.x) == 0)
+    }
+
     /// A DNG offers the DNG-tagged decoder version; a NEF, ARW or CR2 offers its
     /// own and never "8.dng". Requiring the tagged one refused every non-DNG raw
     /// at the first line of the decode, which is what a Nikon file hit.
@@ -192,6 +207,55 @@ struct PhotoDevelopmentPipelineTests {
         #expect(job.status == .completed)
         #expect(job.outputURL != firstOutput)
         #expect(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    /// Bulk re-develop is the same return-to-step-one applied to a selection,
+    /// with one set of settings, and it must not fail the whole selection because
+    /// one job's original was cleaned up.
+    @Test @MainActor func bulkRedevelopAppliesOneSetOfSettingsToTheSelection() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let renders = Counter()
+        let model = RenderQueueViewModel(persistenceURL: folder.appendingPathComponent("queue.json"),
+            render: { _ in
+                renders.value += 1
+                let output = folder.appendingPathComponent("out-\(renders.value).jpg")
+                try CIContext().writeJPEGRepresentation(of: CIImage(color: CIColor(red: 0.2, green: 0.3, blue: 0.4))
+                    .cropped(to: CGRect(x: 0, y: 0, width: 16, height: 16)), to: output,
+                    colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+                return output
+            }, save: { _ in })
+
+        func queuedPhoto(_ name: String) throws -> UUID {
+            let source = folder.appendingPathComponent(name)
+            try Data([1]).write(to: source)
+            return try #require(model.enqueuePhoto(sourceURL: source, stockId: "kodak5219", iso: 500,
+                gauge: .neutral, cropZoom: 1, seed: 3, isImported: true))
+        }
+        let one = try queuedPhoto("a.dng")
+        let two = try queuedPhoto("b.dng")
+        for _ in 0..<400 where model.jobs.contains(where: { $0.status != .completed }) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        // A third job whose original is gone must be skipped, not fatal.
+        let gone = folder.appendingPathComponent("gone.dng")
+        try Data([1]).write(to: gone)
+        let three = try #require(model.enqueuePhoto(sourceURL: gone, stockId: "kodak5219", iso: 500,
+            gauge: .neutral, cropZoom: 1, seed: 4, isImported: true))
+        for _ in 0..<400 where model.jobs.contains(where: { $0.status != .completed }) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try FileManager.default.removeItem(at: gone)
+
+        let requeued = model.redevelopPhotos(jobIds: [one, two, three],
+                                             stockId: "kodak5207", gauge: .eightMillimetre,
+                                             pushPull: .neutral)
+        #expect(requeued == 2, "the job without its original is skipped")
+        let refreshed = model.jobs.filter { [one, two].contains($0.id) }
+        #expect(refreshed.allSatisfy { $0.stockId == "kodak5207" })
+        #expect(refreshed.allSatisfy { $0.printGauge == .eightMillimetre })
     }
 
     @Test func shippingPhotoStagesApplyStockAndGaugeAndRepeatTheSameSeed() throws {
@@ -328,6 +392,64 @@ struct PhotoDevelopmentPipelineTests {
         let bypass = try render(diffusion: nil, gauge: .seventyFiveMillimetre)
         let bypassOff = try render(diffusion: .some(nil), gauge: .seventyFiveMillimetre)
         #expect(bypass == bypassOff, "75mm must render no diffusion at all")
+    }
+
+    /// Spread must scale with the FRAME, not stay a fixed pixel count.
+    ///
+    /// A still from the phone and a 45MP raw have to bloom and diffuse by the
+    /// same fraction of the picture, or one looks blown out and the other
+    /// invisible. Measured here as the radius, in units of frame width, at which
+    /// the effect has fallen to a small fraction of its peak.
+    @Test func halationAndDiffusionSpreadScalesWithFrameWidth() throws {
+        func spread(width: Int, height: Int, apply: (StillFilmRenderResources, CIImage) throws -> CIImage) throws -> Double {
+            // A single bright dot on black: its halo is the thing being measured.
+            let dot = CIImage(color: CIColor(red: 6, green: 6, blue: 6))
+                .cropped(to: CGRect(x: 0, y: 0, width: max(2, width / 128), height: max(2, height / 128)))
+                .composited(over: CIImage(color: .black).cropped(to: CGRect(x: 0, y: 0, width: width, height: height)))
+            let film = try StillFilmRenderResources(stockID: "kodak5219", gauge: .sixteenMillimetre,
+                                                     seed: 1, bundle: Bundle(for: BundleToken.self))
+            let out = try apply(film, dot)
+
+            // Scale to a fixed sample grid FIRST: rendering the full extent into
+            // a narrow bitmap mismatches rowBytes and reads garbage.
+            let sampleWidth = 256
+            let scale = Float(sampleWidth) / Float(width)
+            let sampled = out.transformed(by: CGAffineTransform(scaleX: CGFloat(scale), y: CGFloat(scale)))
+                .cropped(to: CGRect(x: 0, y: 0, width: sampleWidth, height: sampleWidth))
+            var pixels = [UInt8](repeating: 0, count: sampleWidth * 4)
+            film.context.render(sampled, toBitmap: &pixels, rowBytes: sampleWidth * 4,
+                                bounds: CGRect(x: 0, y: 0, width: sampleWidth, height: 1), format: .RGBA8,
+                                colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!)
+            let values = (0..<sampleWidth).map { Double(pixels[$0 * 4]) }
+            let peak = values.max() ?? 0
+            guard peak > 1 else { return 0 }
+            // First sample under 10% of peak, as a fraction of the frame.
+            let index = values.firstIndex { $0 < peak * 0.1 } ?? sampleWidth
+            return Double(index) / Double(sampleWidth)
+        }
+
+        let small = 512, large = 2048
+        // Halation: the whole frame is the halo of one dot.
+        let halationSmall = try spread(width: small, height: small) { film, image in
+            try film.halation(RAWToLog2Stage.apply(image), sceneLiftStops: 1)
+        }
+        let halationLarge = try spread(width: large, height: large) { film, image in
+            try film.halation(RAWToLog2Stage.apply(image), sceneLiftStops: 1)
+        }
+        // Same fraction of the frame within a generous band.
+        #expect(halationLarge > halationSmall * 0.6 && halationLarge < halationSmall * 1.6,
+                "halation spread should be frame-relative: small \(halationSmall) large \(halationLarge)")
+
+        let diffusionSmall = try spread(width: small, height: small) { film, image in
+            try DevelopmentPhotoRenderer.develop(linearImage: image, film: film,
+                                                 sceneLiftStops: 1)
+        }
+        let diffusionLarge = try spread(width: large, height: large) { film, image in
+            try DevelopmentPhotoRenderer.develop(linearImage: image, film: film,
+                                                 sceneLiftStops: 1)
+        }
+        #expect(diffusionLarge > diffusionSmall * 0.5 && diffusionLarge < diffusionSmall * 1.8,
+                "diffusion spread should be frame-relative: small \(diffusionSmall) large \(diffusionLarge)")
     }
 
     @Test func productionStillKernelDistinguishesAllFourGaugeFootprintsAndPresence() throws {

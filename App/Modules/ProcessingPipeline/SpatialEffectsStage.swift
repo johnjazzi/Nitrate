@@ -103,9 +103,23 @@ final class SpatialEffectsStage {
     /// `sceneLiftStops` is zero for every video frame and for any still whose
     /// decode was not lifted, in which case this is exactly `(1, 2, 4)`.
     static func halationKnees(sceneLiftStops: Float) -> SIMD3<Float> {
+        SIMD3(redKnee, greenKnee, blueKnee) * liftScale(sceneLiftStops)
+    }
+
+    /// The same lift applied to the superwhite REFERENCE.
+    ///
+    /// Scaling only the knees was half the job: the excess a lifted frame carries
+    /// is also `2^lift` times its true value, so a constant denominator made the
+    /// halo grow with the decode lift — measured at ~30x when one stop was added
+    /// on top of a ProRAW's BaselineExposure. Scaling both keeps the halo a
+    /// property of the scene, not of how the file was decoded.
+    static func halationReferenceSuperwhite(sceneLiftStops: Float) -> Float {
+        referenceSuperwhite * liftScale(sceneLiftStops)
+    }
+
+    private static func liftScale(_ sceneLiftStops: Float) -> Float {
         let lift = sceneLiftStops.isFinite ? max(-8, min(8, sceneLiftStops)) : 0
-        let scale = pow(2, lift)
-        return SIMD3(redKnee, greenKnee, blueKnee) * scale
+        return pow(2, lift)
     }
 
     private let device: MTLDevice
@@ -277,7 +291,8 @@ final class SpatialEffectsStage {
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
             var strength = strength
             var layerScale = layerScale
-            var referenceSuperwhite = Self.referenceSuperwhite
+            var referenceSuperwhite = Self.halationReferenceSuperwhite(
+                sceneLiftStops: sceneLiftStops)
             // Unused level slots are bound to a real, samplable texture rather
             // than left unbound; their weights are zero, so they contribute
             // nothing and the blend stays a normalized average.

@@ -39,7 +39,7 @@ enum DevelopmentPhotoRenderer {
         // know about that lift, or every lit surface in the frame reads as
         // superwhite and the whole photo blooms (measured: +2.99 EV on ProRAW).
         let finished = try develop(linearImage: oriented, film: film,
-                                   sceneLiftStops: decodedRAW.baselineExposure,
+                                   sceneLiftStops: decodedRAW.sceneLiftStops,
                                    resourcesURL: resourcesURL)
         // LUT output is Rec.709 gamma 2.4. Decode it before the final sRGB encoding.
         let linear709 = try FilmOutputDisplayConverter.linearImage(fromGamma24: finished)

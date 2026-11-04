@@ -50,6 +50,15 @@ final class DevelopVideoModel {
     /// The accepted render job. Survives a new selection while it is pending or
     /// processing, so the preview keeps showing genuine render progress.
     private(set) var activeJobID: UUID?
+    /// Files held before rendering, so one set of settings can be chosen for all
+    /// of them.
+    private(set) var bulk = BulkStaging()
+    /// A file loaded back from the queue for re-development. It has no lease —
+    /// the queue already owns it — so it must satisfy `canRender` another way.
+    private(set) var adoptedURL: URL?
+    /// The jobs one bulk commit created, so the panel can show them rendering
+    /// and then point at the results. Empty outside a batch.
+    private(set) var batchJobIDs: [UUID] = []
 
     private let queue: RenderQueueViewModel
     private let inspect: InspectOperation
@@ -115,10 +124,184 @@ final class DevelopVideoModel {
         }
     }
 
+    /// What a bulk pick produced: how many went to the queue, and why the rest
+    /// did not. One refusal must not abandon the others.
+    struct BulkDevelopResult: Sendable, Equatable {
+        var queued = 0
+        var skipped: [String] = []
+    }
+
+    /// Files picked in bulk, held UNQUEUED so the stock, gauge and push/pull can
+    /// be chosen before any of them starts rendering.
+    ///
+    /// Nothing here is in the queue yet, and each file keeps its lease: clearing
+    /// the staging area discards the copies instead of leaving them behind.
+    struct BulkStaging {
+        var photos: [ImportedPhoto] = []
+        var videos: [ImportedVideo] = []
+        var skipped: [String] = []
+        /// Files in this pick, and how many have been read so far, so a slow
+        /// batch says "reading 2 of 3" instead of spinning anonymously.
+        var total = 0
+        var read = 0
+        @ObservationIgnored var photoLeases: [VideoImportFileLease] = []
+        @ObservationIgnored var videoLeases: [VideoImportFileLease] = []
+
+        var count: Int { photos.count + videos.count }
+        var isEmpty: Bool { count == 0 }
+        /// The file the panel previews: the first one staged.
+        var previewURL: URL? { photos.first?.url ?? videos.first?.url }
+        var isPhotoStaging: Bool { videos.isEmpty && !photos.isEmpty }
+    }
+
+    /// Stage several picked clips. Nothing renders yet: the files wait in
+    /// `bulk` so the stock, gauge and push/pull can be chosen for all of them.
+    func stageVideos(transfers: [TransferOperation]) async {
+        clearBulk()
+        cancelSelection()
+        let token = generation
+        isLoading = true
+        bulk.total = transfers.count
+        for transfer in transfers {
+            if Task.isCancelled || token != generation { break }
+            bulk.read += 1
+            do {
+                let clip = try await transfer()
+                let inspected = try await inspect(clip.url, clip.originalFilename)
+                bulk.videos.append(inspected)
+                bulk.videoLeases.append(clip.lease)
+            } catch {
+                bulk.skipped.append((error as? LocalizedError)?.errorDescription
+                                    ?? "One clip could not be read.")
+            }
+        }
+        guard token == generation else { return }
+        isLoading = false
+        reportStagingIfEmpty()
+    }
+
+    /// Say WHY a staged pick produced nothing.
+    ///
+    /// The reasons live in `bulk.skipped`, which the staging view shows — and the
+    /// staging view is exactly what does not appear when every file was refused,
+    /// so a three-NEF pick spun, stopped, and explained nothing.
+    private func reportStagingIfEmpty() {
+        guard bulk.isEmpty, let first = bulk.skipped.first else { return }
+        let count = bulk.skipped.count
+        errorMessage = count == 1 ? first : "\(count) files could not be added. \(first)"
+    }
+
+    /// The photo half of the same staging.
+    func stagePhotos(transfers: [PhotoTransferOperation]) async {
+        clearBulk()
+        cancelSelection()
+        let token = generation
+        isLoading = true
+        bulk.total = transfers.count
+        for transfer in transfers {
+            if Task.isCancelled || token != generation { break }
+            bulk.read += 1
+            do {
+                let picked = try await transfer()
+                let inspected = try await inspectPhoto(picked.url, picked.originalFilename)
+                bulk.photos.append(inspected)
+                bulk.photoLeases.append(picked.lease)
+            } catch {
+                bulk.skipped.append((error as? LocalizedError)?.errorDescription
+                                    ?? "One photo could not be read.")
+            }
+        }
+        guard token == generation else { return }
+        isLoading = false
+        reportStagingIfEmpty()
+    }
+
+    /// Queue everything staged, with the settings chosen while it waited.
+    @discardableResult
+    func commitBulk(stock: FilmStockConfig, gauge: PrintGauge, pushPull: PushPullExposure?,
+                    queue: RenderQueueViewModel) -> BulkDevelopResult {
+        var result = BulkDevelopResult(skipped: bulk.skipped)
+        var queuedIDs: [UUID] = []
+        for (index, photo) in bulk.photos.enumerated() {
+            if let id = queue.enqueuePhoto(sourceURL: photo.url, stockId: stock.stockId,
+                                           iso: photo.iso ?? stock.defaultISO, gauge: gauge,
+                                           cropZoom: 1, seed: Self.grainSeed(for: photo),
+                                           pushPull: pushPull, isImported: true) {
+                queuedIDs.append(id)
+                if index < bulk.photoLeases.count { bulk.photoLeases[index].transferToQueue() }
+                result.queued += 1
+            } else {
+                result.skipped.append(photo.detailSummary)
+            }
+        }
+        for (index, video) in bulk.videos.enumerated() {
+            if let id = queue.enqueueImportedVideo(sourceURL: video.url, stockId: stock.stockId,
+                                                   iso: stock.defaultISO, gauge: gauge,
+                                                   pushPull: pushPull) {
+                queuedIDs.append(id)
+                if index < bulk.videoLeases.count { bulk.videoLeases[index].transferToQueue() }
+                result.queued += 1
+            } else {
+                result.skipped.append(video.originalFilename)
+            }
+        }
+        // Everything staged has been handed over; leases that were not
+        // transferred discard their files when the staging value is cleared.
+        bulk = BulkStaging()
+        batchJobIDs = queuedIDs
+        return result
+    }
+
+    /// Drop the staged files without rendering them.
+    func clearBulk() {
+        bulk = BulkStaging()
+        batchJobIDs = []
+    }
+
+    /// Leave the batch summary and start another.
+    func dismissBatch() {
+        batchJobIDs = []
+    }
+
+    /// Load a file the queue already owns back into the panel.
+    ///
+    /// This is what "re-develop" means for a finished photo: the same file returns
+    /// to step one, with the gauge and push/pull controls, so the next render can
+    /// be a different look rather than the same one again. Nothing is copied or
+    /// re-picked — the file is already in app storage — and no lease is taken,
+    /// because the queue still owns it.
+    func adoptExistingPhoto(url: URL, originalFilename: String) async {
+        // The job that produced this file is finished. Leaving it referenced made
+        // the panel keep showing the COMPLETED state — the delivered still and
+        // "Saved to Photos" — so re-develop appeared to do nothing at all.
+        clearSettledJobReference()
+        cancelSelection()
+        let token = generation
+        isLoading = true
+        errorMessage = nil
+        do {
+            let inspected = try await inspectPhoto(url, originalFilename)
+            guard token == generation else { return }
+            photo = inspected
+            video = nil
+            adoptedURL = url
+            isLoading = false
+            finish(token)
+        } catch {
+            guard token == generation else { return }
+            photo = nil
+            isLoading = false
+            errorMessage = (error as? LocalizedError)?.errorDescription
+                ?? "This photo can no longer be developed."
+            finish(token)
+        }
+    }
+
     /// Cancel the in-flight transfer / inspection. The unqueued file is released
     /// by its lease; an already accepted queue job is never touched.
     func cancelSelection() {
         generation = UUID()
+        adoptedURL = nil
         selectionTask?.cancel()
         selectionTask = nil
         pendingTransfer = nil
@@ -207,7 +390,11 @@ final class DevelopVideoModel {
         guard let stock, !stock.stockId.isEmpty else { return false }
         guard !isLoading else { return false }
         let selected = video?.url ?? photo?.url
-        guard let selected, lease?.url == selected else { return false }
+        guard let selected else { return false }
+        // A freshly picked file must still hold its lease, or it may have been
+        // discarded. An ADOPTED file (re-develop) is owned by the queue instead,
+        // and that is why this used to leave Develop's button disabled.
+        guard lease?.url == selected || adoptedURL == selected else { return false }
         return !isRenderActive(in: queue)
     }
 
@@ -224,6 +411,20 @@ final class DevelopVideoModel {
                 queue: RenderQueueViewModel) -> UUID? {
         guard canRender(stock: stock, queue: queue) else { return nil }
         if let photo {
+            // A re-developed file already has a job, and enqueueing it again would
+            // just hand back that job and render nothing. Re-render it in place
+            // with the settings chosen now.
+            if let existing = queue.jobs.first(where: {
+                $0.sourceURL.standardizedFileURL == photo.url.standardizedFileURL
+            }), existing.status == .completed || existing.status == .failed {
+                queue.redevelopPhotos(jobIds: [existing.id], stockId: stock.stockId,
+                                      gauge: gauge, pushPull: pushPull)
+                self.photo = nil
+                adoptedURL = nil
+                errorMessage = nil
+                activeJobID = existing.id
+                return existing.id
+            }
             // A developed raw keeps its own exposure index when the file carries
             // one: the DNG recorded it, so the render states what was shot rather
             // than the stock's default.

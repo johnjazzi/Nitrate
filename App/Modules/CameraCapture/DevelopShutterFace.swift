@@ -69,9 +69,10 @@ struct DevelopShutterFace: View {
     /// control never reflows the face.
     private var glyph: some View {
         VStack(spacing: 2) {
-            Image(systemName: "wand.and.stars")
+            // A lab flask: Develop is a darkroom, not a magic wand.
+            Image(systemName: "flask")
                 .font(.system(size: 21, weight: .semibold))
-            Text("Render")
+            Text("Develop")
                 .font(NitrateTypography.font(size: 12))
                 .tracking(0.5)
         }

@@ -157,12 +157,7 @@ struct ContentView: View {
 
                 if isDevelopMode {
                     let rect = previewRect(in: geometry)
-                    DevelopPreview(model: developModel, queue: renderQueueViewModel,
-                                   gauge: $developGauge,
-                                   pushPullAutomatic: $developPushPullAutomatic,
-                                   pushPullStops: $developPushPullStops,
-                                   onControlsChanged: persistDevelopControls,
-                                   resolvedPushPull: developPushPull)
+                    developPanel
                         .frame(width: rect.width, height: rect.height)
                         .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
                         .position(x: rect.midX, y: rect.midY)
@@ -1341,6 +1336,57 @@ struct ContentView: View {
             .resolved(meteredOffsetEV: nil)
     }
 
+    /// The Develop panel, built in its own property.
+    ///
+    /// It carries three closures and four bindings; left inline, the type checker
+    /// gave up on the surrounding ZStack ("unable to type-check in reasonable
+    /// time").
+    private var developPanel: some View {
+        DevelopPreview(
+            model: developModel,
+            queue: renderQueueViewModel,
+            stock: selectedStock,
+            stockOptions: library.videoStocks(),
+            onSelectStock: { stock in selectedStock = stock },
+            onOpenResults: { showQueueSheet = true },
+            gauge: $developGauge,
+            pushPullAutomatic: $developPushPullAutomatic,
+            pushPullStops: $developPushPullStops,
+            onControlsChanged: persistDevelopControls,
+            resolvedPushPull: developPushPull
+        )
+    }
+
+    /// Return a finished develop to step one: same file, back in the panel with
+    /// the gauge and push/pull controls, so the next render can be a new look.
+    private func redevelop(_ job: RenderJob) {
+        showQueueSheet = false
+        Task { @MainActor in
+            // The job knows which stock it was developed with; select it so the
+            // panel's gauge and push/pull seed from the right stock.
+            if let stock = library.config(for: job.stockId,
+                                          iso: library.lastISO(for: job.stockId)) {
+                selectedStock = stock
+            }
+            // The sheet is dismissing on this runloop, and the mode switch is
+            // refused while the camera is busy — so give it a tick, try once more,
+            // and SAY SO instead of returning silently if it still cannot switch.
+            await Task.yield()
+            if !isDevelopMode { selectCameraMode(.develop) }
+            if !isDevelopMode {
+                try? await Task.sleep(for: .milliseconds(250))
+                selectCameraMode(.develop)
+            }
+            guard isDevelopMode else {
+                showModeRefusal("Close the queue before re-developing this photo.")
+                return
+            }
+            restoreDevelopControls()
+            await developModel.adoptExistingPhoto(url: job.sourceURL,
+                                                  originalFilename: job.sourceURL.lastPathComponent)
+        }
+    }
+
     /// Seed Develop's controls from the chosen stock's remembered preference.
     private func restoreDevelopControls() {
         guard let stock = selectedStock else { return }
@@ -1560,7 +1606,17 @@ struct ContentView: View {
         QueueSheetView(
             viewModel: renderQueueViewModel,
             cameraViewModel: cameraViewModel,
-            isPresented: $showQueueSheet
+            isPresented: $showQueueSheet,
+            onRedevelop: redevelop,
+            onBulkRedevelop: { ids in
+                // Bulk uses what the Develop panel currently shows, so the look
+                // is one deliberate choice applied to the whole selection.
+                renderQueueViewModel.redevelopPhotos(
+                    jobIds: Array(ids),
+                    stockId: selectedStock?.stockId,
+                    gauge: developGauge,
+                    pushPull: developPushPull)
+            }
         )
     }
 

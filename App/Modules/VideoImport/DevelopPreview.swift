@@ -16,6 +16,14 @@ import CoreGraphics
 struct DevelopPreview: View {
     let model: DevelopVideoModel
     let queue: RenderQueueViewModel
+    /// The stock a bulk pick queues with; nil disables bulk (no target stock).
+    var stock: FilmStockConfig? = nil
+    /// Stocks offered in the bulk staging view, so a batch can be developed with
+    /// a different stock than the camera is set to.
+    var stockOptions: [FilmStockConfig] = []
+    var onSelectStock: (FilmStockConfig) -> Void = { _ in }
+    /// Opens the queue, so a finished batch can be looked at straight away.
+    var onOpenResults: () -> Void = {}
     @Binding var gauge: PrintGauge
     @Binding var pushPullAutomatic: Bool
     @Binding var pushPullStops: PushPullStops
@@ -24,8 +32,11 @@ struct DevelopPreview: View {
     /// The exposure the parent resolved for this render, shown in the pill.
     var resolvedPushPull: PushPullExposure = .neutral
 
-    @State private var pickerItem: PhotosPickerItem?
-    @State private var photoPickerItem: PhotosPickerItem?
+    @State private var pickerItems: [PhotosPickerItem] = []
+    @State private var photoPickerItems: [PhotosPickerItem] = []
+    /// What a bulk pick is doing, so a multi-select is not silent.
+    @State private var bulkStatus: String?
+    @State private var batchPreview: CGImage?
     @State private var preview: CGImage?
     /// The delivered render, decoded from the file the queue wrote. Separate
     /// from `preview` so the pre-render frame and the graded result can never be
@@ -45,17 +56,20 @@ struct DevelopPreview: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(DevelopPreviewChrome.surface)
-        .onChange(of: pickerItem) { _, item in
-            if let item {
-                model.select(item)
-                pickerItem = nil
-            }
+        // One pick keeps the old step-one flow — preview, gauge, push/pull. More
+        // than one skips the preview (there is only one panel to show it in) and
+        // queues them all with what is selected now.
+        .onChange(of: pickerItems) { _, items in
+            guard !items.isEmpty else { return }
+            let picked = items
+            pickerItems = []
+            if picked.count == 1 { model.select(picked[0]) } else { stageClips(picked) }
         }
-        .onChange(of: photoPickerItem) { _, item in
-            if let item {
-                model.selectPhoto(item)
-                photoPickerItem = nil
-            }
+        .onChange(of: photoPickerItems) { _, items in
+            guard !items.isEmpty else { return }
+            let picked = items
+            photoPickerItems = []
+            if picked.count == 1 { model.selectPhoto(picked[0]) } else { stagePhotos(picked) }
         }
         // The ungraded frame follows whatever is selected. Both are decoded from
         // the file itself, NOT through the render pipeline, so what is shown
@@ -69,9 +83,35 @@ struct DevelopPreview: View {
         .task(id: renderedKey) {
             await loadRenderedPreview()
         }
+        // The batch preview follows the first result that lands, so "Done!" is
+        // shown with the picture that proves it.
+        .task(id: batchPreviewKey) {
+            await loadBatchPreview()
+        }
         .sheet(isPresented: $showHelp) {
             DevelopMediaHelp(refusal: helpRefusal)
         }
+    }
+
+    private var batchPreviewKey: String {
+        guard !model.batchJobIDs.isEmpty else { return "none" }
+        let completed = batchJobs.filter { $0.status == .completed }
+        return "\(model.batchJobIDs.count)-\(completed.count)-\(completed.first?.receipt?.thumbnailJPEG?.count ?? 0)"
+    }
+
+    private func loadBatchPreview() async {
+        guard !model.batchJobIDs.isEmpty else {
+            batchPreview = nil
+            return
+        }
+        guard let job = batchJobs.first(where: { $0.status == .completed }) else { return }
+        if let data = job.receipt?.thumbnailJPEG,
+           let image = DevelopPreviewLoader.thumbnail(from: data) {
+            batchPreview = image
+            return
+        }
+        guard let url = job.outputURL else { return }
+        batchPreview = await DevelopPreviewLoader.image(for: url, isPhoto: job.isPhoto == true)
     }
 
     private var renderedKey: String {
@@ -99,6 +139,51 @@ struct DevelopPreview: View {
             return
         }
         renderedPreview = await DevelopPreviewLoader.image(for: url, isPhoto: job.isPhoto == true)
+    }
+
+    /// A multi-pick STAGES the files. Nothing renders until the operator has
+    /// seen them and chosen a stock, gauge and push/pull for the batch.
+    private func stageClips(_ items: [PhotosPickerItem]) {
+        bulkStatus = nil
+        Task { @MainActor in
+            let transfers: [DevelopVideoModel.TransferOperation] = items.map { item in
+                { @MainActor in try await model.loadClip(from: item) }
+            }
+            await model.stageVideos(transfers: transfers)
+            await loadBulkPreview()
+        }
+    }
+
+    private func stagePhotos(_ items: [PhotosPickerItem]) {
+        bulkStatus = nil
+        Task { @MainActor in
+            let transfers: [DevelopVideoModel.PhotoTransferOperation] = items.map { item in
+                { @MainActor in try await model.loadPhoto(from: item) }
+            }
+            await model.stagePhotos(transfers: transfers)
+            await loadBulkPreview()
+        }
+    }
+
+    private func commitBulk() {
+        guard let stock else { return }
+        let result = model.commitBulk(stock: stock, gauge: gauge,
+                                      pushPull: resolvedPushPull, queue: queue)
+        bulkStatus = Self.bulkSummary(result)
+        preview = nil
+    }
+
+    private func loadBulkPreview() async {
+        guard let url = model.bulk.previewURL else { return }
+        preview = await DevelopPreviewLoader.image(for: url, isPhoto: model.bulk.isPhotoStaging)
+    }
+
+    /// "Queued 5" or "Queued 4 · 1 skipped", because a bulk action that silently
+    /// drops a file is worse than one that refuses them all.
+    static func bulkSummary(_ result: DevelopVideoModel.BulkDevelopResult) -> String {
+        let queued = "\(result.queued) added"
+        guard !result.skipped.isEmpty else { return queued }
+        return queued + " · \(result.skipped.count) skipped"
     }
 
     private var selectedURL: URL? {
@@ -129,9 +214,14 @@ struct DevelopPreview: View {
     // MARK: - Content
 
     private var chooser: some View {
-        VStack(spacing: 18) {
+        ScrollView(.vertical, showsIndicators: false) {
+        VStack(spacing: 14) {
             if model.isLoading {
                 transferState
+            } else if !model.bulk.isEmpty {
+                bulkState
+            } else if !model.batchJobIDs.isEmpty {
+                batchState
             } else if let job = activeJob, job.status == .completed {
                 completedState
             } else if let job = activeJob, job.status == .failed {
@@ -159,9 +249,201 @@ struct DevelopPreview: View {
                     .accessibilityIdentifier("develop.error.why")
                 }
             }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity)
         }
-        .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The batch after Develop N: what is rendering, then what finished.
+    ///
+    /// A bulk develop is several jobs the panel did not open, so it reports their
+    /// progress here rather than through the single-job overlay, and when they
+    /// settle it offers the results instead of only counting them.
+    private var batchState: some View {
+        VStack(spacing: 14) {
+            if let batchPreview {
+                Image(decorative: batchPreview, scale: 1)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 180)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .accessibilityIdentifier("develop.batchPreview")
+            }
+            if batchSettled {
+                Text(batchDoneTitle)
+                    .font(NitrateTypography.font(.headline))
+                    .foregroundStyle(.white)
+                    .accessibilityIdentifier("develop.batchDone")
+                if batchFailed > 0 {
+                    Text("\(batchFailed) failed — open the queue to retry")
+                        .font(NitrateTypography.font(.caption2))
+                        .foregroundStyle(DevelopPreviewChrome.warning)
+                        .multilineTextAlignment(.center)
+                }
+                Button(action: onOpenResults) {
+                    Text("See results")
+                        .font(NitrateTypography.font(.headline))
+                        .foregroundStyle(.black)
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                        .background(DevelopPreviewChrome.orange, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("develop.batchResults")
+                Button("Develop more") { model.dismissBatch(); batchPreview = nil }
+                    .font(NitrateTypography.font(.callout))
+                    .foregroundStyle(DevelopPreviewChrome.muted)
+                    .accessibilityIdentifier("develop.batchAgain")
+            } else {
+                // The bar is the animation: it moves as jobs finish, so a batch of
+                // eight does not sit silent for a minute.
+                ProgressView(value: Double(batchSettledCount), total: Double(max(batchTotal, 1)))
+                    .progressViewStyle(.linear)
+                    .tint(DevelopPreviewChrome.orange)
+                    .animation(.easeInOut(duration: 0.35), value: batchSettledCount)
+                    .accessibilityIdentifier("develop.batchProgress")
+                Text("Developing \(batchSettledCount) of \(batchTotal)…")
+                    .font(NitrateTypography.font(.callout))
+                    .foregroundStyle(.white)
+                    .contentTransition(.numericText())
+                    .animation(.default, value: batchSettledCount)
+                    .accessibilityIdentifier("develop.batchCount")
+            }
+        }
+    }
+
+    /// "Reading 2 of 3…" while a batch is being taken in, so a slow pick of large
+    /// raws is not an anonymous spinner.
+    private var bulkReadingText: String? {
+        guard model.isLoading, model.bulk.total > 0 else { return nil }
+        let current = min(model.bulk.read + 1, model.bulk.total)
+        return "Reading \(current) of \(model.bulk.total)…"
+    }
+
+    private var batchJobs: [RenderJob] {
+        model.batchJobIDs.compactMap { id in queue.jobs.first { $0.id == id } }
+    }
+
+    private var batchTotal: Int { model.batchJobIDs.count }
+
+    private var batchSettledCount: Int {
+        batchJobs.filter { $0.status == .completed || $0.status == .failed }.count
+    }
+
+    private var batchFailed: Int { batchJobs.filter { $0.status == .failed }.count }
+
+    private var batchSettled: Bool { batchTotal > 0 && batchSettledCount == batchTotal }
+
+    private var batchDoneTitle: String {
+        let done = batchJobs.filter { $0.status == .completed }.count
+        return done == 1 ? "Done! 1 develop" : "Done! \(done) develops"
+    }
+
+    /// Everything picked in bulk, held before any of it renders.
+    ///
+    /// The same gauge and push/pull controls the single-file flow uses, plus the
+    /// stock, so one deliberate choice covers the batch. Files that were refused
+    /// are counted here rather than dropped silently.
+    private var bulkState: some View {
+        VStack(spacing: 12) {
+            if let preview {
+                Image(decorative: preview, scale: 1)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 150)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(alignment: .bottomTrailing) {
+                        Text("\(model.bulk.count) files")
+                            .font(NitrateTypography.font(.caption2))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.black.opacity(0.6), in: Capsule())
+                            .padding(8)
+                    }
+                    .accessibilityIdentifier("develop.bulkPreview")
+            }
+            Text(bulkHeadline)
+                .font(NitrateTypography.font(.callout))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .accessibilityIdentifier("develop.bulkCount")
+            if !model.bulk.skipped.isEmpty {
+                VStack(spacing: 2) {
+                    Text("\(model.bulk.skipped.count) skipped")
+                        .font(NitrateTypography.font(.caption2))
+                        .foregroundStyle(DevelopPreviewChrome.warning)
+                    if let reason = model.bulk.skipped.first {
+                        Text(reason)
+                            .font(NitrateTypography.font(.caption2))
+                            .foregroundStyle(DevelopPreviewChrome.muted)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                    }
+                }
+                .accessibilityIdentifier("develop.bulkSkipped")
+            }
+            stockMenu
+            controlRow
+            Button(action: commitBulk) {
+                Text("Develop \(model.bulk.count)")
+                    .font(NitrateTypography.font(.headline))
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity, minHeight: 50)
+                    .background(DevelopPreviewChrome.orange, in: RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            .disabled(stock == nil || model.bulk.isEmpty)
+            .accessibilityIdentifier("develop.bulkCommit")
+            Button("Cancel") { model.clearBulk(); preview = nil }
+                .font(NitrateTypography.font(.callout))
+                .foregroundStyle(DevelopPreviewChrome.muted)
+                .accessibilityIdentifier("develop.bulkCancel")
+        }
+    }
+
+    private var bulkHeadline: String {
+        let photos = model.bulk.photos.count
+        let videos = model.bulk.videos.count
+        switch (photos, videos) {
+        case (let p, 0): return "\(p) photo\(p == 1 ? "" : "s") ready"
+        case (0, let v): return "\(v) clip\(v == 1 ? "" : "s") ready"
+        default: return "\(photos) photos · \(videos) clips ready"
+        }
+    }
+
+    /// Stock choice for the batch, so a staged set is not locked to whatever the
+    /// camera happens to be set to.
+    private var stockMenu: some View {
+        Menu {
+            ForEach(stockOptions, id: \.stockId) { option in
+                Button {
+                    onSelectStock(option)
+                } label: {
+                    if option.stockId == stock?.stockId {
+                        Label(option.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(option.displayName)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(stock?.displayName ?? "Choose a stock")
+                    .font(NitrateTypography.font(.subheadline))
+                Image(systemName: "chevron.up.chevron.down").font(.caption2)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(DevelopPreviewChrome.control, in: Capsule())
+        }
+        .accessibilityIdentifier("develop.bulkStock")
     }
 
     private var clipSelection: some View {
@@ -205,10 +487,16 @@ struct DevelopPreview: View {
 
             if let preview {
                 VStack(spacing: 6) {
+                    // Fill the panel's width and crop the overflow. Sizing by
+                    // height (`aspectRatio: .fit`) collapsed a portrait photo to
+                    // a narrow column in a wide panel, which is what made this
+                    // read as compressed.
                     Image(decorative: preview, scale: 1)
                         .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxHeight: 220)
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 196)
+                        .clipped()
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                     // Say plainly that this is the file, not the look: the grade
                     // only exists after the render.
@@ -217,6 +505,13 @@ struct DevelopPreview: View {
                         .foregroundStyle(DevelopPreviewChrome.muted)
                 }
                 .accessibilityIdentifier("develop.preview")
+            }
+
+            if let bulkStatus {
+                Text(bulkStatus)
+                    .font(NitrateTypography.font(.caption))
+                    .foregroundStyle(DevelopPreviewChrome.muted)
+                    .accessibilityIdentifier("develop.bulkStatus")
             }
 
             if selectedURL != nil {
@@ -259,12 +554,13 @@ struct DevelopPreview: View {
     private var transferState: some View {
         VStack(spacing: 14) {
             ProgressView().tint(DevelopPreviewChrome.orange)
-            Text("Preparing clip…")
+            Text(bulkReadingText ?? "Preparing clip…")
                 .font(NitrateTypography.font(.callout))
                 .foregroundStyle(.white)
             Button("Cancel") {
                 model.cancelSelection()
-                pickerItem = nil
+                pickerItems = []
+                photoPickerItems = []
             }
             .font(NitrateTypography.font(.callout))
             .foregroundStyle(DevelopPreviewChrome.orange)
@@ -279,8 +575,10 @@ struct DevelopPreview: View {
                 VStack(spacing: 6) {
                     Image(decorative: renderedPreview, scale: 1)
                         .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxHeight: 260)
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 224)
+                        .clipped()
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                     Text("Graded · delivered file")
                         .font(NitrateTypography.font(.caption2))
@@ -337,7 +635,8 @@ struct DevelopPreview: View {
     }
 
     private func clipPicker(_ title: String) -> some View {
-        PhotosPicker(selection: $pickerItem, matching: .videos, preferredItemEncoding: .current) {
+        PhotosPicker(selection: $pickerItems, maxSelectionCount: 0, matching: .videos,
+                     preferredItemEncoding: .current) {
             Label(title, systemImage: "photo.on.rectangle")
                 .font(NitrateTypography.font(.headline))
                 .foregroundStyle(.white)
@@ -350,7 +649,7 @@ struct DevelopPreview: View {
     }
 
     private func photoPicker(_ title: String) -> some View {
-        PhotosPicker(selection: $photoPickerItem, matching: .images,
+        PhotosPicker(selection: $photoPickerItems, maxSelectionCount: 0, matching: .images,
                      preferredItemEncoding: .current) {
             Label(title, systemImage: "camera.aperture")
                 .font(NitrateTypography.font(.headline))
