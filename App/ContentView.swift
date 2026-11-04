@@ -1368,9 +1368,19 @@ struct ContentView: View {
                                           iso: library.lastISO(for: job.stockId)) {
                 selectedStock = stock
             }
-            // Same path the carousel takes, so the camera teardown and the
-            // "you cannot change mode right now" refusal are shared.
-            selectCameraMode(.develop)
+            // The sheet is dismissing on this runloop, and the mode switch is
+            // refused while the camera is busy — so give it a tick, try once more,
+            // and SAY SO instead of returning silently if it still cannot switch.
+            await Task.yield()
+            if !isDevelopMode { selectCameraMode(.develop) }
+            if !isDevelopMode {
+                try? await Task.sleep(for: .milliseconds(250))
+                selectCameraMode(.develop)
+            }
+            guard isDevelopMode else {
+                showModeRefusal("Close the queue before re-developing this photo.")
+                return
+            }
             restoreDevelopControls()
             await developModel.adoptExistingPhoto(url: job.sourceURL,
                                                   originalFilename: job.sourceURL.lastPathComponent)

@@ -271,6 +271,10 @@ final class DevelopVideoModel {
     /// re-picked — the file is already in app storage — and no lease is taken,
     /// because the queue still owns it.
     func adoptExistingPhoto(url: URL, originalFilename: String) async {
+        // The job that produced this file is finished. Leaving it referenced made
+        // the panel keep showing the COMPLETED state — the delivered still and
+        // "Saved to Photos" — so re-develop appeared to do nothing at all.
+        clearSettledJobReference()
         cancelSelection()
         let token = generation
         isLoading = true

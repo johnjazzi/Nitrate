@@ -331,17 +331,21 @@ struct DevelopPhotoSelectionTests {
                                     lutName: "x.cube", halationStrength: 2.52, glowStrength: 0.1,
                                     grainSize: 1, defaultISO: 250)
 
-        // Develop it once.
-        let first = try #require(queue.enqueuePhoto(sourceURL: source, stockId: stock.stockId,
-                                                    iso: 250, gauge: .neutral, cropZoom: 1,
-                                                    seed: 1, isImported: true))
+        // Develop it once, through the model, so the panel holds the job.
+        await model.adoptExistingPhoto(url: source, originalFilename: "A.dng")
+        let first = try #require(model.render(stock: stock, iso: 250, gauge: .neutral, queue: queue))
         for _ in 0..<400 where queue.jobs.first?.status != .completed {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(queue.jobs.first?.status == .completed)
+        #expect(model.activeJobID == first, "a finished develop is still referenced")
 
-        // Re-develop: back to step one with the same file.
+        // Re-develop: back to step one with the same file. The finished job must
+        // stop being referenced, or the panel keeps showing its completed state
+        // and the gauge controls never appear.
         await model.adoptExistingPhoto(url: source, originalFilename: "A.dng")
+        #expect(model.activeJobID == nil,
+                "adopting clears the settled job so the panel shows step one")
         #expect(model.photo?.url == source)
         #expect(model.canRender(stock: stock, queue: queue),
                 "an adopted file has no lease; the button must still be enabled")
