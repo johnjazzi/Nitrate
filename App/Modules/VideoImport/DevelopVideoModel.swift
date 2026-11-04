@@ -426,14 +426,27 @@ final class DevelopVideoModel {
             // with the settings chosen now.
             if let existing = queue.jobs.first(where: {
                 $0.sourceURL.standardizedFileURL == photo.url.standardizedFileURL
-            }), existing.status == .completed || existing.status == .failed {
-                queue.redevelopPhotos(jobIds: [existing.id], stockId: stock.stockId,
-                                      gauge: gauge, pushPull: pushPull)
-                self.photo = nil
-                adoptedURL = nil
-                errorMessage = nil
-                activeJobID = existing.id
-                return existing.id
+            }) {
+                switch existing.status {
+                case .completed, .failed:
+                    // A skipped re-develop (the original was cleaned up) must not
+                    // be reported as a success: the panel would go back to the old
+                    // delivered still and nothing new would ever be saved.
+                    guard queue.redevelopPhotos(jobIds: [existing.id], stockId: stock.stockId,
+                                                gauge: gauge, pushPull: pushPull) > 0 else {
+                        errorMessage = "This photo's original is no longer on the device. "
+                            + "Pick the file again to develop it."
+                        return nil
+                    }
+                    self.photo = nil
+                    adoptedURL = nil
+                    errorMessage = nil
+                    activeJobID = existing.id
+                    return existing.id
+                case .pending, .processing, .awaitingStock:
+                    errorMessage = "This photo is already developing."
+                    return nil
+                }
             }
             // A developed raw keeps its own exposure index when the file carries
             // one: the DNG recorded it, so the render states what was shot rather
