@@ -115,6 +115,99 @@ final class DevelopVideoModel {
         }
     }
 
+    /// What a bulk pick produced: how many went to the queue, and why the rest
+    /// did not. One refusal must not abandon the others.
+    struct BulkDevelopResult: Sendable, Equatable {
+        var queued = 0
+        var skipped: [String] = []
+    }
+
+    /// Queue several picked clips with one set of settings.
+    ///
+    /// The panel shows a single preview and one gauge/push/pull pair, so a bulk
+    /// pick skips the step-one preview entirely: it validates and queues each
+    /// file in turn and reports what did not make it.
+    func enqueueAllVideos(transfers: [TransferOperation], stock: FilmStockConfig,
+                          gauge: PrintGauge, pushPull: PushPullExposure?,
+                          queue: RenderQueueViewModel) async -> BulkDevelopResult {
+        var result = BulkDevelopResult()
+        for transfer in transfers {
+            if Task.isCancelled { break }
+            do {
+                let clip = try await transfer()
+                let inspected = try await inspect(clip.url, clip.originalFilename)
+                if queue.enqueueImportedVideo(sourceURL: inspected.url, stockId: stock.stockId,
+                                              iso: stock.defaultISO, gauge: gauge,
+                                              pushPull: pushPull) != nil {
+                    clip.lease.transferToQueue()
+                    result.queued += 1
+                } else {
+                    result.skipped.append(inspected.originalFilename)
+                }
+            } catch {
+                result.skipped.append((error as? LocalizedError)?.errorDescription
+                                      ?? "One clip could not be read.")
+            }
+        }
+        return result
+    }
+
+    /// The photo half of a bulk pick.
+    func enqueueAllPhotos(transfers: [PhotoTransferOperation], stock: FilmStockConfig,
+                          gauge: PrintGauge, pushPull: PushPullExposure?,
+                          queue: RenderQueueViewModel) async -> BulkDevelopResult {
+        var result = BulkDevelopResult()
+        for transfer in transfers {
+            if Task.isCancelled { break }
+            do {
+                let picked = try await transfer()
+                let inspected = try await inspectPhoto(picked.url, picked.originalFilename)
+                if queue.enqueuePhoto(sourceURL: inspected.url, stockId: stock.stockId,
+                                      iso: inspected.iso ?? stock.defaultISO, gauge: gauge,
+                                      cropZoom: 1, seed: Self.grainSeed(for: inspected),
+                                      pushPull: pushPull, isImported: true) != nil {
+                    picked.lease.transferToQueue()
+                    result.queued += 1
+                } else {
+                    result.skipped.append(inspected.originalFilename)
+                }
+            } catch {
+                result.skipped.append((error as? LocalizedError)?.errorDescription
+                                      ?? "One photo could not be read.")
+            }
+        }
+        return result
+    }
+
+    /// Load a file the queue already owns back into the panel.
+    ///
+    /// This is what "re-develop" means for a finished photo: the same file returns
+    /// to step one, with the gauge and push/pull controls, so the next render can
+    /// be a different look rather than the same one again. Nothing is copied or
+    /// re-picked — the file is already in app storage — and no lease is taken,
+    /// because the queue still owns it.
+    func adoptExistingPhoto(url: URL, originalFilename: String) async {
+        cancelSelection()
+        let token = generation
+        isLoading = true
+        errorMessage = nil
+        do {
+            let inspected = try await inspectPhoto(url, originalFilename)
+            guard token == generation else { return }
+            photo = inspected
+            video = nil
+            isLoading = false
+            finish(token)
+        } catch {
+            guard token == generation else { return }
+            photo = nil
+            isLoading = false
+            errorMessage = (error as? LocalizedError)?.errorDescription
+                ?? "This photo can no longer be developed."
+            finish(token)
+        }
+    }
+
     /// Cancel the in-flight transfer / inspection. The unqueued file is released
     /// by its lease; an already accepted queue job is never touched.
     func cancelSelection() {

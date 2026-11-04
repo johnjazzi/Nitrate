@@ -308,6 +308,78 @@ struct DevelopPhotoSelectionTests {
         }
     }
 
+    /// The refusal must not wait for a decode: a picked JPEG or HEIC is named in
+    /// its first bytes, and a raw container is a TIFF.
+    @Test func renderedImagesAreRecognisedWithoutADecoder() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sniff-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        func file(_ name: String, _ bytes: [UInt8]) throws -> URL {
+            let url = directory.appendingPathComponent(name)
+            try Data(bytes + [UInt8](repeating: 0, count: 32)).write(to: url)
+            return url
+        }
+
+        // Rendered images: refused on the sniff alone.
+        let jpeg = try file("a.NEF", [0xFF, 0xD8, 0xFF, 0xE0])
+        let png = try file("b.DNG", [0x89, 0x50, 0x4E, 0x47])
+        var heicBytes: [UInt8] = [0x00, 0x00, 0x00, 0x18]
+        heicBytes += Array("ftypheic".utf8)
+        let heic = try file("c.DNG", heicBytes)
+
+        for url in [jpeg, png, heic] {
+            #expect(RawPhotoType.isDefinitelyRenderedImage(url) == true)
+            #expect(!RawPhotoType.isRaw(url), "\(url.lastPathComponent) is not a raw")
+        }
+
+        // A TIFF container is where every raw this app develops lives.
+        let tiff = try file("d.NEF", [0x49, 0x49, 0x2A, 0x00])
+        #expect(RawPhotoType.isDefinitelyRenderedImage(tiff) == false)
+        #expect(RawPhotoType.isRaw(tiff), "a TIFF container is not refused by the sniff")
+
+        // Unclassifiable bytes fall through to the name.
+        let opaque = try file("e.DNG", [0x00, 0x00, 0x00, 0x00])
+        #expect(RawPhotoType.isDefinitelyRenderedImage(opaque) == nil)
+        #expect(RawPhotoType.isRaw(opaque))
+    }
+
+    /// A bulk pick queues what it can and reports what it could not, so one bad
+    /// file never abandons the rest of the selection.
+    @MainActor @Test func bulkPickQueuesTheGoodFilesAndSkipsTheRest() async throws {
+        let queue = RenderQueueViewModel()
+        let model = DevelopVideoModel(queue: queue, inspectPhoto: { url, name in
+            // Refuse anything whose name says it is not a raw.
+            guard name.lowercased().hasSuffix(".dng") || name.lowercased().hasSuffix(".nef") else {
+                throw PhotoImportError.unsupported(found: "JPEG")
+            }
+            return Self.photo(url)
+        })
+        let stock = FilmStockConfig(stockId: "kodak5207", displayName: "5207", category: .video,
+                                    lutName: "x.cube", halationStrength: 2.52, glowStrength: 0.1,
+                                    grainSize: 1, defaultISO: 250)
+
+        func transfer(_ name: String) -> DevelopVideoModel.PhotoTransferOperation {
+            {
+                let url = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("bulk_\(UUID().uuidString)_\(name)")
+                try Data(repeating: 1, count: 16).write(to: url)
+                return DevelopVideoModel.DevelopPhotoTransfer(
+                    lease: VideoImportFileLease(url: url), originalFilename: name)
+            }
+        }
+
+        let result = await model.enqueueAllPhotos(
+            transfers: [transfer("A.dng"), transfer("B.JPG"), transfer("C.nef")],
+            stock: stock, gauge: .neutral, pushPull: nil, queue: queue)
+
+        #expect(result.queued == 2, "two developable raws go to the queue")
+        #expect(result.skipped.count == 1, "the JPEG is reported, not queued")
+        #expect(queue.jobs.count == 2)
+        #expect(queue.jobs.allSatisfy { $0.isImportedPhoto == true })
+    }
+
     /// A develop delivers the develop and nothing else.
     ///
     /// The raw came from the library, so "save the original" would either

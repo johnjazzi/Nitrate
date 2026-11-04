@@ -158,6 +158,7 @@ struct ContentView: View {
                 if isDevelopMode {
                     let rect = previewRect(in: geometry)
                     DevelopPreview(model: developModel, queue: renderQueueViewModel,
+                                   stock: selectedStock,
                                    gauge: $developGauge,
                                    pushPullAutomatic: $developPushPullAutomatic,
                                    pushPullStops: $developPushPullStops,
@@ -1338,6 +1339,26 @@ struct ContentView: View {
             .resolved(meteredOffsetEV: nil)
     }
 
+    /// Return a finished develop to step one: same file, back in the panel with
+    /// the gauge and push/pull controls, so the next render can be a new look.
+    private func redevelop(_ job: RenderJob) {
+        showQueueSheet = false
+        Task { @MainActor in
+            // The job knows which stock it was developed with; select it so the
+            // panel's gauge and push/pull seed from the right stock.
+            if let stock = library.config(for: job.stockId,
+                                          iso: library.lastISO(for: job.stockId)) {
+                selectedStock = stock
+            }
+            // Same path the carousel takes, so the camera teardown and the
+            // "you cannot change mode right now" refusal are shared.
+            selectCameraMode(.develop)
+            restoreDevelopControls()
+            await developModel.adoptExistingPhoto(url: job.sourceURL,
+                                                  originalFilename: job.sourceURL.lastPathComponent)
+        }
+    }
+
     /// Seed Develop's controls from the chosen stock's remembered preference.
     private func restoreDevelopControls() {
         guard let stock = selectedStock else { return }
@@ -1553,7 +1574,17 @@ struct ContentView: View {
         QueueSheetView(
             viewModel: renderQueueViewModel,
             cameraViewModel: cameraViewModel,
-            isPresented: $showQueueSheet
+            isPresented: $showQueueSheet,
+            onRedevelop: redevelop,
+            onBulkRedevelop: { ids in
+                // Bulk uses what the Develop panel currently shows, so the look
+                // is one deliberate choice applied to the whole selection.
+                renderQueueViewModel.redevelopPhotos(
+                    jobIds: Array(ids),
+                    stockId: selectedStock?.stockId,
+                    gauge: developGauge,
+                    pushPull: developPushPull)
+            }
         )
     }
 
