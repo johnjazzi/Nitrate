@@ -36,6 +36,15 @@ enum PhotoDeliveryMetadata {
         }
     }
 
+    /// Keys a still states for itself, because a still renders the same recipe
+    /// through a smaller share of it (`stillHalationScale`, `stillDiffusionScale`)
+    /// and after a RAW decode lift. They are present in both payloads and are
+    /// expected to disagree.
+    static let stillAppliedKeys: Set<String> = [
+        "diffusion-amount", "diffusion-still-scale", "halation-still-scale",
+        "halation-scene-lift-ev"
+    ]
+
     /// Keys the movie writer states that describe a take, not a still.
     static let movieOnlyKeys: Set<String> = [
         "shutter-angle", "capture-frame-rate", "encoding-bitrate-target"
@@ -96,8 +105,11 @@ enum PhotoDeliveryMetadata {
         if let sceneLiftStops, sceneLiftStops.isFinite, sceneLiftStops != 0 {
             overrides["halation-scene-lift-ev"] = String(format: "%.2f", sceneLiftStops)
         }
-        // The share of the stock's halation strength the still render applied.
+        // The shares the still render applied, and the amount actually mixed:
+        // the recipe's keys describe the take, so a photo states its own.
         overrides["halation-still-scale"] = String(format: "%.2f", config.effectiveStillHalationScale)
+        overrides["diffusion-still-scale"] = String(format: "%.2f", config.effectiveStillDiffusionScale)
+        overrides["diffusion-amount"] = String(format: "%.2f", config.effectiveStillDiffusion.amount)
         if let whiteLevel = raw?.usableWhiteLevel {
             overrides["raw-white-level"] = String(format: "%.0f", whiteLevel)
         }

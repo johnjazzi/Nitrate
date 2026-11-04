@@ -60,6 +60,27 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
     /// The still share actually applied to a photo render.
     var effectiveStillHalationScale: Float { stillHalationScale ?? 1 }
 
+    /// How much of the diffusion amount a STILL render applies. Same reasoning as
+    /// `stillHalationScale`, and deliberately the same lever: a take spends a
+    /// 24th of a second with the softness next to motion, while a still is held
+    /// in front of the viewer with nothing to compare it to. The RADIUS is left
+    /// alone — it is the physical spread — so the halo keeps its geometry and
+    /// only the mix changes.
+    ///
+    /// Optional and resolved to 1 when absent, for the same reason as above.
+    var stillDiffusionScale: Float? = nil
+
+    var effectiveStillDiffusionScale: Float { stillDiffusionScale ?? 1 }
+
+    /// The diffusion node a still render actually applies.
+    var effectiveStillDiffusion: DiffusionSettings {
+        let authored = effectiveDiffusion
+        let scale = effectiveStillDiffusionScale
+        guard authored.isEnabled, scale < 1 else { return authored }
+        return DiffusionSettings(preset: authored.preset,
+                                 amount: max(0, min(1, authored.amount * scale)))
+    }
+
     /// The gauge actually applied to the render: the selected gauge or 35mm.
     var effectivePrintGauge: PrintGauge { printGauge ?? .neutral }
 
@@ -117,6 +138,10 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
         if let stillHalationScale {
             try require(stillHalationScale.isFinite && (0...1).contains(stillHalationScale),
                         "stillHalationScale")
+        }
+        if let stillDiffusionScale {
+            try require(stillDiffusionScale.isFinite && (0...1).contains(stillDiffusionScale),
+                        "stillDiffusionScale")
         }
         try require(halationRadiusFraction.isFinite && halationRadiusFraction > 0
             && halationRadiusFraction <= 0.5, "halationRadiusFraction")

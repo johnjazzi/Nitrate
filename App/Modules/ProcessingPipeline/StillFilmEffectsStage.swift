@@ -39,9 +39,9 @@ final class StillFilmEffectsStage {
     ///    `SpatialEffectsStage.halationKnees`.
     ///  * the lens diffusion node is passed in the same call, so a still gets
     ///    the same scene-linear diffusion as a video frame: same code path, same
-    ///    decode/encode, same order in front of the emulsion. Stills previously
-    ///    took the stage's `.disabled` default, which meant a photo's embedded
-    ///    metadata could claim a diffusion the render never applied.
+    ///    decode/encode, same order in front of the emulsion. It is the STILL
+    ///    setting (`effectiveStillDiffusion`), which keeps the gauge's radius but
+    ///    mixes a smaller share — a held frame reads softer than a moving one.
     func applyHalation(source: MTLTexture, commandQueue: MTLCommandQueue,
                        config: FilmStockConfig, sceneLiftStops: Float = 0) -> MTLTexture? {
         guard source.pixelFormat == .rgba16Float else { return nil }
@@ -49,7 +49,7 @@ final class StillFilmEffectsStage {
                                      strength: config.halationStrength * config.effectiveStillHalationScale,
                                      radiusFraction: config.halationRadiusFraction,
                                      layerScale: config.halationTint,
-                                     diffusion: config.effectiveDiffusion,
+                                     diffusion: config.effectiveStillDiffusion,
                                      sceneLiftStops: sceneLiftStops,
                                      width: source.width, height: source.height)
     }

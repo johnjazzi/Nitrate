@@ -22,6 +22,11 @@ struct RenderJob: Codable, Identifiable, Equatable {
     var pushPull: PushPullExposure? = nil
     /// Immutable enqueue-time preferences; nil preserves legacy delivery behavior.
     var deliveryPreferences: RenderDeliveryPreferences?
+    /// True for a raw the operator chose in Develop instead of one this app
+    /// captured. It already exists in Photos — that is where it came from — so
+    /// there is no original to deliver back, and trying could only duplicate it
+    /// or fail. Optional so every queue written before Develop stays readable.
+    var isImportedPhoto: Bool? = nil
     /// Nil preserves legacy camera jobs. Imported assets never expose playback
     /// or export another copy of their original into Photos.
     var isImportedVideo: Bool? = nil
@@ -50,9 +55,15 @@ struct RenderJob: Codable, Identifiable, Equatable {
     var isDiscardingImport: Bool { isImportedVideo == true && discardImportedMedia == true }
     var permitsLocalMedia: Bool { isImportedVideo != true }
     /// Media-aware original delivery: a Photo job honours the independent RAW
-    /// switch, a video honours `saveOriginalLog`. Imported video never exports.
+    /// switch, a video honours `saveOriginalLog`.
+    ///
+    /// An IMPORTED asset never exports: a develop is made from a file the
+    /// operator already has, so "save the original" would either duplicate
+    /// something already in the library or, for a maker's raw the library will
+    /// not store, fail a render that succeeded. The flag is what makes that a
+    /// property of the job rather than a rule the UI has to remember.
     var shouldSaveOriginal: Bool {
-        guard isImportedVideo != true else { return false }
+        guard isImportedVideo != true, isImportedPhoto != true else { return false }
         if isPhoto == true { return deliveryPreferences?.saveOriginalRAWToPhotos == true }
         return deliveryPreferences?.saveOriginalLog == true
     }

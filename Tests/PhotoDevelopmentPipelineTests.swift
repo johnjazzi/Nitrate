@@ -44,6 +44,73 @@ struct PhotoDevelopmentPipelineTests {
         #expect(extreme.x.isFinite && extreme.x > 0)
     }
 
+    /// The delivery switch still governs a photo this app CAPTURED; only an
+    /// import is exempt. Kept as a pair so the exemption cannot quietly widen.
+    @Test func capturedPhotosStillHonourTheOriginalSwitchButImportsDoNot() {
+        var job = RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/capture.dng"),
+                            stockId: "kodak5219", iso: 400)
+        job.isPhoto = true
+        job.deliveryPreferences = RenderDeliveryPreferences(saveOriginalRAWToPhotos: true)
+        #expect(job.shouldSaveOriginal, "a capture returns its raw when asked")
+
+        job.isImportedPhoto = true
+        #expect(!job.shouldSaveOriginal, "a develop has nothing to return")
+
+        // And an imported video keeps its existing exemption.
+        var movie = RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/clip.mov"),
+                              stockId: "kodak5219", iso: 400)
+        movie.isImportedVideo = true
+        movie.deliveryPreferences = RenderDeliveryPreferences(saveOriginalLog: true)
+        #expect(!movie.shouldSaveOriginal)
+    }
+
+    /// The original-save guard must accept every file the pipeline develops.
+    ///
+    /// It allowed only `dng`, so an imported Nikon NEF — developed and delivered
+    /// fine — was refused here and reported as a failed delivery.
+    @Test func originalSaveAcceptsEveryDevelopableRaw() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("saver-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        func file(_ name: String) throws -> URL {
+            let url = directory.appendingPathComponent(name)
+            // Bytes ImageIO cannot type at all — the case the name fallback
+            // exists for. (A sequential 0..63 pattern sniffs as TGA, which is a
+            // rendered image and is correctly refused.)
+            try Data(repeating: 0, count: 64).write(to: url)
+            return url
+        }
+
+        for name in ["DSC_4800.NEF", "shot.ARW", "IMG_0001.CR3", "frame.RAF", "pro.cr2",
+                     "capture.DNG", "developed.JPG", "developed.jpeg"] {
+            #expect(DevelopmentPhotoLibrarySaver.isStorable(try file(name)),
+                    "\(name) must be storable — the renderer develops it")
+        }
+    }
+
+    /// A DNG offers the DNG-tagged decoder version; a NEF, ARW or CR2 offers its
+    /// own and never "8.dng". Requiring the tagged one refused every non-DNG raw
+    /// at the first line of the decode, which is what a Nikon file hit.
+    @Test func decoderVersionFollowsTheFileInsteadOfDemandingDNG() {
+        let dng = CIRAWDecoderVersion(rawValue: "8.dng")
+        #expect(RAWPhotoDecoder.preferredDecoderVersion(from: [dng]) == dng)
+        // A DNG that also offers a newer numbered version still pins 8.dng.
+        #expect(RAWPhotoDecoder.preferredDecoderVersion(
+            from: [CIRAWDecoderVersion(rawValue: "9.0"), dng]) == dng)
+
+        // A maker's own raw: no DNG tag, so the newest supported version wins.
+        let maker = ["6.0", "8.0", "9.0"].map { CIRAWDecoderVersion(rawValue: $0) }
+        #expect(RAWPhotoDecoder.preferredDecoderVersion(from: maker)?.rawValue == "9.0")
+        // Natural order, so 10.0 is not below 9.0.
+        let wide = ["9.0", "10.0"].map { CIRAWDecoderVersion(rawValue: $0) }
+        #expect(RAWPhotoDecoder.preferredDecoderVersion(from: wide)?.rawValue == "10.0")
+
+        // A file that offers nothing cannot be developed, and says so.
+        #expect(RAWPhotoDecoder.preferredDecoderVersion(from: []) == nil)
+    }
+
     @Test func rawDestinationIsWritableAndPreservesLinearSamples() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
@@ -251,7 +318,10 @@ struct PhotoDevelopmentPipelineTests {
         let darkBand = 8..<(width / 2 - 8)
         let darkOff = darkBand.map { off[$0] }.reduce(0, +) / Double(darkBand.count)
         let darkOn = darkBand.map { on[$0] }.reduce(0, +) / Double(darkBand.count)
-        #expect(darkOn > darkOff + 0.5,
+        // Shipped stills mix half the take's amount (`stillDiffusionScale` 0.5),
+        // so 8mm arrives at 0.25 rather than 0.5 and the lift is about half the
+        // one a video frame gets at the same gauge.
+        #expect(darkOn > darkOff + 0.2,
                 "diffusion must lift the dark side of the edge (\(darkOff) -> \(darkOn))")
 
         // And a bypassed gauge is still a true pass-through of the node itself.
@@ -555,9 +625,10 @@ struct PhotoOriginalDeliveryTests {
         #expect(failed.outputURL == files.output)
         #expect(failed.status == .failed)
         let message = try #require(failed.errorMessage)
-        #expect(message.contains("Developed photo saved to Photos"))
-        #expect(message.contains("original DNG could not be saved"))
-        #expect(message.contains("Retry saves only the original"))
+        // Short on screen: what happened, then what Retry does.
+        #expect(message.contains("Developed photo saved."))
+        #expect(message.contains("Original not added to Photos"))
+        #expect(message.contains("Retry tries only that"))
         #expect(!message.contains("Apple Log"))
 
         failOriginal = false

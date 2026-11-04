@@ -231,10 +231,14 @@ final class RenderQueueViewModel {
     /// The delivery preferences (including the RAW original switch) are snapshotted
     /// here, so changing the setting later never alters a queued photo.
     @discardableResult
+    /// - Parameter isImported: true when the raw came from the operator's own
+    ///   library (Develop) rather than this app's camera, in which case the job
+    ///   never tries to return an "original" to Photos.
     func enqueuePhoto(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge,
                       cropZoom: Double, seed: UInt32,
                       pushPull: PushPullExposure? = nil,
-                      preferences: RenderDeliveryPreferences? = nil) -> UUID? {
+                      preferences: RenderDeliveryPreferences? = nil,
+                      isImported: Bool = false) -> UUID? {
         guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
         // Any raw the still renderer can develop, not only a DNG: the importer
         // already proved the file opens through the system RAW pipeline.
@@ -256,6 +260,7 @@ final class RenderQueueViewModel {
         photo.isPhoto = true
         photo.photoCropZoom = cropZoom
         photo.photoGrainSeed = seed
+        if isImported { photo.isImportedPhoto = true }
         jobs.append(photo)
         guard persistJobs() else {
             jobs.removeAll { $0.id == photo.id }
@@ -778,30 +783,15 @@ final class RenderQueueViewModel {
                 update(jobId) { $0.sourceSavedToPhotos = true }
                 guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
             } catch {
-                let sourceDetail = Self.isUsableFile(initial.sourceURL)
-                    ? (isPhoto ? "Original DNG remains in the app." : "Original remains in the app.")
-                    : (isPhoto ? "Original DNG is no longer available in the app."
-                               : "Original source is no longer available in the app.")
-                let outputDetail: String
-                if isPhoto {
-                    outputDetail = job(jobId)?.outputURL.map(Self.isUsableFile) == true
-                        ? "Developed photo is retained in the app."
-                        : "Developed photo is no longer available in the app."
-                } else {
-                    outputDetail = job(jobId)?.outputURL.map(Self.isUsableFile) == true
-                        ? "Rendered movie is retained in the app."
-                        : "Rendered movie is no longer available in the app."
-                }
-                let delivery = isPhoto
-                    ? "Developed photo saved to Photos, but original DNG could not be saved"
-                    : "Rendered movie saved to Photos, but original Apple Log could not be saved"
-                let retryHint = isPhoto
-                    ? "Retry saves only the original DNG; the developed photo is not saved again."
-                    : "Retry saves only the original."
+                // Two short lines instead of five sentences. What happened, then
+                // what Retry will do — the file-level detail that used to be
+                // spelled out here ("remains in the app", "is not saved again")
+                // is either obvious or belongs in the log.
+                let saved = isPhoto ? "Developed photo saved." : "Movie saved."
                 update(jobId) {
                     $0.status = .failed
                     $0.sourceSavedToPhotos = false
-                    $0.errorMessage = "\(delivery): \(error.localizedDescription). \(sourceDetail) \(outputDetail) \(retryHint)"
+                    $0.errorMessage = "\(saved)\nOriginal not added to Photos — Retry tries only that."
                 }
                 recordFailureState()
                 return

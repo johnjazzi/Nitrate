@@ -19,6 +19,23 @@ final class RAWPhotoDecoder {
         let metadata: DNGMetadata?
     }
 
+    /// The decoder version to pin for a file: the DNG-tagged one when the file
+    /// offers it, otherwise the newest version it does support.
+    ///
+    /// Pure and separate from `CIRAWFilter` so the rule is testable without a
+    /// camera's file: `["8.dng", "9.0"]` pins 8.dng, `["6.0", "8.0", "9.0"]`
+    /// pins 9.0 (a non-DNG raw), and an empty list is refused rather than
+    /// silently left on a default the rest of the pipeline did not measure.
+    static func preferredDecoderVersion(from supported: [CIRAWDecoderVersion]) -> CIRAWDecoderVersion? {
+        let dng = CIRAWDecoderVersion(rawValue: "8.dng")
+        if supported.contains(dng) { return dng }
+        // Newest wins: versions read as "6.0", "8.0", "9.0", so a natural-order
+        // comparison keeps 9.0 above 10.0 and above 8.0.
+        return supported.max {
+            $0.rawValue.localizedStandardCompare($1.rawValue) == .orderedAscending
+        }
+    }
+
     private let device: MTLDevice
     private let queue: MTLCommandQueue
     private let context: CIContext
@@ -44,8 +61,12 @@ final class RAWPhotoDecoder {
             throw DecodeError.invalidWhiteBalance
         }
         guard let raw = CIRAWFilter(imageURL: url) else { throw DecodeError.unsupported("CIRAWFilter could not open URL") }
-        let version = CIRAWDecoderVersion(rawValue: "8.dng")
-        guard raw.supportedDecoderVersions.contains(version) else { throw DecodeError.unsupported("decoder 8.dng not supported") }
+        // Pick the newest version THIS file supports instead of demanding
+        // "8.dng". That string is a DNG-tagged decoder version, and a Nikon NEF,
+        // a Sony ARW or a Canon CR2 does not offer it at all: pinning it refused
+        // every non-DNG raw at the first line of the decode.
+        let version = Self.preferredDecoderVersion(from: raw.supportedDecoderVersions)
+        guard let version else { throw DecodeError.unsupported("no supported decoder version") }
         raw.decoderVersion = version
         raw.scaleFactor = 1
         raw.exposure = 0
@@ -63,7 +84,7 @@ final class RAWPhotoDecoder {
         raw.neutralTint = tint
 
         var settings: [String: String] = [
-            "decoderVersion": "8.dng", "scaleFactor": "1", "exposure": "0",
+            "decoderVersion": raw.decoderVersion.rawValue, "scaleFactor": "1", "exposure": "0",
             "baselineExposure": String(format: "%.3f (DNG-provided)", dngBaselineExposure), "shadowBias": "0",
             "boostAmount": "0", "boostShadowAmount": "0", "gamutMappingEnabled": "false",
             "extendedDynamicRangeAmount": "1", "neutralTemperature": String(raw.neutralTemperature),
