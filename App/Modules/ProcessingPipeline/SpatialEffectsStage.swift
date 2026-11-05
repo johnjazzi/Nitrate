@@ -113,8 +113,25 @@ final class SpatialEffectsStage {
     /// halo grow with the decode lift — measured at ~30x when one stop was added
     /// on top of a ProRAW's BaselineExposure. Scaling both keeps the halo a
     /// property of the scene, not of how the file was decoded.
-    static func halationReferenceSuperwhite(sceneLiftStops: Float) -> Float {
-        referenceSuperwhite * liftScale(sceneLiftStops)
+    ///
+    /// VIDEO passes no `headroom`, so this is always the authored 8x: the knees
+    /// were designed for Apple Log 2, which carries about 12x diffuse white.
+    ///
+    /// A STILL passes the file's own measured ceiling (`headroom`, in the same
+    /// lifted units as the frame). A single-exposure raw CLIPS at its own white,
+    /// so measuring it against 8x asks for headroom the file does not have: across
+    /// 35 DSLR raws the brightest 0.01% of pixels sat at 0.5-3.7x white, and
+    /// halation reached at most a third of its range. Anchoring to what the file
+    /// actually carries puts a clipped specular - or a clipped sky - at full
+    /// contribution, which is what a diffuser in front of that film would do.
+    ///
+    /// Clamped to [1x, 8x] of the decode lift: below 1x white the knees never
+    /// fire, and above 8x nothing changes from the authored value.
+    static func halationReferenceSuperwhite(sceneLiftStops: Float, headroom: Float? = nil) -> Float {
+        let lift = liftScale(sceneLiftStops)
+        let authored = referenceSuperwhite * lift
+        guard let headroom, headroom.isFinite else { return authored }
+        return min(authored, max(lift, headroom))
     }
 
     private static func liftScale(_ sceneLiftStops: Float) -> Float {
@@ -183,6 +200,9 @@ final class SpatialEffectsStage {
         layerScale: SIMD3<Float>,
         diffusion: DiffusionSettings = .disabled,
         sceneLiftStops: Float = 0,
+        /// Measured highlight ceiling of a still, in lifted units. Nil for video,
+        /// which keeps the authored reference. See `halationReferenceSuperwhite`.
+        halationHeadroom: Float? = nil,
         width: Int,
         height: Int
     ) -> MTLTexture? {
@@ -292,7 +312,7 @@ final class SpatialEffectsStage {
             var strength = strength
             var layerScale = layerScale
             var referenceSuperwhite = Self.halationReferenceSuperwhite(
-                sceneLiftStops: sceneLiftStops)
+                sceneLiftStops: sceneLiftStops, headroom: halationHeadroom)
             // Unused level slots are bound to a real, samplable texture rather
             // than left unbound; their weights are zero, so they contribute
             // nothing and the blend stays a normalized average.

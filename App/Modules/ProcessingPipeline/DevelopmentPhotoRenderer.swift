@@ -40,6 +40,7 @@ enum DevelopmentPhotoRenderer {
         // superwhite and the whole photo blooms (measured: +2.99 EV on ProRAW).
         let finished = try develop(linearImage: oriented, film: film,
                                    sceneLiftStops: decodedRAW.sceneLiftStops,
+                                   halationHeadroom: decodedRAW.halationHeadroom,
                                    resourcesURL: resourcesURL)
         // LUT output is Rec.709 gamma 2.4. Decode it before the final sRGB encoding.
         let linear709 = try FilmOutputDisplayConverter.linearImage(fromGamma24: finished)
@@ -59,7 +60,8 @@ enum DevelopmentPhotoRenderer {
         for (key, value) in try PhotoDeliveryMetadata.properties(
             config: film.config, capture: capture,
             deliveredSize: CGSize(width: cg.width, height: cg.height),
-            raw: decodedRAW.metadata, sceneLiftStops: decodedRAW.baselineExposure) {
+            raw: decodedRAW.metadata, sceneLiftStops: decodedRAW.baselineExposure,
+            halationHeadroom: decodedRAW.halationHeadroom) {
             properties[key] = value
         }
         CGImageDestinationAddImage(sink, cg, properties as CFDictionary)
@@ -76,10 +78,14 @@ enum DevelopmentPhotoRenderer {
     }
 
     /// The same stages used by DNG delivery, exposed to actual GPU regressions.
+    /// `halationHeadroom` is the decode's measured highlight ceiling, so halation
+    /// is anchored to what this file carries rather than to Apple Log 2's 8x.
     static func develop(linearImage: CIImage, film: StillFilmRenderResources,
-                        sceneLiftStops: Float = 0, resourcesURL: URL? = nil) throws -> CIImage {
+                        sceneLiftStops: Float = 0, halationHeadroom: Float? = nil,
+                        resourcesURL: URL? = nil) throws -> CIImage {
         let prepared = try RAWToLog2Stage.apply(linearImage)
-        let halated = try film.halation(prepared, sceneLiftStops: sceneLiftStops)
+        let halated = try film.halation(prepared, sceneLiftStops: sceneLiftStops,
+                                        halationHeadroom: halationHeadroom)
         let graded = try film.grade(halated, resourcesURL: resourcesURL)
         return try film.glowAndGrain(graded)
     }

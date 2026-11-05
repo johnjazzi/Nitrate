@@ -17,6 +17,12 @@ final class RAWPhotoDecoder {
         let baselineExposure: Float
         /// The file's own sensor numbers, when it is a DNG.
         let metadata: DNGMetadata?
+        /// Highlight ceiling the file actually carries: the 99.99th percentile
+        /// of its configured decode, in the same lifted units the film stages
+        /// see. Halation is anchored to this instead of a constant, because a
+        /// single-exposure raw clips at its own white (see
+        /// `SpatialEffectsStage.halationReferenceSuperwhite`).
+        let halationHeadroom: Float
 
         /// Total stops this frame was lifted by before the film stages: the
         /// capture's baseline plus the still base exposure.
@@ -64,7 +70,19 @@ final class RAWPhotoDecoder {
     private let queue: MTLCommandQueue
     private let context: CIContext
     private let colorSpace: CGColorSpace
-    private let usablePixelLimit = PhotoCapturePolicy.maximumPixelCount
+    /// Largest imported raw this decoder will open.
+    ///
+    /// `PhotoCapturePolicy.maximumPixelCount` (12.19 MP) sizes the DNGs THIS app
+    /// writes; it is not an import limit, and applying it refused every DSLR raw
+    /// above 12 MP (a 16 MP Sony NEX-6 ARW, a 33 MP A7 IV, a 45 MP NEF). A raw
+    /// the operator picked is theirs to develop, at the resolution it was shot.
+    ///
+    /// This ceiling exists only to refuse a file large enough to exhaust memory
+    /// before anything can fail gracefully. Raise it if it gets in the way; it is
+    /// one number on purpose.
+    static let maximumImportPixels = 80_000_000
+
+    private var usablePixelLimit: Int { Self.maximumImportPixels }
 
     init(device: MTLDevice, queue: MTLCommandQueue) throws {
         self.device = device
@@ -160,7 +178,33 @@ final class RAWPhotoDecoder {
         return Decoded(texture: texture, linearImage: normalized, nativeSize: raw.nativeSize,
                        orientedExtent: CGRect(origin: .zero, size: CGSize(width: extent.width, height: extent.height)),
                        settings: settings, baselineExposure: dngBaselineExposure,
-                       metadata: DNGMetadata.read(url))
+                       metadata: DNGMetadata.read(url),
+                       halationHeadroom: measureHeadroom(of: normalized))
+    }
+
+    /// The file's highlight ceiling, in the lifted units the film stages see.
+    ///
+    /// The 99.99th percentile of the PEAK channel over a 256 px sample: the
+    /// channel a specular saturates first, and a percentile so one hot pixel
+    /// cannot set a whole frame's halation. Sampled small on purpose - this runs
+    /// once per photo, and 65 536 values are plenty to place a 0.01% point.
+    private func measureHeadroom(of image: CIImage) -> Float {
+        let sample = 256
+        let scale = CGFloat(sample) / max(1, image.extent.width)
+        let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        var pixels = [Float](repeating: 0, count: sample * sample * 4)
+        context.render(small, toBitmap: &pixels, rowBytes: sample * 16,
+                       bounds: CGRect(x: 0, y: 0, width: sample, height: sample),
+                       format: .RGBAf, colorSpace: colorSpace)
+        var values: [Float] = []
+        values.reserveCapacity(sample * sample)
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            let peak = max(pixels[index], max(pixels[index + 1], pixels[index + 2]))
+            if peak.isFinite { values.append(peak) }
+        }
+        guard !values.isEmpty else { return 1 }
+        values.sort()
+        return values[min(values.count - 1, Int(Double(values.count - 1) * 0.9999))]
     }
 
     /// Shared render destination for RAW and numerical handoff regressions.

@@ -47,7 +47,7 @@ enum PhotoDeliveryMetadata {
     /// expected to disagree.
     static let stillAppliedKeys: Set<String> = [
         "diffusion-amount", "diffusion-still-scale", "halation-still-scale",
-        "halation-scene-lift-ev"
+        "halation-scene-lift-ev", "halation-headroom"
     ]
 
     /// Keys the movie writer states that describe a take, not a still.
@@ -100,7 +100,8 @@ enum PhotoDeliveryMetadata {
     static func properties(config: FilmStockConfig, capture: StillCapture,
                            deliveredSize: CGSize,
                            raw: DNGMetadata? = nil,
-                           sceneLiftStops: Float? = nil) throws -> [CFString: Any] {
+                           sceneLiftStops: Float? = nil,
+                           halationHeadroom: Float? = nil) throws -> [CFString: Any] {
         let orientation = RenderDeliveryOrientation.from(naturalSize: deliveredSize,
                                                         preferredTransform: .identity)
         let caption = RenderConsumerMetadata.caption(stockName: config.displayName,
@@ -124,6 +125,12 @@ enum PhotoDeliveryMetadata {
         }
         if let sceneLiftStops, sceneLiftStops.isFinite, sceneLiftStops != 0 {
             overrides["halation-scene-lift-ev"] = String(format: "%.2f", sceneLiftStops)
+        }
+        // The file's measured highlight ceiling, in the same lifted units the
+        // render used. Halation is anchored to it, so a delivered still states
+        // what its halation was measured against.
+        if let halationHeadroom, halationHeadroom.isFinite {
+            overrides["halation-headroom"] = String(format: "%.2f", halationHeadroom)
         }
         // The base exposure every still gets, so a delivered file says what it
         // was lifted by rather than leaving it to be inferred.
