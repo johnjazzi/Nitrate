@@ -131,15 +131,16 @@ final class SpatialEffectsStage {
     /// contribution. The anchor is a DENOMINATOR, not a knee: lowering it makes
     /// every pixel above the knees contribute more, which is the lever for "the
     /// DSLR halation should read stronger". 1.0 anchors exactly to the file's
-    /// brightest 0.01%; 0.50 reaches full contribution halfway up a specular.
-    /// One number on purpose — halve it to double the effect.
-    static let stillAnchorShare: Float = 0.50
+    /// brightest 0.01%; 0.125 reaches full contribution an eighth of the way up a
+    /// specular, which is ~8x the authored anchor on a typical DSLR frame. One
+    /// number on purpose — halve it to double the effect.
+    static let stillAnchorShare: Float = 0.125
 
     /// Floor for that anchor, in multiples of white, so a dark frame cannot push
     /// the denominator toward zero and veil the image. It bites on ordinary DSLR
     /// frames (a NEF measures ~1.03x white), which is why it is the second knob:
     /// lower it to let the share act, raise it to hold the effect back.
-    static let stillAnchorFloorWhite: Float = 0.25
+    static let stillAnchorFloorWhite: Float = 0.0625
 
     static func halationReferenceSuperwhite(sceneLiftStops: Float, headroom: Float? = nil) -> Float {
         let lift = liftScale(sceneLiftStops)

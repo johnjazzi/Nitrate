@@ -58,11 +58,14 @@ struct HalationReferenceTests {
         #expect(abs(proRAW - expected) < 0.01, "measured, not authored")
         #expect(proRAW < authored, "and stronger than the authored point")
 
-        // A file brighter than the authored point cannot push the reference past
-        // it: 8x is the ceiling of the rule, and the knees were authored for it.
+        // However bright the file, the share keeps the anchor under the authored
+        // point — that constant is the ceiling of the rule, because the knees were
+        // authored for Apple Log 2's curve. (A 500 lifted ceiling still lands at
+        // 500 x share; it takes a ceiling above authored / share to hit the cap.)
         let brighter = SpatialEffectsStage.halationReferenceSuperwhite(sceneLiftStops: 3.99,
-                                                                      headroom: 500)
+                                                                      headroom: 5_000)
         #expect(abs(brighter - authored) < 0.01, "the authored point is the cap")
+        #expect(brighter <= authored)
     }
 
     @Test func aNonFiniteMeasurementFallsBackToTheAuthoredReference() {
