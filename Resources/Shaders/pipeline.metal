@@ -68,8 +68,15 @@ kernel void pass1_lut_halation_glow(
     // Render-time push/pull: a scene-light gain, so it is applied in the linear
     // domain and re-encoded as Apple Log 2 before the cube is sampled. The cube
     // is authored for Apple Log 2 code values, so a code-domain multiply would
-    // not be a stop — it would bend the curve instead of exposing it. Negative
+    // not be a stop - it would bend the curve instead of exposing it. Negative
     // stops pull (darker), positive push (brighter).
+    //
+    // VIDEO passes 0 here. A take is locked to its shutter, so its pull belongs in
+    // FRONT of the emulsion: `PipelineRenderer` hands those stops to
+    // `SpatialEffectsStage.applyHalation` instead, and halation is measured
+    // against the light the film receives (`spatial_expose`). This kernel still
+    // runs the gain for a STILL, whose exposure is a grading choice on a frame
+    // halation has already been fitted to.
     if (pushPullStops != 0.0f) {
         float gain = exp2(pushPullStops);
         float3 exposed = float3(appleLog2Encode(appleLog2Decode(color.r) * gain),

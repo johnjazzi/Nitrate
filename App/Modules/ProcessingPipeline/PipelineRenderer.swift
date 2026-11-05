@@ -595,6 +595,10 @@ final class PipelineRenderer: @unchecked Sendable {
                     radiusFraction: parameters.halationRadiusFraction,
                     layerScale: parameters.halationTint,
                     diffusion: parameters.diffusion,
+                    // The pull is applied HERE, in front of the emulsion, so the
+                    // halo is measured against the light the film receives. The
+                    // LUT pass below therefore grades with no exposure of its own.
+                    exposureStops: Float(config.effectivePushPull.stops.stops),
                     width: width,
                     height: height
                 ) else { return nil }
@@ -603,7 +607,7 @@ final class PipelineRenderer: @unchecked Sendable {
                     input: halated,
                     lut: lut,
                     outputContrast: config.outputContrast,
-                    pushPullStops: config.effectivePushPull.stops,
+                    pushPullStops: .none,
                     width: width,
                     height: height
                 ) else { return nil }
@@ -1008,6 +1012,13 @@ final class PipelineRenderer: @unchecked Sendable {
                             radiusFraction: config.halationRadiusFraction,
                             layerScale: config.halationTint,
                             diffusion: config.effectiveDiffusion,
+                            // A video take is locked to its shutter, so a bright
+                            // day is over-exposed at the sensor and pulled down in
+                            // the render. Applying that pull in front of the
+                            // emulsion is the whole point: after halation, the
+                            // frame came back darker with the halo of the light
+                            // the sensor saw.
+                            exposureStops: Float(config.effectivePushPull.stops.stops),
                             width: width,
                             height: height
                         ) else {
@@ -1018,7 +1029,7 @@ final class PipelineRenderer: @unchecked Sendable {
                             input: halated,
                             lut: context.lut,
                             outputContrast: config.outputContrast,
-                            pushPullStops: config.effectivePushPull.stops,
+                            pushPullStops: .none,
                             width: width,
                             height: height
                         ) else {
@@ -1189,6 +1200,11 @@ final class PipelineRenderer: @unchecked Sendable {
     /// source BEFORE this pass, not to its output: a 2x and a 100x specular both
     /// land near 1.0 after the LUT, and the superwhite separation halation needs
     /// would be gone.
+    ///
+    /// `pushPullStops` is 0 on the video paths: their pull runs earlier, inside
+    /// `SpatialEffectsStage.applyHalation`, so halation sees the exposed scene.
+    /// It stays non-zero for stills, whose push/pull is a grading choice made
+    /// after the halo has already been fitted to the file.
     private func runLUTPass(
         input: MTLTexture,
         lut: MTLTexture,

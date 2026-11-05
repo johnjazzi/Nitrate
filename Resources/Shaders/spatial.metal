@@ -226,6 +226,26 @@ static inline uint spatial_mask_scale(
             && mask.get_height() == input.get_height()) ? 1u : 2u;
 }
 
+/// Render-time exposure, applied to scene light BEFORE the emulsion stages.
+///
+/// A video take is locked to its shutter, so a bright day is over-exposed at the
+/// sensor and the operator pulls the exposure down in the render. Applying that
+/// pull AFTER halation meant the emulsion was still measured against the light
+/// the sensor saw: the frame came back two stops darker with two stops too much
+/// halo. Exposing the scene first puts the pull where a real exposure change
+/// would be — in front of the film.
+///
+/// Apple Log 2 is signed: codes under the black point carry NEGATIVE scene
+/// values, and scaling those toward zero would move them against the requested
+/// direction. Clamp so a pull only ever darkens and a push only ever brightens.
+static inline float3 spatial_expose(float3 linear, float stops) {
+    if (stops == 0.0f) {
+        return linear;
+    }
+    float3 exposed = linear * exp2(stops);
+    return stops < 0.0f ? min(exposed, linear) : max(exposed, linear);
+}
+
 static inline float3 spatial_energy(float3 linear, float3 knees) {
     // Per-layer response. `max(0, linear - knee)` is continuous and grows with
     // intensity, so a brighter source bleeds further and reaches more layers.
@@ -241,6 +261,7 @@ kernel void spatial_halation_mask(
     constant float& redKnee                [[buffer(0)]],
     constant float& greenKnee              [[buffer(1)]],
     constant float& blueKnee               [[buffer(2)]],
+    constant float& exposureStops          [[buffer(3)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= mask.get_width() || gid.y >= mask.get_height()) {
@@ -248,7 +269,9 @@ kernel void spatial_halation_mask(
     }
 
     uint valid = 0;
-    float3 linear = spatial_linear_block(input, gid, spatial_mask_scale(mask, input), valid);
+    float3 linear = spatial_expose(
+        spatial_linear_block(input, gid, spatial_mask_scale(mask, input), valid),
+        exposureStops);
     float3 energy = spatial_energy(linear, float3(redKnee, greenKnee, blueKnee));
 
     mask.write(float4(energy, 1.0f), gid);
@@ -270,6 +293,7 @@ kernel void spatial_scene_prepare(
     constant float& redKnee                [[buffer(0)]],
     constant float& greenKnee              [[buffer(1)]],
     constant float& blueKnee               [[buffer(2)]],
+    constant float& exposureStops          [[buffer(3)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= mask.get_width() || gid.y >= mask.get_height()) {
@@ -277,7 +301,9 @@ kernel void spatial_scene_prepare(
     }
 
     uint valid = 0;
-    float3 scene = spatial_linear_block(input, gid, spatial_mask_scale(mask, input), valid);
+    float3 scene = spatial_expose(
+        spatial_linear_block(input, gid, spatial_mask_scale(mask, input), valid),
+        exposureStops);
     float3 energy = spatial_energy(scene, float3(redKnee, greenKnee, blueKnee));
 
     mask.write(float4(energy, 1.0f), gid);
@@ -318,6 +344,7 @@ kernel void spatial_halation_apply(
     constant float& referenceSuperwhite    [[buffer(2)]],
     constant float4& diffusionWeights      [[buffer(3)]],
     constant float& diffusionAmount        [[buffer(4)]],
+    constant float& exposureStops          [[buffer(5)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
@@ -351,9 +378,10 @@ kernel void spatial_halation_apply(
     // Decode the source to linear scene light, add the scattered energy there,
     // and re-encode. Adding in the encoded domain instead would apply the log
     // curve twice and detach the halo from the highlight it came from.
-    float3 linear = float3(apple_log_decode(base.r),
-                           apple_log_decode(base.g),
-                           apple_log_decode(base.b));
+    float3 linear = spatial_expose(float3(apple_log_decode(base.r),
+                                          apple_log_decode(base.g),
+                                          apple_log_decode(base.b)),
+                                   exposureStops);
 
     // Lens diffusion: blend the scene light toward the multi-scale blurred
     // version. The levels are the same blur sampled at three (or four) scales;

@@ -870,4 +870,61 @@ struct SpatialEffectsTests {
                     "zero glow strength must not change the frame (index \\(index))")
         }
     }
+
+    /// A video take is locked to its shutter, so a bright day is pulled down in
+    /// the render. That pull must land BEFORE the emulsion: applied after
+    /// halation, the frame came back darker carrying the halo of the light the
+    /// sensor saw — the opposite of a workable result in unsuitable conditions.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func aPullDarkensTheHaloWithTheFrame() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        let width = 64, height = 64
+        let base: Double = 0.18
+        let source = Self.sourcePixels(width: width, height: height) { x, y in
+            let hot = (20..<24).contains(x) && (20..<24).contains(y)
+            return hot ? SIMD3(12, 12, 12) : SIMD3(base, base, base)
+        }
+
+        func measure(stops: Float) throws -> (mean: Double, halo: Double) {
+            let input = try Self.makeTexture(device: device, width: width, height: height,
+                                             pixels: source)
+            let output = try #require(stage.applyHalation(
+                source: input, commandQueue: queue, strength: 2.52, radiusFraction: 0.02,
+                layerScale: SIMD3(1, 0.32, 0.1), exposureStops: stops,
+                width: width, height: height))
+            let linear = Self.decodedLinear(
+                try Self.readBack(output, device: device, queue: queue, width: width, height: height),
+                count: width * height)
+            var total = 0.0, ring = 0.0
+            var ringCount = 0
+            for y in 0..<height {
+                for x in 0..<width {
+                    let red = linear[(y * width + x) * 3]
+                    total += red
+                    let dx = Double(x) - 21.5, dy = Double(y) - 21.5
+                    let radius = (dx * dx + dy * dy).squareRoot()
+                    if radius > 5, radius < 11 {
+                        ring += red
+                        ringCount += 1
+                    }
+                }
+            }
+            return (total / Double(width * height), ring / Double(max(ringCount, 1)))
+        }
+
+        let none = try measure(stops: 0)
+        let pulled = try measure(stops: -2)
+
+        // The frame itself is two stops darker.
+        #expect(pulled.mean < none.mean * 0.5,
+                "a -2 pull must darken the frame: \(pulled.mean) vs \(none.mean)")
+        // And the halo is pulled with it, rather than staying at the exposure the
+        // sensor saw. The ring carries some of the field, so compare the excess.
+        let excessNone = none.halo - base
+        let excessPulled = pulled.halo - base
+        #expect(excessPulled < excessNone * 0.6,
+                "the halo must follow the pull: \(excessPulled) vs \(excessNone)")
+    }
 }
