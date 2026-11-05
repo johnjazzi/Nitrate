@@ -4,6 +4,105 @@ import ImageIO
 
 /// Developer-only local replay of a captured DNG through the shipping Photo stages.
 enum PhotoPipelineProbe {
+    /// How much light a raw carries ABOVE its own white point.
+    ///
+    /// Halation's trigger is a multiple of white (`halationReferenceSuperwhite`),
+    /// which assumes a file can hold several stops of highlight headroom. A fused
+    /// ProRAW can (measured 21.9x); a single-exposure DSLR raw clips at its own
+    /// white (a Nikon D700 NEF measured 5.4x after the decoder's own lift), so a
+    /// constant reference asks for headroom the file does not have.
+    ///
+    /// This scan measures each file's own ceiling on the configured decode — the
+    /// image the pipeline actually receives — and reports the percentiles a
+    /// per-file anchor could use. Percentiles rather than max: one hot pixel
+    /// should not decide the whole frame's halation. Developer-only; it renders
+    /// nothing and writes nothing.
+    static func headroom(in paths: [URL]) throws {
+        let files = try expand(paths)
+        guard !files.isEmpty else { print("No raw files found."); return }
+        let resources = URL(fileURLWithPath: CommandLine.arguments[0])
+            .deletingLastPathComponent().appendingPathComponent("RenderCLITests.xctest")
+        let bundle = Bundle(url: resources) ?? .main
+        let film = try StillFilmRenderResources(stockID: "kodak5207", gauge: .sixteenMillimetre,
+                                                seed: 42, bundle: bundle)
+        let decoder = try RAWPhotoDecoder(device: film.device, queue: film.queue)
+        let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+        // 256 is plenty for a percentile and cheap enough to scan a folder.
+        let sample = 256
+        print("FILE | make model | liftEv | max | p99.99 | p99.9 | p99 | above1 | refNow | refAnchored")
+        for url in files {
+            do {
+                let decoded = try decoder.decode(url: url, temperature: 5600)
+                let image = decoded.linearImage
+                let scale = CGFloat(sample) / image.extent.width
+                let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                var pixels = [Float](repeating: 0, count: sample * sample * 4)
+                film.context.render(small, toBitmap: &pixels, rowBytes: sample * 16,
+                                    bounds: CGRect(x: 0, y: 0, width: sample, height: sample),
+                                    format: .RGBAf, colorSpace: space)
+                var values: [Float] = []
+                values.reserveCapacity(sample * sample)
+                for index in stride(from: 0, to: pixels.count, by: 4) {
+                    // Peak channel: halation measures each channel's excess, and a
+                    // specular is hot in whichever channel saturates first.
+                    let peak = max(pixels[index], max(pixels[index + 1], pixels[index + 2]))
+                    if peak.isFinite { values.append(peak) }
+                }
+                values.sort()
+                func percentile(_ p: Double) -> Float {
+                    guard !values.isEmpty else { return .nan }
+                    return values[min(values.count - 1, max(0, Int(Double(values.count - 1) * p)))]
+                }
+                let aboveFraction = Double(values.filter { $0 > 1 }.count) / Double(max(1, values.count))
+                let referenceNow = SpatialEffectsStage.halationReferenceSuperwhite(
+                    sceneLiftStops: decoded.sceneLiftStops)
+                let anchored = min(8, max(2, percentile(0.9999)))
+                let model = [decoded.metadata?.make, decoded.metadata?.model]
+                    .compactMap { $0 }.joined(separator: " ")
+                print(String(format: "%@ | %@ | %.2f | %.2f | %.2f | %.2f | %.2f | %.3f%% | %.2f | %.2f",
+                             url.lastPathComponent,
+                             model.isEmpty ? "(no DNG tags)" : model,
+                             decoded.sceneLiftStops,
+                             values.last ?? .nan,
+                             percentile(0.9999), percentile(0.999),
+                             percentile(0.99),
+                             aboveFraction * 100,
+                             referenceNow, anchored))
+            } catch {
+                print("\(url.lastPathComponent) | FAILED: \(error)")
+            }
+        }
+    }
+
+    /// Extensions this scan will try. The CLI target does not link the app's
+    /// `PhotoImportService`, so the list is spelled here; anything that fails to
+    /// decode is reported rather than skipped silently.
+    private static let rawExtensions: Set<String> = [
+        "dng", "nef", "nrw", "arw", "srf", "sr2", "cr2", "cr3", "crw",
+        "raf", "orf", "rw2", "pef", "srw", "3fr", "fff", "iiq"
+    ]
+
+    /// Files and directories on one pass, sorted, so a folder scan reads
+    /// reproducibly.
+    private static func expand(_ paths: [URL]) throws -> [URL] {
+        var files: [URL] = []
+        for path in paths {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: path.path, isDirectory: &isDirectory) else {
+                print("Not found: \(path.path)")
+                continue
+            }
+            if isDirectory.boolValue {
+                let contents = try FileManager.default.contentsOfDirectory(at: path,
+                    includingPropertiesForKeys: nil).sorted { $0.lastPathComponent < $1.lastPathComponent }
+                files.append(contentsOf: contents.filter { rawExtensions.contains($0.pathExtension.lowercased()) })
+            } else {
+                files.append(path)
+            }
+        }
+        return files
+    }
+
     static func run(input: URL, stock: String, directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let resources = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().appendingPathComponent("RenderCLITests.xctest")
