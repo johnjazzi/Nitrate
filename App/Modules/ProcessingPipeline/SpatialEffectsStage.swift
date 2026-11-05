@@ -127,11 +127,26 @@ final class SpatialEffectsStage {
     ///
     /// Clamped to [1x, 8x] of the decode lift: below 1x white the knees never
     /// fire, and above 8x nothing changes from the authored value.
+    /// Share of a still's measured ceiling at which halation reaches full
+    /// contribution. The anchor is a DENOMINATOR, not a knee: lowering it makes
+    /// every pixel above the knees contribute more, which is the lever for "the
+    /// DSLR halation should read stronger". 1.0 anchors exactly to the file's
+    /// brightest 0.01%; 0.50 reaches full contribution halfway up a specular.
+    /// One number on purpose — halve it to double the effect.
+    static let stillAnchorShare: Float = 0.50
+
+    /// Floor for that anchor, in multiples of white, so a dark frame cannot push
+    /// the denominator toward zero and veil the image. It bites on ordinary DSLR
+    /// frames (a NEF measures ~1.03x white), which is why it is the second knob:
+    /// lower it to let the share act, raise it to hold the effect back.
+    static let stillAnchorFloorWhite: Float = 0.25
+
     static func halationReferenceSuperwhite(sceneLiftStops: Float, headroom: Float? = nil) -> Float {
         let lift = liftScale(sceneLiftStops)
         let authored = referenceSuperwhite * lift
         guard let headroom, headroom.isFinite else { return authored }
-        return min(authored, max(lift, headroom))
+        let anchored = headroom * stillAnchorShare
+        return min(authored, max(lift * stillAnchorFloorWhite, anchored))
     }
 
     private static func liftScale(_ sceneLiftStops: Float) -> Float {

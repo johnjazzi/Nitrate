@@ -31,17 +31,19 @@ struct HalationReferenceTests {
         // Real numbers: DSC_4224.NEF p99.99 = 3.48 at 1.10 EV of lift.
         let reference = SpatialEffectsStage.halationReferenceSuperwhite(sceneLiftStops: 1.10,
                                                                         headroom: 3.48)
-        #expect(abs(reference - 3.48) < 0.001, "taken as measured, in the frame's own units")
+        let expected = 3.48 * SpatialEffectsStage.stillAnchorShare
+        #expect(abs(reference - expected) < 0.001,
+                "anchored to its own ceiling, through the tuned share")
         #expect(reference < 8 * Self.lift(1.10), "and well below the authored 8x")
     }
 
-    @Test func theFloorIsOneWhiteSoTheKneesCanStillFire() {
-        // DSC_4301.NEF measures 1.09 lifted — near enough to white that a lower
-        // anchor would put the red knee below every ordinary surface.
-        let floor = Self.lift(3.99)
+    @Test func theFloorKeepsADarkFrameFromVeiling() {
+        // A frame with almost nothing above white must not push the denominator
+        // toward zero: the floor is a share of white, not the measurement.
+        let floor = Self.lift(3.99) * SpatialEffectsStage.stillAnchorFloorWhite
         let reference = SpatialEffectsStage.halationReferenceSuperwhite(sceneLiftStops: 3.99,
                                                                        headroom: 0.4)
-        #expect(abs(reference - floor) < 0.01, "never anchored below one white")
+        #expect(abs(reference - floor) < 0.01, "the floor holds the anchor off zero")
     }
 
     @Test func aBrightFileIsAnchoredToItsMeasureAndCappedAtTheAuthoredPoint() {
@@ -52,8 +54,9 @@ struct HalationReferenceTests {
         let authored = 8 * Self.lift(3.99)
         let proRAW = SpatialEffectsStage.halationReferenceSuperwhite(sceneLiftStops: 3.99,
                                                                      headroom: 74.94)
-        #expect(abs(proRAW - 74.94) < 0.01, "measured, not authored")
-        #expect(abs(authored / proRAW - 1.69) < 0.02, "a 1.69x stronger anchor for ProRAW")
+        let expected = 74.94 * SpatialEffectsStage.stillAnchorShare
+        #expect(abs(proRAW - expected) < 0.01, "measured, not authored")
+        #expect(proRAW < authored, "and stronger than the authored point")
 
         // A file brighter than the authored point cannot push the reference past
         // it: 8x is the ceiling of the rule, and the knees were authored for it.
