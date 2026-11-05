@@ -219,6 +219,12 @@ final class SpatialEffectsStage {
         /// Measured highlight ceiling of a still, in lifted units. Nil for video,
         /// which keeps the authored reference. See `halationReferenceSuperwhite`.
         halationHeadroom: Float? = nil,
+        /// Render-time exposure in stops, applied to the scene BEFORE the emulsion
+        /// stages: a video take is locked to its shutter, so the operator pulls a
+        /// bright day down in the render, and halation has to be measured against
+        /// the light the film actually receives. Stills pass 0 — their exposure is
+        /// baked into the decode.
+        exposureStops: Float = 0,
         width: Int,
         height: Int
     ) -> MTLTexture? {
@@ -263,6 +269,9 @@ final class SpatialEffectsStage {
             var red = knees.x
             var green = knees.y
             var blue = knees.z
+            // The mask and the ladder must be measured on the EXPOSED scene, or
+            // the apply pass would add a halo taken from light the film never saw.
+            var stops = exposureStops
             encoder.setComputePipelineState(scene == nil ? halationMaskPipeline : scenePreparePipeline)
             encoder.setTexture(source, index: 0)
             encoder.setTexture(halationMask, index: 1)
@@ -272,6 +281,7 @@ final class SpatialEffectsStage {
             encoder.setBytes(&red, length: MemoryLayout<Float>.size, index: 0)
             encoder.setBytes(&green, length: MemoryLayout<Float>.size, index: 1)
             encoder.setBytes(&blue, length: MemoryLayout<Float>.size, index: 2)
+            encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 3)
             encoder.dispatchThreadgroups(maskGroups, threadsPerThreadgroup: Self.groupSize)
             encoder.endEncoding()
         }
@@ -325,6 +335,7 @@ final class SpatialEffectsStage {
         // 4. Blend the diffusion, add the scattered light in scene-linear, and
         //    re-encode — one full-resolution pass for both effects.
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
+            var stops = exposureStops
             var strength = strength
             var layerScale = layerScale
             var referenceSuperwhite = Self.halationReferenceSuperwhite(
@@ -351,6 +362,7 @@ final class SpatialEffectsStage {
             encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
             encoder.setBytes(&diffusionWeights, length: MemoryLayout<SIMD4<Float>>.size, index: 3)
             encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 4)
+            encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 5)
             encoder.dispatchThreadgroups(fullGroups, threadsPerThreadgroup: Self.groupSize)
             encoder.endEncoding()
         }
