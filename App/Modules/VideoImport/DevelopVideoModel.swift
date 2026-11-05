@@ -402,6 +402,16 @@ final class DevelopVideoModel {
     /// durable acceptance returns an id; a failed enqueue keeps the selection so
     /// the user can retry.
     @discardableResult
+    /// The push/pull a develop should carry, from what the panel's pill shows.
+    ///
+    /// Shared and tested rather than inlined in the view: the pill's value once
+    /// sat in a stored property that defaulted to `.neutral`, so every import
+    /// developed two stops away from what was chosen. An import has no meter, so
+    /// automatic resolves neutral instead of guessing.
+    nonisolated static func resolvedPushPull(automatic: Bool, stops: PushPullStops) -> PushPullExposure {
+        automatic ? .automatic(meteredOffsetEV: nil) : .manual(stops)
+    }
+
     /// `pushPull` is the exposure the develop applies to the file's Apple Log 2
     /// code. A nil value falls back to the stock's persisted manual pull, so a
     /// developed import matches the camera's current setting rather than
@@ -416,14 +426,27 @@ final class DevelopVideoModel {
             // with the settings chosen now.
             if let existing = queue.jobs.first(where: {
                 $0.sourceURL.standardizedFileURL == photo.url.standardizedFileURL
-            }), existing.status == .completed || existing.status == .failed {
-                queue.redevelopPhotos(jobIds: [existing.id], stockId: stock.stockId,
-                                      gauge: gauge, pushPull: pushPull)
-                self.photo = nil
-                adoptedURL = nil
-                errorMessage = nil
-                activeJobID = existing.id
-                return existing.id
+            }) {
+                switch existing.status {
+                case .completed, .failed:
+                    // A skipped re-develop (the original was cleaned up) must not
+                    // be reported as a success: the panel would go back to the old
+                    // delivered still and nothing new would ever be saved.
+                    guard queue.redevelopPhotos(jobIds: [existing.id], stockId: stock.stockId,
+                                                gauge: gauge, pushPull: pushPull) > 0 else {
+                        errorMessage = "This photo's original is no longer on the device. "
+                            + "Pick the file again to develop it."
+                        return nil
+                    }
+                    self.photo = nil
+                    adoptedURL = nil
+                    errorMessage = nil
+                    activeJobID = existing.id
+                    return existing.id
+                case .pending, .processing, .awaitingStock:
+                    errorMessage = "This photo is already developing."
+                    return nil
+                }
             }
             // A developed raw keeps its own exposure index when the file carries
             // one: the DNG recorded it, so the render states what was shot rather

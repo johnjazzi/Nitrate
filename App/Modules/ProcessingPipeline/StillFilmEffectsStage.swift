@@ -42,8 +42,12 @@ final class StillFilmEffectsStage {
     ///    decode/encode, same order in front of the emulsion. It is the STILL
     ///    setting (`effectiveStillDiffusion`), which keeps the gauge's radius but
     ///    mixes a smaller share — a held frame reads softer than a moving one.
+    /// `halationHeadroom` is the file's measured highlight ceiling; see
+    /// `SpatialEffectsStage.halationReferenceSuperwhite`. A still passes it, a
+    /// video frame does not.
     func applyHalation(source: MTLTexture, commandQueue: MTLCommandQueue,
-                       config: FilmStockConfig, sceneLiftStops: Float = 0) -> MTLTexture? {
+                       config: FilmStockConfig, sceneLiftStops: Float = 0,
+                       halationHeadroom: Float? = nil) -> MTLTexture? {
         guard source.pixelFormat == .rgba16Float else { return nil }
         return spatial.applyHalation(source: source, commandQueue: commandQueue,
                                      strength: config.halationStrength * config.effectiveStillHalationScale,
@@ -51,6 +55,7 @@ final class StillFilmEffectsStage {
                                      layerScale: config.halationTint,
                                      diffusion: config.effectiveStillDiffusion,
                                      sceneLiftStops: sceneLiftStops,
+                                     halationHeadroom: halationHeadroom,
                                      width: source.width, height: source.height)
     }
 

@@ -113,8 +113,41 @@ final class SpatialEffectsStage {
     /// halo grow with the decode lift — measured at ~30x when one stop was added
     /// on top of a ProRAW's BaselineExposure. Scaling both keeps the halo a
     /// property of the scene, not of how the file was decoded.
-    static func halationReferenceSuperwhite(sceneLiftStops: Float) -> Float {
-        referenceSuperwhite * liftScale(sceneLiftStops)
+    ///
+    /// VIDEO passes no `headroom`, so this is always the authored 8x: the knees
+    /// were designed for Apple Log 2, which carries about 12x diffuse white.
+    ///
+    /// A STILL passes the file's own measured ceiling (`headroom`, in the same
+    /// lifted units as the frame). A single-exposure raw CLIPS at its own white,
+    /// so measuring it against 8x asks for headroom the file does not have: across
+    /// 35 DSLR raws the brightest 0.01% of pixels sat at 0.5-3.7x white, and
+    /// halation reached at most a third of its range. Anchoring to what the file
+    /// actually carries puts a clipped specular - or a clipped sky - at full
+    /// contribution, which is what a diffuser in front of that film would do.
+    ///
+    /// Clamped to [1x, 8x] of the decode lift: below 1x white the knees never
+    /// fire, and above 8x nothing changes from the authored value.
+    /// Share of a still's measured ceiling at which halation reaches full
+    /// contribution. The anchor is a DENOMINATOR, not a knee: lowering it makes
+    /// every pixel above the knees contribute more, which is the lever for "the
+    /// DSLR halation should read stronger". 1.0 anchors exactly to the file's
+    /// brightest 0.01%; 0.125 reaches full contribution an eighth of the way up a
+    /// specular, which is ~8x the authored anchor on a typical DSLR frame. One
+    /// number on purpose — halve it to double the effect.
+    static let stillAnchorShare: Float = 0.125
+
+    /// Floor for that anchor, in multiples of white, so a dark frame cannot push
+    /// the denominator toward zero and veil the image. It bites on ordinary DSLR
+    /// frames (a NEF measures ~1.03x white), which is why it is the second knob:
+    /// lower it to let the share act, raise it to hold the effect back.
+    static let stillAnchorFloorWhite: Float = 0.0625
+
+    static func halationReferenceSuperwhite(sceneLiftStops: Float, headroom: Float? = nil) -> Float {
+        let lift = liftScale(sceneLiftStops)
+        let authored = referenceSuperwhite * lift
+        guard let headroom, headroom.isFinite else { return authored }
+        let anchored = headroom * stillAnchorShare
+        return min(authored, max(lift * stillAnchorFloorWhite, anchored))
     }
 
     private static func liftScale(_ sceneLiftStops: Float) -> Float {
@@ -183,6 +216,9 @@ final class SpatialEffectsStage {
         layerScale: SIMD3<Float>,
         diffusion: DiffusionSettings = .disabled,
         sceneLiftStops: Float = 0,
+        /// Measured highlight ceiling of a still, in lifted units. Nil for video,
+        /// which keeps the authored reference. See `halationReferenceSuperwhite`.
+        halationHeadroom: Float? = nil,
         width: Int,
         height: Int
     ) -> MTLTexture? {
@@ -292,7 +328,7 @@ final class SpatialEffectsStage {
             var strength = strength
             var layerScale = layerScale
             var referenceSuperwhite = Self.halationReferenceSuperwhite(
-                sceneLiftStops: sceneLiftStops)
+                sceneLiftStops: sceneLiftStops, headroom: halationHeadroom)
             // Unused level slots are bound to a real, samplable texture rather
             // than left unbound; their weights are zero, so they contribute
             // nothing and the blend stays a normalized average.
@@ -335,6 +371,11 @@ final class SpatialEffectsStage {
     /// sampling a coarser level, not from a wider kernel. That is what keeps a
     /// 35-preset diffuser costing about what a small one does, and what makes the
     /// cost independent of frame size beyond the linear resolution term.
+    ///
+    /// The plan only returns a depth whose kernel is wider than a texel at
+    /// every level (`DiffusionPlan.minLevelKernelSigma`). A shallower level
+    /// would be a nearest filter here — it would reproject the texel grid, and
+    /// the apply pass would upsample that grid into a flat-topped disc.
     private func buildDiffusion(
         scene: MTLTexture,
         plan: DiffusionPlan,

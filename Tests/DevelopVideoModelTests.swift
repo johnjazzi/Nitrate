@@ -360,6 +360,64 @@ struct DevelopPhotoSelectionTests {
                 "the re-develop applies the settings chosen on the second visit")
     }
 
+    /// A re-develop whose original is gone must SAY so. `redevelopPhotos` skips
+    /// such a job (a bulk action must not fail on one cleaned-up file), and the
+    /// model used to report the skipped id as a success — the panel went back to
+    /// the old delivered still and nothing new was ever saved.
+    @MainActor @Test func aRedevelopWithoutItsOriginalIsNotReportedAsSuccess() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gone-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("photo_import_GONE.dng")
+        try Data([1]).write(to: source)
+
+        let queue = RenderQueueViewModel(persistenceURL: folder.appendingPathComponent("q.json"),
+            render: { _ in
+                let out = folder.appendingPathComponent("out-\(UUID().uuidString).jpg")
+                try Data([2]).write(to: out)
+                return out
+            }, save: { _ in })
+        // The photo's own file is stubbed, so adopting still works after the
+        // original is deleted — which is the state this bug is about.
+        let model = DevelopVideoModel(queue: queue, inspectPhoto: { url, _ in Self.photo(url) })
+        let stock = FilmStockConfig(stockId: "kodak5207", displayName: "5207", category: .video,
+                                    lutName: "x.cube", halationStrength: 2.52, glowStrength: 0.1,
+                                    grainSize: 1, defaultISO: 250)
+
+        await model.adoptExistingPhoto(url: source, originalFilename: "GONE.dng")
+        let first = try #require(model.render(stock: stock, iso: 250, gauge: .neutral, queue: queue))
+        for _ in 0..<400 where queue.jobs.first?.status != .completed {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(queue.jobs.first?.status == .completed)
+
+        // The owned original is cleaned up (cache purge, storage pressure).
+        try FileManager.default.removeItem(at: source)
+        await model.adoptExistingPhoto(url: source, originalFilename: "GONE.dng")
+        let again = model.render(stock: stock, iso: 250, gauge: .eightMillimetre, queue: queue)
+
+        #expect(again == nil, "a skipped re-develop must not return a job id")
+        #expect(model.errorMessage?.contains("no longer on the device") == true,
+                "the reason must be said, not swallowed: \(model.errorMessage ?? "nil")")
+        #expect(queue.jobs.first?.printGauge == .neutral, "the old develop is untouched")
+        #expect(queue.jobs.first?.id == first)
+    }
+
+    /// The pill's choice must survive to the render. It once did not: the value
+    /// sat in a stored property defaulting to neutral, and an import chosen at
+    /// -2 stops developed at 0.
+    @Test func theChosenPullReachesTheDevelop() {
+        let pulled = DevelopVideoModel.resolvedPushPull(automatic: false, stops: .pullTwo)
+        #expect(pulled.stops == .pullTwo)
+        #expect(pulled.origin == .manual)
+        #expect(pulled == .manual(.pullTwo), "a manual choice must not be neutral")
+
+        // An import has no meter, so automatic cannot invent a pull.
+        let automatic = DevelopVideoModel.resolvedPushPull(automatic: true, stops: .none)
+        #expect(automatic.stops == .none)
+    }
+
     /// A pick where EVERY file is refused must say why. The reasons used to live
     /// only in the staging view, which never appears when nothing staged — three
     /// NEFs spun, stopped, and explained nothing.

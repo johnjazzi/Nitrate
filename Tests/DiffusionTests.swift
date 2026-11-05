@@ -129,6 +129,41 @@ struct DiffusionTests {
                 "4K radius \(uhdRadius) must track 1080p radius \(hdRadius)")
     }
 
+    /// Every ladder level must be a real blur, at every width the pipeline
+    /// renders.
+    ///
+    /// All levels run the same kernel, so a level whose kernel is narrower than
+    /// one of its own texels is a nearest filter, not a blur: it hands its
+    /// texel grid back, bilinear upsampling turns each texel into a flat
+    /// plateau, and the summed ladder answers an isolated highlight with a
+    /// stack of blocky discs instead of a radial scatter — the flat-topped
+    /// halos a developed ProRAW showed at the 35mm gauge. Depth is therefore
+    /// capped by the kernel, and the realized radius still has to be the
+    /// authored one.
+    @Test
+    func everyLadderLevelIsAWideEnoughKernel() throws {
+        for preset in [DiffusionPreset.radius4, .radius8, .radius16, .radius35] {
+            let authored = try #require(preset.radiusPixels)
+            for width in [320, 512, 1024, 1536, 1920, 2048, 4032, 6192] {
+                let plan = try #require(
+                    DiffusionSettings(preset: preset, amount: 0.5).plan(sourceWidth: width))
+                if plan.levels > 1 {
+                    #expect(plan.kernelSigma >= DiffusionPlan.minLevelKernelSigma,
+                            "\(preset.title) at \(width): a \(plan.levels)-level ladder needs a kernel of at least one texel per level (was \(plan.kernelSigma))")
+                }
+                // Below 1080p the discretized kernel is itself narrow enough to
+                // widen the realized sigma, and at the far end the tap cap
+                // truncates the tail; both are the plan's documented behaviour
+                // and neither is the ladder's shape. Only the delivered widths
+                // with an untruncated kernel are held to the authored radius.
+                guard width >= 1536, plan.taps < DiffusionPlan.maxTaps else { continue }
+                let realized = plan.radiusPixels(atSourceWidth: width)
+                #expect(abs(realized - authored) < authored * 0.2,
+                        "\(preset.title) at \(width): realized \(realized) px for authored \(authored) px")
+            }
+        }
+    }
+
     @Test
     func everyPlanIsAUsableKernel() throws {
         for preset in [DiffusionPreset.radius8, .radius16, .radius35] {

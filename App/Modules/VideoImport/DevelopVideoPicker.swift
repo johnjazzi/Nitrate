@@ -23,26 +23,42 @@ struct DevelopPickedVideo: Transferable, Sendable {
     }
 }
 
-/// The photo counterpart. Photos cannot filter its picker by file type either,
-/// so the same rule applies: check the picked file is a raw the still renderer
-/// can develop, and only then copy it into owned storage.
+/// The photo counterpart.
+///
+/// Two representations, RAW FIRST. A capture stored as JPEG+RAW holds both, and
+/// asking for "any image" lets Photos hand over the JPEG — which the gate then
+/// refuses as "not a raw photo". Declaring `public.camera-raw-image` first asks
+/// for the raw resource specifically; `.image` stays as the fallback for files
+/// whose type the system cannot name as a camera raw.
+///
+/// The copy is still validated: a file that arrives as a JPEG is refused with the
+/// reason rather than developed as if it were raw.
 struct DevelopPickedPhoto: Transferable, Sendable {
     let transfer: DevelopVideoModel.DevelopPhotoTransfer
 
     static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(importedContentType: .image) { received in
-            try await PhotoImportService.validateRaw(at: received.file)
-            // Keep the file's own extension. A NEF renamed to .dng would lie
-            // about the container and about which decoder opened it; the render
-            // path reads raw by capability, not by name.
-            let receivedExtension = received.file.pathExtension.lowercased()
-            let url = try await VideoImportService.copyToOwnedStorage(
-                from: received.file, prefix: "photo_import",
-                fileExtension: receivedExtension.isEmpty ? "dng" : receivedExtension)
-            return DevelopPickedPhoto(transfer: DevelopVideoModel.DevelopPhotoTransfer(
-                lease: VideoImportFileLease(url: url),
-                originalFilename: received.file.lastPathComponent))
+        // `UTType.cameraRawImage` is not a declared constant in every SDK, and
+        // the identifier is stable, so it is built by identifier.
+        FileRepresentation(importedContentType: UTType(importedAs: "public.camera-raw-image")) { received in
+            try await accept(received.file)
         }
+        FileRepresentation(importedContentType: .image) { received in
+            try await accept(received.file)
+        }
+    }
+
+    private static func accept(_ file: URL) async throws -> DevelopPickedPhoto {
+        try await PhotoImportService.validateRaw(at: file)
+        // Keep the file's own extension. A NEF renamed to .dng would lie about
+        // the container and about which decoder opened it; the render path reads
+        // raw by capability, not by name.
+        let receivedExtension = file.pathExtension.lowercased()
+        let url = try await VideoImportService.copyToOwnedStorage(
+            from: file, prefix: "photo_import",
+            fileExtension: receivedExtension.isEmpty ? "dng" : receivedExtension)
+        return DevelopPickedPhoto(transfer: DevelopVideoModel.DevelopPhotoTransfer(
+            lease: VideoImportFileLease(url: url),
+            originalFilename: file.lastPathComponent))
     }
 }
 

@@ -54,6 +54,26 @@ actor DevelopmentPhotoLibrarySaver {
     }
 
     /// Returns only evidence from the Photos creation completion; local media remains in place.
+    /// Durable-receipt key for one delivery.
+    ///
+    /// The folder and file name survive app-container relocation after a
+    /// reinstall, so they are part of the identity - but the NAME alone is not
+    /// enough. A re-develop writes a new render to the same path, so a name-only
+    /// key answered "already saved" and the second develop never reached Photos
+    /// while the job reported it delivered. Size and modification time change
+    /// with the content and cost nothing to read: the same file is still
+    /// delivered once, and a new render is a new delivery.
+    static func receiptKey(for url: URL) -> String {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+        let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let identity = url.deletingLastPathComponent().lastPathComponent
+            + "/" + url.lastPathComponent
+        let version = "\(identity)|\(size)|\(modified)"
+        return SHA256.hash(data: Data(version.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+
     func save(originalDNG url: URL) async -> Result<SaveEvidence, SaveError> {
         // Any file the pipeline develops, plus a JPEG. This guard used to allow
         // only `dng`, so an imported NEF — already developed, already saved —
@@ -76,10 +96,15 @@ actor DevelopmentPhotoLibrarySaver {
             return .failure(.authorizationDenied)
         }
 
-        // Capture folder IDs survive app-container relocation after reinstall.
-        let identity = url.deletingLastPathComponent().lastPathComponent + "/" + url.lastPathComponent
-        let key = SHA256.hash(data: Data(identity.utf8))
-            .map { String(format: "%02x", $0) }.joined()
+        // Capture folder IDs survive app-container relocation after reinstall,
+        // so the identity keeps them — but the NAME is not enough on its own.
+        // A re-develop writes a new render to the same path, so a name-only
+        // key answered "already saved" and the second develop never reached
+        // Photos while the job reported it delivered. The file's size and
+        // timestamp change with its content and cost nothing to read, so they
+        // join the identity: the same file is still delivered once, and a new
+        // render is a new delivery.
+        let key = Self.receiptKey(for: url)
         var receipt: Receipt
         do {
             receipt = try loadReceipt()

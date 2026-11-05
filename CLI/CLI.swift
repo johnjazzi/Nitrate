@@ -41,6 +41,15 @@ import Foundation
             } catch { print("Grain comparison failed: \(error)"); exit(1) }
             return
         }
+        if arguments.first == "--raw-headroom", arguments.count >= 2 {
+            do {
+                try PhotoPipelineProbe.headroom(in: arguments.dropFirst().map { URL(fileURLWithPath: $0) })
+            } catch {
+                print("Raw headroom scan failed: \(error)")
+                exit(1)
+            }
+            return
+        }
         if arguments.first == "--photo-probe", arguments.count == 4 {
             do {
                 try PhotoPipelineProbe.run(input: URL(fileURLWithPath: arguments[1]), stock: arguments[2],

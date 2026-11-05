@@ -1352,8 +1352,7 @@ struct ContentView: View {
             gauge: $developGauge,
             pushPullAutomatic: $developPushPullAutomatic,
             pushPullStops: $developPushPullStops,
-            onControlsChanged: persistDevelopControls,
-            resolvedPushPull: developPushPull
+            onControlsChanged: persistDevelopControls
         )
     }
 
