@@ -1200,6 +1200,11 @@ final class PipelineRenderer: @unchecked Sendable {
     /// source BEFORE this pass, not to its output: a 2x and a 100x specular both
     /// land near 1.0 after the LUT, and the superwhite separation halation needs
     /// would be gone.
+    ///
+    /// `pushPullStops` is 0 on the video paths: their pull runs earlier, inside
+    /// `SpatialEffectsStage.applyHalation`, so halation sees the exposed scene.
+    /// It stays non-zero for stills, whose push/pull is a grading choice made
+    /// after the halo has already been fitted to the file.
     private func runLUTPass(
         input: MTLTexture,
         lut: MTLTexture,

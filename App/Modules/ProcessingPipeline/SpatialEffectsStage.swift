@@ -106,42 +106,49 @@ final class SpatialEffectsStage {
         SIMD3(redKnee, greenKnee, blueKnee) * liftScale(sceneLiftStops)
     }
 
-    /// The same lift applied to the superwhite REFERENCE.
+    // MARK: - Where halation reaches full contribution
+
+    /// Share of a STILL's measured highlight ceiling at which the halo is at full
+    /// strength. Not used for video, which has no measurement to apply it to.
     ///
-    /// Scaling only the knees was half the job: the excess a lifted frame carries
-    /// is also `2^lift` times its true value, so a constant denominator made the
-    /// halo grow with the decode lift — measured at ~30x when one stop was added
-    /// on top of a ProRAW's BaselineExposure. Scaling both keeps the halo a
-    /// property of the scene, not of how the file was decoded.
+    /// This is a DENOMINATOR, not a knee: the per-layer knees decide WHICH light
+    /// bleeds, this decides how much of the requested strength a given excess
+    /// buys. Lower it and every pixel above a knee contributes more, which is the
+    /// lever for "DSLR halation should read stronger". 1.0 would anchor exactly to
+    /// the file's brightest 0.01%; 0.125 reaches full contribution an eighth of the
+    /// way up a specular.
     ///
-    /// VIDEO passes no `headroom`, so this is always the authored 8x: the knees
-    /// were designed for Apple Log 2, which carries about 12x diffuse white.
-    ///
-    /// A STILL passes the file's own measured ceiling (`headroom`, in the same
-    /// lifted units as the frame). A single-exposure raw CLIPS at its own white,
-    /// so measuring it against 8x asks for headroom the file does not have: across
-    /// 35 DSLR raws the brightest 0.01% of pixels sat at 0.5-3.7x white, and
-    /// halation reached at most a third of its range. Anchoring to what the file
-    /// actually carries puts a clipped specular - or a clipped sky - at full
-    /// contribution, which is what a diffuser in front of that film would do.
-    ///
-    /// Clamped to [1x, 8x] of the decode lift: below 1x white the knees never
-    /// fire, and above 8x nothing changes from the authored value.
-    /// Share of a still's measured ceiling at which halation reaches full
-    /// contribution. The anchor is a DENOMINATOR, not a knee: lowering it makes
-    /// every pixel above the knees contribute more, which is the lever for "the
-    /// DSLR halation should read stronger". 1.0 anchors exactly to the file's
-    /// brightest 0.01%; 0.125 reaches full contribution an eighth of the way up a
-    /// specular, which is ~8x the authored anchor on a typical DSLR frame. One
-    /// number on purpose — halve it to double the effect.
+    /// One number on purpose: halve it to double the effect.
     static let stillAnchorShare: Float = 0.125
 
-    /// Floor for that anchor, in multiples of white, so a dark frame cannot push
-    /// the denominator toward zero and veil the image. It bites on ordinary DSLR
-    /// frames (a NEF measures ~1.03x white), which is why it is the second knob:
-    /// lower it to let the share act, raise it to hold the effect back.
+    /// Floor under that anchor, in multiples of white, so a frame with almost no
+    /// light above white cannot drive the denominator toward zero and veil itself.
+    ///
+    /// It bites on ordinary DSLR frames (a NEF measures ~1.03x white), so it is
+    /// the second knob: lower it to let `stillAnchorShare` act, raise it to hold
+    /// the effect back. Tuned together with the share — changing one alone moves
+    /// nothing on the files the two knobs were fitted to.
     static let stillAnchorFloorWhite: Float = 0.0625
 
+    /// The superwhite value at which halation reaches FULL contribution.
+    ///
+    /// VIDEO passes no `headroom` and gets the authored constant: the knees and
+    /// this reference were designed for Apple Log 2, which carries about 12x
+    /// diffuse white, and 8x leaves room for an 11x specular without letting it
+    /// swamp the graded frame. Every video frame is therefore unchanged by
+    /// anything in this section.
+    ///
+    /// A STILL passes `headroom`, the file's own measured ceiling in the same
+    /// lifted units as the frame (see `RAWPhotoDecoder.measureHeadroom`). A
+    /// single-exposure raw CLIPS at its own white: across 35 DSLR raws the
+    /// brightest 0.01% of pixels sat at 0.5-3.7x white, so against the authored 8x
+    /// halation reached 7-48% of its range and the halo read faint. Anchoring to
+    /// what the file actually carries puts a clipped specular - and a clipped sky,
+    /// which is clipped all the same - at full contribution.
+    ///
+    /// Both ends scale with the decode lift, exactly as the knees do, so a lifted
+    /// still is measured against the same scene it came from (`halationKnees`).
+    /// The result never exceeds the authored value, however bright the file.
     static func halationReferenceSuperwhite(sceneLiftStops: Float, headroom: Float? = nil) -> Float {
         let lift = liftScale(sceneLiftStops)
         let authored = referenceSuperwhite * lift
