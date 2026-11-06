@@ -26,6 +26,9 @@ struct ContentView: View {
     }
     @State private var developModel: DevelopVideoModel
     @State private var showSettings = false
+    /// Whether the corner notice is showing its full message. Reset whenever a
+    /// new notice replaces the old one.
+    @State private var noticeExpanded = false
     @State private var showDaylightRescue = false
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("showFramedPreview") private var showFramedPreview = false
@@ -362,6 +365,8 @@ struct ContentView: View {
                 debugControlsOverlay(in: geometry)
                     .disabled(isDevelopMode)
                     .opacity(isDevelopMode ? 0.3 : 1)
+
+                cameraNoticeOverlay(in: geometry)
 
                 errorOverlays
             }
@@ -1015,6 +1020,23 @@ struct ContentView: View {
             // It renders in a non-sizing sibling overlay instead (see
             // `debugControlsOverlay`), while this fifth slot stays concrete.
             EmptyView()
+        }
+    }
+
+    /// The notice flag sits below the toolbar and to the right of the DEBUG/FAULT
+    /// rail: out of the way of the viewfinder, reachable with the thumb, and
+    /// never part of the top bar's measured height.
+    @ViewBuilder private func cameraNoticeOverlay(in geometry: GeometryProxy) -> some View {
+        if let notice = cameraViewModel.notice, let top = controlBounds["top"] {
+            CameraNoticeFlag(notice: notice,
+                             isExpanded: $noticeExpanded,
+                             onDismiss: { cameraViewModel.dismissNotice() })
+                .frame(width: 280, alignment: .leading)
+                .padding(.leading, 68)
+                .padding(.top, top.maxY + 8)
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+                .onChange(of: notice.id) { _, _ in noticeExpanded = false }
+                .transition(.opacity)
         }
     }
 

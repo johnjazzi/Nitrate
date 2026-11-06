@@ -344,6 +344,7 @@ targets:
       # call site stays in the iOS app target.
       - path: App/Modules/CameraCapture/FlashControl.swift
       - path: App/Modules/CameraCapture/CaptureFormat.swift
+      - path: App/Modules/CameraCapture/CameraNotice.swift
       - path: App/Modules/ProcessingPipeline/PhotoColorMath.swift
       - path: App/Modules/ProcessingPipeline/PhotoZoomGeometry.swift
       - path: App/Modules/ProcessingPipeline/RAWToLog2Stage.swift
@@ -429,6 +430,7 @@ targets:
       - path: App/Modules/CameraCapture/PhotoShutterPresentation.swift
       - path: App/Modules/CameraCapture/FlashControl.swift
       - path: App/Modules/CameraCapture/CaptureFormat.swift
+      - path: App/Modules/CameraCapture/CameraNotice.swift
       - path: App/Modules/CameraCapture/PhotoShutterControl.swift
       - path: App/Modules/CameraCapture/PhotoShutterFace.swift
       - path: App/Modules/CameraCapture/RulerSlider.swift

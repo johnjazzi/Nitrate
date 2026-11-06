@@ -91,6 +91,31 @@ final class CameraViewModel {
         }
     }
     var recordingWarning: String?
+    /// The transient notice the corner flag shows. One at a time: a new notice
+    /// replaces the old one rather than stacking, and each carries its own
+    /// lifetime so a warning cannot outlive a moment while an error lingers.
+    private(set) var notice: CameraNotice?
+    private var noticeDismissTask: Task<Void, Never>?
+
+    /// Post a notice. The message is the operator's text; severity decides how
+    /// long it stands and what the flag looks like.
+    func showNotice(_ message: String, severity: CameraNotice.Severity) {
+        let notice = CameraNotice(severity: severity, message: message)
+        self.notice = notice
+        noticeDismissTask?.cancel()
+        noticeDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(notice.lifetime * 1_000_000_000))
+            guard !Task.isCancelled, self?.notice?.id == notice.id else { return }
+            self?.notice = nil
+        }
+    }
+
+    /// Clear the notice early — the operator opened it and is done with it.
+    func dismissNotice() {
+        noticeDismissTask?.cancel()
+        noticeDismissTask = nil
+        notice = nil
+    }
     private(set) var lastRecordedURL: URL?
     /// Set when a take finished with a readable original that failed validation.
     /// The screen saves it to Photos unchanged; it is never rendered.
@@ -1294,7 +1319,9 @@ final class CameraViewModel {
         session.setCaptureFormat(format) { [weak self] error in
             guard let self, self.lifecycleGate.isActive else { return }
             if let error {
-                self.errorMessage = error.localizedDescription
+                // A format switch is a settings action, not a broken camera:
+                // warn in the corner and let the operator read or dismiss it.
+                self.showNotice(error.localizedDescription, severity: .warning)
             }
         }
     }
