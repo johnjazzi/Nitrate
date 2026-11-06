@@ -224,6 +224,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// A session-boundary reset waiting for the active take to drain.
     private var pendingFrameRateReset = false
 
+    /// Which sensor format the Video graph records. Persisted as a preference by
+    /// the settings screen, but only this queue-confined value decides what the
+    /// next take writes. `.uhd16x9` is the default and keeps the shipping path.
+    private(set) var captureFormat: CaptureFormat = .uhd16x9
+
     // MARK: - Hardware Camera Control slider
 
     /// The system Camera Control slider. Queue-confined to `sessionQueue`; the
@@ -1009,9 +1014,21 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// this from the main thread with `sessionQueue.sync` froze app launch and
     /// lens switching until the run loop was allowed to spin. `completion` runs
     /// on the main queue with `nil` on success, or the failure to report.
-    func configure(completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+    func configure(captureFormat: CaptureFormat = .uhd16x9,
+                   completion: @escaping @MainActor @Sendable (Error?) -> Void) {
         sessionQueue.async { [weak self] in
-            let error = self?.performConfigure()
+            guard let self else { return }
+            // A configuration that is already installed keeps the new
+            // preference as a live transition, so returning from Settings does
+            // not require tearing the camera down. Both paths fail visibly when
+            // the device cannot deliver the requested format.
+            let error: Error?
+            if self.isConfigured, self.activeDevice != nil {
+                error = self.applyCaptureFormatMode(captureFormat)
+            } else {
+                self.captureFormat = captureFormat
+                error = self.performConfigure()
+            }
             if let error {
                 print("Camera session configuration failed: \(error.localizedDescription)")
             }
@@ -1264,11 +1281,19 @@ final class CameraSession: NSObject, @unchecked Sendable {
         acceptedPixelFormats = []
         acceptedVideoSettings = [:]
         guard #available(iOS 26.0, *) else { throw CameraError.appleLog2NotSupported }
-        // Select for the mode in force. `.standard24` is unchanged; `.daylight60`
-        // requires a 60 fps range and is refused rather than downgraded.
+        // Select for the mode and capture format in force. `.standard24` is
+        // unchanged; `.daylight60` requires a 60 fps range and is refused rather
+        // than downgraded. Open gate is refused with its own error when the
+        // device has no 1920x1440 4:2:2 Log 2 format — never substituted by UHD.
         let mode = frameRate
-        let orderedFormats = Self.appleLog2CaptureFormats(in: device.formats, mode: mode)
+        let selectedFormat = captureFormat
+        let orderedFormats = Self.appleLog2CaptureFormats(in: device.formats, mode: mode,
+                                                          captureFormat: selectedFormat)
         guard !orderedFormats.isEmpty else {
+            if selectedFormat.isOpenGate {
+                throw CameraError.captureFormatUnavailable(
+                    CameraError.captureFormatUnavailableReason(for: selectedFormat, mode: mode))
+            }
             throw CameraError.unsupportedFrameRateError(for: mode)
         }
 
@@ -1470,13 +1495,27 @@ final class CameraSession: NSObject, @unchecked Sendable {
         try reassertFrameDuration(on: device, mode: mode)
     }
 
-    /// Every eligible 4K Apple Log 2 10-bit format whose frame-rate ranges include
-    /// `mode.fps`, best bit-depth first. `.high120` needs a range that really
-    /// includes 120, so a 60-only format is never offered for it.
+    /// Every eligible Apple Log 2 10-bit format for `captureFormat` whose
+    /// frame-rate ranges include `mode.fps`, best bit-depth first. `.high120`
+    /// needs a range that really includes 120, so a 60-only format is never
+    /// offered for it. The geometry and chroma rule live in
+    /// `CameraCaptureFormatPolicy`, not here.
     private static func appleLog2CaptureFormats(in formats: [AVCaptureDevice.Format],
-                                                mode: CameraFrameRate = .standard24) -> [AVCaptureDevice.Format] {
+                                                mode: CameraFrameRate = .standard24,
+                                                captureFormat: CaptureFormat = .uhd16x9) -> [AVCaptureDevice.Format] {
         guard #available(iOS 26.0, *) else { return [] }
-        let candidates = formats.map { format in
+        let candidates = formatCandidates(in: formats)
+        let indexes = CameraCaptureFormatPolicy.eligibleCandidateIndexes(
+            in: candidates, format: captureFormat, fps: mode.fps)
+        return indexes.map { formats[$0] }
+    }
+
+    /// Device formats as the pure policy sees them. One builder for selection
+    /// and capability, so the offered option and the chosen format cannot drift.
+    private static func formatCandidates(
+        in formats: [AVCaptureDevice.Format]
+    ) -> [CameraCaptureFormatPolicy.Candidate] {
+        formats.map { format in
             guard CMFormatDescriptionGetMediaType(format.formatDescription) == kCMMediaType_Video else {
                 return CameraCaptureFormatPolicy.Candidate(width: 0, height: 0,
                     supportsAppleLog2: false, supports24FPS: false)
@@ -1491,39 +1530,33 @@ final class CameraSession: NSObject, @unchecked Sendable {
             let supports120FPS = format.videoSupportedFrameRateRanges.contains {
                 $0.minFrameRate <= 120 && $0.maxFrameRate >= 120
             }
+            let subtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
             return CameraCaptureFormatPolicy.Candidate(
                 width: dimensions.width, height: dimensions.height,
                 supportsAppleLog2: format.supportedColorSpaces.contains(.appleLog2),
                 supports24FPS: supports24FPS,
-                isTenBitBiPlanar420: {
-                    let subtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
-                    return subtype == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
-                        || subtype == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
-                }(),
-                isTenBitBiPlanar422: {
-                    let subtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
-                    return subtype == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange
-                        || subtype == kCVPixelFormatType_422YpCbCr10BiPlanarFullRange
-                }(),
+                isTenBitBiPlanar420: subtype == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                    || subtype == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+                isTenBitBiPlanar422: subtype == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange
+                    || subtype == kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
                 supports60FPS: supports60FPS,
                 supports120FPS: supports120FPS
             )
         }
-        let indexes = CameraCaptureFormatPolicy.appleLog2EligibleCandidateIndexes(
-            in: candidates, fps: mode.fps)
-        return indexes.map { formats[$0] }
     }
 
     private static func appleLog2CaptureFormat(in formats: [AVCaptureDevice.Format],
-                                               mode: CameraFrameRate = .standard24) -> AVCaptureDevice.Format? {
-        appleLog2CaptureFormats(in: formats, mode: mode).first
+                                               mode: CameraFrameRate = .standard24,
+                                               captureFormat: CaptureFormat = .uhd16x9) -> AVCaptureDevice.Format? {
+        appleLog2CaptureFormats(in: formats, mode: mode, captureFormat: captureFormat).first
     }
 
-    /// Whether the device has an eligible 4K Apple Log 2 10-bit format for
+    /// Whether the device has an eligible format for `captureFormat` at
     /// `mode`. `.daylight60` requires a range that includes 60; a device without
     /// one is refused rather than silently downgraded to 24.
-    private static func captureFormatAvailable(for device: AVCaptureDevice, mode: CameraFrameRate) -> Bool {
-        appleLog2CaptureFormat(in: device.formats, mode: mode) != nil
+    private static func captureFormatAvailable(for device: AVCaptureDevice, mode: CameraFrameRate,
+                                               captureFormat: CaptureFormat = .uhd16x9) -> Bool {
+        appleLog2CaptureFormat(in: device.formats, mode: mode, captureFormat: captureFormat) != nil
     }
 
     private static func captureFormatSubtypeDescription(_ format: AVCaptureDevice.Format?) -> String {
@@ -2946,6 +2979,20 @@ final class CameraSession: NSObject, @unchecked Sendable {
         let iso: Float
     }
 
+    /// Change the capture geometry for the next take. Refused during a take and
+    /// refused rather than downgraded when the device has no matching format.
+    func setCaptureFormat(_ format: CaptureFormat,
+                          completion: @escaping @MainActor @Sendable (Error?) -> Void) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            let error = self.applyCaptureFormatMode(format)
+            if let error {
+                print("Capture format change failed: \(error.localizedDescription)")
+            }
+            Task { @MainActor in completion(error) }
+        }
+    }
+
     /// Arm or disarm the session-only frame-rate mode.
     ///
     /// Atomic: the runtime mode changes only after a successful preflight, format
@@ -3105,6 +3152,41 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// in flight. Returns nil on success; on any failure the previous format,
     /// data-output negotiation and exposure state are restored and the mode is
     /// left unchanged.
+    /// Switch the graph to another capture geometry. MUST run on `sessionQueue`.
+    /// Mirrors `applyFrameRateMode`: the format, the data-output pixel settings
+    /// and the stored preference move together, and a failure restores the
+    /// previous snapshot rather than leaving a half-applied format.
+    private func applyCaptureFormatMode(_ format: CaptureFormat) -> Error? {
+        guard format != captureFormat else { return nil }
+        guard !recordingActive, !recordingStartPending, !recordingFinishing else {
+            return CameraError.exposureChangeDuringRecording
+        }
+        guard isConfigured, let device = activeDevice else { return CameraError.noCameraAvailable }
+        guard #available(iOS 26.0, *) else { return CameraError.appleLog2NotSupported }
+        guard let selected = Self.appleLog2CaptureFormat(in: device.formats, mode: frameRate,
+                                                         captureFormat: format) else {
+            return CameraError.captureFormatUnavailable(
+                CameraError.captureFormatUnavailableReason(for: format, mode: frameRate))
+        }
+        let snapshot = makeFrameRateSnapshot()
+        do {
+            try applyCaptureFormat(selected, to: device, mode: frameRate)
+            acceptedPixelFormats = []
+            acceptedVideoSettings = [:]
+            if let rejection = configureDataOutputForActiveFormat(activeFormat: selected) {
+                throw CameraError.writerUnavailable(rejection)
+            }
+            captureFormat = format
+        } catch {
+            restoreFrameRateSnapshot(snapshot)
+            return error
+        }
+        applyRecordingStabilization()
+        refreshPreviewFormat()
+        updatePreviewConnection()
+        return nil
+    }
+
     private func applyFrameRateMode(_ mode: CameraFrameRate) -> Error? {
         guard let device = activeDevice else { return CameraError.noCameraAvailable }
         guard #available(iOS 26.0, *) else { return CameraError.appleLog2NotSupported }
@@ -3716,6 +3798,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             Self.captureItem("shutter-angle", "\(angle)"),
             Self.captureItem("capture-iso", "\(Int(device.iso))"),
             Self.captureItem("capture-color-space", Self.captureColorSpaceLabel(device)),
+            Self.captureItem("capture-framing", captureFormat.rawValue),
             Self.captureItem("capture-format", Self.captureFormatLabel(device)),
             Self.captureItem("capture-codec", acceptedVideoSettings[AVVideoCodecKey] as? String ?? "unknown")
         ]
@@ -5218,6 +5301,10 @@ enum CameraError: LocalizedError {
     /// Distinct from a fatal configuration failure: the shared idle graph falls
     /// back to its Video graph instead of stopping the camera.
     case photoCapabilityUnavailable(String)
+    /// The device cannot deliver the requested capture geometry — e.g. no
+    /// 1920x1440 10-bit 4:2:2 Apple Log 2 format. Never substituted by another
+    /// format: a downgrade the operator did not ask for is a lie about the file.
+    case captureFormatUnavailable(String)
 
     /// Plain-words reason carried by `.daylight60Unsupported`.
     static let daylight60Reason = unsupportedFrameRateReason(for: .daylight60)
@@ -5227,6 +5314,15 @@ enum CameraError: LocalizedError {
     /// rate's reason, so a refused 120 never reports a 60-only explanation.
     static func unsupportedFrameRateReason(for mode: CameraFrameRate) -> String {
         "no 4K Apple Log 2 10-bit format supports \(mode.fps) fps on this device"
+    }
+
+    /// The refusal for a device with no format for `format` at `mode`. Names the
+    /// geometry that was asked for, so the message cannot read as a generic
+    /// camera fault.
+    static func captureFormatUnavailableReason(for format: CaptureFormat,
+                                               mode: CameraFrameRate) -> String {
+        "no \(format.width)x\(format.height) 10-bit 4:2:2 Apple Log 2 format "
+            + "supports \(mode.fps) fps on this device"
     }
 
     /// The refusal for a device that cannot deliver `mode`: the standard mode
@@ -5261,6 +5357,8 @@ enum CameraError: LocalizedError {
             return "Apple Log color space is not supported on this device."
         case .appleLog2NotSupported:
             return "Apple Log 2 recording requires a supported 4K, 24 fps camera format on this device."
+        case .captureFormatUnavailable(let detail):
+            return "That capture format is unavailable: \(detail)."
         case .recordingInProgress:
             return "A recording is already in progress."
         case .destinationAlreadyExists:

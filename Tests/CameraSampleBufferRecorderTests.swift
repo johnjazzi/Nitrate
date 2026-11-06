@@ -1780,7 +1780,7 @@ struct CameraCaptureRuntimeSourceContractTests {
         #expect(source.contains("no 4K Apple Log 2 10-bit format supports \\(mode.fps) fps on this device"))
         // A 24/60-eligible format must not be selected when another rate was
         // requested: the selector is rate-aware and never the 24 baseline.
-        #expect(source.contains("CameraCaptureFormatPolicy.appleLog2EligibleCandidateIndexes(\n            in: candidates, fps: mode.fps)"))
+        #expect(source.contains("CameraCaptureFormatPolicy.eligibleCandidateIndexes(\n            in: candidates, format: captureFormat, fps: mode.fps)"))
         #expect(!source.contains("appleLog2SixtyCandidateIndexes"))
     }
 

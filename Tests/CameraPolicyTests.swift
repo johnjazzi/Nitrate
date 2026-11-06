@@ -340,7 +340,7 @@ struct CameraPolicyTests {
             matrix: nil, primaries: "ITU_R_2020", transfer: "ITU_R_2020"
         )
         #expect(reasons == [
-            "format dimensions are 1920x1080, expected 3840x2160 or 2160x3840",
+            "format dimensions are 1920x1080, expected 3840x2160, 2160x3840, 1920x1440 or 1440x1920",
             "pixel format BGRA was not negotiated",
             "Log transfer is AppleLog2, expected Apple Log 2",
             "YCbCr matrix is missing, expected ITU_R_2020",

@@ -387,7 +387,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showStockSheet) { stockSheet }
         .sheet(isPresented: $showQueueSheet) { queueSheet }
-        .sheet(isPresented: $showSettings) {
+        .sheet(isPresented: $showSettings, onDismiss: {
+            cameraViewModel.applyCaptureFormatPreference()
+        }) {
             PurchaseView(viewModel: purchaseViewModel, showFramedPreview: $showFramedPreview,
                          manualFocusEnabled: manualFocusBinding,
                          zoomControlsEnabled: zoomControlsSetting,
@@ -613,6 +615,11 @@ struct ContentView: View {
     /// behaves exactly as 16:9.
     private var deliveryFraming: DeliveryFraming {
         DeliveryFraming.resolved(deliveryFramingRaw)
+    }
+
+    /// True while the session is recording the native 4:3 open-gate readout.
+    private var isOpenGateCapture: Bool {
+        CaptureFormat.resolved(UserDefaults.standard.string(forKey: CaptureFormat.preferenceKey)).isOpenGate
     }
 
     private func previewRect(in geometry: GeometryProxy) -> CGRect {
@@ -942,7 +949,9 @@ struct ContentView: View {
                 // layout and the tap-to-focus point mapping keep the same rect
                 // they had without it. Photo delivery is a still, not a crop of
                 // the recording, so the guide is Video/Develop only.
-                if !isPhotoMode, deliveryFraming == .fourThree {
+                // Open gate already records 4:3, so there is no crop to guide:
+                // a scrim here would dim pixels the render never discards.
+                if !isPhotoMode, deliveryFraming == .fourThree, !isOpenGateCapture {
                     GeometryReader { geometry in
                         DeliveryFramingScrim(
                             cropRect: DeliveryFramingGuide.deliveredRect(

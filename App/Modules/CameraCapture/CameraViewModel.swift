@@ -439,7 +439,7 @@ final class CameraViewModel {
         // Configure asynchronously: session setup touches camera hardware and
         // used to block the main thread, which froze launch until the run loop
         // was allowed to spin ("app doesn't load until I hit stop").
-        session.configure { [weak self] error in
+        session.configure(captureFormat: CaptureFormat.load()) { [weak self] error in
             guard let self else { return }
             self.configurationInFlight = false
             guard self.lifecycleGate.accepts(generation) else {
@@ -1274,6 +1274,20 @@ final class CameraViewModel {
                 return
             }
             self.sessionFrameRate = target
+        }
+    }
+
+    /// Re-read the persisted capture format and ask the session for it. Called
+    /// when Settings closes. A refusal is shown on screen: the operator asked for
+    /// a geometry this device cannot deliver, and silently keeping the old one
+    /// would mislabel the file.
+    func applyCaptureFormatPreference() {
+        let format = CaptureFormat.load()
+        session.setCaptureFormat(format) { [weak self] error in
+            guard let self, self.lifecycleGate.isActive else { return }
+            if let error {
+                self.errorMessage = error.localizedDescription
+            }
         }
     }
 

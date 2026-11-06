@@ -26,6 +26,11 @@ struct PurchaseView: View {
     @AppStorage(DeliverySettings.saveOriginalRAWToPhotosKey) private var saveOriginalRAWToPhotos = false
     @AppStorage(DeliverySettings.renderQualityKey) private var renderQuality = RenderExportQuality.high.rawValue
     @AppStorage(DeliverySettings.deliveryFramingKey) private var deliveryFraming = DeliveryFraming.defaultValue.rawValue
+    @AppStorage(CaptureFormat.preferenceKey) private var captureFormat = CaptureFormat.defaultValue.rawValue
+    /// Open gate records 4:3, so the delivery-framing row has nothing to crop.
+    private var isOpenGateCapture: Bool {
+        (CaptureFormat(rawValue: captureFormat) ?? CaptureFormat.defaultValue).isOpenGate
+    }
     @AppStorage(RecordButtonAppearance.preferenceKey) private var recordButtonAppearance = RecordButtonAppearance.classic.rawValue
     /// The Camera Control slide target. Stored as its raw string so the camera
     /// screen reads the same value this picker writes; an absent or unrecognised
@@ -419,6 +424,26 @@ struct PurchaseView: View {
                               help: "Saves each photo's unprocessed DNG to Photos as a second item next to the developed JPEG "
                                   + "and uses more storage. Your choice applies to photos added to the queue afterward.",
                               isOn: $saveOriginalRAWToPhotos)
+            SettingsControlRow(icon: "camera.aperture",
+                               title: "Capture Format",
+                               accessibilityTitle: "Capture format",
+                               help: "UHD 16:9 records 3840x2160, the shipping widescreen capture. "
+                                   + "Open Gate 2K records 1920x1440 in native 4:3 with the full "
+                                   + "sensor height — it is not cropped from 16:9 — and is only "
+                                   + "offered on iPhones that expose the 10-bit 4:2:2 Apple Log 2 "
+                                   + "format. Applies to videos recorded afterwards.") {
+                SettingsSelectionRow(title: "Capture Format",
+                                     valueText: (CaptureFormat(rawValue: captureFormat)
+                                                 ?? CaptureFormat.defaultValue).title) {
+                    Picker("Capture Format", selection: Binding(
+                        get: { CaptureFormat(rawValue: captureFormat) ?? CaptureFormat.defaultValue },
+                        set: { captureFormat = $0.rawValue })) {
+                        ForEach(CaptureFormatAvailability.availableFormats(), id: \.rawValue) { format in
+                            Text(format.title).tag(format)
+                        }
+                    }
+                }
+            }
             SettingsControlRow(icon: "rectangle.inset.filled",
                                title: "Delivery Framing",
                                accessibilityTitle: "Delivery framing",
@@ -427,8 +452,10 @@ struct PurchaseView: View {
                                    + "recording). The original recording is never cropped. "
                                    + "Your choice applies to videos added to the queue afterward.") {
                 SettingsSelectionRow(title: "Delivery Framing",
-                                     valueText: (DeliveryFraming(rawValue: deliveryFraming)
-                                                 ?? DeliveryFraming.defaultValue).title) {
+                                     valueText: isOpenGateCapture
+                                         ? "Whole frame (open gate)"
+                                         : (DeliveryFraming(rawValue: deliveryFraming)
+                                            ?? DeliveryFraming.defaultValue).title) {
                     Picker("Delivery Framing", selection: Binding(
                         get: { DeliveryFraming(rawValue: deliveryFraming) ?? DeliveryFraming.defaultValue },
                         set: { deliveryFraming = $0.rawValue })) {
@@ -436,6 +463,10 @@ struct PurchaseView: View {
                             Text(framing.title).tag(framing)
                         }
                     }
+                    // Open gate is already 4:3, so a delivery crop would do
+                    // nothing. Offering a control that changes no pixels is
+                    // worse than saying the frame is whole.
+                    .disabled(isOpenGateCapture)
                 }
             }
             SettingsControlRow(icon: "arrow.up.arrow.down.circle",
