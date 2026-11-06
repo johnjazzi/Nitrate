@@ -367,16 +367,23 @@ struct RenderDeliveryPreferences: Codable, Equatable, Sendable {
     /// as a second Photos resource next to the developed JPEG.
     var saveOriginalRAWToPhotos: Bool
     var quality: RenderExportQuality
+    /// Delivery framing chosen when the item was enqueued. Captured in the
+    /// snapshot for the same reason quality is: a render reads the job's own
+    /// record, never live Settings, so changing the row cannot re-crop work
+    /// that is already waiting in the queue.
+    var framing: DeliveryFraming
 
     init(saveOriginalLog: Bool = false, saveOriginalRAWToPhotos: Bool = false,
-         quality: RenderExportQuality = .high) {
+         quality: RenderExportQuality = .high,
+         framing: DeliveryFraming = DeliveryFraming.defaultValue) {
         self.saveOriginalLog = saveOriginalLog
         self.saveOriginalRAWToPhotos = saveOriginalRAWToPhotos
         self.quality = quality
+        self.framing = framing
     }
 
     private enum CodingKeys: String, CodingKey {
-        case saveOriginalLog, saveOriginalRAWToPhotos, quality
+        case saveOriginalLog, saveOriginalRAWToPhotos, quality, framing
     }
 
     init(from decoder: Decoder) throws {
@@ -387,6 +394,9 @@ struct RenderDeliveryPreferences: Codable, Equatable, Sendable {
         // Newer queues may carry a quality this version does not recognize.
         let rawQuality = try? values.decodeIfPresent(String.self, forKey: .quality)
         quality = rawQuality.flatMap(RenderExportQuality.init(rawValue:)) ?? .high
+        // Queues written before framing existed deliver the full 16:9 frame.
+        let rawFraming = try? values.decodeIfPresent(String.self, forKey: .framing)
+        framing = DeliveryFraming.resolved(rawFraming ?? nil)
     }
 }
 
@@ -402,6 +412,8 @@ enum DeliverySettings {
     /// Photo-only switch; independent of the video original switch above.
     static let saveOriginalRAWToPhotosKey = "delivery.saveOriginalRAWToPhotos"
     static let renderQualityKey = "delivery.renderQuality"
+    /// Shared with the Settings row and the delivered file's metadata value.
+    static let deliveryFramingKey = DeliveryFraming.preferenceKey
 
     static func renderPreferences(defaults: UserDefaults = .standard) -> RenderDeliveryPreferences {
         let quality = defaults.string(forKey: renderQualityKey)
@@ -409,7 +421,8 @@ enum DeliverySettings {
         return RenderDeliveryPreferences(
             saveOriginalLog: defaults.bool(forKey: saveOriginalLogKey),
             saveOriginalRAWToPhotos: defaults.bool(forKey: saveOriginalRAWToPhotosKey),
-            quality: quality
+            quality: quality,
+            framing: DeliveryFraming.resolved(defaults.string(forKey: deliveryFramingKey))
         )
     }
 

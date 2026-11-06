@@ -106,11 +106,12 @@ import Testing
                 "the value button opens a menu of the choices")
         #expect(controls.contains(#"Image(systemName: "chevron.down")"#),
                 "the value button is marked with a chevron")
-        // The three short exclusive choices each use the compact value button, and
+        // The five short exclusive choices each use the compact value button, and
         // each keeps its semantic native picker at the call site (so the choices
         // stay reachable and the selected one is checked).
-        #expect(source.components(separatedBy: "SettingsSelectionRow(title:").count - 1 == 4)
-        for title in ["Recording Indicator", "Record button", "Rendered File Size", "Camera Control"] {
+        #expect(source.components(separatedBy: "SettingsSelectionRow(title:").count - 1 == 6)
+        for title in ["Recording Indicator", "Record button", "Rendered File Size",
+                      "Capture Format", "Delivery Framing", "Camera Control"] {
             #expect(source.contains("SettingsSelectionRow(title: \"\(title)\""),
                     "\(title) must use the compact value button")
             #expect(source.contains("Picker(\"\(title)\""),

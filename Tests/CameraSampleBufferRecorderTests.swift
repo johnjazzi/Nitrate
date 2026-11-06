@@ -1729,7 +1729,8 @@ struct CameraCaptureRuntimeSourceContractTests {
         #expect(source.contains("desired.contains(mode)"))
         #expect(source.contains("let capability = FrameRateCapability(lens: lens, modes: modes)"))
         // 120 is only offered when a real format range includes 120.
-        #expect(source.contains("Self.appleLog2CaptureFormat(in: device.formats, mode: mode) != nil"))
+        #expect(source.contains("Self.appleLog2CaptureFormat(in: device.formats, mode: mode,"),
+                "the menu asks for the capture format in force, not the UHD default")
         // The 60-era seam survives as a wrapper, not a second policy.
         let support = try #require(source.range(of: "func supportsDaylight60(completion:"))
         let after = String(source[support.lowerBound...].prefix(400))
@@ -1780,7 +1781,7 @@ struct CameraCaptureRuntimeSourceContractTests {
         #expect(source.contains("no 4K Apple Log 2 10-bit format supports \\(mode.fps) fps on this device"))
         // A 24/60-eligible format must not be selected when another rate was
         // requested: the selector is rate-aware and never the 24 baseline.
-        #expect(source.contains("CameraCaptureFormatPolicy.appleLog2EligibleCandidateIndexes(\n            in: candidates, fps: mode.fps)"))
+        #expect(source.contains("CameraCaptureFormatPolicy.eligibleCandidateIndexes(\n            in: candidates, format: captureFormat, fps: mode.fps)"))
         #expect(!source.contains("appleLog2SixtyCandidateIndexes"))
     }
 

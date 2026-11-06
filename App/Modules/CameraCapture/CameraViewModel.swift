@@ -91,6 +91,31 @@ final class CameraViewModel {
         }
     }
     var recordingWarning: String?
+    /// The transient notice the corner flag shows. One at a time: a new notice
+    /// replaces the old one rather than stacking, and each carries its own
+    /// lifetime so a warning cannot outlive a moment while an error lingers.
+    private(set) var notice: CameraNotice?
+    private var noticeDismissTask: Task<Void, Never>?
+
+    /// Post a notice. The message is the operator's text; severity decides how
+    /// long it stands and what the flag looks like.
+    func showNotice(_ message: String, severity: CameraNotice.Severity) {
+        let notice = CameraNotice(severity: severity, message: message)
+        self.notice = notice
+        noticeDismissTask?.cancel()
+        noticeDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(notice.lifetime * 1_000_000_000))
+            guard !Task.isCancelled, self?.notice?.id == notice.id else { return }
+            self?.notice = nil
+        }
+    }
+
+    /// Clear the notice early — the operator opened it and is done with it.
+    func dismissNotice() {
+        noticeDismissTask?.cancel()
+        noticeDismissTask = nil
+        notice = nil
+    }
     private(set) var lastRecordedURL: URL?
     /// Set when a take finished with a readable original that failed validation.
     /// The screen saves it to Photos unchanged; it is never rendered.
@@ -439,7 +464,7 @@ final class CameraViewModel {
         // Configure asynchronously: session setup touches camera hardware and
         // used to block the main thread, which froze launch until the run loop
         // was allowed to spin ("app doesn't load until I hit stop").
-        session.configure { [weak self] error in
+        session.configure(captureFormat: Self.captureFormatForThisDevice()) { [weak self] error in
             guard let self else { return }
             self.configurationInFlight = false
             guard self.lifecycleGate.accepts(generation) else {
@@ -472,7 +497,14 @@ final class CameraViewModel {
             guard let self,
                   !self.isSwitchingCameraLens,
                   sourceLens == self.activeLens else { return }
-            self.errorMessage = error.localizedDescription
+            // A configuration the camera can recover from is advice, not a
+            // screen-owning failure: it goes to the corner flag. A dead camera
+            // still takes the screen.
+            if Self.isRecoverableCameraError(error) {
+                self.showNotice(error.localizedDescription, severity: .error)
+            } else {
+                self.errorMessage = error.localizedDescription
+            }
             self.recoverCaptureConfigurationIfNeeded(after: error)
         }
         session.onFinish { [weak self] result in
@@ -1274,6 +1306,42 @@ final class CameraViewModel {
                 return
             }
             self.sessionFrameRate = target
+        }
+    }
+
+    /// Errors the session can mend by reconnecting the graph. They are worth a
+    /// notice, not a banner: the operator can keep framing while it recovers.
+    private static func isRecoverableCameraError(_ error: Error) -> Bool {
+        guard let cameraError = error as? CameraError else { return false }
+        switch cameraError {
+        case .captureRecoveryRequired, .writerUnavailable, .captureFormatUnavailable:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The preferred capture format for this phone: open gate by default, UHD
+    /// on hardware that does not expose the 2K Apple Log 2 format.
+    static func captureFormatForThisDevice() -> CaptureFormat {
+        CaptureFormat.resolvedForDevice(
+            UserDefaults.standard.string(forKey: CaptureFormat.preferenceKey),
+            openGateSupported: CaptureFormatAvailability.supports(.openGate2K))
+    }
+
+    /// Re-read the persisted capture format and ask the session for it. Called
+    /// when Settings closes. A refusal is shown on screen: the operator asked for
+    /// a geometry this device cannot deliver, and silently keeping the old one
+    /// would mislabel the file.
+    func applyCaptureFormatPreference() {
+        let format = Self.captureFormatForThisDevice()
+        session.setCaptureFormat(format) { [weak self] error in
+            guard let self, self.lifecycleGate.isActive else { return }
+            if let error {
+                // A format switch is a settings action, not a broken camera:
+                // warn in the corner and let the operator read or dismiss it.
+                self.showNotice(error.localizedDescription, severity: .warning)
+            }
         }
     }
 

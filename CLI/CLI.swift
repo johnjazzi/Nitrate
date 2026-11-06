@@ -69,9 +69,18 @@ import Foundation
         var iso: Float = 400
         var bitrate: Int = RenderEncodingContract.averageBitRate
         var diagnosticsDirectory: URL?
+        var framing = DeliveryFraming.defaultValue
         var index = 2
         while index < arguments.count {
             switch arguments[index] {
+            case "--framing":
+                guard index + 1 < arguments.count,
+                      let value = DeliveryFraming(rawValue: arguments[index + 1]) else {
+                    print("--framing requires 16:9 or 4:3.")
+                    exit(1)
+                }
+                framing = value
+                index += 2
             case "--diagnostics":
                 guard index + 1 < arguments.count else {
                     print("--diagnostics requires a bundle directory.")
@@ -145,12 +154,14 @@ import Foundation
                     sourceURL: inputURL,
                     config: config,
                     bitrate: bitrate,
+                    framing: framing,
                     diagnosticsBundleDirectory: diagnosticsDirectory
                 )
                 print("Rendered to: \(result.outputURL?.path ?? "unavailable")")
                 print("Diagnostic bundle: \(result.bundleURL.path)")
             } else {
-                let outputURL = try await renderer.render(sourceURL: inputURL, config: config, bitrate: bitrate)
+                let outputURL = try await renderer.render(sourceURL: inputURL, config: config,
+                                                          bitrate: bitrate, framing: framing)
                 print("Rendered to: \(outputURL.path)")
             }
         } catch {

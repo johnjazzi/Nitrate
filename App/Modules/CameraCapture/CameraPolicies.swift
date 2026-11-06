@@ -107,14 +107,49 @@ enum CameraCaptureFormatPolicy {
     /// bit depth and a frame-rate range that actually includes `fps`. `.high120`
     /// uses this with 120 so a 60-only format can never be chosen for 120.
     static func appleLog2EligibleCandidateIndexes(in candidates: [Candidate], fps: Int) -> [Int] {
-        let matches = candidates.indices.filter {
+        eligibleCandidateIndexes(in: candidates, format: .uhd16x9, fps: fps)
+    }
+
+    /// The capture-format-aware selector. Both formats require Apple Log 2,
+    /// ten-bit bi-planar source and a frame-rate range that really includes
+    /// `fps`, so a missing rate is refused rather than downgraded.
+    ///
+    /// * UHD 16:9 keeps the shipping rule exactly: 3840x2160, 4:2:0 preferred
+    ///   over 4:2:2 for compatibility with every device that has shipped.
+    /// * Open Gate 2K requires the native 1920x1440 10-bit **4:2:2** format. A
+    ///   4:2:0 format at the same size is not eligible: the open-gate contract
+    ///   is the 4:2:2 sensor readout, and selecting the 4:2:0 one would change
+    ///   chroma resolution without saying so.
+    static func eligibleCandidateIndexes(in candidates: [Candidate],
+                                         format: CaptureFormat, fps: Int) -> [Int] {
+        let geometryMatches = candidates.indices.filter {
             let candidate = candidates[$0]
-            return candidate.width == 3840 && candidate.height == 2160
+            return candidate.width == format.width && candidate.height == format.height
                 && candidate.supportsAppleLog2 && candidate.supports(fps: fps)
-                && (candidate.isTenBitBiPlanar420 || candidate.isTenBitBiPlanar422)
         }
-        return matches.filter { candidates[$0].isTenBitBiPlanar420 }
-            + matches.filter { candidates[$0].isTenBitBiPlanar422 }
+        switch format {
+        case .uhd16x9:
+            let tenBit = geometryMatches.filter {
+                candidates[$0].isTenBitBiPlanar420 || candidates[$0].isTenBitBiPlanar422
+            }
+            return tenBit.filter { candidates[$0].isTenBitBiPlanar420 }
+                + tenBit.filter { candidates[$0].isTenBitBiPlanar422 }
+        case .openGate2K:
+            return geometryMatches.filter { candidates[$0].isTenBitBiPlanar422 }
+        }
+    }
+
+    /// Whether any candidate can deliver `format` at `fps`. Capability gating
+    /// reads this so the UI hides an option the hardware cannot honour.
+    static func supports(_ format: CaptureFormat, in candidates: [Candidate], fps: Int = 24) -> Bool {
+        !eligibleCandidateIndexes(in: candidates, format: format, fps: fps).isEmpty
+    }
+
+    /// Every capture format this hardware exposes, always including the UHD
+    /// baseline. Order follows `CaptureFormat.allCases` so the settings picker
+    /// reads in a stable order.
+    static func availableFormats(in candidates: [Candidate], fps: Int = 24) -> [CaptureFormat] {
+        CaptureFormat.allCases.filter { supports($0, in: candidates, fps: fps) }
     }
 }
 
@@ -378,6 +413,9 @@ enum CameraSampleValidationPolicy {
 
         static let landscape4K = CodedDimensions(validatedWidth: 3840, height: 2160)
         static let portrait4K = CodedDimensions(validatedWidth: 2160, height: 3840)
+        /// The 2K open gate readout: native 4:3, full sensor height.
+        static let landscape2K = CodedDimensions(validatedWidth: 1920, height: 1440)
+        static let portrait2K = CodedDimensions(validatedWidth: 1440, height: 1920)
 
         private init(validatedWidth width: Int, height: Int) {
             self.width = width
@@ -385,10 +423,13 @@ enum CameraSampleValidationPolicy {
         }
 
         init?(width: Int, height: Int) {
-            guard (width == 3840 && height == 2160) || (width == 2160 && height == 3840) else {
-                return nil
+            switch (width, height) {
+            case (3840, 2160): self.init(validatedWidth: width, height: height)
+            case (2160, 3840): self.init(validatedWidth: width, height: height)
+            case (1920, 1440): self.init(validatedWidth: width, height: height)
+            case (1440, 1920): self.init(validatedWidth: width, height: height)
+            default: return nil
             }
-            self.init(validatedWidth: width, height: height)
         }
 
         var isPortrait: Bool { height > width }
@@ -443,15 +484,24 @@ enum CameraSampleValidationPolicy {
         return "com.apple.apple-wide-gamut.apple-log"
     }
 
-    static func preferredTenBitPixelFormats(from available: [UInt32]) -> [UInt32] {
+    /// Ten-bit formats in preference order. `preferFourTwoTwo` is set when the
+    /// active capture format is itself 4:2:2: feeding the encoder from the
+    /// richer chroma source avoids one generation of sub-sampling before the
+    /// encode. A device that rejects it still falls back through the list.
+    static func preferredTenBitPixelFormats(from available: [UInt32],
+                                            preferFourTwoTwo: Bool = false) -> [UInt32] {
         let tenBit420: Set<UInt32> = [0x78343230, 0x78663230] // x420, xf20
         let tenBit422: Set<UInt32> = [0x78343232, 0x78663232] // x422, xf22
-        return available.filter { tenBit420.contains($0) } + available.filter { tenBit422.contains($0) }
+        let fourTwoZero = available.filter { tenBit420.contains($0) }
+        let fourTwoTwo = available.filter { tenBit422.contains($0) }
+        return preferFourTwoTwo ? fourTwoTwo + fourTwoZero : fourTwoZero + fourTwoTwo
     }
 
     static func firstUsableTenBitPixelFormat(from available: [UInt32],
+                                             preferFourTwoTwo: Bool = false,
                                              isUsable: (UInt32) -> Bool) -> UInt32? {
-        preferredTenBitPixelFormats(from: available).first(where: isUsable)
+        preferredTenBitPixelFormats(from: available, preferFourTwoTwo: preferFourTwoTwo)
+            .first(where: isUsable)
     }
 
     static func fourCCDescription(_ value: UInt32) -> String {
@@ -483,7 +533,7 @@ enum CameraSampleValidationPolicy {
                                  matrix: String?, primaries: String?, transfer: String?) -> [String] {
         var reasons: [String] = []
         if CodedDimensions(width: width, height: height) == nil {
-            reasons.append("format dimensions are \(width)x\(height), expected 3840x2160 or 2160x3840")
+            reasons.append("format dimensions are \(width)x\(height), expected 3840x2160, 2160x3840, 1920x1440 or 1440x1920")
         }
         if !acceptedPixelFormats.contains(pixelFormat) {
             reasons.append("pixel format \(fourCCDescription(pixelFormat)) was not negotiated")
