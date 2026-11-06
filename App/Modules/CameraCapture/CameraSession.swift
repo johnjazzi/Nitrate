@@ -1621,7 +1621,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
         ) { pixelFormat in
             videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat)]
             if let rejection = configureWriterForDataOutput(pixelFormat: pixelFormat,
-                                                            candidates: candidates) {
+                                                            candidates: candidates,
+                                                            activeFormat: activeFormat) {
                 candidateFailures.append("\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)): \(rejection)")
                 return false
             } else {
@@ -1634,7 +1635,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
     }
 
     private func configureWriterForDataOutput(pixelFormat: UInt32,
-                                              candidates: [UInt32]) -> String? {
+                                              candidates: [UInt32],
+                                              activeFormat: AVCaptureDevice.Format) -> String? {
         let codecs = videoOutput.availableVideoCodecTypesForAssetWriter(writingTo: .mov)
         let codecNames = codecs.map(\.rawValue)
         let codecList = codecNames.isEmpty ? "none" : codecNames.joined(separator: ", ")
@@ -1646,8 +1648,17 @@ final class CameraSession: NSObject, @unchecked Sendable {
             AVVideoLogTransferFunctionKey: AVVideoLogTransferFunction_AppleLog2,
             AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
         ]
-        let dimensions = [CameraSampleValidationPolicy.CodedDimensions.landscape4K,
-                          CameraSampleValidationPolicy.CodedDimensions.portrait4K]
+        // The writer must be negotiated for the format the session is actually
+        // delivering. A hardcoded 4K pair silently produced 3840x2160 settings
+        // for a 1920x1440 open-gate feed, and the take died on its first frame.
+        let activeSize = CMVideoFormatDescriptionGetDimensions(activeFormat.formatDescription)
+        guard let landscapeSize = CameraSampleValidationPolicy.CodedDimensions(
+                width: Int(activeSize.width), height: Int(activeSize.height)),
+              let portraitSize = CameraSampleValidationPolicy.CodedDimensions(
+                width: Int(activeSize.height), height: Int(activeSize.width)) else {
+            return "unsupported capture dimensions \(activeSize.width)x\(activeSize.height)"
+        }
+        let dimensions = [landscapeSize, portraitSize]
         var landscapeSettings: [String: Any]?
         for codedSize in dimensions {
             let settings = CameraSampleValidationPolicy.explicitHEVCMain10Settings(
@@ -1679,14 +1690,15 @@ final class CameraSession: NSObject, @unchecked Sendable {
                     "\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)); " +
                     "capture-output MOV codecs (diagnostic only): \(codecList))"
             }
-            if codedSize == .landscape4K { landscapeSettings = settings }
+            if codedSize == landscapeSize { landscapeSettings = settings }
         }
         guard let settings = landscapeSettings else {
             return "landscape HEVC Main10 writer settings were not constructed"
         }
         acceptedPixelFormats = [pixelFormat]
         acceptedVideoSettings = settings
-        print("Capture writer capability: hvc1 Main10 3840x2160 and 2160x3840; selected pixel format " +
+        print("Capture writer capability: hvc1 Main10 \(landscapeSize.width)x\(landscapeSize.height) "
+              + "and \(portraitSize.width)x\(portraitSize.height); selected pixel format " +
               "\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)); " +
               "advertised ten-bit formats: \(CameraSampleValidationPolicy.fourCCListDescription(candidates)); " +
               "capture-output MOV codecs (diagnostic only): \(codecList)")

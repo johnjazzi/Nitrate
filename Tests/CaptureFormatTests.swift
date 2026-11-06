@@ -106,6 +106,14 @@ struct CaptureFormatTests {
         #expect(delivery.deliveredHeight == 1440)
     }
 
+    @Test func theValidatorAcceptsTheOpenGateCodedDimensions() {
+        // The writer negotiates against the active format; the validator has to
+        // admit the 2K pair or a 1920x1440 take is rejected after it started.
+        #expect(CameraSampleValidationPolicy.CodedDimensions(width: 1920, height: 1440) != nil)
+        #expect(CameraSampleValidationPolicy.CodedDimensions(width: 1440, height: 1920) != nil)
+        #expect(CameraSampleValidationPolicy.CodedDimensions(width: 1920, height: 1080) == nil)
+    }
+
     @Test func aWidescreenDeliveryStillCropsWhenUhdIsRecorded() {
         let delivery = DeliveryFraming.fourThree.delivery(forSourceSize: CGSize(width: 3840, height: 2160))
         #expect(delivery.isCropped)
