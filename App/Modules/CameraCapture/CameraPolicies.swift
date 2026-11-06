@@ -484,15 +484,24 @@ enum CameraSampleValidationPolicy {
         return "com.apple.apple-wide-gamut.apple-log"
     }
 
-    static func preferredTenBitPixelFormats(from available: [UInt32]) -> [UInt32] {
+    /// Ten-bit formats in preference order. `preferFourTwoTwo` is set when the
+    /// active capture format is itself 4:2:2: feeding the encoder from the
+    /// richer chroma source avoids one generation of sub-sampling before the
+    /// encode. A device that rejects it still falls back through the list.
+    static func preferredTenBitPixelFormats(from available: [UInt32],
+                                            preferFourTwoTwo: Bool = false) -> [UInt32] {
         let tenBit420: Set<UInt32> = [0x78343230, 0x78663230] // x420, xf20
         let tenBit422: Set<UInt32> = [0x78343232, 0x78663232] // x422, xf22
-        return available.filter { tenBit420.contains($0) } + available.filter { tenBit422.contains($0) }
+        let fourTwoZero = available.filter { tenBit420.contains($0) }
+        let fourTwoTwo = available.filter { tenBit422.contains($0) }
+        return preferFourTwoTwo ? fourTwoTwo + fourTwoZero : fourTwoZero + fourTwoTwo
     }
 
     static func firstUsableTenBitPixelFormat(from available: [UInt32],
+                                             preferFourTwoTwo: Bool = false,
                                              isUsable: (UInt32) -> Bool) -> UInt32? {
-        preferredTenBitPixelFormats(from: available).first(where: isUsable)
+        preferredTenBitPixelFormats(from: available, preferFourTwoTwo: preferFourTwoTwo)
+            .first(where: isUsable)
     }
 
     static func fourCCDescription(_ value: UInt32) -> String {

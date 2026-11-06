@@ -1608,7 +1608,12 @@ final class CameraSession: NSObject, @unchecked Sendable {
         let supportedPixelFormats = videoOutput.availableVideoPixelFormatTypes.map {
             UInt32(truncating: $0 as NSNumber)
         }
-        let candidates = CameraSampleValidationPolicy.preferredTenBitPixelFormats(from: supportedPixelFormats)
+        // A 4:2:2 capture format should feed a 4:2:2 source buffer: the encoder
+        // sub-samples once, instead of inheriting chroma already halved in both
+        // directions. Devices that refuse it fall back through the list.
+        let prefersFourTwoTwo = Self.isTenBit422CaptureFormat(activeFormat)
+        let candidates = CameraSampleValidationPolicy.preferredTenBitPixelFormats(
+            from: supportedPixelFormats, preferFourTwoTwo: prefersFourTwoTwo)
         let pixelFormatList = CameraSampleValidationPolicy.fourCCListDescription(supportedPixelFormats)
         print("Camera output negotiation: active format \(Self.captureFormatSubtypeDescription(activeFormat)); " +
               "advertised pixel formats: \(pixelFormatList); ten-bit candidates: " +
@@ -1618,7 +1623,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
         var candidateFailures: [String] = []
         let selectedPixelFormat = CameraSampleValidationPolicy.firstUsableTenBitPixelFormat(
-            from: supportedPixelFormats
+            from: supportedPixelFormats, preferFourTwoTwo: prefersFourTwoTwo
         ) { pixelFormat in
             videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat)]
             if let rejection = configureWriterForDataOutput(pixelFormat: pixelFormat,
@@ -1633,6 +1638,13 @@ final class CameraSession: NSObject, @unchecked Sendable {
         guard selectedPixelFormat == nil else { return nil }
         return "no advertised ten-bit format could negotiate HEVC Main10 (output advertises: \(pixelFormatList); " +
             "attempts: \(candidateFailures.joined(separator: "; ")))"
+    }
+
+    /// Whether the capture format itself carries 4:2:2 chroma.
+    private static func isTenBit422CaptureFormat(_ format: AVCaptureDevice.Format) -> Bool {
+        let subtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
+        return subtype == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange
+            || subtype == kCVPixelFormatType_422YpCbCr10BiPlanarFullRange
     }
 
     private func configureWriterForDataOutput(pixelFormat: UInt32,

@@ -106,6 +106,16 @@ struct CaptureFormatTests {
         #expect(delivery.deliveredHeight == 1440)
     }
 
+    @Test func fourTwoTwoIsPreferredOnlyWhenTheFormatCarriesIt() {
+        let available: [UInt32] = [0x78343230, 0x78343232] // x420, x422
+        #expect(CameraSampleValidationPolicy.preferredTenBitPixelFormats(
+            from: available).first == 0x78343230,
+                "the shipping path keeps 4:2:0 first")
+        #expect(CameraSampleValidationPolicy.preferredTenBitPixelFormats(
+            from: available, preferFourTwoTwo: true).first == 0x78343232,
+                "a 4:2:2 capture format feeds a 4:2:2 source buffer")
+    }
+
     @Test func theValidatorAcceptsTheOpenGateCodedDimensions() {
         // The writer negotiates against the active format; the validator has to
         // admit the 2K pair or a 1920x1440 take is rejected after it started.
