@@ -6,6 +6,22 @@ Photos.
 
 You shoot neutral. The film look comes back from the render.
 
+## Highlights
+
+- **2K open gate, on by default.** Nitrate records the sensor's native **4:3**
+  readout — 1920×1440, 10-bit 4:2:2 Apple Log 2, up to 60 fps — instead of
+  cropping to 16:9 and throwing the top and bottom away. Nothing is squeezed: the
+  frame is the full sensor height, so the same take can be reframed vertical or
+  widescreen in post. Switch to UHD 16:9 (3840×2160) in Settings → Capture
+  Format; devices without the open-gate format stay on UHD automatically.
+- **Full film emulation, not a preset.** The stock is a print LUT generated from
+  a spectral model, and it is only part of the look: halation bleeds light from
+  the highlights, glow blooms the graded highlights, and grain is a real
+  volumetric plate. None of it is a filter over a finished image.
+- **The original is never destroyed.** Open gate changes what is recorded, not
+  what is kept — the Apple Log 2 original stays intact and every look is a
+  render of it.
+
 ## Why it exists
 
 [mood.camera](https://mood.camera) is the reference point. Its idea is that you
@@ -84,6 +100,7 @@ look already baked into the camera it would be guesswork on top of a guess.
 | OS | **iOS 27 or later.** The camera's Apple Log 2 HEVC writer requires iOS 27; the install target matches that requirement |
 | Aperture | **iOS 27 or later.** The variable-aperture API the app uses is not available before that, and the app reports aperture as unavailable |
 | Hardware | Any device whose camera advertises an **Apple Log 2** capture format. Apple Log 2 arrived with the iPhone 17 Pro; the reference device here is an iPhone 18 Pro |
+| Open gate | Needs a **1920×1440 10-bit 4:2:2** Apple Log 2 format. Devices without one hide the option and record UHD 16:9, so the default never turns into a refusal |
 | Anything else | No Apple Log 2 format means no recording. The app fails with an explicit unsupported error instead of falling back to a baked-in look |
 
 The app never tests for model names. It asks the hardware which formats it
@@ -107,7 +124,7 @@ than a refusal, but ask before shipping anything derived from it.
 
 | | |
 |---|---|
-| Format | Apple Log 2, 10-bit HEVC Main10 (`hvc1`), 3840×2160 or 2160×3840 |
+| Format | **Open gate 2K (default):** 1920×1440 native 4:3, or **UHD 16:9:** 3840×2160 — both Apple Log 2, 10-bit HEVC Main10 (`hvc1`), plus their portrait forms |
 | Requirement | Apple Log 2 capture — see [Platform](#platform) for the specific iOS versions and iPhones |
 | Lenses | Ultrawide, Normal (1×), Tele, Front — the device's real lenses, with the active focal length shown |
 | Aperture | Per-lens, over the stops the device reports (f/1.5–f/4.0 on the reference iPhone 18 Pro) |

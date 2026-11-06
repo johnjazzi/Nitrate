@@ -439,7 +439,7 @@ final class CameraViewModel {
         // Configure asynchronously: session setup touches camera hardware and
         // used to block the main thread, which froze launch until the run loop
         // was allowed to spin ("app doesn't load until I hit stop").
-        session.configure(captureFormat: CaptureFormat.load()) { [weak self] error in
+        session.configure(captureFormat: Self.captureFormatForThisDevice()) { [weak self] error in
             guard let self else { return }
             self.configurationInFlight = false
             guard self.lifecycleGate.accepts(generation) else {
@@ -1277,12 +1277,20 @@ final class CameraViewModel {
         }
     }
 
+    /// The preferred capture format for this phone: open gate by default, UHD
+    /// on hardware that does not expose the 2K Apple Log 2 format.
+    static func captureFormatForThisDevice() -> CaptureFormat {
+        CaptureFormat.resolvedForDevice(
+            UserDefaults.standard.string(forKey: CaptureFormat.preferenceKey),
+            openGateSupported: CaptureFormatAvailability.supports(.openGate2K))
+    }
+
     /// Re-read the persisted capture format and ask the session for it. Called
     /// when Settings closes. A refusal is shown on screen: the operator asked for
     /// a geometry this device cannot deliver, and silently keeping the old one
     /// would mislabel the file.
     func applyCaptureFormatPreference() {
-        let format = CaptureFormat.load()
+        let format = Self.captureFormatForThisDevice()
         session.setCaptureFormat(format) { [weak self] error in
             guard let self, self.lifecycleGate.isActive else { return }
             if let error {

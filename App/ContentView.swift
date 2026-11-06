@@ -618,8 +618,12 @@ struct ContentView: View {
     }
 
     /// True while the session is recording the native 4:3 open-gate readout.
+    /// Clamped to the hardware: a default of open gate on a phone without the
+    /// format records UHD, and the guide must agree with the session.
     private var isOpenGateCapture: Bool {
-        CaptureFormat.resolved(UserDefaults.standard.string(forKey: CaptureFormat.preferenceKey)).isOpenGate
+        CaptureFormat.resolvedForDevice(
+            UserDefaults.standard.string(forKey: CaptureFormat.preferenceKey),
+            openGateSupported: CaptureFormatAvailability.supports(.openGate2K)).isOpenGate
     }
 
     private func previewRect(in geometry: GeometryProxy) -> CGRect {

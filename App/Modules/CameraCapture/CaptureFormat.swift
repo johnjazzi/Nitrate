@@ -20,8 +20,20 @@ enum CaptureFormat: String, Codable, CaseIterable, Sendable, Identifiable {
     /// the same string is written into the delivered metadata.
     static let preferenceKey = "capture.format"
 
-    /// UHD 16:9 is the shipping default.
-    static let defaultValue: CaptureFormat = .uhd16x9
+    /// Open gate is the shipping default: a new install records the native 4:3
+    /// readout wherever the hardware offers it. A device without that format
+    /// falls back to UHD when the session is configured — the default must never
+    /// become a refusal on a phone that cannot honour it.
+    static let defaultValue: CaptureFormat = .openGate2K
+
+    /// The stored choice clamped to what this device can deliver. A stored
+    /// open-gate selection on hardware without the format degrades to UHD
+    /// instead of failing every take.
+    static func resolvedForDevice(_ raw: String?, openGateSupported: Bool) -> CaptureFormat {
+        let stored = resolved(raw)
+        if stored.isOpenGate && !openGateSupported { return .uhd16x9 }
+        return stored
+    }
 
     var id: String { rawValue }
 

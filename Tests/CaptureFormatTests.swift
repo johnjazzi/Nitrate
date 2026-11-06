@@ -9,12 +9,22 @@ struct CaptureFormatTests {
 
     // MARK: - Preference
 
-    @Test func theShippingCaptureIsTheDefault() {
-        #expect(CaptureFormat.defaultValue == .uhd16x9)
-        #expect(CaptureFormat.resolved(nil) == .uhd16x9)
-        #expect(CaptureFormat.resolved("") == .uhd16x9)
-        #expect(CaptureFormat.resolved("open-gate-3k") == .uhd16x9,
+    @Test func openGateIsTheShippingDefault() {
+        #expect(CaptureFormat.defaultValue == .openGate2K)
+        #expect(CaptureFormat.resolved(nil) == .openGate2K)
+        #expect(CaptureFormat.resolved("") == .openGate2K)
+        #expect(CaptureFormat.resolved("open-gate-3k") == .openGate2K,
                 "an unknown stored value must never invent a geometry")
+    }
+
+    @Test func aDeviceWithoutTheFormatFallsBackToUhdInsteadOfRefusingEveryTake() {
+        #expect(CaptureFormat.resolvedForDevice(nil, openGateSupported: false) == .uhd16x9,
+                "the open-gate default must not become a refusal on older hardware")
+        #expect(CaptureFormat.resolvedForDevice(nil, openGateSupported: true) == .openGate2K)
+        #expect(CaptureFormat.resolvedForDevice("open-gate-2k", openGateSupported: false) == .uhd16x9,
+                "a restored open-gate selection degrades instead of failing")
+        #expect(CaptureFormat.resolvedForDevice("uhd-16x9", openGateSupported: true) == .uhd16x9,
+                "an explicit widescreen choice is honoured on capable hardware")
     }
 
     @Test func openGateIsTheNativeTwoKReadout() {
@@ -35,11 +45,12 @@ struct CaptureFormatTests {
 
     @Test func aStoredSelectionRoundTrips() throws {
         let defaults = try #require(UserDefaults(suiteName: "capture-format-\(UUID().uuidString)"))
+        #expect(CaptureFormat.load(from: defaults) == .openGate2K,
+                "an untouched install takes the open-gate default")
+        defaults.set(CaptureFormat.uhd16x9.rawValue, forKey: CaptureFormat.preferenceKey)
         #expect(CaptureFormat.load(from: defaults) == .uhd16x9)
-        defaults.set(CaptureFormat.openGate2K.rawValue, forKey: CaptureFormat.preferenceKey)
-        #expect(CaptureFormat.load(from: defaults) == .openGate2K)
         defaults.set("bogus", forKey: CaptureFormat.preferenceKey)
-        #expect(CaptureFormat.load(from: defaults) == .uhd16x9)
+        #expect(CaptureFormat.load(from: defaults) == .openGate2K)
     }
 
     // MARK: - Format selection

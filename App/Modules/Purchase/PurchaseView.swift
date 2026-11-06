@@ -27,10 +27,15 @@ struct PurchaseView: View {
     @AppStorage(DeliverySettings.renderQualityKey) private var renderQuality = RenderExportQuality.high.rawValue
     @AppStorage(DeliverySettings.deliveryFramingKey) private var deliveryFraming = DeliveryFraming.defaultValue.rawValue
     @AppStorage(CaptureFormat.preferenceKey) private var captureFormat = CaptureFormat.defaultValue.rawValue
-    /// Open gate records 4:3, so the delivery-framing row has nothing to crop.
-    private var isOpenGateCapture: Bool {
-        (CaptureFormat(rawValue: captureFormat) ?? CaptureFormat.defaultValue).isOpenGate
+    /// The stored capture format clamped to what this phone can deliver, so a
+    /// default of open gate reads as UHD on hardware without that format.
+    private var effectiveCaptureFormat: CaptureFormat {
+        let stored = CaptureFormat(rawValue: captureFormat) ?? CaptureFormat.defaultValue
+        return CaptureFormatAvailability.availableFormats().contains(stored) ? stored : .uhd16x9
     }
+
+    /// Open gate records 4:3, so the delivery-framing row has nothing to crop.
+    private var isOpenGateCapture: Bool { effectiveCaptureFormat.isOpenGate }
     @AppStorage(RecordButtonAppearance.preferenceKey) private var recordButtonAppearance = RecordButtonAppearance.classic.rawValue
     /// The Camera Control slide target. Stored as its raw string so the camera
     /// screen reads the same value this picker writes; an absent or unrecognised
@@ -433,10 +438,9 @@ struct PurchaseView: View {
                                    + "offered on iPhones that expose the 10-bit 4:2:2 Apple Log 2 "
                                    + "format. Applies to videos recorded afterwards.") {
                 SettingsSelectionRow(title: "Capture Format",
-                                     valueText: (CaptureFormat(rawValue: captureFormat)
-                                                 ?? CaptureFormat.defaultValue).title) {
+                                     valueText: effectiveCaptureFormat.title) {
                     Picker("Capture Format", selection: Binding(
-                        get: { CaptureFormat(rawValue: captureFormat) ?? CaptureFormat.defaultValue },
+                        get: { effectiveCaptureFormat },
                         set: { captureFormat = $0.rawValue })) {
                         ForEach(CaptureFormatAvailability.availableFormats(), id: \.rawValue) { format in
                             Text(format.title).tag(format)
