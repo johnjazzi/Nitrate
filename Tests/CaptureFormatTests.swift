@@ -27,6 +27,16 @@ struct CaptureFormatTests {
                 "an explicit widescreen choice is honoured on capable hardware")
     }
 
+    @Test func settingsClampToWhatTheDeviceOffers() {
+        #expect(CaptureFormat.clamped(nil, to: [.uhd16x9]) == .uhd16x9,
+                "a device without open gate shows UHD, not a stranded selection")
+        #expect(CaptureFormat.clamped("open-gate-2k", to: [.uhd16x9]) == .uhd16x9)
+        #expect(CaptureFormat.clamped(nil, to: [.uhd16x9, .openGate2K]) == .openGate2K,
+                "a capable device shows the shipping default")
+        #expect(CaptureFormat.clamped("uhd-16x9", to: [.uhd16x9, .openGate2K]) == .uhd16x9)
+        #expect(CaptureFormat.clamped("bogus", to: [.uhd16x9, .openGate2K]) == .openGate2K)
+    }
+
     @Test func openGateIsTheNativeTwoKReadout() {
         #expect(CaptureFormat.openGate2K.width == 1920)
         #expect(CaptureFormat.openGate2K.height == 1440)

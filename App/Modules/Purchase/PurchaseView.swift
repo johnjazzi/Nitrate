@@ -30,8 +30,7 @@ struct PurchaseView: View {
     /// The stored capture format clamped to what this phone can deliver, so a
     /// default of open gate reads as UHD on hardware without that format.
     private var effectiveCaptureFormat: CaptureFormat {
-        let stored = CaptureFormat(rawValue: captureFormat) ?? CaptureFormat.defaultValue
-        return CaptureFormatAvailability.availableFormats().contains(stored) ? stored : .uhd16x9
+        CaptureFormat.clamped(captureFormat, to: CaptureFormatAvailability.availableFormats())
     }
 
     /// Open gate records 4:3, so the delivery-framing row has nothing to crop.

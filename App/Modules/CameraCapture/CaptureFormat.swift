@@ -26,9 +26,15 @@ enum CaptureFormat: String, Codable, CaseIterable, Sendable, Identifiable {
     /// become a refusal on a phone that cannot honour it.
     static let defaultValue: CaptureFormat = .openGate2K
 
-    /// The stored choice clamped to what this device can deliver. A stored
-    /// open-gate selection on hardware without the format degrades to UHD
-    /// instead of failing every take.
+    /// The stored choice clamped to the formats a device actually offers. Used
+    /// by Settings so a stored open-gate value reads as UHD where it cannot be
+    /// shot, instead of showing a selection the picker no longer lists.
+    static func clamped(_ raw: String?, to available: [CaptureFormat]) -> CaptureFormat {
+        let stored = resolved(raw)
+        if available.contains(stored) { return stored }
+        return available.first ?? .uhd16x9
+    }
+
     static func resolvedForDevice(_ raw: String?, openGateSupported: Bool) -> CaptureFormat {
         let stored = resolved(raw)
         if stored.isOpenGate && !openGateSupported { return .uhd16x9 }
