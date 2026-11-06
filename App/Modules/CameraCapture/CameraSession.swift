@@ -1605,9 +1605,21 @@ final class CameraSession: NSObject, @unchecked Sendable {
     }
 
     private func configureDataOutputForActiveFormat(activeFormat: AVCaptureDevice.Format) -> String? {
-        let supportedPixelFormats = videoOutput.availableVideoPixelFormatTypes.map {
-            UInt32(truncating: $0 as NSNumber)
-        }
+        // `availableVideoPixelFormatTypes` refreshes after the new active format
+        // has been committed and the connection re-negotiates. Reading it once,
+        // immediately, used to report "no ten-bit format" on a switch that was
+        // about to succeed. Wait briefly for the ten-bit set to appear.
+        var supportedPixelFormats: [UInt32] = []
+        let negotiationDeadline = Date().addingTimeInterval(0.4)
+        repeat {
+            supportedPixelFormats = videoOutput.availableVideoPixelFormatTypes.map {
+                UInt32(truncating: $0 as NSNumber)
+            }
+            if !CameraSampleValidationPolicy.preferredTenBitPixelFormats(from: supportedPixelFormats).isEmpty {
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        } while Date() < negotiationDeadline
         // A 4:2:2 capture format should feed a 4:2:2 source buffer: the encoder
         // sub-samples once, instead of inheriting chroma already halved in both
         // directions. Devices that refuse it fall back through the list.

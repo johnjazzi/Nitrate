@@ -497,7 +497,14 @@ final class CameraViewModel {
             guard let self,
                   !self.isSwitchingCameraLens,
                   sourceLens == self.activeLens else { return }
-            self.errorMessage = error.localizedDescription
+            // A configuration the camera can recover from is advice, not a
+            // screen-owning failure: it goes to the corner flag. A dead camera
+            // still takes the screen.
+            if Self.isRecoverableCameraError(error) {
+                self.showNotice(error.localizedDescription, severity: .error)
+            } else {
+                self.errorMessage = error.localizedDescription
+            }
             self.recoverCaptureConfigurationIfNeeded(after: error)
         }
         session.onFinish { [weak self] result in
@@ -1299,6 +1306,18 @@ final class CameraViewModel {
                 return
             }
             self.sessionFrameRate = target
+        }
+    }
+
+    /// Errors the session can mend by reconnecting the graph. They are worth a
+    /// notice, not a banner: the operator can keep framing while it recovers.
+    private static func isRecoverableCameraError(_ error: Error) -> Bool {
+        guard let cameraError = error as? CameraError else { return false }
+        switch cameraError {
+        case .captureRecoveryRequired, .writerUnavailable, .captureFormatUnavailable:
+            return true
+        default:
+            return false
         }
     }
 
