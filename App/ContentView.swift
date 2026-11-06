@@ -29,6 +29,9 @@ struct ContentView: View {
     @State private var showDaylightRescue = false
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("showFramedPreview") private var showFramedPreview = false
+    /// The same persisted key the Settings row writes; read here so the live
+    /// preview can show the crop that a render will apply.
+    @AppStorage(DeliveryFraming.preferenceKey) private var deliveryFramingRaw = DeliveryFraming.defaultValue.rawValue
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
     @AppStorage(CameraControlAdjustment.preferenceKey) private var cameraControlAdjustment = CameraControlAdjustment.defaultValue.rawValue
     /// The persisted Camera Tips switch, shared with the Settings row. ON by
@@ -606,6 +609,12 @@ struct ContentView: View {
         }
     }
 
+    /// The stored delivery framing, resolved so an absent or unreadable value
+    /// behaves exactly as 16:9.
+    private var deliveryFraming: DeliveryFraming {
+        DeliveryFraming.resolved(deliveryFramingRaw)
+    }
+
     private func previewRect(in geometry: GeometryProxy) -> CGRect {
         if showFramedPreview {
             // Keep the camera alive but hidden until both control bounds exist;
@@ -926,6 +935,25 @@ struct ContentView: View {
                    developmentPhotoPreview: isPhotoMode)
             .frame(width: rect.width, height: rect.height)
             .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
+            .overlay {
+                // Framing guide for a cropped delivery. It is a non-interactive
+                // overlay drawn inside the existing preview rect: it never
+                // resizes, moves or re-clips the surface, so the framed-preview
+                // layout and the tap-to-focus point mapping keep the same rect
+                // they had without it. Photo delivery is a still, not a crop of
+                // the recording, so the guide is Video/Develop only.
+                if !isPhotoMode, deliveryFraming == .fourThree {
+                    GeometryReader { geometry in
+                        DeliveryFramingScrim(
+                            cropRect: DeliveryFramingGuide.deliveredRect(
+                                in: CGRect(origin: .zero, size: geometry.size),
+                                framing: .fourThree)
+                        )
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                }
+            }
             .overlay {
                 if showFramedPreview {
                     RoundedRectangle(cornerRadius: 16)
@@ -1907,5 +1935,32 @@ private struct StockSheetView: View {
             )
         }
         isPresented = false
+    }
+}
+
+/// Dims everything in the live preview that the 4:3 delivery will not keep.
+///
+/// Deliberately inert: `Canvas` draws the scrim and the caller disables hit
+/// testing, so the focus/exposure tap still lands on the camera surface and
+/// `captureDevicePointConverted(fromLayerPoint:)` sees the same geometry.
+private struct DeliveryFramingScrim: View {
+    /// The delivered region in this view's own coordinates. Nil means there is
+    /// nothing to guide, and no scrim is drawn.
+    let cropRect: CGRect?
+
+    /// The dimmer over the discarded edges. Strong enough to read as "outside
+    /// the frame" against a bright scene, light enough to keep the scene
+    /// visible for framing.
+    private static let scrim = Color.black.opacity(0.55)
+
+    var body: some View {
+        if let cropRect {
+            Canvas { context, size in
+                var path = Path(CGRect(origin: .zero, size: size))
+                path.addRect(cropRect)
+                // Even-odd fill: everything except the delivered rectangle.
+                context.fill(path, with: .color(Self.scrim), style: FillStyle(eoFill: true))
+            }
+        }
     }
 }

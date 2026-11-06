@@ -25,6 +25,7 @@ struct PurchaseView: View {
     @AppStorage(DeliverySettings.saveOriginalLogKey) private var saveOriginalLog = false
     @AppStorage(DeliverySettings.saveOriginalRAWToPhotosKey) private var saveOriginalRAWToPhotos = false
     @AppStorage(DeliverySettings.renderQualityKey) private var renderQuality = RenderExportQuality.high.rawValue
+    @AppStorage(DeliverySettings.deliveryFramingKey) private var deliveryFraming = DeliveryFraming.defaultValue.rawValue
     @AppStorage(RecordButtonAppearance.preferenceKey) private var recordButtonAppearance = RecordButtonAppearance.classic.rawValue
     /// The Camera Control slide target. Stored as its raw string so the camera
     /// screen reads the same value this picker writes; an absent or unrecognised
@@ -418,6 +419,25 @@ struct PurchaseView: View {
                               help: "Saves each photo's unprocessed DNG to Photos as a second item next to the developed JPEG "
                                   + "and uses more storage. Your choice applies to photos added to the queue afterward.",
                               isOn: $saveOriginalRAWToPhotos)
+            SettingsControlRow(icon: "rectangle.inset.filled",
+                               title: "Delivery Framing",
+                               accessibilityTitle: "Delivery framing",
+                               help: "16:9 delivers the full recorded frame. 4:3 crops the sides of the "
+                                   + "rendered video to a centred 4:3 frame (2880x2160 from a 3840x2160 "
+                                   + "recording). The original recording is never cropped. "
+                                   + "Your choice applies to videos added to the queue afterward.") {
+                SettingsSelectionRow(title: "Delivery Framing",
+                                     valueText: (DeliveryFraming(rawValue: deliveryFraming)
+                                                 ?? DeliveryFraming.defaultValue).title) {
+                    Picker("Delivery Framing", selection: Binding(
+                        get: { DeliveryFraming(rawValue: deliveryFraming) ?? DeliveryFraming.defaultValue },
+                        set: { deliveryFraming = $0.rawValue })) {
+                        ForEach(DeliveryFraming.allCases, id: \.rawValue) { framing in
+                            Text(framing.title).tag(framing)
+                        }
+                    }
+                }
+            }
             SettingsControlRow(icon: "arrow.up.arrow.down.circle",
                                title: "Rendered File Size",
                                accessibilityTitle: "Rendered file size",

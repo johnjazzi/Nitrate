@@ -924,6 +924,7 @@ final class RenderQueueViewModel {
                                          bitrate: job.deliveryPreferences?.quality.averageBitRate ?? DeliverySettings.averageBitRate,
                                          capturePolicy: job.capturePolicy,
                                          isImportedSource: job.isImportedVideo == true,
+                                         framing: job.deliveryPreferences?.framing ?? DeliveryFraming.defaultValue,
                                          progress: onProgress)
     }
 

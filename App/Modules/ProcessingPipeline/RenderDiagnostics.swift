@@ -304,6 +304,8 @@ enum RenderMovieMetadata {
                              sourceNominalFrameRate: Double? = nil,
                              slate: RenderSlate = .first,
                              flash: FlashRecord? = nil,
+                             framing: DeliveryFraming? = nil,
+                             deliveredSize: CGSize? = nil,
                              overrides: [String: String] = [:],
                              omitting: Set<String> = []) throws -> [String: String] {
         try config.validate()
@@ -363,6 +365,17 @@ enum RenderMovieMetadata {
         if let offset = config.effectivePushPull.meteredOffsetEV {
             metadataValues["push-pull-metered-offset-ev"] = String(offset)
         }
+        // Delivery framing, as a fact about the file that was written: the
+        // shape the operator asked for and the pixel size actually encoded. A
+        // 4:3 delivery is a crop of the original, not a different capture, so
+        // the key says "4:3" while the original beside it stays 3840x2160.
+        if let framing {
+            metadataValues["framing"] = framing.rawValue
+        }
+        if let deliveredSize {
+            metadataValues["delivered-width"] = String(Int(deliveredSize.width.rounded()))
+            metadataValues["delivered-height"] = String(Int(deliveredSize.height.rounded()))
+        }
         // The lamp, as the capture reported it. Push/pull is a different fact —
         // what the lab did to the film — so the two never share a key.
         if let flash {
@@ -404,11 +417,13 @@ enum RenderMovieMetadata {
                      capturePolicy: RenderCapturePolicy? = nil,
                      isImportedSource: Bool = false,
                      sourceNominalFrameRate: Double? = nil,
-                     flash: FlashRecord? = nil) throws -> [AVMetadataItem] {
+                     flash: FlashRecord? = nil,
+                     framing: DeliveryFraming? = nil,
+                     deliveredSize: CGSize? = nil) throws -> [AVMetadataItem] {
         let metadataValues = try recipeValues(config: config, bitrate: bitrate,
             sourceColorProvenance: sourceColorProvenance, capturePolicy: capturePolicy,
             isImportedSource: isImportedSource, sourceNominalFrameRate: sourceNominalFrameRate,
-            flash: flash)
+            flash: flash, framing: framing, deliveredSize: deliveredSize)
         var items: [AVMutableMetadataItem] = metadataValues.sorted { $0.key < $1.key }.map { key, value in
             let item = AVMutableMetadataItem()
             item.keySpace = .quickTimeMetadata

@@ -106,11 +106,12 @@ final class PipelineRenderer: @unchecked Sendable {
         bitrate: Int = RenderEncodingContract.averageBitRate,
         capturePolicy: RenderCapturePolicy? = nil,
         isImportedSource: Bool = false,
+        framing: DeliveryFraming = .widescreen,
         progress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> URL {
         (try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange,
                                     bitrate: bitrate, capturePolicy: capturePolicy,
-                                    isImportedSource: isImportedSource,
+                                    isImportedSource: isImportedSource, framing: framing,
                                     progress: progress)).outputURL
     }
 
@@ -144,6 +145,7 @@ final class PipelineRenderer: @unchecked Sendable {
         bitrate: Int = RenderEncodingContract.averageBitRate,
         capturePolicy: RenderCapturePolicy? = nil,
         isImportedSource: Bool = false,
+        framing: DeliveryFraming = .widescreen,
         collectDecodedBufferEvidence: Bool = false,
         progress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> (outputURL: URL, counters: RenderDiagnosticsManifest.Counters,
@@ -197,11 +199,19 @@ final class PipelineRenderer: @unchecked Sendable {
         // range.
         let renderRange = trimRange ?? CMTimeRange(start: .zero, duration: duration)
 
-        let renderWidth = naturalSize.width
-        let renderHeight = naturalSize.height
+        let sourceWidth = naturalSize.width
+        let sourceHeight = naturalSize.height
+        // Delivery framing is geometry, not colour: 4:3 writes the crop's own
+        // size and fills it with the centre of the decoded frame. The source
+        // reader stays at the encoded size, so the crop is a real crop and
+        // never a squeeze of the whole frame into fewer columns.
+        let delivery = framing.delivery(forSourceSize: naturalSize)
+        guard delivery.deliveredWidth > 0, delivery.deliveredHeight > 0 else {
+            throw RenderError.stageFailed("delivery-framing", "The source has no usable dimensions.")
+        }
         // What Photos shows for the delivered clip: the encoded size with the
         // delivery transform applied, not the sensor shape.
-        let deliveryOrientation = RenderDeliveryOrientation.from(naturalSize: naturalSize,
+        let deliveryOrientation = RenderDeliveryOrientation.from(naturalSize: delivery.deliveredSize,
                                                                  preferredTransform: preferredTransform)
 
         // Use naturalSize everywhere — encoded dimensions, never swapped.
@@ -213,8 +223,8 @@ final class PipelineRenderer: @unchecked Sendable {
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_64RGBAHalf,
             AVVideoAllowWideColorKey: true,
             kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferWidthKey as String: renderWidth,
-            kCVPixelBufferHeightKey as String: renderHeight
+            kCVPixelBufferWidthKey as String: sourceWidth,
+            kCVPixelBufferHeightKey as String: sourceHeight
         ]
         let readerOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: readerOutputSettings)
         guard reader.canAdd(readerOutput) else {
@@ -260,26 +270,10 @@ final class PipelineRenderer: @unchecked Sendable {
             }
         }
 
-        let videoCompression: [String: Any] = [
-            AVVideoAverageBitRateKey: bitrate,
-            AVVideoMaxKeyFrameIntervalKey: 48,
-            AVVideoExpectedSourceFrameRateKey: nominalFrameRate,
-            // Offline encoding can use B-frames to spend the fixed bitrate more
-            // efficiently on stochastic detail such as film grain.
-            AVVideoAllowFrameReorderingKey: true
-        ]
-
-        let writerOutputSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType(rawValue: RenderEncodingContract.codec),
-            AVVideoWidthKey: renderWidth,
-            AVVideoHeightKey: renderHeight,
-            AVVideoCompressionPropertiesKey: videoCompression,
-            AVVideoColorPropertiesKey: [
-                AVVideoColorPrimariesKey: RenderEncodingContract.colorPrimaries,
-                AVVideoTransferFunctionKey: RenderEncodingContract.transferFunction,
-                AVVideoYCbCrMatrixKey: RenderEncodingContract.yCbCrMatrix
-            ]
-        ]
+        let writerOutputSettings = RenderVideoSettings.output(
+            width: delivery.deliveredWidth, height: delivery.deliveredHeight,
+            bitrate: bitrate, nominalFrameRate: nominalFrameRate
+        )
 
         let writerInput = AVAssetWriterInput(mediaType: .video, outputSettings: writerOutputSettings)
         writerInput.transform = preferredTransform
@@ -289,7 +283,7 @@ final class PipelineRenderer: @unchecked Sendable {
         // gamma (2.2 vs 2.4) still unverified — BT.709 transfer is the standard SDR tag.
         var sourcePixelBufferAttributes = CVPixelBufferCreationAttributes(
             pixelFormatType: CVPixelFormatType(rawValue: kCVPixelFormatType_32BGRA),
-            size: CVImageSize(width: Int(renderWidth), height: Int(renderHeight)),
+            size: CVImageSize(width: delivery.deliveredWidth, height: delivery.deliveredHeight),
             compatibility: [.metalTexture]
         )
         sourcePixelBufferAttributes.backing = .ioSurface
@@ -307,7 +301,7 @@ final class PipelineRenderer: @unchecked Sendable {
             config: config, bitrate: bitrate, sourceColorProvenance: sourceColorProvenance,
             orientation: deliveryOrientation, capturePolicy: capturePolicy,
             isImportedSource: isImportedSource, sourceNominalFrameRate: Double(nominalFrameRate),
-            flash: flash
+            flash: flash, framing: framing, deliveredSize: delivery.deliveredSize
         )
 
         // Audio passthrough writer input
@@ -350,6 +344,7 @@ final class PipelineRenderer: @unchecked Sendable {
                 videoProvider: videoProvider,
                 videoReceiver: videoReceiver,
                 config: config,
+                delivery: delivery,
                 audioProvider: audioProvider,
                 audioReceiver: audioReceiver,
                 cancellationHandle: cancellationHandle,
@@ -405,6 +400,7 @@ final class PipelineRenderer: @unchecked Sendable {
         config: FilmStockConfig,
         trimRange: CMTimeRange? = nil,
         bitrate: Int = RenderEncodingContract.averageBitRate,
+        framing: DeliveryFraming = .widescreen,
         diagnosticsBundleDirectory: URL
     ) async throws -> RenderDiagnosticResult {
         let runID = UUID()
@@ -432,7 +428,8 @@ final class PipelineRenderer: @unchecked Sendable {
 
         do {
             let renderResult = try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange,
-                                                          bitrate: bitrate, collectDecodedBufferEvidence: true)
+                                                          bitrate: bitrate, framing: framing,
+                                                          collectDecodedBufferEvidence: true)
             let outputURL = renderResult.outputURL
             resultOutput = outputURL
             manifest.counters = renderResult.counters
@@ -724,6 +721,7 @@ final class PipelineRenderer: @unchecked Sendable {
         videoProvider: ReadySampleProvider,
         videoReceiver: AVAssetWriterInput.PixelBufferReceiver,
         config: FilmStockConfig,
+        delivery: DeliveryFraming.Delivery,
         // The audio lane is handed to a concurrent child task, so this call
         // takes ownership of it: `sending` is what lets the child task carry
         // these non-`Sendable` AVFoundation objects across the isolation
@@ -840,6 +838,7 @@ final class PipelineRenderer: @unchecked Sendable {
                         context: FrameRenderContext(
                             receiver: videoReceiver,
                             config: config,
+                            delivery: delivery,
                             lut: lut,
                             cancellationHandle: cancellationHandle
                         ),
@@ -994,6 +993,18 @@ final class PipelineRenderer: @unchecked Sendable {
                 if captureEvidence {
                     evidence = Self.snapshotDecodedBuffer(sourcePixelBuffer)
                 }
+                // The crop was resolved from the track's naturalSize; a decoded
+                // frame of a different size would be written at the wrong
+                // geometry, so refuse rather than crop the wrong rectangle.
+                let delivery = context.delivery
+                guard width == delivery.sourceWidth, height == delivery.sourceHeight else {
+                    return .failure(RenderError.stageFailed(
+                        "delivery-framing",
+                        "Decoded frame is \(width)x\(height) but the delivery was resolved for "
+                            + "\(delivery.sourceWidth)x\(delivery.sourceHeight)."))
+                }
+                let outputWidth = delivery.deliveredWidth
+                let outputHeight = delivery.deliveredHeight
                 return outputBuffer.withUnsafeBuffer { destination in
                     guard let spatialStage = self.spatialStage,
                           let sourceTexture = self.makeTexture(from: sourcePixelBuffer, format: .rgba16Float) else {
@@ -1005,8 +1016,18 @@ final class PipelineRenderer: @unchecked Sendable {
                     // source's CVMetalTexture alive across the halation and LUT
                     // passes, both of which read it.
                     return withExtendedLifetime(sourceTexture.cvTexture) { () -> Result<Void, Error> in
+                        // Delivery framing is a geometry change only: the crop
+                        // is taken once, here, from the decoded frame, and every
+                        // pass downstream (halation, LUT, glow, grain) then runs
+                        // at the delivered size on the cropped pixels. 16:9 has
+                        // no crop, so this returns the decoded frame itself and
+                        // the pass chain is unchanged.
+                        guard let delivered = self.makeDeliverySource(sourceTexture.texture, delivery: delivery) else {
+                            return .failure(RenderError.stageFailed(
+                                "delivery-crop", "The delivery crop pass did not complete."))
+                        }
                         guard let halated = spatialStage.applyHalation(
-                            source: sourceTexture.texture,
+                            source: delivered,
                             commandQueue: self.commandQueue,
                             strength: config.halationStrength,
                             radiusFraction: config.halationRadiusFraction,
@@ -1019,8 +1040,10 @@ final class PipelineRenderer: @unchecked Sendable {
                             // frame came back darker with the halo of the light
                             // the sensor saw.
                             exposureStops: Float(config.effectivePushPull.stops.stops),
-                            width: width,
-                            height: height
+                            // The delivered texture is already the crop, so the
+                            // stage works in delivery pixels, not source pixels.
+                            width: outputWidth,
+                            height: outputHeight
                         ) else {
                             return .failure(RenderError.stageFailed("gpu-halation", "The halation stage did not complete."))
                         }
@@ -1030,8 +1053,8 @@ final class PipelineRenderer: @unchecked Sendable {
                             lut: context.lut,
                             outputContrast: config.outputContrast,
                             pushPullStops: .none,
-                            width: width,
-                            height: height
+                            width: outputWidth,
+                            height: outputHeight
                         ) else {
                             return .failure(RenderError.stageFailed("gpu-pass-1", "The LUT GPU pass did not complete."))
                         }
@@ -1040,8 +1063,8 @@ final class PipelineRenderer: @unchecked Sendable {
                             graded: graded,
                             commandQueue: self.commandQueue,
                             strength: config.glowStrength,
-                            width: width,
-                            height: height
+                            width: outputWidth,
+                            height: outputHeight
                         ) else {
                             return .failure(RenderError.stageFailed("gpu-spatial", "The glow stage did not complete."))
                         }
@@ -1055,8 +1078,8 @@ final class PipelineRenderer: @unchecked Sendable {
                             grainSize: GrainModel.effectiveSize(stockGrainSize: config.grainSize, gauge: gauge),
                             edgeBoostMultiplier: config.effectiveRecipe.edgeBoostMultiplier,
                             gaugeAmplitude: gauge.amplitudeMultiplier,
-                            width: width,
-                            height: height
+                            width: outputWidth,
+                            height: outputHeight
                         ) else {
                             return .failure(RenderError.stageFailed("gpu-pass-2", "The grain GPU pass did not complete."))
                         }
@@ -1344,6 +1367,34 @@ final class PipelineRenderer: @unchecked Sendable {
         return device.makeTexture(descriptor: desc)
     }
 
+    /// The pixels the grade operates on: the decoded frame for a widescreen
+    /// delivery, or the centred crop rectangle for a 4:3 delivery.
+    ///
+    /// The crop is a single GPU blit of the source region into a
+    /// delivery-sized texture. Doing it once, before the first pass, means the
+    /// colour chain is untouched: halation, the LUT, glow and grain all run at
+    /// the delivered size over real pixels of the original, so the delivered
+    /// file is a crop rather than a scaled copy of the whole frame.
+    private func makeDeliverySource(_ source: MTLTexture,
+                                    delivery: DeliveryFraming.Delivery) -> MTLTexture? {
+        guard delivery.isCropped else { return source }
+        guard let cropped = makeIntermediateTexture(width: delivery.deliveredWidth,
+                                                    height: delivery.deliveredHeight),
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let blit = commandBuffer.makeBlitCommandEncoder() else {
+            return nil
+        }
+        blit.copy(from: source, sourceSlice: 0, sourceLevel: 0,
+                  sourceOrigin: MTLOrigin(x: delivery.cropX, y: delivery.cropY, z: 0),
+                  sourceSize: MTLSize(width: delivery.deliveredWidth,
+                                      height: delivery.deliveredHeight, depth: 1),
+                  to: cropped, destinationSlice: 0, destinationLevel: 0,
+                  destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+        blit.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        return commandBuffer.status == .completed ? cropped : nil
+    }
 
     // MARK: - Shader & Grain Loading
 
@@ -1547,6 +1598,9 @@ struct GrainUniforms {
 private struct FrameRenderContext {
     let receiver: AVAssetWriterInput.PixelBufferReceiver
     let config: FilmStockConfig
+    /// The delivered geometry this frame is written at. A cropped delivery is
+    /// resolved once per render, so every frame crops the same rectangle.
+    let delivery: DeliveryFraming.Delivery
     let lut: MTLTexture
     let cancellationHandle: RenderCancellationHandle
 }
