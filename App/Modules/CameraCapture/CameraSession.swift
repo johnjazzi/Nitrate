@@ -1372,7 +1372,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
         // never inherit them. A connection never observed as stabilizing keeps
         // the snapshot unavailable rather than advertising an unasked capability.
         guard sharedIdleLeaseActive, videoIntent,
-              let format = Self.appleLog2CaptureFormat(in: device.formats, mode: frameRate) else {
+              let format = Self.appleLog2CaptureFormat(in: device.formats, mode: frameRate,
+                                                       captureFormat: captureFormat) else {
             return .unavailable
         }
         return CameraStabilizationPolicy.idleCapability(
@@ -1790,7 +1791,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
             }
 
             guard #available(iOS 26.0, *),
-                  Self.captureFormatAvailable(for: device, mode: self.frameRate) else {
+                  Self.captureFormatAvailable(for: device, mode: self.frameRate,
+                                              captureFormat: self.captureFormat) else {
                 let error = CameraError.unsupportedFrameRateError(for: self.frameRate)
                 self.session.commitConfiguration()
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
@@ -2394,7 +2396,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
         var line = "aperture-read idle=\(sharedIdleLeaseActive) lens=\(activeLens.rawValue) active=\(describe(capability)) " +
             "activeFormat=\(Int(dimensions.width))x\(Int(dimensions.height)) " +
             "activeRange=f/\(String(format: "%.2f", active.minLensAperture))...f/\(String(format: "%.2f", active.maxLensAperture))"
-        if #available(iOS 27.0, *), let videoFormat = Self.appleLog2CaptureFormat(in: device.formats, mode: frameRate) {
+        if #available(iOS 27.0, *),
+           let videoFormat = Self.appleLog2CaptureFormat(in: device.formats, mode: frameRate,
+                                                         captureFormat: captureFormat) {
             let videoCapability = CameraAperturePolicy.capability(
                 recommended: videoFormat.recommendedLensApertureStops,
                 minimum: videoFormat.minLensAperture,
@@ -2446,7 +2450,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// `isoRange` in video mode therefore offers ISO the take cannot take.
     var videoISORange: ClosedRange<Float> {
         guard let device = activeDevice else { return 100...3200 }
-        let eligible = Self.appleLog2CaptureFormats(in: device.formats, mode: frameRate)
+        let eligible = Self.appleLog2CaptureFormats(in: device.formats, mode: frameRate,
+                                                    captureFormat: captureFormat)
             .map { $0.minISO...$0.maxISO }
         return CameraVideoISORangePolicy.range(forCandidates: eligible) ?? isoRange
     }
@@ -3048,7 +3053,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
             }
             if self.defersVideoDeviceWrites {
                 guard mode.isStandard
-                        || Self.captureFormatAvailable(for: self.activeDevice!, mode: mode) else {
+                        || Self.captureFormatAvailable(for: self.activeDevice!, mode: mode,
+                                                       captureFormat: self.captureFormat) else {
                     finish(CameraError.unsupportedFrameRateError(for: mode)); return
                 }
                 self.frameRate = mode
@@ -3100,7 +3106,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
             #endif
             let modes = CameraFrameRatePolicy.availableModes { mode in
                 desired.contains(mode)
-                    && Self.appleLog2CaptureFormat(in: device.formats, mode: mode) != nil
+                    && Self.appleLog2CaptureFormat(in: device.formats, mode: mode,
+                                                   captureFormat: captureFormat) != nil
             }
             let capability = FrameRateCapability(lens: lens, modes: modes)
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(capability) } }
@@ -3202,7 +3209,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
     private func applyFrameRateMode(_ mode: CameraFrameRate) -> Error? {
         guard let device = activeDevice else { return CameraError.noCameraAvailable }
         guard #available(iOS 26.0, *) else { return CameraError.appleLog2NotSupported }
-        guard let format = Self.appleLog2CaptureFormat(in: device.formats, mode: mode) else {
+        guard let format = Self.appleLog2CaptureFormat(in: device.formats, mode: mode,
+                                                       captureFormat: captureFormat) else {
             return CameraError.unsupportedFrameRateError(for: mode)
         }
         let snapshot = makeFrameRateSnapshot()
@@ -3465,7 +3473,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
             }
             guard #available(iOS 26.0, *),
                   device.activeColorSpace == .appleLog2,
-                  Self.appleLog2CaptureFormat(in: [device.activeFormat], mode: self.frameRate) != nil else {
+                  Self.appleLog2CaptureFormat(in: [device.activeFormat], mode: self.frameRate,
+                                              captureFormat: self.captureFormat) != nil else {
                 let error = CameraError.unsupportedFrameRateError(for: self.frameRate)
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
                 return
@@ -3607,7 +3616,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
         guard let device = activeDevice,
               #available(iOS 26.0, *),
               device.activeColorSpace == .appleLog2,
-              Self.appleLog2CaptureFormat(in: [device.activeFormat], mode: frameRate) != nil else {
+              Self.appleLog2CaptureFormat(in: [device.activeFormat], mode: frameRate,
+                                          captureFormat: captureFormat) != nil else {
             recordingStartPending = false
             failPendingStart(CameraError.unsupportedFrameRateError(for: frameRate))
             return
