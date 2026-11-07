@@ -135,15 +135,14 @@ final class StillFilmRenderResources {
         }
         var zero: Float = 0
         var contrast = config.outputContrast
-        // The still applies the same development convention as the take: a
-        // push/pull resolved for this job (neutral when none was chosen).
-        var stops = Float(config.effectivePushPull.stops.stops)
+        // The development push/pull runs in FRONT of halation now — it is a
+        // scene-light curve, not a grading move — so the LUT pass stays neutral
+        // and applies the stock's look only. See `StillFilmEffectsStage`.
         encoder.setComputePipelineState(lutPipeline)
         encoder.setTexture(input, index: 0); encoder.setTexture(output, index: 1); encoder.setTexture(lut, index: 2)
         encoder.setBytes(&zero, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&zero, length: MemoryLayout<Float>.size, index: 1)
         encoder.setBytes(&contrast, length: MemoryLayout<Float>.size, index: 2)
-        encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 3)
         encoder.dispatchThreadgroups(MTLSize(width: (input.width + 15) / 16, height: (input.height + 15) / 16, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         encoder.endEncoding(); command.commit(); command.waitUntilCompleted()

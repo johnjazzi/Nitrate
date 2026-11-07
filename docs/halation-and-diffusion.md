@@ -42,15 +42,42 @@ halation ran at 7–48 % of its range and read faint. A fused ProRAW carries mor
 
 `RenderCLI --raw-headroom <files|dirs>` prints exactly these numbers per file.
 
-## Push/pull sits in different places, on purpose
+## Push/pull is a scene-light change, not a grade
 
-- **Video**: the pull is applied in `spatial_expose`, in front of the emulsion, so
-  halation is measured against the light the film receives. `runLUTPass` gets
-  `.none` on that path, so the gain happens once. A short-shutter-locked take in
-  flat light pulls down with its halo, instead of coming back darker with the halo
-  of the light the sensor saw.
-- **Still**: the push/pull stays in the still LUT pass — a grading choice applied
-  after the halo has already been fitted to the file.
+Both takes and stills apply the exposure in `spatial_expose`, in front of the
+emulsion, so halation and diffusion are measured against the light the film
+receives. `runLUTPass` only grades: its exposure buffers stay bound and pinned to
+neutral, so a stale kernel signature cannot apply a second gain.
+
+The curve HOLDS truly clipped highlights instead of dragging them down with the
+flat gain. For negative stops, `spatial_hold_weight` fades the gain to none at the source's clip
+ceiling, so a highlight with no scene detail left to recover stays white and
+keeps halating at full intensity, while everything below it still exposes. A
+debug-sheet frame measures its own ceiling, so the preview shows the curve the
+render will apply.
+
+Positive stops use a monotone bounded rational shoulder below the ceiling:
+`linear * gain / (1 + (gain - 1) * linear / ceiling)`. At/above the ceiling they
+are identity; an invalid ceiling falls back to flat gain. Unlike a pull below
+its hold region, a positive push does not preserve full flat midtone gain: it
+approaches that gain near black. The signed-black direction clamp is retained.
+
+Disabling halation and diffusion does not disable exposure. `applyHalation`
+returns the source unchanged only when both spatial effects are off and
+`exposureStops` is zero.
+
+The ceiling is MEASURED, because "truly clipped" is a property of the scene, not
+of the encoding:
+
+- **Still**: the file's own headroom (p99.99 of the peak channel).
+- **Take**: eight frames sampled across the render range, every pixel's peak
+  channel, p99.99 pooled (`PushPullTransfer.measuredHighlightCeiling`), floored at
+  diffuse white so an underlit take still gets a plain pull.
+- Apple Log 2's ~12× is only the fallback, for a source that cannot be sampled.
+
+Measured ceilings run far below 12× in practice — a hazy sky tops out near 3×
+white — and anchoring the hold at 12× there let a −3 stop pull take that sky down
+to an eighth of its light, into the stock's cast instead of film's white.
 
 ## Diffusion
 

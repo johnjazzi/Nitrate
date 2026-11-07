@@ -147,24 +147,182 @@ struct PushPullTests {
 
     // MARK: - Shader
 
-    @Test func shaderAppliesTheSameCurveAsTheSwiftFunction() throws {
+    /// The render applies the push/pull in FRONT of the emulsion — inside
+    /// `spatial.metal`'s halation ladder — so that kernel, not the LUT pass, is
+    /// where the curve has to be pinned. `spatial_halation_apply` with zero
+    /// halation strength and no diffusion is exactly the exposure curve.
+    @Test func spatialShaderAppliesTheSameCurveAsTheSwiftFunction() throws {
         try Self.withPipeline { device, pipeline, queue in
             for stops in PushPullStops.allCases where stops != .none {
-                let output = try Self.run(probes: Self.probes.map { Float($0) },
-                                          stops: stops, device: device, pipeline: pipeline, queue: queue)
-                for (index, code) in Self.probes.enumerated() {
-                    // The shipped cube's domain ends at code 1.0, so a push
-                    // that lands above it is held at the top knot rather than
-                    // wrapped or clipped to a wrong look.
-                    let expected = min(PushPullTransfer.gained(code: code, stops: stops), 1)
-                    // 1e-4 absorbs the cube's subtexel interpolation precision
-                    // (a 33³ identity cube resamples the coordinate, it does not
-                    // copy it bit-for-bit).
-                    #expect(abs(Double(output[index]) - expected) < 1e-4,
-                            "stops \(stops.stops) at code \(code): shader \(output[index]) vs swift \(expected)")
+                for ceiling in [Float(PushPullTransfer.clipWhite), Float(3.0)] {
+                    let ramp = (0...128).map { PushPullTransfer.encode(Double(ceiling) * Double($0) / 128) }
+                    let probes = (Self.probes + ramp).sorted()
+                    let output = try Self.run(probes: probes.map { Float($0) },
+                                              stops: stops, ceiling: ceiling,
+                                              device: device, pipeline: pipeline, queue: queue)
+                    if !stops.isPull {
+                        #expect(output == output.sorted(), "positive push inverted a gradient at ceiling \(ceiling)")
+                    }
+                    for (index, code) in probes.enumerated() {
+                        let expected = PushPullTransfer.gained(code: code, stops: stops,
+                                                               ceiling: Double(ceiling))
+                        // 1e-4 absorbs the encode/decode round trip's float error.
+                        #expect(abs(Double(output[index]) - expected) < 1e-4,
+                                "stops \(stops.stops) ceiling \(ceiling) at code \(code): shader \(output[index]) vs swift \(expected)")
+                    }
                 }
             }
         }
+    }
+
+    /// The point of the curve: a truly clipped highlight does not move, so it
+    /// stays white and keeps driving halation instead of being pulled into the
+    /// stock's cast.
+    @Test func clippedHighlightHoldsAtWhiteUnderAPull() {
+        let ceiling = PushPullTransfer.clipWhite
+        // The clip ceiling is code 1.0, and it is a fixed point of every stop.
+        let clipped = PushPullTransfer.encode(ceiling)
+        #expect(clipped > 0.99 && clipped <= 1.0)
+        for stops in PushPullStops.allCases {
+            // Within the float round trip of the ceiling code, the highlight does
+            // not move. Without the hold a four-stop pull would drag it to ~0.74.
+            #expect(abs(PushPullTransfer.gained(code: clipped, stops: stops, ceiling: ceiling) - clipped) < 1e-3,
+                    "a clipped highlight moved under \(stops.displayName)")
+        }
+        #expect(PushPullTransfer.gained(code: clipped, stops: .pullThree) < 0.9,
+                "the flat pull should have dragged the highlight down, so the hold is what protects it")
+        // A midtone well below the clip still moves the full amount: one stop at
+        // 18% grey lands on the same code as 9% grey, exactly as the flat curve.
+        let mid = PushPullTransfer.encode(0.18)
+        #expect(abs(PushPullTransfer.gained(code: mid, stops: .pullOne, ceiling: ceiling)
+            - PushPullTransfer.encode(0.09)) < 1e-9)
+        // And the ladder stays monotone at every code, so darker stops never
+        // render brighter.
+        for code in Self.probes {
+            let values = PushPullStops.allCases.map {
+                PushPullTransfer.gained(code: code, stops: $0, ceiling: ceiling)
+            }
+            #expect(values == values.sorted(), "push/pull order inverted at code \(code)")
+        }
+    }
+
+    @Test func positivePushIsMonotoneBoundedAndContinuousThroughTheCeiling() {
+        for ceiling in [1.0, 3.0, PushPullTransfer.clipWhite] {
+            for stops in [PushPullStops.pushOne, .pushTwo] {
+                var previous = 0.0
+                // Includes the ceiling, the reported 1.5/2.25/3 regression, and above-ceiling identity.
+                for index in 0...320 {
+                    let linear = ceiling * Double(index) / 256
+                    let code = PushPullTransfer.encode(linear)
+                    let result = PushPullTransfer.decode(
+                        PushPullTransfer.gained(code: code, stops: stops, ceiling: ceiling))
+                    let expected = linear >= ceiling ? linear
+                        : linear * stops.linearGain / (1 + (stops.linearGain - 1) * linear / ceiling)
+                    #expect(abs(result - expected) < 1e-9)
+                    #expect(result >= previous - 1e-9)
+                    #expect(result >= linear - 1e-9)
+                    #expect(result <= max(linear, ceiling) + 1e-9)
+                    previous = result
+                }
+                // Full flat midtone gain is a pull-only expectation. A bounded push
+                // already compresses at grey; flat gain is its limit near black.
+                let midtone = 0.18
+                let pushed = PushPullTransfer.decode(PushPullTransfer.gained(
+                    code: PushPullTransfer.encode(midtone), stops: stops, ceiling: ceiling))
+                #expect(pushed > midtone && pushed < midtone * stops.linearGain)
+            }
+        }
+    }
+
+    @Test func positivePushWithInvalidCeilingFallsBackToFlatGain() throws {
+        try Self.withPipeline { device, pipeline, queue in
+            for stops in [PushPullStops.pushOne, .pushTwo] {
+                for ceiling in [Float(0), -1, .nan, .infinity, -.infinity] {
+                    let output = try Self.run(probes: Self.probes.map { Float($0) },
+                                              stops: stops, ceiling: ceiling,
+                                              device: device, pipeline: pipeline, queue: queue)
+                    for (index, code) in Self.probes.enumerated() {
+                        // The production apply pass floors signed-black light at zero.
+                        let expected = PushPullTransfer.encode(max(0, PushPullTransfer.decode(code) * stops.linearGain))
+                        let mirrored = PushPullTransfer.gained(code: code, stops: stops, ceiling: Double(ceiling))
+                        #expect(abs(mirrored - expected) < 1e-9)
+                        #expect(abs(Double(output[index]) - expected) < 1e-4)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Measuring the source's ceiling
+
+    /// The take's ceiling is MEASURED, not assumed. The reported bug: a hazy sky
+    /// carries ~3x white, and holding at Apple Log 2's 12x — the authored
+    /// fallback, and the top of the *recording* range rather than of this take —
+    /// let a three-stop pull drag it down to an eighth of its light, which is
+    /// what put the stock's cast on highlights that were not recoverable anyway.
+    @Test func takeCeilingHoldsAHighlightTheAuthoredFallbackWouldDragDown() {
+        let sky = 3.3
+        let code = PushPullTransfer.encode(sky)
+        // At the measured ceiling the pull has nothing to recover, so the sky
+        // stays exactly where the film put it, at every stop.
+        for stops in PushPullStops.allCases {
+            let held = PushPullTransfer.gained(code: code, stops: stops, ceiling: sky)
+            #expect(abs(PushPullTransfer.decode(held) - sky) < 1e-6,
+                    "the measured ceiling moved under \(stops.displayName)")
+        }
+        // The 12x fallback holds nothing at 3.3x white: it takes the full pull.
+        let dragged = PushPullTransfer.gained(code: code, stops: .pullThree,
+                                              ceiling: PushPullTransfer.clipWhite)
+        #expect(abs(PushPullTransfer.decode(dragged) - sky / 8) < 1e-6)
+    }
+
+    /// The statistic itself: the 99.99th percentile of the peak channel, so one
+    /// blown specular cannot hold a whole take down at the top of the format.
+    @Test func measuredCeilingIsTheHighlightPercentileNotTheHotPixel() throws {
+        let white = Float(PushPullTransfer.encode(1.0))
+        let blown = Float(PushPullTransfer.encode(PushPullTransfer.clipWhite))
+        let ceiling = try #require(PushPullTransfer.measuredHighlightCeiling(
+            peakCodes: [Float](repeating: white, count: 20_000) + [blown]))
+        #expect(abs(Double(ceiling) - 1.0) < 0.01,
+                "one hot pixel set the ceiling: \(ceiling)")
+        // A frame blown all over reports the top of the range, which is what a
+        // genuinely clipped take looks like.
+        let allBlown = try #require(PushPullTransfer.measuredHighlightCeiling(
+            peakCodes: [Float](repeating: blown, count: 20_000)))
+        #expect(abs(Double(allBlown) - PushPullTransfer.clipWhite) < 0.01)
+    }
+
+    /// A dim frame has nothing blown in it, so its ceiling floors at white and a
+    /// pull darkens the whole scene — holding the top of an underlit range would
+    /// flatten exactly the frames a pull is not for.
+    @Test func dimTakeCeilingFloorsAtWhite() throws {
+        let dim = Float(PushPullTransfer.encode(0.3))
+        let ceiling = try #require(PushPullTransfer.measuredHighlightCeiling(
+            peakCodes: [Float](repeating: dim, count: 20_000)))
+        #expect(ceiling == 1)
+    }
+
+    @Test func measuredCeilingRejectsAnUnusableSample() {
+        #expect(PushPullTransfer.measuredHighlightCeiling(peakCodes: []) == nil)
+        #expect(PushPullTransfer.measuredHighlightCeiling(
+            peakCodes: [.nan, .infinity, -.infinity]) == nil)
+        // Codes below the curve's black offset carry no scene light.
+        #expect(PushPullTransfer.measuredHighlightCeiling(peakCodes: [0, -0.02]) == nil)
+    }
+
+    /// A still keeps its own measured headroom and a take its measurement; only a
+    /// source with neither falls back to the authored clip white.
+    @Test func exposureCeilingPrefersTheMeasurementOverTheAuthoredFallback() {
+        #expect(SpatialEffectsStage.halationCeiling(sceneLiftStops: 0, headroom: nil,
+                                                    highlightCeiling: 3.3) == 3.3)
+        #expect(SpatialEffectsStage.halationCeiling(sceneLiftStops: 0, headroom: 2.5) == 2.5)
+        #expect(SpatialEffectsStage.halationCeiling(sceneLiftStops: 0)
+                == SpatialEffectsStage.appleLog2ClipWhite)
+        // A measurement of zero or nonsense is not a ceiling.
+        #expect(SpatialEffectsStage.halationCeiling(sceneLiftStops: 0, headroom: 0)
+                == SpatialEffectsStage.appleLog2ClipWhite)
+        #expect(SpatialEffectsStage.halationCeiling(sceneLiftStops: 0, highlightCeiling: .nan)
+                == SpatialEffectsStage.appleLog2ClipWhite)
     }
 
     // MARK: - Config and metadata
@@ -304,19 +462,22 @@ struct PushPullTests {
 
     private static func withPipeline<T>(_ body: (MTLDevice, MTLComputePipelineState, MTLCommandQueue) throws -> T) throws -> T {
         let device = try #require(MTLCreateSystemDefaultDevice())
-        let source = try String(contentsOf: root.appendingPathComponent("Resources/Shaders/pipeline.metal"),
+        let source = try String(contentsOf: root.appendingPathComponent("Resources/Shaders/spatial.metal"),
                                 encoding: .utf8)
         let library = try device.makeLibrary(source: source, options: nil)
-        let function = try #require(library.makeFunction(name: "pass1_lut_halation_glow"))
+        let function = try #require(library.makeFunction(name: "spatial_halation_apply"))
         let pipeline = try device.makeComputePipelineState(function: function)
         let queue = try #require(device.makeCommandQueue())
         return try body(device, pipeline, queue)
     }
 
-    /// Runs the production kernel with an identity cube and unity contrast, so
-    /// the only thing between input code and output is the push/pull transform.
-    private static func run(probes: [Float], stops: PushPullStops, device: MTLDevice,
-                            pipeline: MTLComputePipelineState, queue: MTLCommandQueue) throws -> [Float] {
+    /// Runs `spatial_halation_apply` with halation disabled and no diffusion, so
+    /// the only thing between input code and output code is the exposure curve.
+    /// The masks are real textures, but strength zero multiplies their
+    /// contribution away, so they cannot affect the result.
+    private static func run(probes: [Float], stops: PushPullStops, ceiling: Float,
+                            device: MTLDevice, pipeline: MTLComputePipelineState,
+                            queue: MTLCommandQueue) throws -> [Float] {
         let width = probes.count
         let inputDescriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba32Float, width: width, height: 1, mipmapped: false)
@@ -338,50 +499,43 @@ struct PushPullTests {
         outputDescriptor.storageMode = .shared
         let output = try #require(device.makeTexture(descriptor: outputDescriptor))
 
-        // 33³ identity cube — the same grid the shipped cubes use, so the
-        // sampler's subtexel precision does not dominate the comparison. A
-        // 2x2x2 cube would quantize the coordinate to ~1/1024.
-        let size = 33
-        let lutDescriptor = MTLTextureDescriptor()
-        lutDescriptor.textureType = .type3D
-        lutDescriptor.pixelFormat = .rgba32Float
-        lutDescriptor.width = size
-        lutDescriptor.height = size
-        lutDescriptor.depth = size
-        lutDescriptor.storageMode = .shared
-        lutDescriptor.usage = .shaderRead
-        let lut = try #require(device.makeTexture(descriptor: lutDescriptor))
-        var identity = [Float]()
-        identity.reserveCapacity(size * size * size * 4)
-        for blue in 0..<size {
-            for green in 0..<size {
-                for red in 0..<size {
-                    identity.append(contentsOf: [Float(red) / Float(size - 1),
-                                                 Float(green) / Float(size - 1),
-                                                 Float(blue) / Float(size - 1), 1])
-                }
-            }
+        // A 1x1 mask stands in for the three diffused layers and all four
+        // diffusion levels. Sampled, never read: strength and amount are zero.
+        func mask() throws -> MTLTexture {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba32Float, width: 1, height: 1, mipmapped: false)
+            descriptor.usage = [.shaderRead, .shaderWrite]
+            descriptor.storageMode = .shared
+            return try #require(device.makeTexture(descriptor: descriptor))
         }
-        identity.withUnsafeBytes { bytes in
-            lut.replace(region: MTLRegionMake3D(0, 0, 0, size, size, size), mipmapLevel: 0, slice: 0,
-                        withBytes: bytes.baseAddress!, bytesPerRow: size * 16,
-                        bytesPerImage: size * size * 16)
-        }
+        let red = try mask()
+        let green = try mask()
+        let blue = try mask()
+        let levelTexture = try mask()
 
         let commandBuffer = try #require(queue.makeCommandBuffer())
         let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(input, index: 0)
-        encoder.setTexture(output, index: 1)
-        encoder.setTexture(lut, index: 2)
-        var halation: Float = 0
-        var glow: Float = 0
-        var contrast: Float = 1
-        var stopCount = Float(stops.stops)
-        encoder.setBytes(&halation, length: MemoryLayout<Float>.size, index: 0)
-        encoder.setBytes(&glow, length: MemoryLayout<Float>.size, index: 1)
-        encoder.setBytes(&contrast, length: MemoryLayout<Float>.size, index: 2)
-        encoder.setBytes(&stopCount, length: MemoryLayout<Float>.size, index: 3)
+        encoder.setTexture(red, index: 1)
+        encoder.setTexture(green, index: 2)
+        encoder.setTexture(blue, index: 3)
+        encoder.setTexture(output, index: 4)
+        for level in 0..<4 { encoder.setTexture(levelTexture, index: 5 + level) }
+        var strength: Float = 0
+        var layerScale = SIMD3<Float>(0, 0, 0)
+        var referenceSuperwhite: Float = 1
+        var diffusionWeights = SIMD4<Float>(0, 0, 0, 0)
+        var diffusionAmount: Float = 0
+        var exposureStops = Float(stops.stops)
+        var exposureCeiling = ceiling
+        encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
+        encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
+        encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
+        encoder.setBytes(&diffusionWeights, length: MemoryLayout<SIMD4<Float>>.size, index: 3)
+        encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 4)
+        encoder.setBytes(&exposureStops, length: MemoryLayout<Float>.size, index: 5)
+        encoder.setBytes(&exposureCeiling, length: MemoryLayout<Float>.size, index: 6)
         encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1))
         encoder.endEncoding()

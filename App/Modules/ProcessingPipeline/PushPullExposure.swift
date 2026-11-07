@@ -210,13 +210,19 @@ enum PushPullTransfer {
         return delta + gamma * log2(value + beta)
     }
 
-    /// One Apple Log 2 code value exposed by `stops`. Exactly the input for a
-    /// neutral setting so a zero-stop render is bit-identical to no push/pull.
+    /// One Apple Log 2 code value exposed by `stops` as a FLAT gain — the whole
+    /// scene multiplied, no highlight hold. Exactly the input for a neutral
+    /// setting so a zero-stop render is bit-identical to no push/pull.
     ///
     /// Apple Log 2 is a *signed* log curve: codes below 0.1505 carry negative
     /// scene values, and scaling a negative linear value towards zero would
     /// pull them *up* the curve. Those codes hold no scene light to recover, so
     /// the result is clamped to never move against the requested direction.
+    ///
+    /// This is the reference the metadata reports (`push-pull-linear-gain`); the
+    /// RENDER does not use it. The render applies the highlight-preserving
+    /// `gained(code:stops:ceiling:)` below, so a clipped highlight is not dragged
+    /// down into the stock's cast.
     static func gained(code: Double, stops: PushPullStops) -> Double {
         guard code.isFinite else { return code }
         guard stops != .none else { return code }
@@ -226,6 +232,97 @@ enum PushPullTransfer {
 
     static func gained(code: Float, stops: PushPullStops) -> Float {
         Float(gained(code: Double(code), stops: stops))
+    }
+
+    // MARK: - Highlight-preserving exposure curve
+
+    /// Apple Log 2's top code is ~12x diffuse white, so a source is truly
+    /// clipped there. Mirrors the 12x ceiling in `spatial.metal`.
+    static let clipWhite: Double = 12.0
+
+    /// Stops under the clip over which the pull gain rolls off. MUST equal
+    /// `kPushPullHoldStops` in `spatial.metal`, or the shader and the diagnostic
+    /// disagree. It is the one taste constant of the curve.
+    static let holdStops: Double = 1.0
+
+    /// Pull gain weight at one scene-light value: 1 where the exposure applies in
+    /// full, 0 at and above the clip ceiling. Mirrors `spatial_hold_weight`.
+    static func holdWeight(linear: Double, ceiling: Double) -> Double {
+        guard ceiling > 0, linear > 0 else { return 1 }
+        let below = min(max(log2(ceiling / linear) / holdStops, 0), 1)
+        return below * below * (3 - 2 * below)
+    }
+
+    /// One Apple Log 2 code value exposed by `stops` with the highlight hold: a
+    /// CURVE, not a flat gain. The gain fades to none at the source's clip
+    /// `ceiling`, so midtones and the recoverable shoulder pull down, while a
+    /// truly clipped highlight holds at white and keeps halating. Mirrors
+    /// `spatial_expose` in `spatial.metal`. Positive stops use a monotone rational
+    /// shoulder instead: linear * gain / (1 + (gain - 1) * linear / ceiling),
+    /// with identity at/above the ceiling and flat gain for an invalid ceiling.
+    static func gained(code: Double, stops: PushPullStops, ceiling: Double) -> Double {
+        guard code.isFinite else { return code }
+        // No `stops == .none` fast path: the shader re-encodes and floors below
+        // black at linear 0 for every stop, neutral included, so the mirror must
+        // too or a neutral render would read a hair different from a zero stop.
+        let linear = decode(code)
+        let exposed: Double
+        if stops.stops > 0 {
+            let gain = stops.linearGain
+            if ceiling.isFinite, ceiling > 0 {
+                exposed = linear >= ceiling ? linear
+                    : linear * gain / (1 + (gain - 1) * max(linear, 0) / ceiling)
+            } else {
+                exposed = linear * gain
+            }
+        } else {
+            let weight = holdWeight(linear: linear, ceiling: ceiling)
+            exposed = linear * (1 + (stops.linearGain - 1) * weight)
+        }
+        // Mirror `spatial_halation_apply`: the direction clamp runs in LINEAR
+        // light, then the re-encode floors below black at linear 0. Doing the
+        // min/max on the code instead would let a negative scene value round
+        // back up the curve and disagree with the shader.
+        let clamped = stops.isPull ? min(exposed, linear) : max(exposed, linear)
+        return encode(max(0, clamped))
+    }
+
+    static func gained(code: Float, stops: PushPullStops, ceiling: Float) -> Float {
+        Float(gained(code: Double(code), stops: stops, ceiling: Double(ceiling)))
+    }
+
+    // MARK: - Measuring a source's ceiling
+
+    /// The highlight ceiling of a SOURCE, from the peak channel of sampled
+    /// pixels.
+    ///
+    /// The 99.99th percentile, not the maximum: one hot pixel must not set a
+    /// whole take's ceiling. This is the same statistic `RAWPhotoDecoder` takes
+    /// of a still, so a take and a still hand the curve the same kind of number
+    /// — the scene light a frame's brightest *region* actually carries.
+    ///
+    /// The take has to be measured because the ceiling is a property of the
+    /// scene, not of the encoding: a hazy sky carries ~3x white and a blown
+    /// specular the full 12x, and a hold anchored at a fixed 12x cannot tell
+    /// them apart — it lets a pull drag the sky down into the stock's cast,
+    /// which is what the sky does NOT do on film. Returns nil for an empty or
+    /// non-finite sample; the caller falls back to `clipWhite`.
+    ///
+    /// Floored at diffuse white. A frame whose brightest pixel sits BELOW white
+    /// has nothing blown in it, so a pull there must darken the whole scene
+    /// rather than hold the top of a dim range — which is what anchoring at the
+    /// frame's own maximum would do to an underlit interior.
+    static func measuredHighlightCeiling(peakCodes: [Float]) -> Float? {
+        var values: [Float] = []
+        values.reserveCapacity(peakCodes.count)
+        for code in peakCodes {
+            let linear = Float(decode(Double(code)))
+            if linear.isFinite, linear > 0 { values.append(linear) }
+        }
+        guard !values.isEmpty else { return nil }
+        values.sort()
+        let measured = values[min(values.count - 1, Int(Double(values.count - 1) * 0.9999))]
+        return max(measured, 1)
     }
 
     static func gained(rgb: SIMD3<Double>, stops: PushPullStops) -> SIMD3<Double> {

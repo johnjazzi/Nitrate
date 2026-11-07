@@ -199,6 +199,12 @@ final class PipelineRenderer: @unchecked Sendable {
         // range.
         let renderRange = trimRange ?? CMTimeRange(start: .zero, duration: duration)
 
+        // Measure once so the highlight hold does not breathe with the framing.
+        // Neutral exposure does not need the extra decode pass.
+        let highlightCeiling: Float? = config.effectivePushPull.isNeutral
+            ? nil
+            : await Self.measureHighlightCeiling(asset: asset, track: videoTrack, range: renderRange)
+
         let sourceWidth = naturalSize.width
         let sourceHeight = naturalSize.height
         // Delivery framing is geometry, not colour: 4:3 writes the crop's own
@@ -345,6 +351,7 @@ final class PipelineRenderer: @unchecked Sendable {
                 videoReceiver: videoReceiver,
                 config: config,
                 delivery: delivery,
+                highlightCeiling: highlightCeiling,
                 audioProvider: audioProvider,
                 audioReceiver: audioReceiver,
                 cancellationHandle: cancellationHandle,
@@ -584,6 +591,14 @@ final class PipelineRenderer: @unchecked Sendable {
             // source BEFORE the LUT, then the LUT + output contrast, then glow,
             // then grain. Keep the source's CVMetalTexture alive across the
             // halation and LUT passes, both of which read it.
+            // The debug sheet must show the same curve the render applies, so the
+            // ceiling comes from the frame on screen, not the authored 12x
+            // fallback. A single frame IS the whole picture here, so measuring it
+            // per frame is the right granularity (the take path measures once).
+            let highlightCeiling: Float? = config.effectivePushPull.isNeutral
+                ? nil
+                : PushPullTransfer.measuredHighlightCeiling(peakCodes: Self.peakCodes(of: pixelBuffer))
+
             return withExtendedLifetime(sourceTexture.cvTexture) { () -> DebugFrameRender? in
                 guard let halated = spatialStage.applyHalation(
                     source: sourceTexture.texture,
@@ -595,6 +610,7 @@ final class PipelineRenderer: @unchecked Sendable {
                     // The pull is applied HERE, in front of the emulsion, so the
                     // halo is measured against the light the film receives. The
                     // LUT pass below therefore grades with no exposure of its own.
+                    highlightCeiling: highlightCeiling,
                     exposureStops: Float(config.effectivePushPull.stops.stops),
                     width: width,
                     height: height
@@ -604,7 +620,6 @@ final class PipelineRenderer: @unchecked Sendable {
                     input: halated,
                     lut: lut,
                     outputContrast: config.outputContrast,
-                    pushPullStops: .none,
                     width: width,
                     height: height
                 ) else { return nil }
@@ -722,6 +737,8 @@ final class PipelineRenderer: @unchecked Sendable {
         videoReceiver: AVAssetWriterInput.PixelBufferReceiver,
         config: FilmStockConfig,
         delivery: DeliveryFraming.Delivery,
+        /// The take's measured highlight ceiling, applied as the push/pull hold.
+        highlightCeiling: Float?,
         // The audio lane is handed to a concurrent child task, so this call
         // takes ownership of it: `sending` is what lets the child task carry
         // these non-`Sendable` AVFoundation objects across the isolation
@@ -840,7 +857,8 @@ final class PipelineRenderer: @unchecked Sendable {
                             config: config,
                             delivery: delivery,
                             lut: lut,
-                            cancellationHandle: cancellationHandle
+                            cancellationHandle: cancellationHandle,
+                            highlightCeiling: highlightCeiling
                         ),
                         frameIndex: frameIndex,
                         grainIndex: grainIndex,
@@ -941,6 +959,92 @@ final class PipelineRenderer: @unchecked Sendable {
                      width: width, height: height, colorAttachments: attachments, samplePoints: samples)
     }
 
+    /// The take's own highlight ceiling, in scene-light units.
+    ///
+    /// Sampled from the SAME decode contract as the render — Apple Log 2 codes
+    /// at 64RGBAHalf, no AVFoundation colour conversion — so the numbers are the
+    /// ones the push/pull curve will see. A handful of frames spread over the
+    /// render range, every pixel's peak channel, then one pooled percentile
+    /// (`PushPullTransfer.measuredHighlightCeiling`).
+    ///
+    /// Returns nil on ANY failure. An unreadable sample is not a reason to fail a
+    /// render: the caller falls back to the authored 12x ceiling, and a take that
+    /// cannot be sampled keeps the behaviour it had before this measurement
+    /// existed.
+    /// Internal so the sampling itself can be exercised against a real movie
+    /// (`TakeHighlightCeilingTests`); nothing outside this file calls it.
+    static func measureHighlightCeiling(asset: AVURLAsset,
+                                        track: AVAssetTrack,
+                                        range: CMTimeRange) async -> Float? {
+        let seconds = range.duration.seconds
+        guard seconds.isFinite, seconds > 0 else { return nil }
+        let sampleCount = 8
+        // Ask for a small frame; the stride in `peakCodes` bounds the work even
+        // if the reader hands back the native one.
+        let settings: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_64RGBAHalf,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferWidthKey as String: 256,
+            kCVPixelBufferHeightKey as String: 256
+        ]
+        var peaks: [Float] = []
+        peaks.reserveCapacity(sampleCount * 65_536)
+        for index in 0..<sampleCount {
+            // Mid-frame offsets: the first and last frames of a take are the most
+            // likely to be a slate, a black leader or a ramp.
+            let offset = (Double(index) + 0.5) / Double(sampleCount) * seconds
+            let start = CMTimeAdd(range.start, CMTime(seconds: offset, preferredTimescale: 600))
+            guard let reader = try? AVAssetReader(asset: asset) else { return nil }
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
+            guard reader.canAdd(output) else { return nil }
+            let provider = reader.outputProvider(for: output)
+            reader.timeRange = CMTimeRange(start: start,
+                                           duration: CMTime(seconds: 0.5, preferredTimescale: 600))
+            guard reader.startReading() else { return nil }
+            defer { reader.cancelReading() }
+            guard let sample = try? await provider.next() else { return nil }
+            sample.withUnsafeSampleBuffer { sampleBuffer in
+                guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+                peaks.append(contentsOf: Self.peakCodes(of: pixelBuffer))
+            }
+        }
+        return PushPullTransfer.measuredHighlightCeiling(peakCodes: peaks)
+    }
+
+    /// Every sampled pixel's peak channel, in Apple Log 2 code units.
+    ///
+    /// Strides the frame to a bounded pixel budget: a percentile does not need
+    /// every pixel of a 12 MP frame, and the decoded buffer's size is the
+    /// reader's to choose.
+    private static func peakCodes(of pixelBuffer: CVPixelBuffer) -> [Float] {
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_64RGBAHalf,
+              CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess,
+              let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return [] }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let halfWordsPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer) / MemoryLayout<UInt16>.size
+        let components = base.assumingMemoryBound(to: UInt16.self)
+        let budget = 65_536
+        let step = max(1, Int((Double(width) * Double(height) / Double(budget)).squareRoot().rounded(.up)))
+        var peaks: [Float] = []
+        peaks.reserveCapacity(budget + 1)
+        var y = 0
+        while y < height {
+            var x = 0
+            while x < width {
+                let index = y * halfWordsPerRow + x * 4
+                let red = Float(Float16(bitPattern: components[index]))
+                let green = Float(Float16(bitPattern: components[index + 1]))
+                let blue = Float(Float16(bitPattern: components[index + 2]))
+                peaks.append(max(red, max(green, blue)))
+                x += step
+            }
+            y += step
+        }
+        return peaks
+    }
+
     /// Grade and encode a single frame: LUT pass, spatial halation/glow,
     /// grain pass, then append. Throws the stage failure to report, if any.
     ///
@@ -1039,6 +1143,7 @@ final class PipelineRenderer: @unchecked Sendable {
                             // emulsion is the whole point: after halation, the
                             // frame came back darker with the halo of the light
                             // the sensor saw.
+                            highlightCeiling: context.highlightCeiling,
                             exposureStops: Float(config.effectivePushPull.stops.stops),
                             // The delivered texture is already the crop, so the
                             // stage works in delivery pixels, not source pixels.
@@ -1052,7 +1157,6 @@ final class PipelineRenderer: @unchecked Sendable {
                             input: halated,
                             lut: context.lut,
                             outputContrast: config.outputContrast,
-                            pushPullStops: .none,
                             width: outputWidth,
                             height: outputHeight
                         ) else {
@@ -1224,15 +1328,15 @@ final class PipelineRenderer: @unchecked Sendable {
     /// land near 1.0 after the LUT, and the superwhite separation halation needs
     /// would be gone.
     ///
-    /// `pushPullStops` is 0 on the video paths: their pull runs earlier, inside
-    /// `SpatialEffectsStage.applyHalation`, so halation sees the exposed scene.
-    /// It stays non-zero for stills, whose push/pull is a grading choice made
-    /// after the halo has already been fitted to the file.
+    /// The development push/pull is NOT applied here. It is a scene-light curve
+    /// that belongs in FRONT of the emulsion, so `SpatialEffectsStage.applyHalation`
+    /// runs it inside the halation ladder (`spatial_expose`) for both a take and a
+    /// still: a truly clipped highlight then holds at white and keeps halating
+    /// instead of being pulled into the stock's cast. This pass only grades.
     private func runLUTPass(
         input: MTLTexture,
         lut: MTLTexture,
         outputContrast: Float,
-        pushPullStops: PushPullStops = .none,
         width: Int,
         height: Int
     ) -> MTLTexture? {
@@ -1248,9 +1352,6 @@ final class PipelineRenderer: @unchecked Sendable {
         var halation: Float = 0
         var glow: Float = 0
         var contrast = outputContrast
-        // Render-time push/pull, in stops. Applied inside the kernel before the
-        // cube is sampled (scene-linear gain, re-encoded as Apple Log 2).
-        var stops = Float(pushPullStops.stops)
 
         encoder.setComputePipelineState(pass1Pipeline!)
         encoder.setTexture(input, index: 0)
@@ -1259,7 +1360,6 @@ final class PipelineRenderer: @unchecked Sendable {
         encoder.setBytes(&halation, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&glow, length: MemoryLayout<Float>.size, index: 1)
         encoder.setBytes(&contrast, length: MemoryLayout<Float>.size, index: 2)
-        encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 3)
 
         let threadGroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let threadGroups = MTLSize(
@@ -1603,6 +1703,9 @@ private struct FrameRenderContext {
     let delivery: DeliveryFraming.Delivery
     let lut: MTLTexture
     let cancellationHandle: RenderCancellationHandle
+    /// The take's own highlight ceiling, measured once for the whole render.
+    /// Nil when the render is neutral (nothing to hold) or the sample failed.
+    let highlightCeiling: Float?
 }
 
 /// Captures the result from the dedicated audio-copy worker for the render queue.

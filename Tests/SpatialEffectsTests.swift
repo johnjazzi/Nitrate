@@ -274,7 +274,7 @@ struct SpatialEffectsTests {
                 "added light at the source centre (\\(centreAdded)) must exceed the tail (\\(tailAdded)) — the source grows, it is not a ring")
     }
 
-    /// Zero strength is identity: a stock with halation at 0 is a passthrough.
+    /// Zero strength is identity when diffusion and exposure are also disabled.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
     func zeroStrengthIsIdentityForHalation() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
@@ -293,6 +293,48 @@ struct SpatialEffectsTests {
             #expect(abs(Double(encoded[index]) - Double(source[index])) < 0.002,
                     "zero strength must not change the frame (index \\(index))")
         }
+    }
+
+    /// Exercise the production stage, not just its apply kernel: disabling both
+    /// spatial effects must not bypass a requested push or pull.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func disabledSpatialEffectsStillApplyExposure() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        let width = 9, height = 3
+        let levels = [0.0, 0.02, 0.18, 0.75, 1.5, 2.25, 2.9, 3.0, 3.5]
+        let source = Self.sourcePixels(width: width, height: height) { x, _ in
+            SIMD3(levels[x], levels[(x + 1) % width], levels[(x + 2) % width])
+        }
+        let input = try Self.makeTexture(device: device, width: width, height: height, pixels: source)
+        for stops in PushPullStops.allCases {
+            let output = try #require(stage.applyHalation(
+                source: input, commandQueue: queue, strength: 0, radiusFraction: 0.012,
+                layerScale: Self.tint, diffusion: .disabled, highlightCeiling: 3,
+                exposureStops: Float(stops.stops), width: width, height: height))
+            let encoded = try Self.readBack(output, device: device, queue: queue, width: width, height: height)
+            if stops == .none {
+                #expect(output === input)
+                #expect(encoded == source)
+                continue
+            }
+            #expect(output !== input, "nonzero exposure must run the production stage")
+            for index in encoded.indices where index % 4 != 3 {
+                let expected = PushPullTransfer.gained(code: Double(source[index]), stops: stops, ceiling: 3)
+                // Input is already quantized; allow one half-float output step.
+                #expect(abs(Double(encoded[index]) - expected) < 0.001,
+                        "stage exposure \(stops.displayName), channel index \(index)")
+            }
+            for index in stride(from: 3, to: encoded.count, by: 4) {
+                #expect(encoded[index] == source[index])
+            }
+            let greyIndex = 2 * 4
+            let changed = Double(encoded[greyIndex]) - Double(source[greyIndex])
+            #expect(stops.isPull ? changed < -0.01 : changed > 0.01)
+        }
+        let unchanged = try Self.readBack(input, device: device, queue: queue, width: width, height: height)
+        #expect(unchanged == source, "exposure must not mutate the source")
     }
 
     // MARK: - Per-layer physics

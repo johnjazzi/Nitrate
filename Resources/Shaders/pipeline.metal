@@ -12,42 +12,16 @@ constexpr sampler linear_sampler(
 /// Input: Apple Log encoded image
 /// Output: color-graded image
 ///
-/// Halation and glow used to be applied here as per-pixel terms. They are now
-/// spatial (`spatial.metal`, story 1.4), so this pass only grades. The function
-/// name and its binding layout are a versioned contract and are unchanged; the
+/// Halation, glow and the development push/pull used to be applied here as
+/// per-pixel terms. They are all scene-light now: halation and glow are spatial
+/// (`spatial.metal`, story 1.4) and the push/pull runs in front of the emulsion
+/// inside `spatial_expose`, so this pass only grades. The function name and its
+/// binding layout are a versioned contract and are unchanged; the
 /// `halationStrength` / `glowStrength` buffers are still bound for signature
 /// stability but no longer read.
 
-// Apple Log 2 (OCIO v2.6 AppleCameras.cpp constants, shared with
-// PushPullExposure.swift and the LUT generator). Signed and unclamped at black:
-// linear 0 sits at code 0.1505, and clamping there would lift every black pixel
-// on a pull.
-constant float kAppleLog2BlackOffset = -0.05641088f;
-constant float kAppleLog2LinearKnee  = 0.01f;
-constant float kAppleLog2Scale       = 47.28711236f;
-constant float kAppleLog2Beta        = 0.00964052f;
-constant float kAppleLog2Gamma       = 0.08550479f;
-constant float kAppleLog2Delta       = 0.69336945f;
-constant float kAppleLog2CodeKnee    = 0.20855532f; // scale * (knee - offset)^2
-
-static inline float appleLog2Decode(float code) {
-    if (!isfinite(code)) { return 0.0f; }
-    if (code >= kAppleLog2CodeKnee) {
-        return exp2((code - kAppleLog2Delta) / kAppleLog2Gamma) - kAppleLog2Beta;
-    }
-    if (code >= 0.0f) { return sqrt(code / kAppleLog2Scale) + kAppleLog2BlackOffset; }
-    return kAppleLog2BlackOffset;
-}
-
-static inline float appleLog2Encode(float linear) {
-    if (!isfinite(linear)) { return 0.0f; }
-    float value = max(linear, kAppleLog2BlackOffset);
-    if (value < kAppleLog2LinearKnee) {
-        float shifted = value - kAppleLog2BlackOffset;
-        return kAppleLog2Scale * shifted * shifted;
-    }
-    return kAppleLog2Delta + kAppleLog2Gamma * log2(value + kAppleLog2Beta);
-}
+// Apple Log 2 decode/encode lives in `spatial.metal` now: the push/pull moved
+// there, and this pass works purely in encoded code values.
 
 kernel void pass1_lut_halation_glow(
     texture2d<float, access::read>  input  [[texture(0)]],
@@ -56,7 +30,6 @@ kernel void pass1_lut_halation_glow(
     constant float& halationStrength       [[buffer(0)]],
     constant float& glowStrength           [[buffer(1)]],
     constant float& outputContrast         [[buffer(2)]],
-    constant float& pushPullStops          [[buffer(3)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= input.get_width() || gid.y >= input.get_height()) {
@@ -65,29 +38,10 @@ kernel void pass1_lut_halation_glow(
 
     float4 color = input.read(gid);
 
-    // Render-time push/pull: a scene-light gain, so it is applied in the linear
-    // domain and re-encoded as Apple Log 2 before the cube is sampled. The cube
-    // is authored for Apple Log 2 code values, so a code-domain multiply would
-    // not be a stop - it would bend the curve instead of exposing it. Negative
-    // stops pull (darker), positive push (brighter).
-    //
-    // VIDEO passes 0 here. A take is locked to its shutter, so its pull belongs in
-    // FRONT of the emulsion: `PipelineRenderer` hands those stops to
-    // `SpatialEffectsStage.applyHalation` instead, and halation is measured
-    // against the light the film receives (`spatial_expose`). This kernel still
-    // runs the gain for a STILL, whose exposure is a grading choice on a frame
-    // halation has already been fitted to.
-    if (pushPullStops != 0.0f) {
-        float gain = exp2(pushPullStops);
-        float3 exposed = float3(appleLog2Encode(appleLog2Decode(color.r) * gain),
-                                appleLog2Encode(appleLog2Decode(color.g) * gain),
-                                appleLog2Encode(appleLog2Decode(color.b) * gain));
-        // Apple Log 2 is signed: codes under 0.1505 carry negative scene
-        // values, and scaling those towards zero would move them against the
-        // requested direction. Clamp so a pull only ever darkens and a push
-        // only ever brightens.
-        color.rgb = pushPullStops < 0.0f ? min(exposed, color.rgb) : max(exposed, color.rgb);
-    }
+    // The development push/pull is a scene-light curve and runs in FRONT of the
+    // emulsion for BOTH a take and a still now — `SpatialEffectsStage` applies it
+    // inside the halation ladder (`spatial_expose`) so clipping highlights hold
+    // at white and keep halating. This pass only applies the stock's look.
 
     // The Resolve .cube assets are authored directly for normalized Apple Log 2
     // code values. Do not introduce an extra contrast curve before sampling.

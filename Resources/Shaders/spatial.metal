@@ -226,7 +226,29 @@ static inline uint spatial_mask_scale(
             && mask.get_height() == input.get_height()) ? 1u : 2u;
 }
 
-/// Render-time exposure, applied to scene light BEFORE the emulsion stages.
+/// How far below the ceiling, in stops, the PULL gain rolls off. The gain is
+/// applied in full up to `2^holdStops` under the clip and fades to none at the
+/// clip itself. Widen it to protect more of the shoulder, narrow it to leave
+/// only the last fraction of a stop alone. It is the one taste constant of the
+/// curve; every other number here is derived.
+constant float kPushPullHoldStops = 1.0f;
+
+/// Pull gain weight at one scene-light value: 1 where the exposure is applied in
+/// full, 0 at and above the clip ceiling — so a truly clipped highlight does not
+/// move and keeps driving halation at full intensity.
+static inline float spatial_hold_weight(float linear, float ceiling) {
+    if (ceiling <= 0.0f || linear <= 0.0f) {
+        // Below black the direction clamp owns the result; above a missing
+        // ceiling there is nothing to hold.
+        return 1.0f;
+    }
+    float below = log2(ceiling / linear) / kPushPullHoldStops; // stops under the clip
+    below = clamp(below, 0.0f, 1.0f);
+    return below * below * (3.0f - 2.0f * below);              // smoothstep
+}
+
+/// Render-time push/pull as a highlight-preserving exposure CURVE, applied to
+/// scene light BEFORE the emulsion stages.
 ///
 /// A video take is locked to its shutter, so a bright day is over-exposed at the
 /// sensor and the operator pulls the exposure down in the render. Applying that
@@ -235,14 +257,40 @@ static inline uint spatial_mask_scale(
 /// halo. Exposing the scene first puts the pull where a real exposure change
 /// would be — in front of the film.
 ///
+/// It is a CURVE, not a flat gain. A flat ±EV multiplies the whole scene, so a
+/// pull drags the truly clipped highlights (which carry no scene detail to
+/// recover) down out of white and into midtones — and there they pick up the
+/// base stock's cast instead of reading as film. Film does the opposite: light
+/// past the emulsion's latitude stays fully developed, prints as white, and
+/// halates. So the gain fades to none at the source's clip ceiling: midtones and
+/// the recoverable shoulder pull down, while a clipped highlight holds at white
+/// and keeps its full-intensity halo.
+/// Positive stops instead use a monotone rational shoulder below the ceiling,
+/// with identity at/above it. Blending a positive gain by the pull weight would
+/// overshoot the ceiling and invert gradients as the weight falls to zero.
+///
 /// Apple Log 2 is signed: codes under the black point carry NEGATIVE scene
 /// values, and scaling those toward zero would move them against the requested
 /// direction. Clamp so a pull only ever darkens and a push only ever brightens.
-static inline float3 spatial_expose(float3 linear, float stops) {
+static inline float3 spatial_expose(float3 linear, float stops, float ceiling) {
     if (stops == 0.0f) {
         return linear;
     }
-    float3 exposed = linear * exp2(stops);
+    float gain = exp2(stops);
+    if (stops > 0.0f) {
+        float3 exposed = linear * gain;
+        if (isfinite(ceiling) && ceiling > 0.0f) {
+            // Monotone, bounded shoulder; at/above the ceiling is identity.
+            // Negative light uses flat gain before the signed-black clamp.
+            exposed /= 1.0f + (gain - 1.0f) * max(linear, 0.0f) / ceiling;
+            exposed = select(exposed, linear, linear >= ceiling);
+        }
+        return max(exposed, linear);
+    }
+    float3 weight = float3(spatial_hold_weight(linear.x, ceiling),
+                           spatial_hold_weight(linear.y, ceiling),
+                           spatial_hold_weight(linear.z, ceiling));
+    float3 exposed = linear * (1.0f + (gain - 1.0f) * weight);
     return stops < 0.0f ? min(exposed, linear) : max(exposed, linear);
 }
 
@@ -262,6 +310,7 @@ kernel void spatial_halation_mask(
     constant float& greenKnee              [[buffer(1)]],
     constant float& blueKnee               [[buffer(2)]],
     constant float& exposureStops          [[buffer(3)]],
+    constant float& exposureCeiling        [[buffer(4)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= mask.get_width() || gid.y >= mask.get_height()) {
@@ -271,7 +320,7 @@ kernel void spatial_halation_mask(
     uint valid = 0;
     float3 linear = spatial_expose(
         spatial_linear_block(input, gid, spatial_mask_scale(mask, input), valid),
-        exposureStops);
+        exposureStops, exposureCeiling);
     float3 energy = spatial_energy(linear, float3(redKnee, greenKnee, blueKnee));
 
     mask.write(float4(energy, 1.0f), gid);
@@ -294,6 +343,7 @@ kernel void spatial_scene_prepare(
     constant float& greenKnee              [[buffer(1)]],
     constant float& blueKnee               [[buffer(2)]],
     constant float& exposureStops          [[buffer(3)]],
+    constant float& exposureCeiling        [[buffer(4)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= mask.get_width() || gid.y >= mask.get_height()) {
@@ -303,7 +353,7 @@ kernel void spatial_scene_prepare(
     uint valid = 0;
     float3 scene = spatial_expose(
         spatial_linear_block(input, gid, spatial_mask_scale(mask, input), valid),
-        exposureStops);
+        exposureStops, exposureCeiling);
     float3 energy = spatial_energy(scene, float3(redKnee, greenKnee, blueKnee));
 
     mask.write(float4(energy, 1.0f), gid);
@@ -345,6 +395,7 @@ kernel void spatial_halation_apply(
     constant float4& diffusionWeights      [[buffer(3)]],
     constant float& diffusionAmount        [[buffer(4)]],
     constant float& exposureStops          [[buffer(5)]],
+    constant float& exposureCeiling        [[buffer(6)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
@@ -381,7 +432,7 @@ kernel void spatial_halation_apply(
     float3 linear = spatial_expose(float3(apple_log_decode(base.r),
                                           apple_log_decode(base.g),
                                           apple_log_decode(base.b)),
-                                   exposureStops);
+                                   exposureStops, exposureCeiling);
 
     // Lens diffusion: blend the scene light toward the multi-scale blurred
     // version. The levels are the same blur sampled at three (or four) scales;
