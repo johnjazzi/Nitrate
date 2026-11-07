@@ -133,8 +133,8 @@ struct DaylightCapturePolicyLedger: Equatable {
 
     /// Record the mode captured when a take started, before the screen observes
     /// the completed URL.
-    mutating func record(sourceURL: URL, mode: CameraFrameRate) {
-        guard let policy = RenderCapturePolicy(mode.fps) else { return }
+    mutating func record(sourceURL: URL, mode: CameraFrameRate, sourceProfile: CameraSourceProfile = .appleLog2) {
+        guard let policy = RenderCapturePolicy(mode.fps, sourceProfile: sourceProfile) else { return }
         let key = sourceURL.standardizedFileURL
         policies[key] = policy
         order.removeAll { $0 == key }

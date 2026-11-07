@@ -69,6 +69,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     private var videoSettings: [String: Any] = [:]
     private var audioSettings: [String: Any]?
     private var acceptedPixelFormats: Set<UInt32> = []
+    private var sourceProfile: CameraSourceProfile = .appleLog2
     private var metadata: [AVMetadataItem] = []
     private var transform = CGAffineTransform.identity
     /// Physical device orientation held at recording start. Drives the delivery
@@ -110,7 +111,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     private var recentDropTimes: [Double] = []
     private var clipGeneration: UInt64 = 0
     private let writerFactory: CameraSampleBufferWriterFactory
-    private let outputValidator: (URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void
+    private let outputValidator: ((URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void)?
     /// Production: true when the microphone was actually configured for this
     /// take, so a zero-audio result must be reported as a failure rather than a
     /// clean success. Not debug-only — a Release build that configured a
@@ -139,7 +140,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
 
     init(queue: DispatchQueue,
          writerFactory: @escaping CameraSampleBufferWriterFactory = CameraSampleBufferRecorder.defaultWriterFactory,
-         outputValidator: @escaping (URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void = CameraSampleBufferRecorder.validateOutput,
+         outputValidator: ((URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void)? = nil,
          uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          scheduleDrainTimeout: ((TimeInterval, @escaping @Sendable () -> Void) -> Void)? = nil) {
         self.queue = queue
@@ -156,6 +157,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         videoSettings: [String: Any],
         audioSettings: [String: Any]?,
         acceptedPixelFormats: Set<UInt32>,
+        sourceProfile: CameraSourceProfile = .appleLog2,
         metadata: [AVMetadataItem],
         deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation = .unknown,
         captureRotationAngle: CGFloat? = nil,
@@ -190,6 +192,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             self.audioSettings = snapshot.audioSettings
             if snapshot.audioSettings == nil { self.audioPreroll.removeAll() }
             self.acceptedPixelFormats = acceptedPixelFormats
+            self.sourceProfile = sourceProfile
             self.metadata = snapshot.metadata
             self.transform = .identity
             self.deliveryOrientation = deliveryOrientation
@@ -470,7 +473,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             width: Int(dimensions.width), height: Int(dimensions.height), pixelFormat: pixelFormat,
             acceptedPixelFormats: acceptedPixelFormats,
             logTransfer: logTransfer as? String, matrix: matrix as? String,
-            primaries: primaries as? String, transfer: transfer as? String
+            primaries: primaries as? String, transfer: transfer as? String,
+            sourceProfile: sourceProfile
         )
         if Int(dimensions.width) != pixelBufferWidth || Int(dimensions.height) != pixelBufferHeight {
             validationRejections.append("format description is \(dimensions.width)x\(dimensions.height), " +
@@ -799,7 +803,13 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                     guard let dimensions = self.codedDimensions else {
                         throw CameraSampleBufferRecorderError.invalidFinalMovie("missing latched coded dimensions")
                     }
-                    try self.outputValidator(destination, dimensions, self.transform, self.appendedAudioSamples)
+                    if let validator = self.outputValidator {
+                        try validator(destination, dimensions, self.transform, self.appendedAudioSamples)
+                    } else {
+                        try Self.validateOutput(destination, expectedDimensions: dimensions, transform: self.transform,
+                                                appendedAudioSamples: self.appendedAudioSamples,
+                                                sourceProfile: self.sourceProfile)
+                    }
                 } catch {
                     // The original finalized readably; a validation failure
                     // must retain it rather than delete the take.
@@ -969,14 +979,15 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     /// to completion here instead of re-ordering the finalization path around a
     /// task hop.
     private static func validateOutput(_ url: URL, expectedDimensions: CameraCaptureCodedDimensions,
-                                       transform: CGAffineTransform, appendedAudioSamples: Int) throws {
+                                       transform: CGAffineTransform, appendedAudioSamples: Int,
+                                       sourceProfile: CameraSourceProfile) throws {
         let outcome = CameraSampleValidationOutcome()
         let finished = DispatchSemaphore(value: 0)
         Task {
             do {
                 try await validateLoadedOutput(url, expectedDimensions: expectedDimensions,
                                                transform: transform,
-                                               appendedAudioSamples: appendedAudioSamples)
+                                               appendedAudioSamples: appendedAudioSamples, sourceProfile: sourceProfile)
                 outcome.succeed()
             } catch {
                 outcome.fail(error)
@@ -993,7 +1004,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     /// below still reports the same error it reported before.
     private static func validateLoadedOutput(_ url: URL, expectedDimensions: CameraCaptureCodedDimensions,
                                              transform: CGAffineTransform,
-                                             appendedAudioSamples: Int) async throws {
+                                             appendedAudioSamples: Int, sourceProfile: CameraSourceProfile) async throws {
         let asset = AVURLAsset(url: url)
         let videoTracks = (try? await asset.loadTracks(withMediaType: .video)) ?? []
         guard let track = videoTracks.first else {
@@ -1028,6 +1039,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         let matrix = extensionValue(kCMFormatDescriptionExtension_YCbCrMatrix) as? String
         let primaries = extensionValue(kCMFormatDescriptionExtension_ColorPrimaries) as? String
         let transfer = extensionValue(kCMFormatDescriptionExtension_TransferFunction) as? String
+        try RenderInputColorProvenance.validate(videoFormats.map(RenderInputColorProvenance.evidence(for:)),
+                                                expectedProfile: sourceProfile)
         // Loaded once: the finalized asset is immutable, so this is the same
         // value the property read used to return at every use below.
         let preferredTransform = (try? await track.load(.preferredTransform)) ?? .identity
@@ -1035,8 +1048,6 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         guard codec == 0x68766331,
               dimensions.width == expectedDimensions.width, dimensions.height == expectedDimensions.height,
               bitDepth == 10, isMain10_420,
-              CameraSampleValidationPolicy.isAppleLog2(logTransfer), matrix == "ITU_R_2020",
-              primaries == nil, transfer == nil,
               preferredTransform == transform,
               timeRange.duration.isValid, timeRange.duration.seconds > 0 else {
             let codecText = String(codec, radix: 16)
@@ -1316,7 +1327,7 @@ enum CameraSampleBufferRecorderError: LocalizedError {
         case .log2WriterUnavailable: return "Apple Log 2 HEVC writing requires iOS 27 or later."
         case .unsupportedWriterSettings(let detail): return "The writer rejected \(detail) settings."
         case .writerStartFailed: return "The HEVC writer could not start."
-        case .invalidVideoSample(let detail): return "The camera returned an invalid Apple Log 2 frame: \(detail)."
+        case .invalidVideoSample(let detail): return "The camera returned an invalid source frame: \(detail)."
         case .invalidAudioSample(let detail): return "The camera returned invalid PCM audio: \(detail)."
         case .nonMonotonicTimestamp(let track): return "The \(track) capture timestamps are not increasing."
         case .appendFailed(let track): return "The \(track) sample could not be encoded."
@@ -1330,7 +1341,7 @@ enum CameraSampleBufferRecorderError: LocalizedError {
         case .discontinuousSourceAudio(let seconds):
             return "Capture audio has a \(String(format: "%.3f", seconds))-second discontinuity inside the take."
         case .finalizationFailed: return "The HEVC recording could not be finalized."
-        case .invalidFinalMovie(let detail): return "The finalized movie failed Apple Log 2 validation: \(detail)."
+        case .invalidFinalMovie(let detail): return "The finalized movie failed source validation: \(detail)."
         }
     }
 }

@@ -61,7 +61,7 @@ import Foundation
             return
         }
         guard arguments.count >= 2 else {
-            print("Usage: RenderCLI <input.mov> <stockId> [iso] [--bitrate <bps>] [--diagnostics <bundle-directory>]")
+            print("Usage: RenderCLI <input.mov> <stockId> [iso] [--bitrate <bps>] [--diagnostics <bundle-directory>] [--source-profile appleLog2|hlgBT2020]")
             exit(1)
         }
         let inputPath = arguments[0]
@@ -70,6 +70,7 @@ import Foundation
         var bitrate: Int = RenderEncodingContract.averageBitRate
         var diagnosticsDirectory: URL?
         var framing = DeliveryFraming.defaultValue
+        var sourceProfile = CameraSourceProfile.appleLog2
         var index = 2
         while index < arguments.count {
             switch arguments[index] {
@@ -87,6 +88,14 @@ import Foundation
                     exit(1)
                 }
                 diagnosticsDirectory = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+                index += 2
+            case "--source-profile":
+                guard index + 1 < arguments.count,
+                      let profile = CameraSourceProfile(rawValue: arguments[index + 1]) else {
+                    print("--source-profile requires appleLog2 or hlgBT2020.")
+                    exit(1)
+                }
+                sourceProfile = profile
                 index += 2
             case "--bitrate":
                 guard index + 1 < arguments.count, let value = Int(arguments[index + 1]) else {
@@ -148,6 +157,20 @@ import Foundation
         var diagnosticRenderStarted = false
         do {
             let renderer = try PipelineRenderer()
+            // The default remains Log 2-only. HLG inspection is explicit and
+            // uses the same snapshotted profile as a native queued take.
+            var capturePolicy: RenderCapturePolicy?
+            if sourceProfile == .hlgBT2020 {
+                let asset = AVURLAsset(url: inputURL)
+                guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+                    throw RenderError.noVideoTrack
+                }
+                let fps = try await track.load(.nominalFrameRate)
+                guard let policy = RenderCapturePolicy(Int(fps.rounded()), sourceProfile: sourceProfile) else {
+                    throw RenderError.stageFailed("capture-policy", "HLG source must use a supported 24 or 60 fps cadence.")
+                }
+                capturePolicy = policy
+            }
             if let diagnosticsDirectory {
                 diagnosticRenderStarted = true
                 let result = try await renderer.render(
@@ -155,13 +178,14 @@ import Foundation
                     config: config,
                     bitrate: bitrate,
                     framing: framing,
-                    diagnosticsBundleDirectory: diagnosticsDirectory
+                    diagnosticsBundleDirectory: diagnosticsDirectory,
+                    capturePolicy: capturePolicy
                 )
                 print("Rendered to: \(result.outputURL?.path ?? "unavailable")")
                 print("Diagnostic bundle: \(result.bundleURL.path)")
             } else {
                 let outputURL = try await renderer.render(sourceURL: inputURL, config: config,
-                                                          bitrate: bitrate, framing: framing)
+                                                          bitrate: bitrate, capturePolicy: capturePolicy, framing: framing)
                 print("Rendered to: \(outputURL.path)")
             }
         } catch {

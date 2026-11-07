@@ -392,7 +392,9 @@ final class RenderQueueViewModel {
         // The camera keeps its handoff until persistence succeeds. A repeated
         // acceptance attempt must reuse that source's original-only job.
         if !jobs.contains(where: { $0.sourceURL == sourceURL && $0.originalOnly == true }) {
-            jobs.append(RenderJob(originalOnlySourceURL: sourceURL, reason: reason, sessionId: sessionId))
+            var rescued = RenderJob(originalOnlySourceURL: sourceURL, reason: reason, sessionId: sessionId)
+            rescued.capturePolicy = journal.capturePolicy(for: sourceURL)
+            jobs.append(rescued)
         }
         let accepted = persistJobs()
         if !accepted { isPersistenceBlocked = true }

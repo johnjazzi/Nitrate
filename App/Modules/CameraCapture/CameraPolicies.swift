@@ -62,11 +62,12 @@ enum CameraCaptureFormatPolicy {
         let supports120FPS: Bool
         let isTenBitBiPlanar420: Bool
         let isTenBitBiPlanar422: Bool
+        let supportsHLG: Bool
 
         init(width: Int32, height: Int32, supportsAppleLog2: Bool,
              supports24FPS: Bool, isTenBitBiPlanar420: Bool = false,
              isTenBitBiPlanar422: Bool = false, supports60FPS: Bool = false,
-             supports120FPS: Bool = false) {
+             supports120FPS: Bool = false, supportsHLG: Bool = false) {
             self.width = width
             self.height = height
             self.supportsAppleLog2 = supportsAppleLog2
@@ -75,8 +76,8 @@ enum CameraCaptureFormatPolicy {
             self.supports120FPS = supports120FPS
             self.isTenBitBiPlanar420 = isTenBitBiPlanar420
             self.isTenBitBiPlanar422 = isTenBitBiPlanar422
+            self.supportsHLG = supportsHLG
         }
-
         /// Whether this format's frame-rate ranges include `fps`. Rates the
         /// selector does not know are never treated as supported.
         func supports(fps: Int) -> Bool {
@@ -86,6 +87,17 @@ enum CameraCaptureFormatPolicy {
             case 120: return supports120FPS
             default: return false
             }
+        }
+    }
+
+    static func hlgCandidateIndexes(in candidates: [Candidate], requested: CaptureFormat,
+                                    fps: Int, permittedProfile: CameraSourceProfile?) -> [Int] {
+        guard permittedProfile == .hlgBT2020, fps == 24 || fps == 60 else { return [] }
+        return candidates.indices.filter {
+            let candidate = candidates[$0]
+            return candidate.width == requested.width && candidate.height == requested.height
+                && candidate.supportsHLG && candidate.isTenBitBiPlanar420
+                && candidate.supports(fps: fps)
         }
     }
 
@@ -484,6 +496,17 @@ enum CameraSampleValidationPolicy {
         return "com.apple.apple-wide-gamut.apple-log"
     }
 
+    @available(iOS 27.0, macOS 27.0, *)
+    static func originalColorProperties(for profile: CameraSourceProfile) -> [String: String] {
+        if profile == .hlgBT2020 {
+            return [AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
+                    AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
+                    AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020]
+        }
+        return [AVVideoLogTransferFunctionKey: AVVideoLogTransferFunction_AppleLog2,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020]
+    }
+
     /// Ten-bit formats in preference order. `preferFourTwoTwo` is set when the
     /// active capture format is itself 4:2:2: feeding the encoder from the
     /// richer chroma source avoids one generation of sub-sampling before the
@@ -530,13 +553,23 @@ enum CameraSampleValidationPolicy {
 
     static func rejectionReasons(width: Int, height: Int, pixelFormat: UInt32,
                                  acceptedPixelFormats: Set<UInt32>, logTransfer: String?,
-                                 matrix: String?, primaries: String?, transfer: String?) -> [String] {
+                                 matrix: String?, primaries: String?, transfer: String?,
+                                 sourceProfile: CameraSourceProfile = .appleLog2) -> [String] {
         var reasons: [String] = []
         if CodedDimensions(width: width, height: height) == nil {
             reasons.append("format dimensions are \(width)x\(height), expected 3840x2160, 2160x3840, 1920x1440 or 1440x1920")
         }
         if !acceptedPixelFormats.contains(pixelFormat) {
             reasons.append("pixel format \(fourCCDescription(pixelFormat)) was not negotiated")
+        }
+        if sourceProfile == .hlgBT2020 {
+            if pixelFormat != 0x78343230 { reasons.append("HLG requires native x420") }
+            if logTransfer != nil || primaries != (kCVImageBufferColorPrimaries_ITU_R_2020 as String)
+                || transfer != (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String) {
+                reasons.append("expected HLG BT.2020 source tags without Log transfer")
+            }
+            if matrix != "ITU_R_2020" { reasons.append("expected BT.2020 YCbCr matrix") }
+            return reasons
         }
         if !isAppleLog2(logTransfer) {
             reasons.append("Log transfer is \(logTransfer ?? "missing"), expected Apple Log 2")

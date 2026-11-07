@@ -399,7 +399,8 @@ struct ContentView: View {
                          manualFocusEnabled: manualFocusBinding,
                          zoomControlsEnabled: zoomControlsSetting,
                          legacyManualControlsEnabled: legacyManualControlsSetting,
-                         cameraControlSupported: cameraViewModel.supportsCameraControl)
+                         cameraControlSupported: cameraViewModel.supportsCameraControl,
+                         availableCaptureFormats: cameraViewModel.availableCaptureFormats)
         }
         .onChange(of: cameraViewModel.lastRecordedURL) { _, newURL in
             guard let url = newURL else { return }

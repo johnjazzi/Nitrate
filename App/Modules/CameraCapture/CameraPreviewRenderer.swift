@@ -30,6 +30,7 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         var quarterTurns: UInt32
         var mirrored: UInt32
         var fullRange: UInt32
+        var hlg: UInt32
     }
 
     private let layer: CAMetalLayer
@@ -314,12 +315,9 @@ final class CameraPreviewRenderer: @unchecked Sendable {
             return
         }
         guard #available(iOS 26.0, *),
-              CameraSampleValidationPolicy.isAppleLog2(
-                CVBufferCopyAttachment(buffer, kCVImageBufferLogTransferFunctionKey, nil) as? String),
-              CVBufferCopyAttachment(buffer, kCVImageBufferYCbCrMatrixKey, nil) as? String == "ITU_R_2020",
-              Self.unspecifiedAttachment(buffer, key: kCVImageBufferColorPrimariesKey),
-              Self.unspecifiedAttachment(buffer, key: kCVImageBufferTransferFunctionKey),
+              let sourceProfile = RenderInputColorProvenance.profile(of: buffer),
               let format = CameraPreviewPolicy.format(CVPixelBufferGetPixelFormatType(buffer)),
+              (sourceProfile != .hlgBT2020 || CVPixelBufferGetPixelFormatType(buffer) == 0x78343230),
               CVPixelBufferGetPlaneCount(buffer) == 2 else {
             // A non-conforming frame is never graded. During an expected handoff
             // it may be a superseded transitional frame, so it is held silently;
@@ -354,7 +352,8 @@ final class CameraPreviewRenderer: @unchecked Sendable {
             return
         }
         var uniforms = Uniforms(imageScale: scale, quarterTurns: UInt32(turns),
-                                mirrored: geometry.mirrored != frame.mirrored ? 1 : 0, fullRange: format.fullRange ? 1 : 0)
+                                mirrored: geometry.mirrored != frame.mirrored ? 1 : 0, fullRange: format.fullRange ? 1 : 0,
+                                hlg: sourceProfile == .hlgBT2020 ? 1 : 0)
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)

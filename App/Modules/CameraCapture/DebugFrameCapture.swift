@@ -77,12 +77,17 @@ enum DebugFrameConverter {
     @available(iOS 26.0, *)
     static func rgbaHalfBuffer(from pixelBuffer: CVPixelBuffer,
                                sourceColorSpace: AVCaptureColorSpace = .appleLog2) -> CVPixelBuffer? {
+        if sourceColorSpace == .HLG_BT2020 {
+            // Retain native HLG identity; never relabel processed SDR/RAW as HLG.
+            guard RenderInputColorProvenance.profile(of: pixelBuffer) == .hlgBT2020 else { return nil }
+            return pixelBuffer
+        }
         let source: DebugFrameSourceAdapter.SourceColorSpace
         switch sourceColorSpace {
         case .appleLog2: source = .appleLog2
         case .sRGB: source = .sRGB
         case .P3_D65: source = .displayP3
-        // Apple Log 1, HLG, and future spaces need their own explicit adapter.
+        // Apple Log 1 and future spaces need their own explicit adapter.
         // Never infer transfer/primaries from 8-bit, 10-bit, or half storage.
         default: return nil
         }

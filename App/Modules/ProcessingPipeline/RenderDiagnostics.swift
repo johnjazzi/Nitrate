@@ -394,6 +394,10 @@ enum RenderMovieMetadata {
             // render. Legacy jobs (nil policy) emit no such key and stay
             // byte-for-byte as before.
             metadataValues["capture-frame-rate"] = String(capturePolicy.frameRate)
+            metadataValues["capture-source-profile"] = capturePolicy.sourceProfile.rawValue
+            if capturePolicy.sourceProfile == .hlgBT2020 {
+                metadataValues["source-to-lut-transform"] = "HLG inverse OETF; 75%-white=1; BT2020-to-AppleWideGamut; AppleLog2"
+            }
         }
         if let sourceColorProvenance {
             let sourceData = try JSONEncoder().encode(sourceColorProvenance)

@@ -121,7 +121,7 @@ struct DebugFrameRenderTests {
     private struct Container: Decodable { let stocks: [FilmStockConfig] }
 
     private func makeRenderer() throws -> PipelineRenderer {
-        try PipelineRenderer(resourceBundle: testBundle)
+        try PipelineRenderer(resourceBundle: testBundle, allowsSyntheticInputForTests: true)
     }
 
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))

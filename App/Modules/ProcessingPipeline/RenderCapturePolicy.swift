@@ -1,5 +1,19 @@
 import Foundation
 
+/// Source encoding, independent of sensor geometry and film delivery encoding.
+enum CameraSourceProfile: String, Codable, Sendable {
+    case appleLog2
+    case hlgBT2020
+
+    var label: String { self == .appleLog2 ? "Apple Log 2" : "HLG BT.2020" }
+
+    /// A Log-1-only device is deliberately unsupported, not an HLG fallback.
+    static func permitted(supportsAppleLog: Bool, supportsAppleLog2: Bool) -> Self? {
+        if supportsAppleLog2 { return .appleLog2 }
+        return supportsAppleLog ? nil : .hlgBT2020
+    }
+}
+
 /// The per-take capture policy, snapshotted at enqueue and carried in the job
 /// JSON so a queued job renders identically after a relaunch without reading
 /// live UI.
@@ -15,9 +29,10 @@ struct RenderCapturePolicy: Codable, Equatable, Sendable {
     let grainPairing: GrainPairing
     /// 180° fixed shutter denominator: 48, 120 or 240.
     let shutterDenominator: Int
+    var sourceProfile: CameraSourceProfile = .appleLog2
 
     private enum CodingKeys: String, CodingKey {
-        case frameRate, grainPairing, shutterDenominator
+        case frameRate, grainPairing, shutterDenominator, sourceProfile
     }
 
     init(from decoder: any Decoder) throws {
@@ -31,6 +46,7 @@ struct RenderCapturePolicy: Codable, Equatable, Sendable {
                 debugDescription: "Capture policy must be 24fps/1⁄48/per-frame, or 60fps/1⁄120 or 120fps/1⁄240 with paired grain."))
         }
         self = policy
+        sourceProfile = try values.decodeIfPresent(CameraSourceProfile.self, forKey: .sourceProfile) ?? .appleLog2
     }
 
     /// Nil unless `frameRate` is 24, 60 or 120. Derives the pairing and shutter
@@ -40,7 +56,8 @@ struct RenderCapturePolicy: Codable, Equatable, Sendable {
     /// Above 24 fps the 180° shutter keeps the same half-rate paired grain
     /// semantics: a 120 fps take gets 60 grain realisations, exactly as a 60 fps
     /// take gets 30, so grain never becomes per-frame noise at a high rate.
-    init?(_ frameRate: Int) {
+    init?(_ frameRate: Int, sourceProfile: CameraSourceProfile = .appleLog2) {
+        self.sourceProfile = sourceProfile
         switch frameRate {
         case 24:
             self.frameRate = 24

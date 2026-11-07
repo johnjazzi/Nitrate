@@ -64,6 +64,7 @@ FILE_FIXTURES: tuple[str, ...] = (
     "App/Modules/FilmStockLibrary/GaugeControl.swift",
     "App/Modules/FilmStockLibrary/PushPullControl.swift",
     "Resources/gauges.json",
+    "Resources/Shaders/hlg-input.h",
     "App/Resources/stocks.json",
     "App/Resources/gauges.json",
     "App/Resources/Preview/AppleLog2ToRec709.cube",

@@ -1,5 +1,20 @@
 #include <metal_stdlib>
+#include "hlg-input.h"
 using namespace metal;
+
+// Native ten-bit HLG YCbCr -> existing LUT input. No display tone mapping.
+kernel void hlg_prepare(texture2d<float, access::read> yPlane [[texture(0)]],
+                        texture2d<float, access::sample> uvPlane [[texture(1)]],
+                        texture2d<float, access::write> output [[texture(2)]],
+                        uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= output.get_width() || gid.y >= output.get_height()) return;
+    constexpr sampler chromaSampler(coord::normalized, filter::linear, address::clamp_to_edge);
+    float y = (yPlane.read(gid).r * (65535.0f / 64.0f) - 64.0f) / 876.0f;
+    float2 uv = (float2(gid) + .5f) / float2(output.get_width(), output.get_height());
+    float2 c = (uvPlane.sample(chromaSampler, uv).rg * (65535.0f / 64.0f) - 512.0f) / 896.0f;
+    float3 rgb = float3(y + 1.4746f*c.y, y - .164553f*c.x - .571353f*c.y, y + 1.8814f*c.x);
+    output.write(float4(hlg_to_lut_input(rgb), 1), gid);
+}
 
 constexpr sampler spatial_linear_sampler(
     coord::normalized,
