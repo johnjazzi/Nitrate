@@ -33,7 +33,7 @@ struct VideoImportEntryTests {
         // silently: the dimmed row has no standing banner to explain itself.
         #expect(!screen.contains("guard canChangeCameraMode else { return }"))
         #expect(screen.contains("explainBlockedModeTap()"))
-        #expect(screen.contains("cameraModePicker"))
+        #expect(screen.contains("CameraModeStripGeometry.frame"))
     }
 
     @Test func importedVideosCannotReachTheLegacyPlayer() throws {
