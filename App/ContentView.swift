@@ -162,7 +162,7 @@ struct ContentView: View {
                     .allowsHitTesting(!isDevelopMode)
 
                 if isDevelopMode {
-                    let rect = previewRect(in: geometry)
+                    let rect = boundedPreviewRect(in: geometry) ?? .zero
                     developPanel
                         .frame(width: rect.width, height: rect.height)
                         .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
@@ -934,7 +934,14 @@ struct ContentView: View {
     /// from the measured control bounds, never the ruler's own size, so a ruler
     /// cannot feed back into the preview frame.
     private func frameRulerBounds(in geometry: GeometryProxy) -> CGRect? {
-        guard !isDevelopMode, let top = controlBounds["top"], let bottom = controlBounds["bottom"] else { return nil }
+        guard !isDevelopMode else { return nil }
+        return boundedPreviewRect(in: geometry)
+    }
+
+    /// Shared content area clear of the toolbar and shooting controls. Develop's
+    /// import buttons must not inherit the immersive camera's full-bleed extent.
+    private func boundedPreviewRect(in geometry: GeometryProxy) -> CGRect? {
+        guard let top = controlBounds["top"], let bottom = controlBounds["bottom"] else { return nil }
         let preview = previewRect(in: geometry)
         guard preview.width > 0, preview.height > 0 else { return nil }
         let safe = CGRect(x: 0, y: top.maxY, width: geometry.size.width,
