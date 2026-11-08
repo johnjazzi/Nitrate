@@ -392,7 +392,9 @@ final class RenderQueueViewModel {
         // The camera keeps its handoff until persistence succeeds. A repeated
         // acceptance attempt must reuse that source's original-only job.
         if !jobs.contains(where: { $0.sourceURL == sourceURL && $0.originalOnly == true }) {
-            jobs.append(RenderJob(originalOnlySourceURL: sourceURL, reason: reason, sessionId: sessionId))
+            var rescued = RenderJob(originalOnlySourceURL: sourceURL, reason: reason, sessionId: sessionId)
+            rescued.capturePolicy = journal.capturePolicy(for: sourceURL)
+            jobs.append(rescued)
         }
         let accepted = persistJobs()
         if !accepted { isPersistenceBlocked = true }
@@ -1004,7 +1006,7 @@ final class RenderQueueViewModel {
         if job(jobId)?.sourceSavedToPhotos == true {
             update(jobId) {
                 $0.status = .failed
-                $0.errorMessage = "Render failed: \(renderMessage). Original Apple Log was already saved to Photos."
+                $0.errorMessage = "Render failed: \(renderMessage). Original video was already saved to Photos."
             }
             return
         }
@@ -1014,7 +1016,7 @@ final class RenderQueueViewModel {
             update(jobId) {
                 $0.status = .failed
                 $0.sourceSavedToPhotos = true
-                $0.errorMessage = "Render failed: \(renderMessage). Original Apple Log saved to Photos."
+                $0.errorMessage = "Render failed: \(renderMessage). Original video saved to Photos."
             }
         } catch {
             let saveMessage = error.localizedDescription
@@ -1024,7 +1026,7 @@ final class RenderQueueViewModel {
             update(jobId) {
                 $0.status = .failed
                 $0.sourceSavedToPhotos = false
-                $0.errorMessage = "Render failed: \(renderMessage). Original Apple Log could not be saved to Photos: \(saveMessage). \(sourceDetail)"
+                $0.errorMessage = "Render failed: \(renderMessage). Original video could not be saved to Photos: \(saveMessage). \(sourceDetail)"
             }
         }
     }

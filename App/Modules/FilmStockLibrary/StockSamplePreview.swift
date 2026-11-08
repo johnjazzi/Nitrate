@@ -697,25 +697,10 @@ final class PlatePreviewPipeline: @unchecked Sendable {
         return texture
     }
 
-    /// Same direct RGB / red-fastest RGBA32Float upload as the capture preview.
+    /// Same direct RGB/red-fastest, filterable upload as the capture preview.
     static func makeLUTTexture(_ cube: PlateCube, device: any MTLDevice) throws -> any MTLTexture {
-        let size = cube.size
-        let descriptor = MTLTextureDescriptor()
-        descriptor.textureType = .type3D
-        descriptor.pixelFormat = .rgba32Float
-        descriptor.width = size
-        descriptor.height = size
-        descriptor.depth = size
-        descriptor.usage = .shaderRead
-        descriptor.storageMode = .shared
-        guard let texture = device.makeTexture(descriptor: descriptor) else {
+        guard let texture = FilterableLUTTexture.make(device: device, size: cube.size, rgba: cube.rgba) else {
             throw PipelineError.unavailable
-        }
-        cube.rgba.withUnsafeBytes {
-            texture.replace(region: MTLRegionMake3D(0, 0, 0, size, size, size), mipmapLevel: 0, slice: 0,
-                            withBytes: $0.baseAddress!,
-                            bytesPerRow: size * 4 * MemoryLayout<Float>.size,
-                            bytesPerImage: size * size * 4 * MemoryLayout<Float>.size)
         }
         return texture
     }

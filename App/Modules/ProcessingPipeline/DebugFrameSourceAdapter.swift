@@ -35,6 +35,7 @@ enum DebugFrameSourceAdapter {
         // has exactly the same storage but entirely different channel semantics.
         if sourceColorSpace == .appleLog2,
            CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_64RGBAHalf {
+            markLog2(pixelBuffer)
             return pixelBuffer
         }
         var destination: CVPixelBuffer?
@@ -65,6 +66,18 @@ enum DebugFrameSourceAdapter {
             guard let prepared = try? RAWToLog2Stage.apply(source) else { return nil }
             linearContext.render(prepared, to: destination, bounds: prepared.extent, colorSpace: linearSpace)
         }
+        markLog2(destination)
         return destination
+    }
+
+    private static func markLog2(_ buffer: CVPixelBuffer) {
+        guard #available(iOS 26.0, macOS 26.0, *) else { return }
+        // This is the adapter's OUTPUT domain, never the source RAW/SDR profile.
+        CVBufferRemoveAttachment(buffer, kCVImageBufferColorPrimariesKey)
+        CVBufferRemoveAttachment(buffer, kCVImageBufferTransferFunctionKey)
+        CVBufferSetAttachment(buffer, kCVImageBufferLogTransferFunctionKey,
+                              kCVImageBufferLogTransferFunction_AppleLog2, .shouldPropagate)
+        CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey,
+                              kCVImageBufferYCbCrMatrix_ITU_R_2020, .shouldPropagate)
     }
 }

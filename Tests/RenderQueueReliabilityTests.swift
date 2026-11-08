@@ -179,7 +179,7 @@ struct RenderQueueReliabilityTests {
         try await waitUntil { model.jobs.allSatisfy { $0.status == .failed } }
         #expect(saves == 2)
         #expect(model.renderingUnavailableMessage == "Metal pipeline unavailable")
-        #expect(model.rendererErrorMessage?.contains("Original Apple Log saved to Photos") == true)
+        #expect(model.rendererErrorMessage?.contains("Original video saved to Photos") == true)
     }
 
     @Test func failedRenderReportsSuccessfulOrFailedOriginalSave() async throws {
@@ -198,7 +198,7 @@ struct RenderQueueReliabilityTests {
             let job = try #require(model.jobs.first)
             #expect(job.sourceSavedToPhotos == saveSucceeds)
             if saveSucceeds {
-                #expect(job.errorMessage?.contains("Original Apple Log saved to Photos") == true)
+                #expect(job.errorMessage?.contains("Original video saved to Photos") == true)
             } else {
                 #expect(job.errorMessage?.contains("could not be saved to Photos") == true)
                 #expect(job.errorMessage?.contains("Source remains in the app") == true)

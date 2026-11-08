@@ -464,7 +464,8 @@ struct PushPullTests {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let source = try String(contentsOf: root.appendingPathComponent("Resources/Shaders/spatial.metal"),
                                 encoding: .utf8)
-        let library = try device.makeLibrary(source: source, options: nil)
+        let header = try String(contentsOf: TestRepository.root.appendingPathComponent("Resources/Shaders/hlg-input.h"), encoding: .utf8)
+        let library = try device.makeLibrary(source: source.replacingOccurrences(of: "#include \"hlg-input.h\"", with: header), options: nil)
         let function = try #require(library.makeFunction(name: "spatial_halation_apply"))
         let pipeline = try device.makeComputePipelineState(function: function)
         let queue = try #require(device.makeCommandQueue())

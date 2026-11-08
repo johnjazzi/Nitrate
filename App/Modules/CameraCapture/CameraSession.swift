@@ -912,9 +912,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
         guard session.outputs.contains(where: { $0 === previewOutput }),
               let connection = previewOutput.connection(with: .video) else { return }
         connection.isEnabled = false
-        let advertised = previewOutput.availableVideoPixelFormatTypes.map {
+        var advertised = previewOutput.availableVideoPixelFormatTypes.map {
             UInt32(truncating: $0 as NSNumber)
         }
+        if Self.permittedSourceProfile() == .hlgBT2020 { advertised = advertised.filter { $0 == 0x78343230 } }
         guard let format = CameraSampleValidationPolicy.preferredTenBitPixelFormats(from: advertised).first else {
             print("Camera preview: no advertised ten-bit source — showing Log")
             return
@@ -1287,8 +1288,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         // device has no 1920x1440 4:2:2 Log 2 format — never substituted by UHD.
         let mode = frameRate
         let selectedFormat = captureFormat
-        let orderedFormats = Self.appleLog2CaptureFormats(in: device.formats, mode: mode,
-                                                          captureFormat: selectedFormat)
+        let orderedFormats = Self.captureFormats(for: device, mode: mode, captureFormat: selectedFormat)
         guard !orderedFormats.isEmpty else {
             if selectedFormat.isOpenGate {
                 throw CameraError.captureFormatUnavailable(
@@ -1372,8 +1372,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         // never inherit them. A connection never observed as stabilizing keeps
         // the snapshot unavailable rather than advertising an unasked capability.
         guard sharedIdleLeaseActive, videoIntent,
-              let format = Self.appleLog2CaptureFormat(in: device.formats, mode: frameRate,
-                                                       captureFormat: captureFormat) else {
+              let format = Self.captureFormats(for: device, mode: frameRate, captureFormat: captureFormat).first else {
             return .unavailable
         }
         return CameraStabilizationPolicy.idleCapability(
@@ -1471,7 +1470,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
     private func applyCaptureFormat(_ format: AVCaptureDevice.Format, to device: AVCaptureDevice,
                                     mode: CameraFrameRate) throws {
         guard #available(iOS 26.0, *) else { throw CameraError.appleLog2NotSupported }
-        guard format.supportedColorSpaces.contains(.appleLog2) else {
+        guard let profile = Self.sourceProfile(for: device),
+              format.supportedColorSpaces.contains(profile == .appleLog2 ? .appleLog2 : .HLG_BT2020) else {
             throw CameraError.appleLog2NotSupported
         }
         session.beginConfiguration()
@@ -1492,8 +1492,49 @@ final class CameraSession: NSObject, @unchecked Sendable {
             device.exposureMode = .continuousAutoExposure
         }
         device.activeFormat = format
-        device.activeColorSpace = .appleLog2
+        device.activeColorSpace = profile == .appleLog2 ? .appleLog2 : .HLG_BT2020
         try reassertFrameDuration(on: device, mode: mode)
+    }
+
+    /// Inspect all physical cameras, not just the current lens/format. A Log-1
+    /// camera anywhere on the device prevents the non-Log HLG fallback.
+    static func permittedSourceProfile() -> CameraSourceProfile? {
+        guard #available(iOS 26.0, *) else { return nil }
+        let devices = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .builtInUltraWideCamera, .builtInTelephotoCamera, .builtInTrueDepthCamera],
+            mediaType: .video, position: .unspecified).devices
+        let spaces = devices.flatMap { $0.formats.flatMap(\.supportedColorSpaces) }
+        guard !spaces.isEmpty else { return nil }
+        return CameraSourceProfile.permitted(supportsAppleLog: spaces.contains(.appleLog),
+                                            supportsAppleLog2: spaces.contains(.appleLog2))
+    }
+
+    private static func sourceProfile(for device: AVCaptureDevice) -> CameraSourceProfile? {
+        guard #available(iOS 26.0, *) else { return nil }
+        guard let permitted = permittedSourceProfile() else { return nil }
+        if permitted == .appleLog2 {
+            return device.formats.contains { $0.supportedColorSpaces.contains(.appleLog2) } ? permitted : nil
+        }
+        return permitted
+    }
+
+    /// One selector for session transitions and the Settings capability owner.
+    static func captureFormats(for device: AVCaptureDevice, mode: CameraFrameRate,
+                               captureFormat: CaptureFormat) -> [AVCaptureDevice.Format] {
+        guard let profile = sourceProfile(for: device) else { return [] }
+        if profile == .appleLog2 {
+            return appleLog2CaptureFormats(in: device.formats, mode: mode, captureFormat: captureFormat)
+        }
+        return CameraCaptureFormatPolicy.hlgCandidateIndexes(
+            in: formatCandidates(in: device.formats), requested: captureFormat,
+            fps: mode.fps, permittedProfile: profile).map { device.formats[$0] }
+    }
+
+    private static func activeSourceIsEligible(_ device: AVCaptureDevice, mode: CameraFrameRate,
+                                               captureFormat: CaptureFormat) -> Bool {
+        guard #available(iOS 26.0, *), let profile = sourceProfile(for: device) else { return false }
+        return device.activeColorSpace == (profile == .appleLog2 ? .appleLog2 : .HLG_BT2020)
+            && captureFormats(for: device, mode: mode, captureFormat: captureFormat).contains(device.activeFormat)
     }
 
     /// Every eligible Apple Log 2 10-bit format for `captureFormat` whose
@@ -1541,7 +1582,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 isTenBitBiPlanar422: subtype == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange
                     || subtype == kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
                 supports60FPS: supports60FPS,
-                supports120FPS: supports120FPS
+                supports120FPS: supports120FPS,
+                supportsHLG: subtype == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                    && format.supportedColorSpaces.contains(.HLG_BT2020)
             )
         }
     }
@@ -1557,7 +1600,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// one is refused rather than silently downgraded to 24.
     private static func captureFormatAvailable(for device: AVCaptureDevice, mode: CameraFrameRate,
                                                captureFormat: CaptureFormat = .uhd16x9) -> Bool {
-        appleLog2CaptureFormat(in: device.formats, mode: mode, captureFormat: captureFormat) != nil
+        !captureFormats(for: device, mode: mode, captureFormat: captureFormat).isEmpty
     }
 
     private static func captureFormatSubtypeDescription(_ format: AVCaptureDevice.Format?) -> String {
@@ -1615,6 +1658,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
             supportedPixelFormats = videoOutput.availableVideoPixelFormatTypes.map {
                 UInt32(truncating: $0 as NSNumber)
             }
+            if Self.permittedSourceProfile() == .hlgBT2020 {
+                supportedPixelFormats = supportedPixelFormats.filter { $0 == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange }
+            }
             if !CameraSampleValidationPolicy.preferredTenBitPixelFormats(from: supportedPixelFormats).isEmpty {
                 break
             }
@@ -1669,10 +1715,8 @@ final class CameraSession: NSObject, @unchecked Sendable {
             return "Apple Log 2 writer color tags require iOS 27 (running version is older)"
         }
         let profile = kVTProfileLevel_HEVC_Main10_AutoLevel as String
-        let colorProperties = [
-            AVVideoLogTransferFunctionKey: AVVideoLogTransferFunction_AppleLog2,
-            AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
-        ]
+        guard let source = Self.permittedSourceProfile() else { return "no permitted source profile" }
+        let colorProperties = CameraSampleValidationPolicy.originalColorProperties(for: source)
         // The writer must be negotiated for the format the session is actually
         // delivering. A hardcoded 4K pair silently produced 3840x2160 settings
         // for a 1920x1440 open-gate feed, and the take died on its first frame.
@@ -2421,8 +2465,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             "activeFormat=\(Int(dimensions.width))x\(Int(dimensions.height)) " +
             "activeRange=f/\(String(format: "%.2f", active.minLensAperture))...f/\(String(format: "%.2f", active.maxLensAperture))"
         if #available(iOS 27.0, *),
-           let videoFormat = Self.appleLog2CaptureFormat(in: device.formats, mode: frameRate,
-                                                         captureFormat: captureFormat) {
+           let videoFormat = Self.captureFormats(for: device, mode: frameRate, captureFormat: captureFormat).first {
             let videoCapability = CameraAperturePolicy.capability(
                 recommended: videoFormat.recommendedLensApertureStops,
                 minimum: videoFormat.minLensAperture,
@@ -2474,8 +2517,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// `isoRange` in video mode therefore offers ISO the take cannot take.
     var videoISORange: ClosedRange<Float> {
         guard let device = activeDevice else { return 100...3200 }
-        let eligible = Self.appleLog2CaptureFormats(in: device.formats, mode: frameRate,
-                                                    captureFormat: captureFormat)
+        let eligible = Self.captureFormats(for: device, mode: frameRate, captureFormat: captureFormat)
             .map { $0.minISO...$0.maxISO }
         return CameraVideoISORangePolicy.range(forCandidates: eligible) ?? isoRange
     }
@@ -3130,8 +3172,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             #endif
             let modes = CameraFrameRatePolicy.availableModes { mode in
                 desired.contains(mode)
-                    && Self.appleLog2CaptureFormat(in: device.formats, mode: mode,
-                                                   captureFormat: captureFormat) != nil
+                    && Self.captureFormats(for: device, mode: mode, captureFormat: captureFormat).first != nil
             }
             let capability = FrameRateCapability(lens: lens, modes: modes)
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(capability) } }
@@ -3206,8 +3247,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
         guard isConfigured, let device = activeDevice else { return CameraError.noCameraAvailable }
         guard #available(iOS 26.0, *) else { return CameraError.appleLog2NotSupported }
-        guard let selected = Self.appleLog2CaptureFormat(in: device.formats, mode: frameRate,
-                                                         captureFormat: format) else {
+        guard let selected = Self.captureFormats(for: device, mode: frameRate, captureFormat: format).first else {
             return CameraError.captureFormatUnavailable(
                 CameraError.captureFormatUnavailableReason(for: format, mode: frameRate))
         }
@@ -3233,8 +3273,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
     private func applyFrameRateMode(_ mode: CameraFrameRate) -> Error? {
         guard let device = activeDevice else { return CameraError.noCameraAvailable }
         guard #available(iOS 26.0, *) else { return CameraError.appleLog2NotSupported }
-        guard let format = Self.appleLog2CaptureFormat(in: device.formats, mode: mode,
-                                                       captureFormat: captureFormat) else {
+        guard let format = Self.captureFormats(for: device, mode: mode, captureFormat: captureFormat).first else {
             return CameraError.unsupportedFrameRateError(for: mode)
         }
         let snapshot = makeFrameRateSnapshot()
@@ -3495,10 +3534,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(CameraError.noCameraAvailable) } }
                 return
             }
-            guard #available(iOS 26.0, *),
-                  device.activeColorSpace == .appleLog2,
-                  Self.appleLog2CaptureFormat(in: [device.activeFormat], mode: self.frameRate,
-                                              captureFormat: self.captureFormat) != nil else {
+            guard Self.activeSourceIsEligible(device, mode: self.frameRate, captureFormat: self.captureFormat) else {
                 let error = CameraError.unsupportedFrameRateError(for: self.frameRate)
                 DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
                 return
@@ -3638,10 +3674,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         startPhases.recorderBeganAt = Date()
 #endif
         guard let device = activeDevice,
-              #available(iOS 26.0, *),
-              device.activeColorSpace == .appleLog2,
-              Self.appleLog2CaptureFormat(in: [device.activeFormat], mode: frameRate,
-                                          captureFormat: captureFormat) != nil else {
+              Self.activeSourceIsEligible(device, mode: frameRate, captureFormat: captureFormat) else {
             recordingStartPending = false
             failPendingStart(CameraError.unsupportedFrameRateError(for: frameRate))
             return
@@ -3683,6 +3716,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             videoSettings: acceptedVideoSettings,
             audioSettings: audioSettings,
             acceptedPixelFormats: acceptedPixelFormats,
+            sourceProfile: Self.sourceProfile(for: device) ?? .appleLog2,
             metadata: captureMetadataItems(),
             deliveryOrientation: deliveryOrientation,
             captureRotationAngle: captureRotationAngle,
@@ -3845,8 +3879,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
             Self.captureItem("capture-iso", "\(Int(device.iso))"),
             Self.captureItem("capture-color-space", Self.captureColorSpaceLabel(device)),
             Self.captureItem("capture-framing", captureFormat.rawValue),
+            Self.captureItem("capture-source-profile", Self.sourceProfile(for: device)?.rawValue ?? "unknown"),
             Self.captureItem("capture-format", Self.captureFormatLabel(device)),
-            Self.captureItem("capture-codec", acceptedVideoSettings[AVVideoCodecKey] as? String ?? "unknown")
+            Self.captureItem("capture-codec", (acceptedVideoSettings[AVVideoCodecKey] as? AVVideoCodecType)?.rawValue ?? "unknown")
         ]
         // The lamp as the take actually ran, not as the slider reads now. A take
         // recorded before the control existed carries no flash key at all, which
@@ -3859,6 +3894,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
     }
 
     private static func captureColorSpaceLabel(_ device: AVCaptureDevice) -> String {
+        if device.activeColorSpace == .HLG_BT2020 { return "HLG BT.2020" }
         if #available(iOS 26.0, *), device.activeColorSpace == .appleLog2 { return "Apple Log 2" }
         return String(describing: device.activeColorSpace)
     }
@@ -4422,6 +4458,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
         print("Debug frame: attach negotiated=\(CameraSampleValidationPolicy.fourCCDescription(pixelFormat)) " +
               "available=\(CameraSampleValidationPolicy.fourCCListDescription(available))")
+        if activeDevice?.activeColorSpace == .HLG_BT2020,
+           (pixelFormat != kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange || !available.contains(pixelFormat)) {
+            return false
+        }
         if available.contains(pixelFormat) {
             debugFrameOutput.videoSettings = [
                 kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat)
@@ -4858,6 +4898,11 @@ final class CameraSession: NSObject, @unchecked Sendable {
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured, self.session.isRunning, !self.isRecordingOrPending else {
                 print("HEVC Log2 smoke failed: camera session is unavailable or busy")
+                return
+            }
+            if CommandLine.arguments.contains("--smoke-60-fps"),
+               let error = self.applyFrameRateMode(.daylight60) {
+                print("Capture smoke failed to select 60 fps: \(error.localizedDescription)")
                 return
             }
             let url = FileManager.default.temporaryDirectory
@@ -5402,7 +5447,7 @@ enum CameraError: LocalizedError {
         case .appleLogNotSupported:
             return "Apple Log color space is not supported on this device."
         case .appleLog2NotSupported:
-            return "Apple Log 2 recording requires a supported 4K, 24 fps camera format on this device."
+            return "No permitted native 10-bit capture format is available. Apple Log 1 devices are not eligible for the non-Log HLG path."
         case .captureFormatUnavailable(let detail):
             return "That capture format is unavailable: \(detail)."
         case .recordingInProgress:

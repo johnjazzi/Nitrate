@@ -119,7 +119,9 @@ import Testing
         }
         // The two binary settings keep native switches, not a value button.
         #expect(source.components(separatedBy: "Toggle(title, isOn: $isOn)").count - 1 == 1)
-        #expect(!source.contains(#"Toggle("Save Original Log to Photos""#))
+        #expect(!source.contains(#"Toggle("Save Original Video to Photos""#))
+        #expect(source.contains(#"title: "Save Original Video to Photos""#))
+        #expect(!source.contains("Save Original Log"), "HLG originals must not be labelled Log")
         #expect(!source.contains("Toggle(isOn: $showFramedPreview)"))
     }
 
@@ -162,7 +164,7 @@ import Testing
         for qualifier in ["Native camera preview. Film processing is applied only to saved output.",
                           "timer starts when recording is confirmed",
                           "Choose a raised or flat record button", "space for camera controls",
-                          "additional, ungraded Apple Log 2", "uses more storage",
+                          "additional, ungraded original (Apple Log 2 or HDR HLG)", "uses more storage",
                           "60 Mbps", "30 Mbps", "can soften grain", "Resolution and frame rate stay the same",
                           "videos added to the queue afterward"] {
             #expect(source.contains(qualifier))

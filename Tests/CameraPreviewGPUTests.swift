@@ -10,10 +10,11 @@ struct CameraPreviewGPUTests {
         var quarterTurns: UInt32 = 0
         var mirrored: UInt32 = 0
         var fullRange: UInt32 = 0
+        var hlg: UInt32 = 0
     }
 
-    @Test(arguments: [Float(0.25), 0.5, 0.75])
-    func packedLogCodesRenderThroughNeutralLUT(log: Float) async throws {
+    @Test(arguments: [Float(0.25), 0.5, 0.75], [false, true])
+    func packedSourceCodesRenderThroughNeutralLUT(log: Float, hlg: Bool) async throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let library = try device.makeDefaultLibrary(bundle: Bundle(for: BundleToken.self))
         let descriptor = MTLRenderPipelineDescriptor()
@@ -34,7 +35,17 @@ struct CameraPreviewGPUTests {
             chroma.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0,
                            withBytes: $0.baseAddress!, bytesPerRow: 4)
         }
-        let (lut, expected) = try loadLUT(device: device, log: log)
+        // Independent CPU reference at the exact normalized camera code. The
+        // production fragment must select the HLG branch before sampling the LUT.
+        var lutCode = log
+        if hlg {
+            let code = Double(log)
+            let nominal = code <= 0.5 ? code * code / 3 : (exp((code - 0.55991073) / 0.17883277) + 0.28466892) / 12
+            let scene = nominal / 0.26496255978640015
+            lutCode = Float(scene < 0.01 ? 47.28711236 * pow(scene + 0.05641088, 2)
+                : 0.69336945 + 0.08550479 * log2(scene + 0.00964052))
+        }
+        let (lut, expected) = try loadLUT(device: device, log: lutCode)
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = output
         pass.colorAttachments[0].loadAction = .clear
@@ -43,6 +54,7 @@ struct CameraPreviewGPUTests {
         let command = try #require(commands.makeCommandBuffer())
         let encoder = try #require(command.makeRenderCommandEncoder(descriptor: pass))
         var uniforms = Uniforms()
+        uniforms.hlg = hlg ? 1 : 0
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
@@ -66,8 +78,13 @@ struct CameraPreviewGPUTests {
             #expect(abs(Float(channel) / 255 - expected) < 0.005)
         }
         #expect(pixel[3] == 255)
-        // A bypassed LUT would give .25/.5/.75, not these monitored values.
-        #expect(abs(Float(pixel[0]) / 255 - log) > 0.02)
+        if hlg {
+            // Treating HLG as Log 2 is different from merely bypassing the LUT.
+            let (_, wrongSourceExpected) = try loadLUT(device: device, log: log)
+            #expect(abs(Float(pixel[0]) / 255 - wrongSourceExpected) > 0.02)
+        } else {
+            #expect(abs(Float(pixel[0]) / 255 - log) > 0.02)
+        }
     }
 
     private func makeTexture(device: any MTLDevice, format: MTLPixelFormat,
@@ -102,7 +119,24 @@ struct CameraPreviewGPUTests {
             texture.replace(region: MTLRegionMake3D(0, 0, 0, 33, 33, 33), mipmapLevel: 0, slice: 0,
                             withBytes: $0.baseAddress!, bytesPerRow: 33 * 16, bytesPerImage: 33 * 33 * 16)
         }
-        let axis = Int((log * 32).rounded())
-        return (texture, values[(axis + axis * 33 + axis * 33 * 33) * 4])
+        let axis = min(max(log, 0), 1) * 32
+        let lo = Int(axis)
+        let hi = min(lo + 1, 32)
+        let fraction = axis - Float(lo)
+        var expected: Float = 0
+        for blue in 0...1 {
+            for green in 0...1 {
+                for red in 0...1 {
+                    let r = red == 0 ? lo : hi
+                    let g = green == 0 ? lo : hi
+                    let b = blue == 0 ? lo : hi
+                    let weight = (red == 0 ? 1 - fraction : fraction)
+                        * (green == 0 ? 1 - fraction : fraction)
+                        * (blue == 0 ? 1 - fraction : fraction)
+                    expected += values[(r + g * 33 + b * 33 * 33) * 4] * weight
+                }
+            }
+        }
+        return (texture, expected)
     }
 }

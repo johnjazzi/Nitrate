@@ -1,4 +1,5 @@
 #include <metal_stdlib>
+#include "hlg-input.h"
 using namespace metal;
 
 struct CameraPreviewUniforms {
@@ -6,6 +7,7 @@ struct CameraPreviewUniforms {
     uint quarterTurns;
     uint mirrored;
     uint fullRange;
+    uint hlg;
 };
 struct CameraPreviewVertex { float4 position [[position]]; float2 uv; };
 
@@ -41,6 +43,7 @@ fragment float4 cameraPreviewFragment(CameraPreviewVertex in [[stage_in]],
     float2 c = (cCode - 512.0) / (u.fullRange ? 1023.0 : 896.0);
     // YCbCr matrix only: these RGB values are still Apple Log 2 encoded.
     float3 logRGB = float3(y + 1.4746*c.y, y - .164553*c.x - .571353*c.y, y + 1.8814*c.x);
+    if (u.hlg) logRGB = hlg_to_lut_input(logRGB);
     float3 size = float3(lut.get_width(), lut.get_height(), lut.get_depth());
     float3 coordinates = (clamp(logRGB, 0.0, 1.0) * (size - 1.0) + .5) / size;
     // Neutral LUT output is Rec.709 encoded. BGRA8Unorm + tagged display layer,

@@ -19,6 +19,8 @@ struct PurchaseView: View {
     /// hardware cannot honour; the camera screen passes
     /// `cameraViewModel.supportsCameraControl`.
     var cameraControlSupported = false
+    /// Supplied by the active camera owner at the current session rate.
+    var availableCaptureFormats: [CaptureFormat] = []
     @State private var pricingExpanded = false
     @State private var legalExpanded = false
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
@@ -30,7 +32,7 @@ struct PurchaseView: View {
     /// The stored capture format clamped to what this phone can deliver, so a
     /// default of open gate reads as UHD on hardware without that format.
     private var effectiveCaptureFormat: CaptureFormat {
-        CaptureFormat.clamped(captureFormat, to: CaptureFormatAvailability.availableFormats())
+        CaptureFormat.clamped(captureFormat, to: availableCaptureFormats)
     }
 
     /// Open gate records 4:3, so the delivery-framing row has nothing to crop.
@@ -418,9 +420,9 @@ struct PurchaseView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Export").font(NitrateTypography.font(.headline))
             SettingsToggleRow(icon: "square.and.arrow.down",
-                              title: "Save Original Log to Photos",
-                              accessibilityTitle: "Save Original Log",
-                              help: "Saves an additional, ungraded Apple Log 2 recording to Photos and uses more storage.",
+                              title: "Save Original Video to Photos",
+                              accessibilityTitle: "Save Original Video",
+                              help: "Saves an additional, ungraded original (Apple Log 2 or HDR HLG) to Photos and uses more storage.",
                               isOn: $saveOriginalLog)
             SettingsToggleRow(icon: "camera.raw",
                               title: "Save Original RAW to Photos",
@@ -434,19 +436,21 @@ struct PurchaseView: View {
                                help: "UHD 16:9 records 3840x2160, the shipping widescreen capture. "
                                    + "Open Gate 2K records 1920x1440 in native 4:3 with the full "
                                    + "sensor height — it is not cropped from 16:9 — and is only "
-                                   + "offered on iPhones that expose the 10-bit 4:2:2 Apple Log 2 "
-                                   + "format. Applies to videos recorded afterwards.") {
+                                   + "offered when the active camera and frame rate expose a native 10-bit "
+                                   + "format: 4:2:2 Apple Log 2, or x420 HLG on cameras without Apple Log. "
+                                   + "Film delivery is SDR Rec.709. Applies to videos recorded afterwards.") {
                 SettingsSelectionRow(title: "Capture Format",
-                                     valueText: effectiveCaptureFormat.title) {
+                                     valueText: availableCaptureFormats.isEmpty ? "Unavailable" : effectiveCaptureFormat.title) {
                     Picker("Capture Format", selection: Binding(
                         get: { effectiveCaptureFormat },
                         set: { captureFormat = $0.rawValue })) {
-                        ForEach(CaptureFormatAvailability.availableFormats(), id: \.rawValue) { format in
+                        ForEach(availableCaptureFormats, id: \.rawValue) { format in
                             Text(format.title).tag(format)
                         }
                     }
                 }
             }
+            .disabled(availableCaptureFormats.isEmpty)
             SettingsControlRow(icon: "rectangle.inset.filled",
                                title: "Delivery Framing",
                                accessibilityTitle: "Delivery framing",

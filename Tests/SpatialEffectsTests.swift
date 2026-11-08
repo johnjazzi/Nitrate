@@ -181,7 +181,8 @@ struct SpatialEffectsTests {
         let source = try ["Resources/Shaders/spatial.metal", "Resources/Shaders/diffusion.metal"]
             .map { try String(contentsOf: TestRepository.root.appendingPathComponent($0), encoding: .utf8) }
             .joined(separator: "\n")
-        return try device.makeLibrary(source: source, options: nil)
+        let header = try String(contentsOf: TestRepository.root.appendingPathComponent("Resources/Shaders/hlg-input.h"), encoding: .utf8)
+        return try device.makeLibrary(source: source.replacingOccurrences(of: "#include \"hlg-input.h\"", with: header), options: nil)
     }
 
     // MARK: - Shared fixtures

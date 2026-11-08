@@ -41,6 +41,7 @@ final class PipelineRenderer: @unchecked Sendable {
     // Cached pipeline states
     private var pass1Pipeline: MTLComputePipelineState?
     private var pass2Pipeline: MTLComputePipelineState?
+    private var hlgPipeline: MTLComputePipelineState?
     private var spatialStage: SpatialEffectsStage?
     private var grainTexture: MTLTexture?
     private var textureCache: CVMetalTextureCache?
@@ -172,7 +173,8 @@ final class PipelineRenderer: @unchecked Sendable {
         } else {
             do {
                 sourceColorProvenance = try RenderInputColorProvenance.inspect(
-                    formatDescriptions, captureColorSpace: captureColorSpace
+                    formatDescriptions, captureColorSpace: captureColorSpace,
+                    expectedProfile: capturePolicy?.sourceProfile ?? .appleLog2
                 )
             } catch let error as RenderInputColorContractError {
                 throw RenderError.stageFailed(
@@ -201,9 +203,25 @@ final class PipelineRenderer: @unchecked Sendable {
 
         // Measure once so the highlight hold does not breathe with the framing.
         // Neutral exposure does not need the extra decode pass.
-        let highlightCeiling: Float? = config.effectivePushPull.isNeutral
-            ? nil
-            : await Self.measureHighlightCeiling(asset: asset, track: videoTrack, range: renderRange)
+        let sourceProfile = capturePolicy?.sourceProfile ?? .appleLog2
+        let peakCodeAdapter: (@Sendable (CVPixelBuffer) -> [Float])?
+        if sourceProfile == .hlgBT2020 {
+            peakCodeAdapter = { [self] buffer in
+                self.renderQueue.sync {
+                    guard let source = self.preparedSource(buffer, expectedProfile: .hlgBT2020) else { return [] }
+                    return self.peakCodes(of: source.texture)
+                }
+            }
+        } else {
+            peakCodeAdapter = nil
+        }
+        let highlightCeiling: Float?
+        if config.effectivePushPull.isNeutral {
+            highlightCeiling = nil
+        } else {
+            highlightCeiling = await Self.measureHighlightCeiling(asset: asset, track: videoTrack, range: renderRange,
+                sourceProfile: sourceProfile, peakCodeAdapter: peakCodeAdapter)
+        }
 
         let sourceWidth = naturalSize.width
         let sourceHeight = naturalSize.height
@@ -226,7 +244,8 @@ final class PipelineRenderer: @unchecked Sendable {
         // The track tags establish Apple Log 2 input. The decoded RGBA values and
         // any AVFoundation conversion behavior remain unverified by this contract.
         let readerOutputSettings: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_64RGBAHalf,
+            kCVPixelBufferPixelFormatTypeKey as String: capturePolicy?.sourceProfile == .hlgBT2020
+                ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_64RGBAHalf,
             AVVideoAllowWideColorKey: true,
             kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferWidthKey as String: sourceWidth,
@@ -358,7 +377,8 @@ final class PipelineRenderer: @unchecked Sendable {
                 grainPairing: capturePolicy?.grainPairing ?? .perFrame,
                 captureFirstBufferEvidence: collectDecodedBufferEvidence,
                 progress: progress,
-                progressRange: renderRange
+                progressRange: renderRange,
+                sourceProfile: capturePolicy?.sourceProfile ?? .appleLog2
             )
             try Task.checkCancellation()
             guard frameResult.counters.processed > 0 else {
@@ -408,7 +428,8 @@ final class PipelineRenderer: @unchecked Sendable {
         trimRange: CMTimeRange? = nil,
         bitrate: Int = RenderEncodingContract.averageBitRate,
         framing: DeliveryFraming = .widescreen,
-        diagnosticsBundleDirectory: URL
+        diagnosticsBundleDirectory: URL,
+        capturePolicy: RenderCapturePolicy? = nil
     ) async throws -> RenderDiagnosticResult {
         let runID = UUID()
         let bundleURL = diagnosticsBundleDirectory.appendingPathComponent("render-\(runID.uuidString)", isDirectory: true)
@@ -435,7 +456,7 @@ final class PipelineRenderer: @unchecked Sendable {
 
         do {
             let renderResult = try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange,
-                                                          bitrate: bitrate, framing: framing,
+                                                          bitrate: bitrate, capturePolicy: capturePolicy, framing: framing,
                                                           collectDecodedBufferEvidence: true)
             let outputURL = renderResult.outputURL
             resultOutput = outputURL
@@ -585,8 +606,12 @@ final class PipelineRenderer: @unchecked Sendable {
             let width = CVPixelBufferGetWidth(pixelBuffer)
             let height = CVPixelBufferGetHeight(pixelBuffer)
             guard width > 0, height > 0 else { return nil }
+            guard let profile = RenderInputColorProvenance.profile(of: pixelBuffer) ?? (allowsSyntheticInputForTests ? .appleLog2 : nil) else {
+                return nil
+            }
             guard let spatialStage,
-                  let sourceTexture = makeTexture(from: pixelBuffer, format: .rgba16Float) else {
+                  let sourceTexture = preparedSource(pixelBuffer,
+                      expectedProfile: profile) else {
                 return nil
             }
 
@@ -600,7 +625,8 @@ final class PipelineRenderer: @unchecked Sendable {
             // per frame is the right granularity (the take path measures once).
             let highlightCeiling: Float? = config.effectivePushPull.isNeutral
                 ? nil
-                : PushPullTransfer.measuredHighlightCeiling(peakCodes: Self.peakCodes(of: pixelBuffer))
+                : PushPullTransfer.measuredHighlightCeiling(peakCodes: profile == .hlgBT2020
+                    ? peakCodes(of: sourceTexture.texture) : Self.peakCodes(of: pixelBuffer))
 
             return withExtendedLifetime(sourceTexture.cvTexture) { () -> DebugFrameRender? in
                 guard let halated = spatialStage.applyHalation(
@@ -704,32 +730,9 @@ final class PipelineRenderer: @unchecked Sendable {
     private func createLUTTexture(size: Int, values: [Float]) throws {
         lutTexture = nil
 
-        let desc = MTLTextureDescriptor()
-        desc.textureType = .type3D
-        desc.pixelFormat = .rgba32Float
-        desc.width = size
-        desc.height = size
-        desc.depth = size
-        desc.mipmapLevelCount = 1
-        desc.usage = .shaderRead
-
-        guard let texture = device.makeTexture(descriptor: desc) else {
+        guard let texture = FilterableLUTTexture.make(device: device, size: size, rgba: values) else {
             throw RenderError.textureCreationFailed
         }
-
-        // Resolve writes 3D cubes as RGB triplets with red varying fastest.
-        // Metal's x/y/z texture axes map directly to r/g/b, respectively.
-        values.withUnsafeBytes { ptr in
-            texture.replace(
-                region: MTLRegionMake3D(0, 0, 0, size, size, size),
-                mipmapLevel: 0,
-                slice: 0,
-                withBytes: ptr.baseAddress!,
-                bytesPerRow: size * 4 * MemoryLayout<Float>.size,
-                bytesPerImage: size * size * 4 * MemoryLayout<Float>.size
-            )
-        }
-
         lutTexture = texture
     }
 
@@ -752,7 +755,8 @@ final class PipelineRenderer: @unchecked Sendable {
         grainPairing: GrainPairing,
         captureFirstBufferEvidence: Bool,
         progress: (@Sendable (Double) -> Void)?,
-        progressRange: CMTimeRange
+        progressRange: CMTimeRange,
+        sourceProfile: CameraSourceProfile
     ) async throws -> (counters: RenderDiagnosticsManifest.Counters,
                        firstBufferEvidence: RenderDiagnosticsManifest.DecodedBufferEvidence?) {
         guard let lut = renderQueue.sync(execute: { lutTexture }) else {
@@ -861,7 +865,8 @@ final class PipelineRenderer: @unchecked Sendable {
                             delivery: delivery,
                             lut: lut,
                             cancellationHandle: cancellationHandle,
-                            highlightCeiling: highlightCeiling
+                            highlightCeiling: highlightCeiling,
+                            sourceProfile: sourceProfile
                         ),
                         frameIndex: frameIndex,
                         grainIndex: grainIndex,
@@ -978,14 +983,17 @@ final class PipelineRenderer: @unchecked Sendable {
     /// (`TakeHighlightCeilingTests`); nothing outside this file calls it.
     static func measureHighlightCeiling(asset: AVURLAsset,
                                         track: AVAssetTrack,
-                                        range: CMTimeRange) async -> Float? {
+                                        range: CMTimeRange,
+                                        sourceProfile: CameraSourceProfile = .appleLog2,
+                                        peakCodeAdapter: (@Sendable (CVPixelBuffer) -> [Float])? = nil) async -> Float? {
         let seconds = range.duration.seconds
         guard seconds.isFinite, seconds > 0 else { return nil }
         let sampleCount = 8
         // Ask for a small frame; the stride in `peakCodes` bounds the work even
         // if the reader hands back the native one.
         let settings: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_64RGBAHalf,
+            kCVPixelBufferPixelFormatTypeKey as String: sourceProfile == .hlgBT2020
+                ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_64RGBAHalf,
             kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferWidthKey as String: 256,
             kCVPixelBufferHeightKey as String: 256
@@ -1008,10 +1016,41 @@ final class PipelineRenderer: @unchecked Sendable {
             guard let sample = try? await provider.next() else { return nil }
             sample.withUnsafeSampleBuffer { sampleBuffer in
                 guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-                peaks.append(contentsOf: Self.peakCodes(of: pixelBuffer))
+                peaks.append(contentsOf: peakCodeAdapter?(pixelBuffer) ?? Self.peakCodes(of: pixelBuffer))
             }
         }
         return PushPullTransfer.measuredHighlightCeiling(peakCodes: peaks)
+    }
+
+    /// Measure HLG only AFTER the production scene/gamut/Log2 adapter, so
+    /// push/pull's measured highlight hold sees the same domain as the emulsion.
+    private func peakCodes(of texture: MTLTexture) -> [Float] {
+        let bytesPerRow = ((texture.width * 8 + 255) / 256) * 256
+        guard texture.pixelFormat == .rgba16Float,
+              let readback = device.makeBuffer(length: bytesPerRow * texture.height, options: .storageModeShared),
+              let command = commandQueue.makeCommandBuffer(),
+              let blit = command.makeBlitCommandEncoder() else { return [] }
+        blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0,
+                  sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                  sourceSize: MTLSize(width: texture.width, height: texture.height, depth: 1),
+                  to: readback, destinationOffset: 0, destinationBytesPerRow: bytesPerRow,
+                  destinationBytesPerImage: bytesPerRow * texture.height)
+        blit.endEncoding()
+        command.commit()
+        command.waitUntilCompleted()
+        guard command.status == .completed else { return [] }
+        let words = readback.contents().assumingMemoryBound(to: UInt16.self)
+        let step = max(1, Int((Double(texture.width) * Double(texture.height) / 65_536).squareRoot().rounded(.up)))
+        var peaks: [Float] = []
+        for y in stride(from: 0, to: texture.height, by: step) {
+            for x in stride(from: 0, to: texture.width, by: step) {
+                let index = y * bytesPerRow / 2 + x * 4
+                peaks.append(max(Float(Float16(bitPattern: words[index])),
+                                 max(Float(Float16(bitPattern: words[index + 1])),
+                                     Float(Float16(bitPattern: words[index + 2])))))
+            }
+        }
+        return peaks
     }
 
     /// Every sampled pixel's peak channel, in Apple Log 2 code units.
@@ -1114,7 +1153,7 @@ final class PipelineRenderer: @unchecked Sendable {
                 let outputHeight = delivery.deliveredHeight
                 return outputBuffer.withUnsafeBuffer { destination in
                     guard let spatialStage = self.spatialStage,
-                          let sourceTexture = self.makeTexture(from: sourcePixelBuffer, format: .rgba16Float) else {
+                          let sourceTexture = self.preparedSource(sourcePixelBuffer, expectedProfile: context.sourceProfile) else {
                         return .failure(RenderError.stageFailed("gpu-halation", "Could not wrap the decoded frame for halation."))
                     }
                     // Halation is added to the scene-linear source and re-encoded
@@ -1436,6 +1475,46 @@ final class PipelineRenderer: @unchecked Sendable {
         let texture: MTLTexture
     }
 
+    /// Native HLG is adapted before halation and stock processing; the original
+    /// remains HLG. An unknown/mismatched decoded source fails closed.
+    private func preparedSource(_ buffer: CVPixelBuffer, expectedProfile: CameraSourceProfile) -> PixelBufferTexture? {
+        if expectedProfile == .appleLog2 {
+            let observed = RenderInputColorProvenance.profile(of: buffer)
+            guard observed == .appleLog2 || (observed == nil && allowsSyntheticInputForTests),
+                  CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_64RGBAHalf else { return nil }
+            return makeTexture(from: buffer, format: .rgba16Float)
+        }
+        guard RenderInputColorProvenance.profile(of: buffer) == .hlgBT2020,
+              CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+              CVPixelBufferGetPlaneCount(buffer) == 2, let hlgPipeline, let textureCache,
+              let output = makeIntermediateTexture(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer)),
+              let command = commandQueue.makeCommandBuffer(),
+              let encoder = command.makeComputeCommandEncoder() else { return nil }
+        var yRef: CVMetalTexture?
+        var cRef: CVMetalTexture?
+        let yStatus = CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, buffer, nil, .r16Unorm,
+            CVPixelBufferGetWidthOfPlane(buffer, 0), CVPixelBufferGetHeightOfPlane(buffer, 0), 0, &yRef)
+        let cStatus = CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, buffer, nil, .rg16Unorm,
+            CVPixelBufferGetWidthOfPlane(buffer, 1), CVPixelBufferGetHeightOfPlane(buffer, 1), 1, &cRef)
+        guard yStatus == kCVReturnSuccess, cStatus == kCVReturnSuccess,
+              let yRef, let cRef, let y = CVMetalTextureGetTexture(yRef), let c = CVMetalTextureGetTexture(cRef) else {
+            encoder.endEncoding()
+            return nil
+        }
+        encoder.setComputePipelineState(hlgPipeline)
+        encoder.setTexture(y, index: 0)
+        encoder.setTexture(c, index: 1)
+        encoder.setTexture(output, index: 2)
+        encoder.dispatchThreads(MTLSize(width: output.width, height: output.height, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
+        encoder.endEncoding()
+        command.commit()
+        command.waitUntilCompleted()
+        withExtendedLifetime((yRef, cRef)) {}
+        guard command.status == .completed else { return nil }
+        return PixelBufferTexture(cvTexture: yRef, texture: output)
+    }
+
     private func makeTexture(from pixelBuffer: CVPixelBuffer, format: MTLPixelFormat) -> PixelBufferTexture? {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
@@ -1529,6 +1608,7 @@ final class PipelineRenderer: @unchecked Sendable {
         }
         pass1Pipeline = try pipeline("pass1_lut_halation_glow")
         pass2Pipeline = try pipeline("pass2_grain")
+        hlgPipeline = try pipeline("hlg_prepare")
         spatialStage = try SpatialEffectsStage(device: device, library: library)
     }
 
@@ -1709,6 +1789,7 @@ private struct FrameRenderContext {
     /// The take's own highlight ceiling, measured once for the whole render.
     /// Nil when the render is neutral (nothing to hold) or the sample failed.
     let highlightCeiling: Float?
+    let sourceProfile: CameraSourceProfile
 }
 
 /// Captures the result from the dedicated audio-copy worker for the render queue.

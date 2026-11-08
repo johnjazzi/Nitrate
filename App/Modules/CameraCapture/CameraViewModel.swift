@@ -1037,8 +1037,9 @@ final class CameraViewModel {
             // Bind policy to the actual destination before any async work.
             // Cancellation advances captureGeneration, and a foreground reset
             // changes sessionFrameRate; neither can relabel this take's URL.
-            capturePolicies.record(sourceURL: outputURL, mode: sessionFrameRate)
-            captureJournal.markPending(outputURL)
+            let sourceProfile = CameraSession.permittedSourceProfile() ?? .appleLog2
+            capturePolicies.record(sourceURL: outputURL, mode: sessionFrameRate, sourceProfile: sourceProfile)
+            captureJournal.markPending(outputURL, capturePolicy: capturePolicies.policy(for: outputURL))
             if usesSharedIdlePreview { session.setVideoRecordingZoomIntent(photoCropZoom) }
             session.startRecording(to: outputURL) { [weak self] error in
                 guard let self else { return }
@@ -1329,18 +1330,32 @@ final class CameraViewModel {
             openGateSupported: CaptureFormatAvailability.supports(.openGate2K))
     }
 
+    /// Recomputed when the observed lens/rate changes, including startup and
+    /// session-boundary resets. Never offers a UHD placeholder without evidence.
+    var availableCaptureFormats: [CaptureFormat] {
+        let device = AVCaptureDevice.default(activeLens.deviceType, for: .video, position: activeLens.position)
+        return CaptureFormatAvailability.availableFormats(on: device, fps: Double(sessionFrameRate.fps))
+    }
+
     /// Re-read the persisted capture format and ask the session for it. Called
     /// when Settings closes. A refusal is shown on screen: the operator asked for
     /// a geometry this device cannot deliver, and silently keeping the old one
     /// would mislabel the file.
     func applyCaptureFormatPreference() {
-        let format = Self.captureFormatForThisDevice()
+        let available = availableCaptureFormats
+        guard !available.isEmpty else {
+            showNotice("No native capture format is available for this camera and frame rate.", severity: .warning)
+            return
+        }
+        let format = CaptureFormat.clamped(UserDefaults.standard.string(forKey: CaptureFormat.preferenceKey), to: available)
         session.setCaptureFormat(format) { [weak self] error in
             guard let self, self.lifecycleGate.isActive else { return }
             if let error {
                 // A format switch is a settings action, not a broken camera:
                 // warn in the corner and let the operator read or dismiss it.
                 self.showNotice(error.localizedDescription, severity: .warning)
+            } else {
+                self.refreshFrameRateEligibility()
             }
         }
     }
@@ -1348,7 +1363,7 @@ final class CameraViewModel {
     /// The capture policy snapshotted for a completed take. The screen reads this
     /// instead of the live mode, so a session-boundary reset cannot mislabel it.
     func capturePolicy(for sourceURL: URL) -> RenderCapturePolicy? {
-        capturePolicies.policy(for: sourceURL)
+        capturePolicies.policy(for: sourceURL) ?? captureJournal.capturePolicy(for: sourceURL)
     }
 
     /// Refresh the eligible session modes from the active lens. Called after the

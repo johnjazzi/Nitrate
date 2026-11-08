@@ -2,11 +2,11 @@ import Foundation
 
 /// Which sensor format the Video capture graph records.
 ///
-/// `uhd16x9` is the shipping 3840x2160 10-bit 4:2:2 Apple Log 2 format and the
-/// default: an install that has never touched the row records exactly what it
-/// recorded before.
+/// `uhd16x9` is native 3840x2160 widescreen. Open gate remains the default
+/// where supported. Geometry never selects or overrides the source profile.
 ///
-/// `openGate2K` is the native 4:3 1920x1440 10-bit 4:2:2 Apple Log 2 format.
+/// `openGate2K` is native 4:3 1920x1440: 10-bit 4:2:2 Apple Log 2, or native
+/// x420 HLG only on devices advertising neither Apple Log 1 nor Apple Log 2.
 /// It is **not** a crop of UHD: the sensor is read at full height and the
 /// delivered file is 1920x1440, so framing is decided at capture instead of in
 /// the renderer. It is only offered where the hardware exposes that format;
@@ -93,9 +93,9 @@ enum CaptureFormat: String, Codable, CaseIterable, Sendable, Identifiable {
     var detail: String {
         switch self {
         case .uhd16x9:
-            return "3840x2160, 10-bit Apple Log 2. The shipping widescreen capture."
+            return "3840x2160, native 10-bit capture. The shipping widescreen capture."
         case .openGate2K:
-            return "1920x1440 native 4:3, 10-bit Apple Log 2. Full sensor height, "
+            return "1920x1440 native 4:3, 10-bit capture. Full sensor height, "
                 + "not cropped to 16:9."
         }
     }
