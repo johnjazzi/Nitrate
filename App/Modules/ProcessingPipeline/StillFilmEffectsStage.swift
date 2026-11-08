@@ -45,6 +45,12 @@ final class StillFilmEffectsStage {
     /// `halationHeadroom` is the file's measured highlight ceiling; see
     /// `SpatialEffectsStage.halationReferenceSuperwhite`. A still passes it, a
     /// video frame does not.
+    ///
+    /// The job's push/pull is applied HERE, in front of the emulsion, exactly as
+    /// a video take's is: the development gain is a scene-light change, so
+    /// halation has to be measured against the light the film receives. It is a
+    /// curve, not a flat gain — see `spatial_expose` — so a clipped highlight
+    /// holds at white and keeps its full-intensity halo.
     func applyHalation(source: MTLTexture, commandQueue: MTLCommandQueue,
                        config: FilmStockConfig, sceneLiftStops: Float = 0,
                        halationHeadroom: Float? = nil) -> MTLTexture? {
@@ -56,6 +62,7 @@ final class StillFilmEffectsStage {
                                      diffusion: config.effectiveStillDiffusion,
                                      sceneLiftStops: sceneLiftStops,
                                      halationHeadroom: halationHeadroom,
+                                     exposureStops: Float(config.effectivePushPull.stops.stops),
                                      width: source.width, height: source.height)
     }
 

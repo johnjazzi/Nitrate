@@ -89,6 +89,11 @@ final class SpatialEffectsStage {
     /// letting an 11x specular swamp the graded image.
     private static let referenceSuperwhite: Float = 8.0
 
+    /// Apple Log 2's recorded range tops out near 12x diffuse white (code 1.0
+    /// decodes to ~12.0), so a video frame is truly clipped there. See the
+    /// superwhite note in `spatial.metal`.
+    static let appleLog2ClipWhite: Float = 12.0
+
     /// The knees above, expressed in the light a caller actually hands in.
     ///
     /// The knees are authored for Apple Log 2, where decoded 1.0 is 100 % scene
@@ -162,6 +167,27 @@ final class SpatialEffectsStage {
         return pow(2, lift)
     }
 
+    /// The scene-light value at which a source is TRULY CLIPPED — the top of its
+    /// recorded range, in the same lifted units as the frame.
+    ///
+    /// This is the ceiling the push/pull curve holds (`spatial_expose`): a
+    /// highlight at or above it carries no scene detail to recover, so the gain
+    /// fades to none there and the pixel stays white and keeps halating. What
+    /// "truly clipped" means is a property of the SOURCE, so it is measured
+    /// wherever it can be: a still clips at its `headroom`
+    /// (see `halationReferenceSuperwhite`), a take at its `highlightCeiling`.
+    /// Apple Log 2's ~12x white is only the fallback — it is the top of the
+    /// RECORDING range, and holding there would let a pull crush a dimmer
+    /// highlight that is nevertheless blown.
+    static func halationCeiling(sceneLiftStops: Float,
+                                headroom: Float? = nil,
+                                highlightCeiling: Float? = nil) -> Float {
+        if let measured = highlightCeiling ?? headroom, measured.isFinite, measured > 0 {
+            return measured
+        }
+        return appleLog2ClipWhite * liftScale(sceneLiftStops)
+    }
+
     private let device: MTLDevice
     private let glowMaskPipeline: MTLComputePipelineState
     private let glowCompositePipeline: MTLComputePipelineState
@@ -201,8 +227,9 @@ final class SpatialEffectsStage {
     /// result, still Apple Log 2 encoded, ready to be graded by the stock LUT
     /// and output contrast. `source` is not mutated.
     ///
-    /// `strength` is the stock's halation strength (0 disables halation, and the
-    /// returned frame then decodes back to the source within rounding).
+    /// `strength` is the stock's halation strength (0 disables halation only).
+    /// Exposure still runs when halation and diffusion are disabled; byte-for-byte
+    /// passthrough requires both effects disabled AND `exposureStops == 0`.
     /// `radiusFraction` is the base diffusion radius as a fraction of the
     /// half-resolution width; `layerScale` weights the three per-layer
     /// contributions. A radius of 0 means no spatial diffusion — the scattered
@@ -212,9 +239,8 @@ final class SpatialEffectsStage {
     /// scene-linear and pre-LUT, so they share ONE decode and ONE encode: the
     /// prepare pass writes the halation mask and the linear scene together, the
     /// blur passes run over the linear scene, and the apply pass blends the
-    /// diffusion and adds the halation energy before encoding once. With
-    /// diffusion disabled the frame is byte-for-byte what it was before the
-    /// node existed.
+    /// diffusion and adds the halation energy before encoding once. Disabling
+    /// diffusion bypasses its blend, not the requested exposure or halation.
     func applyHalation(
         source: MTLTexture,
         commandQueue: MTLCommandQueue,
@@ -226,6 +252,13 @@ final class SpatialEffectsStage {
         /// Measured highlight ceiling of a still, in lifted units. Nil for video,
         /// which keeps the authored reference. See `halationReferenceSuperwhite`.
         halationHeadroom: Float? = nil,
+        /// The take's own highlight ceiling, in the frame's scene units, measured
+        /// from the source frames. A take's halation reference stays authored (see
+        /// `halationReferenceSuperwhite`), but the push/pull hold must anchor to
+        /// what THIS take carries: a hazy sky tops out near 3x white, and a hold
+        /// anchored at Apple Log 2's 12x would let a pull drag it down into the
+        /// stock's cast. Nil for a still, which measures its own `halationHeadroom`.
+        highlightCeiling: Float? = nil,
         /// Render-time exposure in stops, applied to the scene BEFORE the emulsion
         /// stages: a video take is locked to its shutter, so the operator pulls a
         /// bright day down in the render, and halation has to be measured against
@@ -236,8 +269,8 @@ final class SpatialEffectsStage {
         height: Int
     ) -> MTLTexture? {
         let plan = diffusion.plan(sourceWidth: width)
-        // Disabled means byte-for-byte identity, including below-black Log noise.
-        guard strength != 0 || plan != nil else { return source }
+        // Only all three disabled means byte-for-byte identity, including Log noise.
+        guard strength != 0 || plan != nil || exposureStops != 0 else { return source }
 
         let halfWidth = max(1, (width + 1) / 2)
         let halfHeight = max(1, (height + 1) / 2)
@@ -279,6 +312,12 @@ final class SpatialEffectsStage {
             // The mask and the ladder must be measured on the EXPOSED scene, or
             // the apply pass would add a halo taken from light the film never saw.
             var stops = exposureStops
+            // The push/pull is a curve, not a flat gain: it fades to none at the
+            // source's clip ceiling, so a truly clipped highlight holds at white
+            // (and keeps halating) instead of being pulled into the stock's cast.
+            var ceiling = Self.halationCeiling(sceneLiftStops: sceneLiftStops,
+                                               headroom: halationHeadroom,
+                                               highlightCeiling: highlightCeiling)
             encoder.setComputePipelineState(scene == nil ? halationMaskPipeline : scenePreparePipeline)
             encoder.setTexture(source, index: 0)
             encoder.setTexture(halationMask, index: 1)
@@ -289,6 +328,7 @@ final class SpatialEffectsStage {
             encoder.setBytes(&green, length: MemoryLayout<Float>.size, index: 1)
             encoder.setBytes(&blue, length: MemoryLayout<Float>.size, index: 2)
             encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 3)
+            encoder.setBytes(&ceiling, length: MemoryLayout<Float>.size, index: 4)
             encoder.dispatchThreadgroups(maskGroups, threadsPerThreadgroup: Self.groupSize)
             encoder.endEncoding()
         }
@@ -343,6 +383,9 @@ final class SpatialEffectsStage {
         //    re-encode — one full-resolution pass for both effects.
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
             var stops = exposureStops
+            var ceiling = Self.halationCeiling(sceneLiftStops: sceneLiftStops,
+                                               headroom: halationHeadroom,
+                                               highlightCeiling: highlightCeiling)
             var strength = strength
             var layerScale = layerScale
             var referenceSuperwhite = Self.halationReferenceSuperwhite(
@@ -370,6 +413,7 @@ final class SpatialEffectsStage {
             encoder.setBytes(&diffusionWeights, length: MemoryLayout<SIMD4<Float>>.size, index: 3)
             encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 4)
             encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 5)
+            encoder.setBytes(&ceiling, length: MemoryLayout<Float>.size, index: 6)
             encoder.dispatchThreadgroups(fullGroups, threadsPerThreadgroup: Self.groupSize)
             encoder.endEncoding()
         }
