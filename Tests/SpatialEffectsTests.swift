@@ -361,21 +361,47 @@ struct SpatialEffectsTests {
             return band - SIMD3(repeating: Self.surround)
         }
 
-        // 1.5x: clears red's 1.0 knee only.
-        let redOnly = try halo(1.5)
-        // 3.0x: clears red and green, still below blue's 4.0.
-        let redGreen = try halo(3.0)
+        // 1.25x: clears the lowered red knee, but not green.
+        let redOnly = try halo(1.25)
+        // 2.5x: clears red and green, still below blue.
+        let redGreen = try halo(2.5)
         // 8.0x: clears all three.
         let allLayers = try halo(8.0)
 
-        #expect(redOnly.x > 0.002, "red must respond above its 1.0 knee (was \\(redOnly.x))")
-        #expect(redOnly.y < redOnly.x * 0.1, "green must stay dark below its 2.0 knee (was \\(redOnly.y))")
-        #expect(redOnly.z < redOnly.x * 0.1, "blue must stay dark below its 4.0 knee (was \\(redOnly.z))")
+        #expect(redOnly.x > 0.002, "red must respond above its 0.75 knee (was \\(redOnly.x))")
+        #expect(redOnly.y < redOnly.x * 0.1, "green must stay dark below its 1.5 knee (was \\(redOnly.y))")
+        #expect(redOnly.z < redOnly.x * 0.1, "blue must stay dark below its 3.0 knee (was \\(redOnly.z))")
 
-        #expect(redGreen.y > 0.002, "green must respond above its 2.0 knee (was \\(redGreen.y))")
-        #expect(redGreen.z < redGreen.y * 0.1, "blue must stay dark below its 4.0 knee (was \\(redGreen.z))")
+        #expect(redGreen.y > 0.002, "green must respond above its 1.5 knee (was \\(redGreen.y))")
+        #expect(redGreen.z < redGreen.y * 0.1, "blue must stay dark below its 3.0 knee (was \\(redGreen.z))")
 
-        #expect(allLayers.z > 0.002, "blue must respond above its 4.0 knee (was \\(allLayers.z))")
+        #expect(allLayers.z > 0.002, "blue must respond above its 3.0 knee (was \\(allLayers.z))")
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func halationStartsEarlierAndBuildsMoreGradually() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        func redAdded(_ level: Double) throws -> Double {
+            let source = Self.blockSource(width: Self.side, height: Self.side,
+                                          block: SIMD3(repeating: level))
+            let encoded = try Self.runHalation(stage: stage, device: device, queue: queue,
+                width: Self.side, height: Self.side, sourcePixels: source,
+                strength: 1, radiusFraction: 0, layerScale: Self.tint)
+            let linear = Self.decodedLinear(encoded, count: Self.side * Self.side)
+            // Compare against the quantized input, not the pre-encoding authored level.
+            let input = Self.appleLogDecode(Double(source[(128 * Self.side + 128) * 4]))
+            return Self.linearMean(linear, width: Self.side, columns: 120..<136, rows: 120..<136).x - input
+        }
+        #expect(abs(try redAdded(0.5)) < 0.002)
+        let early = try redAdded(0.9)
+        #expect(early > 0.01, "red now responds below the previous 1.0 onset")
+        #expect(abs(early - 0.015) < 0.003)
+        let lower = try redAdded(2)
+        let upper = try redAdded(3)
+        #expect(abs(lower - 0.125) < 0.003)
+        #expect(abs((upper - lower) - 0.1) < 0.004, "ramp slope is 1/10, not the old 1/8")
     }
 
     /// An all-red source exposes only the red layer, so its halo must stay red.
@@ -758,7 +784,7 @@ struct SpatialEffectsTests {
         let blue = Double(mask[2])
         #expect(abs(red - 1.385) < 0.02, "red must preserve the subpixel specular (was \\(red))")
         #expect(abs(green - 0.385) < 0.02, "green must preserve the subpixel specular (was \\(green))")
-        #expect(blue < 0.01, "blue is below its 4.0 knee and must stay dark (was \\(blue))")
+        #expect(blue < 0.01, "blue is below its explicit 4.0 knee and must stay dark (was \\(blue))")
     }
 
     /// A mask texel whose 2x2 block runs off an odd-sized frame must average the
@@ -783,7 +809,7 @@ struct SpatialEffectsTests {
         let blue = Double(mask[6])
         #expect(abs(red - 1.5) < 0.02, "partial block must average its valid samples (was \\(red))")
         #expect(abs(green - 0.5) < 0.02, "partial block must average its valid samples (was \\(green))")
-        #expect(blue < 0.01, "blue is below its 4.0 knee (was \\(blue))")
+        #expect(blue < 0.01, "blue is below its explicit 4.0 knee (was \\(blue))")
 
         // Texel (0,0): full block, same uniform source, must agree.
         #expect(abs(Double(mask[0]) - red) < 0.02,

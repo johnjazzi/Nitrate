@@ -390,15 +390,16 @@ struct PlatePreviewEffectsTests {
                 "the bundle must carry the reduced total amount")
         for gauge in PrintGauge.allCases {
             let config = PreviewConfiguration(stock: stock, gauge: gauge, sceneIlluminantKelvin: 3600)
-            #expect(config.halationStrength == stock.halationStrength,
-                    "the preview must pass the catalog value through, not reduce it again")
+            #expect(config.halationStrength == stock.halationStrength(for: gauge),
+                    "the preview must apply the selected gauge exactly once")
             #expect(config.halationRadiusFraction == stock.halationRadiusFraction)
             #expect(config.halationTint == stock.halationTint)
         }
         // The gauge must not disturb the stock's halation geometry.
         let a = PreviewConfiguration(stock: stock, gauge: .eightMillimetre, sceneIlluminantKelvin: 3600)
         let b = PreviewConfiguration(stock: stock, gauge: .seventyFiveMillimetre, sceneIlluminantKelvin: 3600)
-        #expect(a.halationStrength == b.halationStrength && a.halationRadiusFraction == b.halationRadiusFraction)
+        #expect(abs(b.halationStrength - a.halationStrength * 0.20) < 0.00001)
+        #expect(a.halationRadiusFraction == b.halationRadiusFraction)
     }
 
     // MARK: - Real 8-bit output fixture

@@ -80,14 +80,15 @@ final class SpatialEffectsStage {
     /// by the most, so red responds first. The ordering is what makes a faint
     /// halo read red and a bright one read white: as intensity climbs the source
     /// clears more knees, which is also why a very bright source appears to grow.
-    private static let redKnee: Float = 1.0
-    private static let greenKnee: Float = 2.0
-    private static let blueKnee: Float = 4.0
+    private static let redKnee: Float = 0.75
+    private static let greenKnee: Float = 1.5
+    private static let blueKnee: Float = 3.0
 
     /// Superwhite excess that reaches full contribution. Apple Log 2 tops out
-    /// near 12x diffuse white, so normalizing by 8 leaves headroom instead of
+    /// near 12x diffuse white. Lower knees and a 10x excess reference widen
+    /// the ramp so it starts sooner and builds more gradually, instead of
     /// letting an 11x specular swamp the graded image.
-    private static let referenceSuperwhite: Float = 8.0
+    private static let referenceSuperwhite: Float = 10.0
 
     /// Apple Log 2's recorded range tops out near 12x diffuse white (code 1.0
     /// decodes to ~12.0), so a video frame is truly clipped there. See the
@@ -106,7 +107,7 @@ final class SpatialEffectsStage {
     /// quantity the video path measures.
     ///
     /// `sceneLiftStops` is zero for every video frame and for any still whose
-    /// decode was not lifted, in which case this is exactly `(1, 2, 4)`.
+    /// decode was not lifted, in which case this is exactly `(0.75, 1.5, 3)`.
     static func halationKnees(sceneLiftStops: Float) -> SIMD3<Float> {
         SIMD3(redKnee, greenKnee, blueKnee) * liftScale(sceneLiftStops)
     }
@@ -120,11 +121,11 @@ final class SpatialEffectsStage {
     /// bleeds, this decides how much of the requested strength a given excess
     /// buys. Lower it and every pixel above a knee contributes more, which is the
     /// lever for "DSLR halation should read stronger". 1.0 would anchor exactly to
-    /// the file's brightest 0.01%; 0.125 reaches full contribution an eighth of the
-    /// way up a specular.
+    /// the file's brightest 0.01%; 0.15625 stretches the previous 0.125 ramp by
+    /// 25%, matching the gentler video reference.
     ///
     /// One number on purpose: halve it to double the effect.
-    static let stillAnchorShare: Float = 0.125
+    static let stillAnchorShare: Float = 0.15625
 
     /// Floor under that anchor, in multiples of white, so a frame with almost no
     /// light above white cannot drive the denominator toward zero and veil itself.
@@ -133,13 +134,13 @@ final class SpatialEffectsStage {
     /// the second knob: lower it to let `stillAnchorShare` act, raise it to hold
     /// the effect back. Tuned together with the share — changing one alone moves
     /// nothing on the files the two knobs were fitted to.
-    static let stillAnchorFloorWhite: Float = 0.0625
+    static let stillAnchorFloorWhite: Float = 0.078125
 
     /// The superwhite value at which halation reaches FULL contribution.
     ///
     /// VIDEO passes no `headroom` and gets the authored constant: the knees and
     /// this reference were designed for Apple Log 2, which carries about 12x
-    /// diffuse white, and 8x leaves room for an 11x specular without letting it
+    /// diffuse white, and 10x leaves room for an 11x specular without letting it
     /// swamp the graded frame. Every video frame is therefore unchanged by
     /// anything in this section.
     ///

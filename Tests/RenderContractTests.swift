@@ -103,7 +103,7 @@ struct RenderContractTests {
             // Daylight/tungsten tag travels with the render.
             #expect(values["com.filmemulation.light-type"] == config.lightType)
             #expect(values["com.filmemulation.iso"] == String(Int(config.defaultISO)))
-            #expect(values["com.filmemulation.halation-level"] == String(config.halationStrength))
+            #expect(values["com.filmemulation.halation-level"] == String(config.effectiveHalationStrength))
             #expect(values["com.filmemulation.iso-role"] == "selected-render-exposure-index")
             #expect(values["com.filmemulation.shutter-speed"] == "1/48")
             #expect(values["com.filmemulation.shutter-angle"] == "180")
@@ -183,7 +183,7 @@ struct RenderContractTests {
         #expect(shippedGrainStocks.allSatisfy { $0.effectiveRecipe.edgeBoostMultiplier == 3 })
         let template = try #require(app.first { $0.stockId == "kodak5219" })
         #expect(template.grainSize == 1.3)
-        #expect(template.effectiveRecipe.version == "5219-current-v12")
+        #expect(template.effectiveRecipe.version == "5219-current-v13")
         #expect(template.effectiveRecipe.grainAlgorithm == RenderRecipe.edgeAmplitudeAlgorithm)
         #expect(template.effectiveRecipe.edgeBoostMultiplier == 3)
         let low = template.overridingISO(250)
@@ -209,8 +209,8 @@ struct RenderContractTests {
             #expect(tungsten.grainSize == 1.3)
             #expect(daylight.outputContrast == 0.85)
             #expect(tungsten.outputContrast == 0.85)
-            #expect(daylight.effectiveRecipe.version == "5207-current-v7")
-            #expect(tungsten.effectiveRecipe.version == "5219-current-v12")
+            #expect(daylight.effectiveRecipe.version == "5207-current-v8")
+            #expect(tungsten.effectiveRecipe.version == "5219-current-v13")
         }
     }
 
@@ -260,7 +260,7 @@ struct RenderContractTests {
     /// The requested 30% reduction applies to halation TOTAL AMOUNT only, and only in the
     /// catalogs: the radius (0.001), the layer weights and every glow/grain/contrast setting
     /// are untouched, and no code path reapplies the reduction. The preview and the renderer
-    /// both pass `config.halationStrength` through unchanged, so the amount cannot be halved
+    /// both apply the gauge once through `config.effectiveHalationStrength`, so it is not reduced
     /// twice; the preview-side guard for that lives in `PlatePreviewEffectsTests`.
     @Test func shippedHalationTotalAmountDropsThirtyPercentAndLeavesGeometryAlone() throws {
         let previous: Float = 3.60
@@ -486,6 +486,28 @@ struct RenderContractTests {
             var bad = config
             bad.halationRadiusFraction = radius
             #expect(throws: RenderContractError.self) { try bad.validate() }
+        }
+    }
+
+    @Test func gaugeHalationPresenceMatchesPreviewDebugAndShotConfig() throws {
+        for stock in try stocks("App/Resources/stocks.json") {
+            let factors: [(PrintGauge, Float)] = [(.eightMillimetre, 1), (.sixteenMillimetre, 1),
+                (.thirtyFiveMillimetre, 0.45), (.seventyFiveMillimetre, 0.20)]
+            for (gauge, factor) in factors {
+                let shot = stock.overridingISO(800).overridingGauge(gauge)
+                #expect(abs(shot.effectiveHalationStrength - stock.halationStrength * factor) < 0.00001)
+                #expect(shot.effectiveStillHalationScale == 0.5)
+                #expect(shot.halationRadiusFraction == stock.halationRadiusFraction)
+                #expect(shot.halationTint == stock.halationTint)
+                let restored = try JSONDecoder().decode(FilmStockConfig.self, from: JSONEncoder().encode(shot))
+                #expect(restored.effectiveHalationStrength == shot.effectiveHalationStrength)
+                let preview = PreviewConfiguration(stock: stock, gauge: gauge, sceneIlluminantKelvin: 5600)
+                #expect(preview.halationStrength == shot.effectiveHalationStrength)
+                var debug = PipelineRenderer.DebugFrameParameters(config: stock)
+                debug.applyGauge(gauge)
+                #expect(debug.halationStrength == shot.effectiveHalationStrength)
+            }
+            #expect(stock.effectiveHalationStrength == stock.halationStrength * 0.45)
         }
     }
 

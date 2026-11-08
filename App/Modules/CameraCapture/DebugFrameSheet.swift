@@ -424,7 +424,7 @@ struct DebugFrameSheet: View {
 
     private var grainSection: some View {
         DebugCollapsibleSection(title: "Grain", isExpanded: $grainExpanded) {
-            labelled("Print gauge — re-seeds size and presence") {
+            labelled("Print gauge — re-seeds grain and halation") {
                 Picker("Gauge", selection: gaugeBinding) {
                     ForEach(PrintGauge.allCases, id: \.self) { Text($0.displayName).tag($0) }
                 }

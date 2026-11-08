@@ -7,7 +7,7 @@ import Foundation
 /// undersampled, so the fine end is delivered by the amplitude multiplier.
 ///
 /// The ladder is configuration, not code: `gauges.json` ships one entry per print
-/// gauge and the two multiplier properties below delegate to it. A gauge only
+/// gauge and the multiplier properties below delegate to it. A gauge only
 /// scales the stock's grain size; stock `grainSize` itself is never rewritten.
 ///
 /// Multipliers are documented starting points, not measurements.
@@ -29,6 +29,9 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     /// that is where "almost grain-free" is delivered, by amplitude, not by
     /// pushing size into the aliased regime.
     var amplitudeMultiplier: Float { GaugeTunings.tuning(for: self).amplitudeMultiplier }
+
+    /// Scales halation presence independently of grain and diffusion geometry.
+    var halationMultiplier: Float { GaugeTunings.tuning(for: self).halationMultiplier }
 
     /// Short label for the gauge selector; the encoded value is the same short
     /// form, so exported metadata reads "35mm", not "thirtyFiveMillimetre".
@@ -88,6 +91,7 @@ struct GaugeTuning: Codable, Equatable, Sendable {
     let amplitudeMultiplier: Float
     let diffusionPreset: DiffusionPreset
     let diffusionAmount: Float
+    var halationMultiplier: Float = 1
 
     var diffusion: DiffusionSettings {
         DiffusionSettings(preset: diffusionPreset, amount: diffusionAmount)
@@ -111,6 +115,7 @@ struct GaugeTuningConfig: Codable, Equatable, Sendable {
         let amplitudeMultiplier: Float
         let diffusionPreset: DiffusionPreset
         let diffusionAmount: Float
+        var halationMultiplier: Float? = nil
     }
 
     let schemaVersion: Int
@@ -133,6 +138,11 @@ struct GaugeTuningConfig: Codable, Equatable, Sendable {
             }
             try Self.requirePositive(entry.sizeMultiplier, field: "sizeMultiplier", gauge: entry.gauge)
             try Self.requirePositive(entry.amplitudeMultiplier, field: "amplitudeMultiplier", gauge: entry.gauge)
+            let halation = entry.halationMultiplier ?? 1
+            guard halation.isFinite, (0...1).contains(halation) else {
+                throw GaugeConfigError.invalidMultiplier(
+                    gauge: entry.gauge.rawValue, field: "halationMultiplier", value: halation)
+            }
             // The radius belongs to the format, so an entry whose preset does
             // not match its gauge is a defect, not a creative choice.
             guard entry.diffusionPreset == entry.gauge.diffusionPreset else {
@@ -146,7 +156,8 @@ struct GaugeTuningConfig: Codable, Equatable, Sendable {
             resolved[entry.gauge] = GaugeTuning(sizeMultiplier: entry.sizeMultiplier,
                                                 amplitudeMultiplier: entry.amplitudeMultiplier,
                                                 diffusionPreset: entry.diffusionPreset,
-                                                diffusionAmount: entry.diffusionAmount)
+                                                diffusionAmount: entry.diffusionAmount,
+                                                halationMultiplier: halation)
         }
         let missing = PrintGauge.allCases.filter { resolved[$0] == nil }
         guard missing.isEmpty else {
@@ -182,6 +193,9 @@ enum GaugeConfigError: LocalizedError, Equatable {
         case .missingGauges(let gauges):
             return "gauges.json is missing entries for: \(gauges.joined(separator: ", "))."
         case .invalidMultiplier(let gauge, let field, let value):
+            if field == "halationMultiplier" {
+                return "gauges.json \(gauge).\(field) must be within 0...1, got \(value)."
+            }
             return "gauges.json \(gauge).\(field) must be finite and positive, got \(value)."
         case .mismatchedDiffusionPreset(let gauge, let preset):
             return "gauges.json \(gauge) must use its own diffusion radius, got \(preset)."

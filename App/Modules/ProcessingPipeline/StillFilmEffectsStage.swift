@@ -56,7 +56,7 @@ final class StillFilmEffectsStage {
                        halationHeadroom: Float? = nil) -> MTLTexture? {
         guard source.pixelFormat == .rgba16Float else { return nil }
         return spatial.applyHalation(source: source, commandQueue: commandQueue,
-                                     strength: config.halationStrength * config.effectiveStillHalationScale,
+                                     strength: config.effectiveHalationStrength * config.effectiveStillHalationScale,
                                      radiusFraction: config.halationRadiusFraction,
                                      layerScale: config.halationTint,
                                      diffusion: config.effectiveStillDiffusion,

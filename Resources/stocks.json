@@ -19,7 +19,7 @@
       "secondaryTint": "#A67C2E",
       "recipe": {
         "schemaVersion": 1,
-        "version": "5207-current-v7",
+        "version": "5207-current-v8",
         "input": {
           "gamut": "Rec.2020",
           "transfer": "Apple Log 2",
@@ -68,7 +68,7 @@
       "secondaryTint": "#153A4A",
       "recipe": {
         "schemaVersion": 1,
-        "version": "5219-current-v12",
+        "version": "5219-current-v13",
         "input": {
           "gamut": "Rec.2020",
           "transfer": "Apple Log 2",

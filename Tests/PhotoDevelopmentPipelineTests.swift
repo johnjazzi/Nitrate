@@ -20,7 +20,7 @@ struct PhotoDevelopmentPipelineTests {
     /// weaker stock, so the halo around a true specular is unchanged.
     @Test func liftedStillsMeasureAgainstLiftedKnees() {
         let unlifted = SpatialEffectsStage.halationKnees(sceneLiftStops: 0)
-        #expect(unlifted == SIMD3<Float>(1, 2, 4), "video and unlifted stills keep the authored knees")
+        #expect(unlifted == SIMD3<Float>(0.75, 1.5, 3), "video and unlifted stills keep the authored knees")
 
         let lifted = SpatialEffectsStage.halationKnees(sceneLiftStops: 2.988)
         let scale = pow(Float(2), Float(2.988))
@@ -39,7 +39,7 @@ struct PhotoDevelopmentPipelineTests {
         #expect(specular - lifted.z > 0)
 
         // Out-of-range and non-finite lifts cannot produce a nonsense knee.
-        #expect(SpatialEffectsStage.halationKnees(sceneLiftStops: -.infinity) == SIMD3<Float>(1, 2, 4))
+        #expect(SpatialEffectsStage.halationKnees(sceneLiftStops: -.infinity) == SIMD3<Float>(0.75, 1.5, 3))
         let extreme = SpatialEffectsStage.halationKnees(sceneLiftStops: 99)
         #expect(extreme.x.isFinite && extreme.x > 0)
     }
