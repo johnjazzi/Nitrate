@@ -435,22 +435,10 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         return bundleFiles?[filename]
     }
 
-    /// Same direct RGB/red-fastest RGBA32Float upload as PipelineRenderer.
+    /// Same direct RGB/red-fastest, filterable upload as PipelineRenderer.
     private static func makeLUT(_ cube: CameraPreviewCube, device: any MTLDevice) throws -> any MTLTexture {
-        let size = cube.size
-        let values = cube.rgba
-        let descriptor = MTLTextureDescriptor()
-        descriptor.textureType = .type3D
-        descriptor.pixelFormat = .rgba32Float
-        descriptor.width = size
-        descriptor.height = size
-        descriptor.depth = size
-        descriptor.usage = .shaderRead
-        guard let texture = device.makeTexture(descriptor: descriptor) else { throw PreviewError.unavailable }
-        values.withUnsafeBytes {
-            texture.replace(region: MTLRegionMake3D(0, 0, 0, size, size, size), mipmapLevel: 0, slice: 0,
-                withBytes: $0.baseAddress!, bytesPerRow: size * 4 * MemoryLayout<Float>.size,
-                bytesPerImage: size * size * 4 * MemoryLayout<Float>.size)
+        guard let texture = FilterableLUTTexture.make(device: device, size: cube.size, rgba: cube.rgba) else {
+            throw PreviewError.unavailable
         }
         return texture
     }

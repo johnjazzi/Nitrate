@@ -154,7 +154,28 @@ broaden the app's video-import picker. The standalone CLI still requires a
 resource bundle containing stocks/LUTs/grain/Metal shaders; the local inspection
 used the already-built test resources in a scratch app wrapper.
 
+## Older-GPU LUT filtering correction
+
+The measured iPhone 14 Pro/A16 reports `supports32BitFloatFiltering=false`.
+The previous LUT uploads nevertheless used RGBA32Float with linear sampling in
+live preview, stock plates and film rendering. A shared `FilterableLUTTexture`
+now selects RGBA16Float on GPUs without Float32 filtering and preserves the
+existing RGBA32Float path on capable GPUs. Half-float uploads use the matching
+16-bit row/image strides; RGB order, red-fastest axes, cube contents, transfer,
+and grain settings are unchanged.
+
+The regression tests first failed against the old format choice, then passed
+with the capability-based choice. An asymmetric off-grid gradient exercises the
+production LUT kernel with half-float storage and bounds interpolation error and
+adjacent steps. The full gate passed 960 tests, plus Debug/Release and signed
+builds. The corrected build was installed on the 14 Pro, and the user confirmed
+that the visible banding was resolved. This is visual acceptance of this fix,
+not a new colorimetric calibration or completion of the remaining device matrix.
+
 ## Primary references
+
+- Apple `MTLDevice.supports32BitFloatFiltering`:
+  https://developer.apple.com/documentation/metal/mtldevice/supports32bitfloatfiltering
 
 - Apple `AVCaptureDevice.isVideoHDREnabled`:
   https://developer.apple.com/documentation/avfoundation/avcapturedevice/isvideohdrenabled
@@ -167,3 +188,10 @@ used the already-built test resources in a scratch app wrapper.
   https://www.itu.int/rec/R-REC-BT.2100
 - Vendored OCIO Apple transfer constants and Apple Wide Gamut chromaticities:
   `tools/lut-generation/ocio-apple-cameras.cpp`.
+
+The 0.6.1 rebase also routes main's new StillFilmRenderResources LUT upload
+through FilterableLUTTexture. It retains the RAW photo domain adapter, current
+still effects/grain ladder and push/pull path; only LUT storage precision changes
+on a GPU without Float32 filtering. Grain R32 filtering is outside this change.
+Post-rebase verification is lint-only; the historical checks above have not been
+repeated against the rebased code.

@@ -721,32 +721,9 @@ final class PipelineRenderer: @unchecked Sendable {
     private func createLUTTexture(size: Int, values: [Float]) throws {
         lutTexture = nil
 
-        let desc = MTLTextureDescriptor()
-        desc.textureType = .type3D
-        desc.pixelFormat = .rgba32Float
-        desc.width = size
-        desc.height = size
-        desc.depth = size
-        desc.mipmapLevelCount = 1
-        desc.usage = .shaderRead
-
-        guard let texture = device.makeTexture(descriptor: desc) else {
+        guard let texture = FilterableLUTTexture.make(device: device, size: size, rgba: values) else {
             throw RenderError.textureCreationFailed
         }
-
-        // Resolve writes 3D cubes as RGB triplets with red varying fastest.
-        // Metal's x/y/z texture axes map directly to r/g/b, respectively.
-        values.withUnsafeBytes { ptr in
-            texture.replace(
-                region: MTLRegionMake3D(0, 0, 0, size, size, size),
-                mipmapLevel: 0,
-                slice: 0,
-                withBytes: ptr.baseAddress!,
-                bytesPerRow: size * 4 * MemoryLayout<Float>.size,
-                bytesPerImage: size * size * 4 * MemoryLayout<Float>.size
-            )
-        }
-
         lutTexture = texture
     }
 

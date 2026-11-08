@@ -114,24 +114,14 @@ final class StillFilmRenderResources {
             throw RenderError.missingResource(config.lutName)
         }
         let (size, values) = try PhotoCubeLUT.parse(String(contentsOf: url, encoding: .utf8))
-        let cubeDescriptor = MTLTextureDescriptor()
-        cubeDescriptor.textureType = .type3D
-        cubeDescriptor.pixelFormat = .rgba32Float
-        cubeDescriptor.width = size; cubeDescriptor.height = size; cubeDescriptor.depth = size
-        cubeDescriptor.storageMode = .shared
-        cubeDescriptor.usage = [.shaderRead]
         let input = try texture(source)
         let outputDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float,
             width: input.width, height: input.height, mipmapped: false)
         outputDescriptor.usage = [.shaderRead, .shaderWrite]
-        guard let lut = device.makeTexture(descriptor: cubeDescriptor),
+        guard let lut = FilterableLUTTexture.make(device: device, size: size, rgba: values),
               let output = device.makeTexture(descriptor: outputDescriptor),
               let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else {
             throw RenderError.textureCreationFailed
-        }
-        values.withUnsafeBytes { pointer in
-            lut.replace(region: MTLRegionMake3D(0, 0, 0, size, size, size), mipmapLevel: 0, slice: 0,
-                withBytes: pointer.baseAddress!, bytesPerRow: size * 16, bytesPerImage: size * size * 16)
         }
         var zero: Float = 0
         var contrast = config.outputContrast
