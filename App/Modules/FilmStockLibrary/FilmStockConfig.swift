@@ -81,6 +81,13 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
                                  amount: max(0, min(1, authored.amount * scale)))
     }
 
+    /// Stock halation gain after the selected format's authored presence.
+    func halationStrength(for gauge: PrintGauge) -> Float {
+        halationStrength * gauge.halationMultiplier
+    }
+
+    var effectiveHalationStrength: Float { halationStrength(for: effectivePrintGauge) }
+
     /// The gauge actually applied to the render: the selected gauge or 35mm.
     var effectivePrintGauge: PrintGauge { printGauge ?? .neutral }
 

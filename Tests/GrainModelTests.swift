@@ -48,6 +48,34 @@ struct GrainModelTests {
 
     /// The shipped JSON is the single source of the ladder, both copies are
     /// byte-identical, and it loads from the bundle without a source checkout.
+    @Test func gaugeHalationConfigIsValidatedAndLegacyDocumentsStayNeutral() throws {
+        let data = try Data(contentsOf: TestRepository.url(for: "Resources/gauges.json"))
+        let document = try JSONDecoder().decode(GaugeTuningConfig.self, from: data)
+        let expected: [PrintGauge: Float] = [.eightMillimetre: 1, .sixteenMillimetre: 1,
+                                            .thirtyFiveMillimetre: 0.45, .seventyFiveMillimetre: 0.20]
+        let resolved = try document.validated()
+        for gauge in PrintGauge.allCases {
+            #expect(resolved[gauge]?.halationMultiplier == expected[gauge])
+            #expect(gauge.halationMultiplier == expected[gauge])
+        }
+        for value: Float in [-1, 1.01, .nan, .infinity] {
+            var entries = document.gauges
+            entries[0].halationMultiplier = value
+            #expect(throws: (any Error).self) {
+                _ = try GaugeTuningConfig(schemaVersion: document.schemaVersion, gauges: entries).validated()
+            }
+        }
+        var legacy = document.gauges
+        for index in legacy.indices { legacy[index].halationMultiplier = nil }
+        let bytes = try JSONEncoder().encode(GaugeTuningConfig(schemaVersion: 1, gauges: legacy))
+        let decoded = try GaugeConfigLoader.decode(bytes)
+        #expect(decoded.values.allSatisfy { $0.halationMultiplier == 1 })
+        var disabled = document.gauges
+        disabled[0].halationMultiplier = 0
+        #expect(try GaugeTuningConfig(schemaVersion: 1, gauges: disabled).validated()[.eightMillimetre]?
+            .halationMultiplier == 0)
+    }
+
     @Test func bundledGaugeConfigIsTheTuningSourceOfTruth() throws {
         let cli = try Data(contentsOf: TestRepository.url(for: "Resources/gauges.json"))
         let app = try Data(contentsOf: TestRepository.url(for: "App/Resources/gauges.json"))

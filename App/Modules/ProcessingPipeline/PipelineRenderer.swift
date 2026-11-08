@@ -489,6 +489,7 @@ final class PipelineRenderer: @unchecked Sendable {
     /// is no ISO-driven loudness term: the stock's exposure index is passed
     /// through unchanged and does not scale grain.
     struct DebugFrameParameters: Sendable, Equatable {
+        private let stockConfig: FilmStockConfig
         var gauge: PrintGauge
         var stockGrainSize: Float
         /// Grain size and presence are dialled independently here, so the two
@@ -507,26 +508,28 @@ final class PipelineRenderer: @unchecked Sendable {
         /// Seed every dial from a stock so the debug sheet opens on the shipping
         /// look for that stock.
         init(config: FilmStockConfig) {
+            self.stockConfig = config
             let gauge = config.effectivePrintGauge
             self.gauge = gauge
             self.stockGrainSize = config.grainSize
             self.sizeMultiplier = gauge.sizeMultiplier
             self.presenceMultiplier = gauge.amplitudeMultiplier
             self.edgeBoostMultiplier = config.effectiveRecipe.edgeBoostMultiplier
-            self.halationStrength = config.halationStrength
+            self.halationStrength = config.effectiveHalationStrength
             self.halationRadiusFraction = config.halationRadiusFraction
             self.halationTint = config.halationTint
             self.glowStrength = config.glowStrength
             self.diffusion = config.effectiveDiffusion
         }
 
-        /// Re-seed size, presence and diffusion from a gauge's authored values.
-        /// The gauge owns all three, so switching format cannot leave a stale
+        /// Re-seed grain, halation and diffusion from a gauge's authored values.
+        /// The gauge owns all of them, so switching format cannot leave a stale
         /// radius or amount behind from the previous one.
         mutating func applyGauge(_ gauge: PrintGauge) {
             self.gauge = gauge
             sizeMultiplier = gauge.sizeMultiplier
             presenceMultiplier = gauge.amplitudeMultiplier
+            halationStrength = stockConfig.halationStrength(for: gauge)
             diffusion = gauge.diffusion
         }
 
@@ -1133,7 +1136,7 @@ final class PipelineRenderer: @unchecked Sendable {
                         guard let halated = spatialStage.applyHalation(
                             source: delivered,
                             commandQueue: self.commandQueue,
-                            strength: config.halationStrength,
+                            strength: config.effectiveHalationStrength,
                             radiusFraction: config.halationRadiusFraction,
                             layerScale: config.halationTint,
                             diffusion: config.effectiveDiffusion,

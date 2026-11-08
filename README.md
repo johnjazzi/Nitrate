@@ -213,17 +213,19 @@ decoded Apple Log 2 → halation: decode → add scattered linear light → re-e
   Their contributions are added to the **linear source**, including its core,
   then re-encoded to Apple Log 2. The stock LUT grades source and scattered
   light together; halation is not a separate display-space overlay. Base radius,
-  strength and channel weights are **per stock**; print gauge does not change
-  halation. The debug radius slider covers 0.0005–0.0030 in 0.0001 increments.
+  strength and channel weights are **per stock**. Bundled gauge multipliers
+  retain 8mm/16mm strength, use 45% on 35mm and 20% on 75mm. The debug radius
+  slider covers 0.0005–0.0030 in 0.0001 increments.
 - **Glow** keeps its separate graded-luminance mask and wide amber bloom. It
   does not use the scene-linear halation mask.
 - **Grain** is [described below](#how-the-grain-works).
 
 The halation model is **physically informed, not a calibrated film simulation**.
-Its initial channel thresholds are 1×, 2× and 4× decoded diffuse white; radius
+Its channel thresholds are 0.75×, 1.5× and 3× decoded diffuse white; radius
 multipliers are 1.8×, 1× and 0.5× the stock's base radius. Channel energy is divided
-by an 8× reference before stock weights and strength are applied. These are
-starting values for device tuning, not measured emulsion properties. Halation
+by a 10× excess reference before stock weights and strength are applied,
+starting earlier with a gentler ramp. Stills retain their measured-headroom
+anchor, with its share and floor also raised 25%. These are starting values for device tuning, not measured emulsion properties. Halation
 addition is scene-linear and pre-LUT, with no background-dependent shadow gate;
 final colour and highlight rolloff come from the same stock LUT as the source.
 Passing GPU tests establishes the operation order and numerical behaviour, not

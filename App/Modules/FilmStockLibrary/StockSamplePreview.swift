@@ -177,7 +177,7 @@ struct PreviewConfiguration: Equatable {
             amplitude: GrainModel.amount(gauge: effectiveGauge),
             whiteBalance: PlateWhiteBalance.adaptation(sceneKelvin: sceneIlluminantKelvin,
                                                        lockedKelvin: stock.colorTemperature),
-            halationStrength: stock.halationStrength,
+            halationStrength: stock.halationStrength(for: effectiveGauge),
             halationRadiusFraction: stock.halationRadiusFraction,
             halationTint: stock.halationTint,
             diffusion: stock.overridingGauge(effectiveGauge).effectiveDiffusion)
