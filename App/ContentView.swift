@@ -184,37 +184,21 @@ struct ContentView: View {
                     controlBar(horizontalInset: controlBarHorizontalInset(in: geometry))
                         .padding(.bottom, 8)
                         .background(controlMeasurement("bottom"))
-                }
-
-                if let bottom = controlBounds["bottom"],
-                   let slot = CameraModeStripGeometry.frame(
-                    controls: bottom, canvasWidth: geometry.size.width,
-                    horizontalInset: controlBarHorizontalInset(in: geometry)) {
-                    CameraModeCarousel(selected: cameraMode.selected, enabled: canChangeCameraMode,
-                                       rotationDegrees: statusRotationDegrees, onSelect: selectCameraMode,
-                                       photoAvailable: photoModeAvailable,
-                                       onBlockedSelect: { _ in explainBlockedModeTap() })
-                        .frame(width: slot.width, height: slot.height)
-                        .position(x: slot.midX, y: slot.midY)
-                        // The letters are dimmed rather than disabled, so a tap
-                        // can still explain itself — for a moment, where the
-                        // operator is looking. It is not a standing label: a take
-                        // dims this row for its whole length, and a permanent
-                        // "stop the take to change modes" banner over a running
-                        // take is noise the recording status face already covers.
-                        //
-                        // The capsule sits BELOW the row, not above it: at -30 it
-                        // landed under the sensor housing and was clipped
-                        // mid-sentence. It only ever answers a tap, so it cannot
-                        // become a standing label over a take.
-                        .overlay(alignment: .top) {
-                            if let notice = modeRefusalNotice {
-                                modeStatusCapsule(notice)
-                                    .offset(y: 44)
+                        // Keep the mode strip in the shooting bar's local
+                        // coordinates. The immersive preview extends beyond the
+                        // safe canvas; its bounds must not offset this row.
+                        .overlay {
+                            GeometryReader { controls in
+                                if let slot = CameraModeStripGeometry.frame(
+                                    controls: CGRect(origin: .zero, size: controls.size),
+                                    canvasWidth: controls.size.width,
+                                    horizontalInset: controlBarHorizontalInset(in: geometry)) {
+                                    cameraModePicker
+                                        .frame(width: slot.width, height: slot.height)
+                                        .position(x: slot.midX, y: slot.midY)
+                                }
                             }
                         }
-                        .accessibilityValue(cameraViewModel.shootingModeBlockedReason
-                            ?? modeRefusalNotice ?? "")
                 }
 
                 if let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
@@ -1535,6 +1519,23 @@ struct ContentView: View {
             cameraViewModel.endSlowZoom()
             pinchIsActive = false
         }
+    }
+
+    /// The mode row is an overlay of the shooting controls, not an absolute
+    /// position in the camera canvas. It never reserves space or moves the frame.
+    private var cameraModePicker: some View {
+        CameraModeCarousel(selected: cameraMode.selected, enabled: canChangeCameraMode,
+                           rotationDegrees: statusRotationDegrees, onSelect: selectCameraMode,
+                           photoAvailable: photoModeAvailable,
+                           onBlockedSelect: { _ in explainBlockedModeTap() })
+            .overlay(alignment: .top) {
+                if let notice = modeRefusalNotice {
+                    modeStatusCapsule(notice)
+                        .offset(y: 44)
+                }
+            }
+            .accessibilityValue(cameraViewModel.shootingModeBlockedReason
+                ?? modeRefusalNotice ?? "")
     }
 
     /// The shooting bar's horizontal margin. In Frame Mode it aligns the bar's
