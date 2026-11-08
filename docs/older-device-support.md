@@ -6,18 +6,22 @@ The non-Log path uses native 10-bit video-range 4:2:0 HLG BT.2020 (`x420`).
 It is not an 8-bit fallback or an Apple Log 1 implementation. Film delivery is
 still the existing SDR Rec.709 output. The original remains HDR HLG.
 
-Rebased onto main 0.6.1 (31), base b04ea1f. The coordinator's full post-rebase
-verification passed: 1,481 automated tests with zero failures, policy checks,
-SwiftLint, unsigned Debug/Release iOS builds, signed device build and
-`git diff --check`. Integration head: cf5c40c. The 14 Pro was locked at the
-installation gate, so the rebased build has not yet been installed or physically
-verified. Historical device results below describe the pre-rebase feature.
+Prepared as minor release 0.7.0 (33), rebased onto main 0.6.2 (32), base
+01b5815, retaining that release's halation changes. Release-candidate verification
+passed: 1,485 automated tests, policy checks, SwiftLint, Debug/Release builds,
+a signed device build, minor-version policy and `git diff --check`. Both built
+app configurations report 0.7.0 (33).
+
+The earlier 0.6.1 integration and corrected Develop-panel build were installed
+and launched on the iPhone 14 Pro before release preparation. Historical
+capture/render evidence below is not a fresh execution of the complete 0.7.0
+device matrix; remaining physical checks are still open.
 
 The integration reuses main's CaptureFormat, capture.format preference,
 CaptureFormatAvailability, transactional live transitions, delivery framing,
 RAW-photo adapters, push/pull curves and current grain ladder. There is no second
-geometry enum or settings Capture section. The old installed 0.3.0 HLG app is not
-the current main version; ordinary Debug builds keep 0.6.1 (31).
+geometry enum or settings Capture section. The release preparation advances the
+version to 0.7.0 (33); ordinary Debug iteration does not increment it.
 
 ## Runtime eligibility, not model lists
 

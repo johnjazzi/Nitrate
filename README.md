@@ -497,8 +497,8 @@ exposure, grain and preview policies, and the film-stock catalogue.
 source of truth. XcodeGen feeds them into the generated Info.plist, and the
 launch splash renders them through `AppVersion` (`App/AppIdentity.swift`).
 
-- The current base is **0.6.1 (31)**. This branch adds HLG support; that does not
-  mean the HLG changes have been distributed in a release.
+- This minor-release candidate is **0.7.0 (33)**, based on **0.6.2 (32)**.
+  Preparing the release PR does not mean it has been distributed.
 - Advance `MARKETING_VERSION` for each release PR into `main` (a patch increment
   by default unless a larger increment is explicitly requested).
 - Increment `CURRENT_PROJECT_VERSION` for each new archive intended for
@@ -513,12 +513,13 @@ launch splash renders them through `AppVersion` (`App/AppIdentity.swift`).
 - **Implemented:** Apple Log 2 video import, Photo on Bayer-RAW-capable lenses,
   native open-gate capture, 24/60 fps selection, push/pull, flash/lamp controls and
   hardware capture events. Each remains subject to its hardware requirements.
-- **HLG branch verification:** 1,481 automated tests passed after the 0.6.1
-  rebase, along with Debug, Release and signed device builds. Earlier iPhone 14
-  Pro captures verified native 24 fps Open Gate and UHD HLG originals and SDR
-  film renders; the older-GPU LUT filtering fix was visually accepted. The
-  rebased build still needs installation and physical checks. This does not
-  establish support on an untested phone or complete the lens/FPS/audio matrix.
+- **HLG release verification:** 1,485 automated tests passed for the 0.7.0
+  candidate rebased on 0.6.2, along with Debug, Release and signed device builds.
+  Earlier iPhone 14 Pro captures verified native 24 fps Open Gate and UHD HLG
+  originals and SDR film renders; the older-GPU LUT filtering fix was visually
+  accepted. The 0.6.1 integration and corrected Develop panel were installed on
+  the 14 Pro. Other phones and the remaining lens/FPS/audio matrix still require
+  physical validation; advertised capability is not a completed device test.
 - **Open work:** realistic gate jitter and weave, plus the remaining physical
   validation listed in [older-device support](docs/older-device-support.md).
 - **Recording timing:** delayed-stabilization startup and stop-boundary defects
