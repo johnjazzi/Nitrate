@@ -102,7 +102,7 @@
     },
     {
       "stockId": "kodakektachrome100d",
-      "displayName": "Ektachrome 100D",
+      "displayName": "EC 100D",
       "category": "video",
       "lutName": "Ektachrome 100D - Apple Log 2.cube",
       "halationStrength": 2.52,
@@ -119,8 +119,8 @@
       "outputContrast": 1.0,
       "colorTemperature": 5500,
       "defaultISO": 100,
-      "primaryTint": "#0057D9",
-      "secondaryTint": "#FFD43B",
+      "primaryTint": "#FFD43B",
+      "secondaryTint": "#0057D9",
       "recipe": {
         "schemaVersion": 1,
         "version": "ektachrome100d-current-v1",

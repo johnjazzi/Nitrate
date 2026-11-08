@@ -20,7 +20,7 @@ struct StockCatalogTests {
             #expect(stock.lutName.hasSuffix(" - Apple Log 2.cube"))
             try stock.validate()
         }
-        #expect(stocks.map(\.displayName) == ["250D / 5207", "500T / 5219", "Ektachrome 100D"])
+        #expect(stocks.map(\.displayName) == ["250D / 5207", "500T / 5219", "EC 100D"])
         for stock in stocks {
             #expect(stock.stockDescription?.isEmpty == false)
         }
@@ -28,8 +28,8 @@ struct StockCatalogTests {
         #expect(reversal.defaultISO == 100)
         #expect(reversal.colorTemperature == 5500)
         #expect(reversal.lightType == "D")
-        #expect(reversal.primaryTint == "#0057D9")
-        #expect(reversal.secondaryTint == "#FFD43B")
+        #expect(reversal.primaryTint == "#FFD43B")
+        #expect(reversal.secondaryTint == "#0057D9")
         #expect(reversal.effectiveRecipe.input.gamut == "Apple Wide Gamut")
         #expect(reversal.effectiveRecipe.output.transfer == "Gamma 2.4")
         #expect(!reversal.effectiveRecipe.colorContractVerified)

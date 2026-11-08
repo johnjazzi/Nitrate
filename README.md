@@ -213,11 +213,11 @@ a wrong image.
 |---|---|---|
 | 250D / 5207 | Daylight | `5207 - Apple Log 2.cube` |
 | 500T / 5219 | Tungsten | `5219 - Apple Log 2.cube` |
-| Ektachrome 100D | Daylight, ISO 100, reversal | `Ektachrome 100D - Apple Log 2.cube` |
+| EC 100D | Daylight, ISO 100, reversal | `Ektachrome 100D - Apple Log 2.cube` |
 
-The two negative stocks use a fixed Kodak Vision 2383 print stage. Ektachrome
-100D is a direct positive-reversal model, without a 2383 print, and uses 5500 K
-daylight balance. Its selector card is blue with a yellow stripe. The existing
+The two negative stocks use a fixed Kodak Vision 2383 print stage. EC 100D
+is a direct positive-reversal model, without a 2383 print, and uses 5500 K
+daylight balance. Its selector card is yellow with a blue stripe. The existing
 negative-stock cubes are unchanged. See [LUT provenance](docs/lut-provenance.md).
 
 Touch and hold any stock card for half a second to open its description; a
