@@ -10,6 +10,8 @@ import SwiftUI
 struct FilmStockConfig: Codable, Equatable, Sendable {
     let stockId: String
     let displayName: String
+    /// Authored catalogue copy; absent in historical queues and stock documents.
+    var stockDescription: String? = nil
     let category: StockCategory
     let lutName: String
     let halationStrength: Float
