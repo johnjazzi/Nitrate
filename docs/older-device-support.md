@@ -6,10 +6,12 @@ The non-Log path uses native 10-bit video-range 4:2:0 HLG BT.2020 (`x420`).
 It is not an 8-bit fallback or an Apple Log 1 implementation. Film delivery is
 still the existing SDR Rec.709 output. The original remains HDR HLG.
 
-Rebased onto main 0.6.1 (31), base b04ea1f. This rebase has lint-only
-verification; compiler, automated tests, and physical-device verification belong
-to the parent. Historical coordinator results below describe the pre-rebase
-feature, not a fresh 0.6.1 verification claim.
+Rebased onto main 0.6.1 (31), base b04ea1f. The coordinator's full post-rebase
+verification passed: 1,481 automated tests with zero failures, policy checks,
+SwiftLint, unsigned Debug/Release iOS builds, signed device build and
+`git diff --check`. Integration head: cf5c40c. The 14 Pro was locked at the
+installation gate, so the rebased build has not yet been installed or physically
+verified. Historical device results below describe the pre-rebase feature.
 
 The integration reuses main's CaptureFormat, capture.format preference,
 CaptureFormatAvailability, transactional live transitions, delivery framing,
@@ -143,9 +145,10 @@ Physical evidence (iPhone 14 Pro, 2026-11-07):
 The parent additionally supplied successful native 24 fps Open Gate and UHD
 recordings rendered on the Mac to SDR, and a visually confirmed installed LUT
 filtering fix. These are pre-rebase observations, not new executions here.
-Remaining post-rebase verification: compilation, automated suites, first-launch
-choices, 60 fps, camera/lens/mode transitions, preview/frozen parity, photos,
-restart/retry and microphone/audio. Prior results do not replace these checks.
+Post-rebase compilation and automated suites have passed. Remaining physical
+verification: installation, first-launch choices, 60 fps, camera/lens/mode
+transitions, preview/frozen parity, photos, restart/retry and microphone/audio.
+Prior device results do not replace these checks.
 
 For repeatable Mac inspection, `RenderCLI` accepts an explicit
 `--source-profile hlgBT2020` (default remains `appleLog2`). Its diagnostics overload
@@ -193,5 +196,5 @@ The 0.6.1 rebase also routes main's new StillFilmRenderResources LUT upload
 through FilterableLUTTexture. It retains the RAW photo domain adapter, current
 still effects/grain ladder and push/pull path; only LUT storage precision changes
 on a GPU without Float32 filtering. Grain R32 filtering is outside this change.
-Post-rebase verification is lint-only; the historical checks above have not been
-repeated against the rebased code.
+Post-rebase automated tests and both iOS build configurations passed. Visual
+acceptance of the pre-rebase fix does not replace a check of the rebased build.
