@@ -174,31 +174,21 @@ struct ContentView: View {
                 }
 
                 VStack(spacing: 0) {
-                    topBar
-                        .disabled(isDevelopMode)
-                        .opacity(isDevelopMode ? 0.3 : 1)
-                        .background(controlMeasurement("top"))
+                    VStack(spacing: 0) {
+                        topBar
+                            .disabled(isDevelopMode)
+                            .opacity(isDevelopMode ? 0.3 : 1)
+                        cameraModePicker
+                            .frame(width: 200, height: CameraModeCarousel.height)
+                    }
+                    .background(controlMeasurement("top"))
 
                     Spacer()
 
                     controlBar(horizontalInset: controlBarHorizontalInset(in: geometry))
                         .padding(.bottom, 8)
                         .background(controlMeasurement("bottom"))
-                        // Keep the mode strip in the shooting bar's local
-                        // coordinates. The immersive preview extends beyond the
-                        // safe canvas; its bounds must not offset this row.
-                        .overlay {
-                            GeometryReader { controls in
-                                if let slot = CameraModeStripGeometry.frame(
-                                    controls: CGRect(origin: .zero, size: controls.size),
-                                    canvasWidth: controls.size.width,
-                                    horizontalInset: controlBarHorizontalInset(in: geometry)) {
-                                    cameraModePicker
-                                        .frame(width: slot.width, height: slot.height)
-                                        .position(x: slot.midX, y: slot.midY)
-                                }
-                            }
-                        }
+
                 }
 
                 if let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
@@ -1521,8 +1511,7 @@ struct ContentView: View {
         }
     }
 
-    /// The mode row is an overlay of the shooting controls, not an absolute
-    /// position in the camera canvas. It never reserves space or moves the frame.
+    /// A normal layout row directly below the top toolbar in both preview modes.
     private var cameraModePicker: some View {
         CameraModeCarousel(selected: cameraMode.selected, enabled: canChangeCameraMode,
                            rotationDegrees: statusRotationDegrees, onSelect: selectCameraMode,
