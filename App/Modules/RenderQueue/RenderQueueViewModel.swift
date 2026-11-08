@@ -1006,7 +1006,7 @@ final class RenderQueueViewModel {
         if job(jobId)?.sourceSavedToPhotos == true {
             update(jobId) {
                 $0.status = .failed
-                $0.errorMessage = "Render failed: \(renderMessage). Original Apple Log was already saved to Photos."
+                $0.errorMessage = "Render failed: \(renderMessage). Original video was already saved to Photos."
             }
             return
         }
@@ -1016,7 +1016,7 @@ final class RenderQueueViewModel {
             update(jobId) {
                 $0.status = .failed
                 $0.sourceSavedToPhotos = true
-                $0.errorMessage = "Render failed: \(renderMessage). Original Apple Log saved to Photos."
+                $0.errorMessage = "Render failed: \(renderMessage). Original video saved to Photos."
             }
         } catch {
             let saveMessage = error.localizedDescription
@@ -1026,7 +1026,7 @@ final class RenderQueueViewModel {
             update(jobId) {
                 $0.status = .failed
                 $0.sourceSavedToPhotos = false
-                $0.errorMessage = "Render failed: \(renderMessage). Original Apple Log could not be saved to Photos: \(saveMessage). \(sourceDetail)"
+                $0.errorMessage = "Render failed: \(renderMessage). Original video could not be saved to Photos: \(saveMessage). \(sourceDetail)"
             }
         }
     }

@@ -119,7 +119,9 @@ import Testing
         }
         // The two binary settings keep native switches, not a value button.
         #expect(source.components(separatedBy: "Toggle(title, isOn: $isOn)").count - 1 == 1)
-        #expect(!source.contains(#"Toggle("Save Original Log to Photos""#))
+        #expect(!source.contains(#"Toggle("Save Original Video to Photos""#))
+        #expect(source.contains(#"title: "Save Original Video to Photos""#))
+        #expect(!source.contains("Save Original Log"), "HLG originals must not be labelled Log")
         #expect(!source.contains("Toggle(isOn: $showFramedPreview)"))
     }
 

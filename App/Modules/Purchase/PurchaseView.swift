@@ -420,8 +420,8 @@ struct PurchaseView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Export").font(NitrateTypography.font(.headline))
             SettingsToggleRow(icon: "square.and.arrow.down",
-                              title: "Save Original Log to Photos",
-                              accessibilityTitle: "Save Original Log",
+                              title: "Save Original Video to Photos",
+                              accessibilityTitle: "Save Original Video",
                               help: "Saves an additional, ungraded original (Apple Log 2 or HDR HLG) to Photos and uses more storage.",
                               isOn: $saveOriginalLog)
             SettingsToggleRow(icon: "camera.raw",
