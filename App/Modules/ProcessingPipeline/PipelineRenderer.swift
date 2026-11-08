@@ -203,16 +203,25 @@ final class PipelineRenderer: @unchecked Sendable {
 
         // Measure once so the highlight hold does not breathe with the framing.
         // Neutral exposure does not need the extra decode pass.
-        let highlightCeiling: Float? = config.effectivePushPull.isNeutral
-            ? nil
-            : await Self.measureHighlightCeiling(asset: asset, track: videoTrack, range: renderRange,
-                sourceProfile: capturePolicy?.sourceProfile ?? .appleLog2,
-                peakCodeAdapter: capturePolicy?.sourceProfile == .hlgBT2020 ? { [self] buffer in
-                    renderQueue.sync {
-                        guard let source = preparedSource(buffer, expectedProfile: .hlgBT2020) else { return [] }
-                        return peakCodes(of: source.texture)
-                    }
-                } : nil)
+        let sourceProfile = capturePolicy?.sourceProfile ?? .appleLog2
+        let peakCodeAdapter: (@Sendable (CVPixelBuffer) -> [Float])?
+        if sourceProfile == .hlgBT2020 {
+            peakCodeAdapter = { [self] buffer in
+                self.renderQueue.sync {
+                    guard let source = self.preparedSource(buffer, expectedProfile: .hlgBT2020) else { return [] }
+                    return self.peakCodes(of: source.texture)
+                }
+            }
+        } else {
+            peakCodeAdapter = nil
+        }
+        let highlightCeiling: Float?
+        if config.effectivePushPull.isNeutral {
+            highlightCeiling = nil
+        } else {
+            highlightCeiling = await Self.measureHighlightCeiling(asset: asset, track: videoTrack, range: renderRange,
+                sourceProfile: sourceProfile, peakCodeAdapter: peakCodeAdapter)
+        }
 
         let sourceWidth = naturalSize.width
         let sourceHeight = naturalSize.height
