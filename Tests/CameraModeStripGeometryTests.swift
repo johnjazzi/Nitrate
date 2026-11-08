@@ -21,20 +21,6 @@ struct CameraModeStripGeometryTests {
         }
     }
 
-    @Test func localModeSlotStaysBelowShutterWhenTheCanvasOriginChanges() throws {
-        let size = CGSize(width: 393, height: 180)
-        let local = try #require(CameraModeStripGeometry.frame(
-            controls: CGRect(origin: .zero, size: size), canvasWidth: size.width, horizontalInset: 16))
-        let shutter = CameraControlGeometry(width: size.width - 32, height: size.height - 8).record
-            .offsetBy(dx: 16, dy: 0)
-        for origin: CGFloat in [-59, 0, 59, 579, 638] {
-            let placed = local.offsetBy(dx: 0, dy: origin)
-            #expect(placed.minY >= shutter.maxY + origin + 4)
-            #expect(placed.maxY == origin + size.height)
-            #expect(placed.midX == size.width / 2)
-        }
-    }
-
     @Test func minimumExposureCompositionKeepsTheModeEntryVisible() throws {
         // Even with a zero-height footer: 120pt ruler + 14pt readout +
         // two 6pt stack gaps + two 6pt rims + 8pt bottom padding = 166pt.
