@@ -12,14 +12,16 @@ enum DevelopmentPhotoRenderer {
                        bundle: Bundle = .main) throws -> URL {
         let normalizedStock: String
         switch stockID.lowercased() {
-        case "kodak5207", "5207": normalizedStock = "5207"
-        case "kodak5219", "5219": normalizedStock = "5219"
-        default: throw RenderError.unsupportedStock(stockID)
+        // Preserve historical short identifiers; all canonical catalogue IDs
+        // are resolved by the shared resource loader, not a two-stock whitelist.
+        case "5207": normalizedStock = "kodak5207"
+        case "5219": normalizedStock = "kodak5219"
+        default: normalizedStock = stockID.lowercased()
         }
-        let film = try StillFilmRenderResources(stockID: "kodak" + normalizedStock, gauge: gauge, seed: seed,
+        let film = try StillFilmRenderResources(stockID: normalizedStock, gauge: gauge, seed: seed,
                                                 bundle: bundle, pushPull: pushPull)
         let decoder = try RAWPhotoDecoder(device: film.device, queue: film.queue)
-        let decodedRAW = try decoder.decode(url: originalDNG, temperature: film.config.lightType == "D" ? 5600 : 3200)
+        let decodedRAW = try decoder.decode(url: originalDNG, temperature: film.config.colorTemperature)
         guard let decoded = CIImage(mtlTexture: decodedRAW.texture,
             options: [.colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!]) else {
             throw RenderError.decode("RAW texture unavailable")

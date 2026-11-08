@@ -16,9 +16,9 @@ struct LUTContractTests {
     private let whitePointRange: ClosedRange<Float> = 0.90...1.0
     private let maxNeutralCast: Float = 0.15   // measured max ≈ 0.126 (F3513DI prints)
 
-    @Test func allStockLUTsTrackNeutralAxisWithoutClipping() throws {
+    @Test func allStockLUTsTrackTheirAuthoredNeutralAxis() throws {
         let stocks = try loadStocks()
-        #expect(stocks.count == 2)
+        #expect(stocks.count == 3)
         for config in stocks {
             let (_, values) = try parseCubeLUT(config.lutName)
             let axis = neutralAxis(values: values)
@@ -28,7 +28,7 @@ struct LUTContractTests {
 
     @Test func shippedStocksCarryTheExpectedDaylightOrTungstenTag() throws {
         let stocks = try loadStocks()
-        let expected = ["kodak5207": "D", "kodak5219": "T"]
+        let expected = ["kodak5207": "D", "kodak5219": "T", "kodakektachrome100d": "D"]
         for config in stocks {
             #expect(config.lightType == expected[config.stockId],
                     "\(config.stockId) tagged \(config.lightType)")
@@ -86,7 +86,16 @@ struct LUTContractTests {
         // 5. Neutral axis keeps a bounded (film-consistent) per-channel cast.
         #expect(maxCast < maxNeutralCast, "\(stockID): neutral cast \(maxCast) exceeds \(maxNeutralCast)")
         // 6. No highlight plateau: at most 2 of the top 4 steps may sit at ~white.
-        #expect(topGradientSteps <= 2, "\(stockID): highlight plateau (\(topGradientSteps) of top 4 steps ≥ 0.99)")
+        if stockID == "kodakektachrome100d" {
+            // Direct reversal has finite latitude, unlike the negative/2383
+            // shoulder. Its authored clipping begins above Log2 code0.7;
+            // do not flatten or rebake it to satisfy a negative-stock golden.
+            #expect(lumas[22] < 0.99, "Reversal must retain detail through code0.6875")
+            #expect(lumas[26] >= 0.99, "Reversal should reach its modeled white by code0.8125")
+        } else {
+            #expect(topGradientSteps <= 2,
+                    "\(stockID): highlight plateau (\(topGradientSteps) of top 4 steps ≥ 0.99)")
+        }
     }
 
     /// Neutral-axis grid points: input (t, t, t) for t in 0..size. Grid index for

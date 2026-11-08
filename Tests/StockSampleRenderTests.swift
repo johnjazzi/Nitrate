@@ -18,7 +18,7 @@ struct StockSampleRenderTests {
         let data = try Data(contentsOf: TestRepository.url(for: "App/Resources/stocks.json"))
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let stocks = try #require(object["stocks"] as? [[String: Any]])
-        #expect(stocks.count == 2, "the selector must preview every shipping stock")
+        #expect(stocks.count == 3, "the selector must preview every shipping stock")
         for scene in catalog.scenes {
             let url = scene.plateURL(directory: catalog.directory)
             let image = try #require(PlateImage.load(url), "\(scene.id) has no decodable plate")
@@ -28,7 +28,8 @@ struct StockSampleRenderTests {
     }
 
     @Test func everyStockCubeParsesForTheLivePreview() throws {
-        for stock in ["5207 - Apple Log 2.cube", "5219 - Apple Log 2.cube"] {
+        for stock in ["5207 - Apple Log 2.cube", "5219 - Apple Log 2.cube",
+                      "Ektachrome 100D - Apple Log 2.cube"] {
             let url = try #require(Bundle(for: BundleToken.self)
                 .url(forResource: stock, withExtension: nil)
                 ?? Bundle(for: BundleToken.self).url(forResource: stock, withExtension: nil, subdirectory: "LUTs"))

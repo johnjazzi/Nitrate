@@ -73,7 +73,7 @@ struct StockInfoContent: View {
                 .accessibilityAddTraits(.isHeader)
             Text(stock.stockInfoMetadata)
                 .font(NitrateTypography.font(.subheadline))
-                .foregroundStyle(stock.primaryColor)
+                .foregroundStyle(.white.opacity(0.7))
             Text(stock.stockInfoDescription)
                 .font(NitrateTypography.font(.body))
                 .foregroundStyle(.white.opacity(0.9))

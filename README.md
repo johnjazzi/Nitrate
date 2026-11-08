@@ -18,8 +18,8 @@ You shoot neutral. The film look comes back from the render.
   Format. Open gate is the default where available; otherwise the app uses UHD
   if supported. Settings lists only formats supported by the current camera,
   source profile and frame rate, rather than offering an unsupported choice.
-- **Full film emulation, not a preset.** The stock is a print LUT generated from
-  a spectral model, and it is only part of the look: halation bleeds light from
+- **Full film emulation, not a preset.** The stock is a negative/print or reversal
+  LUT generated from a spectral model, and it is only part of the look: halation bleeds light from
   the highlights, glow blooms the graded highlights, and grain is a real
   volumetric plate. None of it is a filter over a finished image.
 - **Non-destructive development.** Open gate changes what is recorded, not
@@ -147,7 +147,7 @@ than a refusal, but ask before shipping anything derived from it.
 | Lenses | Ultrawide, Normal (1×), Tele, Front — the device's real lenses, with the active focal length shown |
 | Aperture | Per-lens, over the stops the device reports (f/1.5–f/4.0 on the reference iPhone 18 Pro) |
 | Exposure | 180° shutter priority by default (shutter locked to 1/48 s, ISO meters), plus manual EV and manual ISO |
-| White balance | Locked per stock — 5600 K daylight, 3200 K tungsten — so the LUT always sees the same white point |
+| White balance | Locked per stock — 5600 K daylight negatives, 5500 K Ektachrome, 3200 K tungsten — so the LUT always sees the same white point |
 | Stabilization | Recording-only: Off, Standard, Cinematic, Extreme (Apple extended cinematic). The preview stays independent, and the UI calls out the crop and latency |
 | Light | Flash/lamp controls, subject to the active camera's hardware and thermal limits |
 
@@ -213,12 +213,17 @@ a wrong image.
 |---|---|---|
 | 250D / 5207 | Daylight | `5207 - Apple Log 2.cube` |
 | 500T / 5219 | Tungsten | `5219 - Apple Log 2.cube` |
+| Ektachrome 100D | Daylight, ISO 100, reversal | `Ektachrome 100D - Apple Log 2.cube` |
 
-Stocks are labelled the way the emulsion is printed on the canister: common
-name, then emulsion number. The LUT file carries the emulsion number alone,
-because a slash cannot go in a filename. The print stage is a fixed Kodak
-Vision 2383 for both, so it is not part of the name; it is recorded in the
-provenance below.
+The two negative stocks use a fixed Kodak Vision 2383 print stage. Ektachrome
+100D is a direct positive-reversal model, without a 2383 print, and uses 5500 K
+daylight balance. Its selector card is blue with a yellow stripe. The existing
+negative-stock cubes are unchanged. See [LUT provenance](docs/lut-provenance.md).
+
+Touch and hold any stock card for half a second to open its description; a
+confirmation haptic acknowledges the info action. Viewing information does not
+select that card or change the gauge. Tap still selects; swipe still scrolls.
+VoiceOver exposes a separate **Stock info** action.
 
 **Print gauge** is a separate axis from stock: 8mm, 16mm, 35mm, 75mm. The gauge
 owns grain, both its size and its presence, and is chosen per stock. 35mm is the

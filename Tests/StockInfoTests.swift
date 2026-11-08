@@ -1,5 +1,7 @@
 import CoreGraphics
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 import SwiftUI
 import Testing
 
@@ -96,6 +98,36 @@ struct StockInfoTests {
         let image = try #require(card.cgImage)
         #expect(image.width == 160 && image.height == 132)
         #expect(try brightPixels(image) > 200)
+    }
+
+    @MainActor @Test func everyShippingStockRendersReadableInfoAndItsActualCard() throws {
+        struct Catalog: Decodable { let stocks: [FilmStockConfig] }
+        let data = try Data(contentsOf: TestRepository.url(for: "App/Resources/stocks.json"))
+        let stocks = try JSONDecoder().decode(Catalog.self, from: data).stocks
+        let directory = TestRepository.artifactDirectory("stock-info")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for stock in stocks {
+            let views: [(String, AnyView)] = [
+                ("info", AnyView(StockInfoContent(stock: stock).padding(24).frame(width: 320)
+                    .background(Color.black).environment(\.colorScheme, .dark))),
+                ("card", AnyView(StockCarouselCard(stock: stock, isSelected: true)
+                    .frame(width: 160, height: 132).background(Color.black).environment(\.colorScheme, .dark)))
+            ]
+            for (name, view) in views {
+                let renderer = ImageRenderer(content: view)
+                renderer.scale = 2
+                let image = try #require(renderer.cgImage)
+                if name == "info" {
+                    #expect(image.height > 200 && image.height < 900)
+                    #expect(try brightPixels(image) > 600)
+                }
+                let path = directory.appendingPathComponent("\(stock.stockId)-\(name).png")
+                let writer = try #require(CGImageDestinationCreateWithURL(path as CFURL,
+                    UTType.png.identifier as CFString, 1, nil))
+                CGImageDestinationAddImage(writer, image, nil)
+                #expect(CGImageDestinationFinalize(writer))
+            }
+        }
     }
 
     private func brightPixels(_ image: CGImage) throws -> Int {

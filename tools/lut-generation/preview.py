@@ -106,7 +106,9 @@ def render(lut_path: Path, out_path: Path, columns: int = 5) -> dict:
     out = apply_lut(table, log2)
 
     chart = np.zeros((rows * cell, columns * cell, 3))
-    encoded = (encode_gamma24(out) * 255).round().astype(np.uint8)
+    # The cube already outputs gamma-2.4 encoded Rec.709. Encoding again
+    # would brighten the preview rather than show the authored table.
+    encoded = (np.clip(out, 0.0, 1.0) * 255).round().astype(np.uint8)
     for index in range(len(names)):
         row, col = divmod(index, columns)
         chart[row * cell:(row + 1) * cell, col * cell:(col + 1) * cell] = encoded[index]
@@ -133,8 +135,10 @@ if __name__ == "__main__":
     targets = [
         ("mine 5207", source_dir / "5207 - Apple Log 2.cube"),
         ("mine 5219", source_dir / "5219 - Apple Log 2.cube"),
+        ("mine Ektachrome 100D", source_dir / "Ektachrome 100D - Apple Log 2.cube"),
         ("shipped 5207", app_luts / "5207 - Apple Log 2.cube"),
         ("shipped 5219", app_luts / "5219 - Apple Log 2.cube"),
+        ("shipped Ektachrome 100D", app_luts / "Ektachrome 100D - Apple Log 2.cube"),
     ]
     reports = {}
     for label, path in targets:

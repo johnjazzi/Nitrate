@@ -3,6 +3,7 @@
     {
       "stockId": "kodak5207",
       "displayName": "250D / 5207",
+      "stockDescription": "An ISO 250 daylight-balanced color negative stock. Fine grain, natural skin tones and generous highlight latitude, finished through a Kodak 2383 print look.",
       "category": "video",
       "lutName": "5207 - Apple Log 2.cube",
       "halationStrength": 2.52,
@@ -52,6 +53,7 @@
     {
       "stockId": "kodak5219",
       "displayName": "500T / 5219",
+      "stockDescription": "An ISO 500 tungsten-balanced color negative stock. Built for lower light, with more visible grain and warm practical-light character, finished through a Kodak 2383 print look.",
       "category": "video",
       "lutName": "5219 - Apple Log 2.cube",
       "halationStrength": 2.52,
@@ -97,6 +99,60 @@
         "edgeBoostMultiplier": 3,
         "deliveryAlgorithm": "clamp-bgra8-hevc-rec709-tagged-v1"
       }
+    },
+    {
+      "stockId": "kodakektachrome100d",
+      "displayName": "Ektachrome 100D",
+      "category": "video",
+      "lutName": "Ektachrome 100D - Apple Log 2.cube",
+      "halationStrength": 2.52,
+      "glowStrength": 0.155,
+      "grainSize": 1.0,
+      "halationRadiusFraction": 0.001,
+      "halationTint": [
+        1.0,
+        0.28,
+        0.1
+      ],
+      "stillHalationScale": 0.5,
+      "stillDiffusionScale": 0.5,
+      "outputContrast": 1.0,
+      "colorTemperature": 5500,
+      "defaultISO": 100,
+      "primaryTint": "#0057D9",
+      "secondaryTint": "#FFD43B",
+      "recipe": {
+        "schemaVersion": 1,
+        "version": "ektachrome100d-current-v1",
+        "input": {
+          "gamut": "Apple Wide Gamut",
+          "transfer": "Apple Log 2",
+          "provenance": "user-declared"
+        },
+        "output": {
+          "gamut": "Rec.709",
+          "transfer": "Gamma 2.4",
+          "provenance": "user-declared"
+        },
+        "domainMin": [
+          0,
+          0,
+          0
+        ],
+        "domainMax": [
+          1,
+          1,
+          1
+        ],
+        "domainProvenance": "implicit-cube-default",
+        "lutAlgorithm": "resolve-rgb-red-fastest-texel-center-linear-clamp-v2",
+        "halationAlgorithm": "scene-linear-pre-lut-layer-diffusion-v3",
+        "glowAlgorithm": "blurred-warm-highlight-addition-v2",
+        "grainAlgorithm": "coherent-multiscale-edge-amplitude-v3",
+        "edgeBoostMultiplier": 3,
+        "deliveryAlgorithm": "clamp-bgra8-hevc-rec709-tagged-v1"
+      },
+      "stockDescription": "An ISO 100 daylight-balanced color reversal stock, known for fine grain, vivid color, rich blues and crisp contrast. A positive transparency look rather than a negative printed onto 2383."
     }
   ]
 }
