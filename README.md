@@ -225,6 +225,11 @@ confirmation haptic acknowledges the info action. Viewing information does not
 select that card or change the gauge. Tap still selects; swipe still scrolls.
 VoiceOver exposes a separate **Stock info** action.
 
+**Settings → Film Stocks** lets you show or hide individual stocks in the
+selectors. All stocks are shown by default and choices persist across launches.
+At least one must remain enabled. Hiding a stock does not remove its LUT or
+change existing queued renders, saved settings or render history.
+
 **Print gauge** is a separate axis from stock: 8mm, 16mm, 35mm, 75mm. The gauge
 owns grain, both its size and its presence, and is chosen per stock. 35mm is the
 neutral reference; 75mm is near grain-free.

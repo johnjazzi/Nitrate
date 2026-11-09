@@ -326,6 +326,9 @@ struct PurchaseView: View {
                     .font(NitrateTypography.font(.caption))
                     .foregroundStyle(.secondary)
             }
+            .padding()
+            .background(.regularMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
 
