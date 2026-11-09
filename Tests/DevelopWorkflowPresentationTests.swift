@@ -81,7 +81,7 @@ struct DevelopWorkflowPresentationTests {
         #expect(fence.accepts(third, cancelled: false))
     }
 
-    @Test func everyRecipeInputInvalidatesThePreviewAndSnapshotsRemainFrozen() {
+    @Test func colorRecipeInputsInvalidateWithoutRestartingForGaugeChanges() {
         let configuration = stock()
         let url = URL(fileURLWithPath: "/fixture/source.dng")
         func recipe(url overrideURL: URL? = nil, photo: Bool = true, crop: Double = 1,
@@ -94,12 +94,17 @@ struct DevelopWorkflowPresentationTests {
         #expect(shown != recipe(url: URL(fileURLWithPath: "/fixture/next.dng")))
         #expect(shown != recipe(photo: false))
         #expect(shown != recipe(crop: 1.5))
-        #expect(shown != recipe(gauge: .sixteenMillimetre))
+        #expect(shown == recipe(gauge: .sixteenMillimetre), "Gauge changes must not restart a colour-only preview")
         #expect(shown != recipe(pushPull: .manual(.pullOne)))
         var changedStock = configuration
         changedStock.outputContrast = 0.9
         #expect(shown != recipe(stock: changedStock), "A reused stock ID must not reuse stale pixels")
         #expect(shown.stock.outputContrast == 1, "The render request is a value snapshot")
+        var effectsOnly = configuration
+        effectsOnly.printGauge = .eightMillimetre
+        effectsOnly.diffusion = .disabled
+        effectsOnly.stillHalationScale = 0
+        #expect(shown == recipe(stock: effectsOnly), "Export-only effects must not restart the preview")
         #expect(shown == recipe())
     }
 

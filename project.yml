@@ -382,6 +382,8 @@ targets:
       - path: App/Modules/FilmStockLibrary/
       - path: App/Modules/VideoImport/DevelopVideoModel.swift
       - path: App/Modules/VideoImport/DevelopFramePreviewRenderer.swift
+      - path: App/Modules/VideoImport/DevelopColorPreviewResources.swift
+      - path: App/Modules/VideoImport/DevelopTransferLoader.swift
       - path: App/Modules/VideoImport/DevelopExposureMeter.swift
       - path: App/Modules/VideoImport/DevelopWorkflowPresentation.swift
       - path: App/Modules/VideoImport/DevelopProgressOverlay.swift

@@ -61,7 +61,10 @@ Three commitments follow from that:
 Choose **D** below the shutter to open Develop. Photo, Video and Re-develop use
 one flow: **select files → load → review a graded still → choose stock, gauge and
 push/pull → Develop → view results**. One file and a batch use the same controls;
-push/pull updates the preview before rendering. Results can be swiped and enlarged,
+previews show stock colour and push/pull only. Grain, halation, glow and diffusion
+remain in the final render; changing gauge does not restart the preview. Inputs
+and colour resources are cached, and cancelled/stalled loads settle with retry
+instead of waiting indefinitely. Results can be swiped and enlarged,
 with **Develop more**, **Re-develop** and **Open Photos** actions. Queue Re-develop
 also returns originals to review instead of immediately rendering them.
 

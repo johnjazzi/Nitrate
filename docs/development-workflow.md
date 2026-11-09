@@ -28,7 +28,9 @@ locking, LUT contents or delivery colour contracts. Work is on
    Batches can be swiped. Show file position and identity, not an internal working
    filename where better metadata exists.
 4. **Adjust.** Offer the same stock, gauge and fixed-stop push/pull controls for
-   photos, videos and re-development. The preview updates when settings change.
+   photos, videos and re-development. Preview stock colour and push/pull only;
+   grain, halation, glow and diffusion run during final development, not preview.
+   Gauge changes do not reload or regrade the still.
    Settings apply to the staged batch. Rendering takes the settings on screen,
    not a later read of mutable camera preferences.
 5. **Develop.** Explicitly submit through the existing durable serial render queue.
@@ -69,9 +71,14 @@ seeds the shared controls; the user can change it before submission.
 
 Use the existing `DevelopVideoModel`, import file leases, RAW decoder, film stages,
 queue and receipts. Do not add a second render queue or a separate look approximation.
-Use bounded-resolution genuine decoding/film rendering for previews; an embedded
+Use bounded-resolution genuine decoding and the shipped LUT/contrast/push-pull for previews; an embedded
 JPEG is not valid input to an Apple Log 2 LUT. Apply orientation and white balance
 once, preserve RAW baseline exposure, and cancel or fence stale preview results.
+Cache colour resources and decoded inputs; hold only the same original while updating
+its colour instead of blanking the image. Picker transfers settle on cancellation
+and time out after 120 seconds; preview requests have a 20-second deadline, with retry.
+Provider stalls cannot leave the UI spinning indefinitely. These limits are not
+evidence that a particular external Photos/iCloud asset has been diagnosed.
 
 Originals are never edited or replaced by previews. Files not accepted by the queue
 remain owned by staging leases and must be released on cancellation. A failed queue
@@ -90,7 +97,7 @@ photo crop/seed and delivery preferences survive re-development.
 - Single photo, single video and multi-file selection reach the same review stage.
 - Late transfer/inspection/preview results cannot overwrite a newer selection.
 - Cancel/Develop more release unqueued copies, not accepted or queue-owned media.
-- Stock/gauge/push-pull produce nonblank graded previews; push/pull changes pixels
+- Stock/push-pull produce nonblank colour previews; gauge and effect values leave preview pixels unchanged; push/pull changes pixels
   in the expected direction while the source exposure estimate stays stable.
 - A spatial gradient survives rendering; colour tests are not claims of calibration.
 - Queue submission freezes the shown recipe, rejects duplicate active renders and

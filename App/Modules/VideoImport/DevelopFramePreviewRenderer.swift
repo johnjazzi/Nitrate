@@ -199,8 +199,9 @@ actor DevelopFramePreviewRenderer {
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
         guard reader.canAdd(output) else { throw PreviewError.decode }
         let provider = reader.outputProvider(for: output)
-        let start = CMTime(seconds: duration * 0.5, preferredTimescale: 600)
-        reader.timeRange = CMTimeRange(start: start, duration: CMTime(seconds: duration * 0.5, preferredTimescale: 600))
+        // Decode the first available still rather than seeking through a long take.
+        reader.timeRange = CMTimeRange(start: .zero,
+            duration: CMTime(seconds: min(duration, 1), preferredTimescale: 600))
         guard reader.startReading() else { throw PreviewError.decode }
         let cancellation = RenderCancellationHandle(writer: nil, videoReader: reader, audioReader: nil)
         defer { cancellation.cancel() }

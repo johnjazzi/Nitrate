@@ -80,6 +80,7 @@ struct DevelopPreview: View {
         }
         .onChange(of: model.sources.map(\.id)) { _, _ in sourcePage = 0 }
         .onChange(of: gauge) { _, _ in onControlsChanged() }
+        .onDisappear { selectionTask?.cancel() }
         .sheet(isPresented: $showHelp) {
             DevelopMediaHelp(refusal: model.errorMessage ?? (model.bulk.skipped.isEmpty
                 ? nil : model.bulk.skipped.joined(separator: "\n")))
@@ -400,8 +401,13 @@ private struct DevelopSourcePage: View {
     var body: some View {
         VStack(spacing: 10) {
             ZStack {
-                if loadedRequest == request, let frame {
+                if loadedRequest?.source == source, let frame {
                     DevelopExpandableStill(image: frame.image, label: "Preview")
+                        .overlay(alignment: .topTrailing) {
+                            if loadedRequest != request {
+                                ProgressView().padding(12)
+                            }
+                        }
                         .accessibilityIdentifier("develop.preview")
                 } else if loadedRequest == request, failure != nil {
                     VStack(spacing: 16) {
@@ -456,24 +462,39 @@ private struct DevelopSourcePage: View {
     @MainActor private func load(_ requested: DevelopSourceRequest) async {
         guard requested == request, !Task.isCancelled else { return }
         let token = fence.begin()
-        frame = nil
+        if loadedRequest?.source != requested.source {
+            frame = nil
+            loadedRequest = nil
+        }
         failure = nil
-        loadedRequest = nil
         guard requested.active, let recipe = requested.recipe else { return }
         do {
             // SwiftUI cancels on every recipe/source/page change; debounce knobs
             // before decoding, and fence actors that finish despite cancellation.
             try await Task.sleep(for: .milliseconds(180))
             try Task.checkCancellation()
-            let rendered = try await renderer.preview(url: recipe.url, isPhoto: recipe.isPhoto,
-                                                      stock: recipe.stock, gauge: recipe.gauge,
-                                                      pushPull: recipe.pushPull, cropZoom: recipe.cropZoom)
+            let rendered: DevelopFramePreview? = try await DevelopTransferLoader.load(timeout: .seconds(20)) { completion in
+                let progress = Progress(totalUnitCount: 1)
+                let task = Task {
+                    do {
+                        let image = try await renderer.preview(url: recipe.url, isPhoto: recipe.isPhoto,
+                            stock: recipe.stock, gauge: recipe.gauge, pushPull: recipe.pushPull, cropZoom: recipe.cropZoom)
+                        completion(.success(image))
+                    } catch {
+                        completion(.failure(error))
+                    }
+                }
+                progress.cancellationHandler = { task.cancel() }
+                return progress
+            }
+            guard let rendered else { throw DevelopFramePreviewRenderer.PreviewError.decode }
             guard fence.accepts(token, cancelled: Task.isCancelled), requested == request else { return }
             frame = rendered
             loadedRequest = requested
         } catch {
             guard fence.accepts(token, cancelled: Task.isCancelled), requested == request else { return }
-            failure = error.localizedDescription
+            frame = nil
+            failure = error is DevelopTransferLoader.TransferError ? "Preview timeout" : error.localizedDescription
             loadedRequest = requested
         }
     }

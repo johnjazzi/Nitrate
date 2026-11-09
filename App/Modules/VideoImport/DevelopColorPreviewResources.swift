@@ -102,40 +102,7 @@ final class DevelopColorPreviewResources {
 
     func grade(_ input: MTLTexture, stock: FilmStockConfig, pushPull: PushPullExposure,
                ceiling: Float? = nil) throws -> CIImage {
-        let rowBytes = input.width * 8
-        var words = [UInt16](repeating: 0, count: input.width * input.height * 4)
-        input.getBytes(&words, bytesPerRow: rowBytes,
-                       from: MTLRegionMake2D(0, 0, input.width, input.height), mipmapLevel: 0)
-        if !pushPull.isNeutral {
-            let step = max(1, Int((Double(input.width * input.height) / 65_536).squareRoot().rounded(.up)))
-            var peaks: [Float] = []
-            for y in stride(from: 0, to: input.height, by: step) {
-                for x in stride(from: 0, to: input.width, by: step) {
-                    let index = (y * input.width + x) * 4
-                    peaks.append((0..<3).map { Float(Float16(bitPattern: words[index + $0])) }.max()!)
-                }
-            }
-            let hold = ceiling ?? PushPullTransfer.measuredHighlightCeiling(peakCodes: peaks)
-                ?? SpatialEffectsStage.halationCeiling(sceneLiftStops: 0)
-            // Exhaustive half-float lookup of the existing production curve, not
-            // an interpolated look. Avoid millions of per-pixel pow/log calls.
-            let key = "\(pushPull.stops.stops):\(hold.bitPattern)"
-            if curveKey != key {
-                cachedCurve = (0...Int(UInt16.max)).map { bits in
-                    Float16(PushPullTransfer.gained(code: Float(Float16(bitPattern: UInt16(bits))),
-                        stops: pushPull.stops, ceiling: hold)).bitPattern
-                }
-                curveKey = key
-            }
-            let curve = cachedCurve
-            for index in words.indices where index % 4 != 3 {
-                if index.isMultiple(of: 16_384) { try Task.checkCancellation() }
-                words[index] = curve[Int(words[index])]
-            }
-        }
-        let exposed = try texture(width: input.width, height: input.height)
-        exposed.replace(region: MTLRegionMake2D(0, 0, input.width, input.height), mipmapLevel: 0,
-                        withBytes: words, bytesPerRow: rowBytes)
+        let exposed = try applyExposure(input, pushPull: pushPull, ceiling: ceiling)
         let lut: MTLTexture
         if let cached = luts[stock.lutName] {
             lut = cached
@@ -171,6 +138,46 @@ final class DevelopColorPreviewResources {
             throw RenderError.textureCreationFailed
         }
         return image
+    }
+
+    private func applyExposure(_ input: MTLTexture, pushPull: PushPullExposure,
+                               ceiling: Float?) throws -> MTLTexture {
+        guard !pushPull.isNeutral else { return input }
+        let rowBytes = input.width * 8
+        var words = [UInt16](repeating: 0, count: input.width * input.height * 4)
+        input.getBytes(&words, bytesPerRow: rowBytes,
+                       from: MTLRegionMake2D(0, 0, input.width, input.height), mipmapLevel: 0)
+        if !pushPull.isNeutral {
+            let step = max(1, Int((Double(input.width * input.height) / 65_536).squareRoot().rounded(.up)))
+            var peaks: [Float] = []
+            for y in stride(from: 0, to: input.height, by: step) {
+                for x in stride(from: 0, to: input.width, by: step) {
+                    let index = (y * input.width + x) * 4
+                    peaks.append((0..<3).map { Float(Float16(bitPattern: words[index + $0])) }.max()!)
+                }
+            }
+            let hold = ceiling ?? PushPullTransfer.measuredHighlightCeiling(peakCodes: peaks)
+                ?? SpatialEffectsStage.halationCeiling(sceneLiftStops: 0)
+            // Exhaustive half-float lookup of the existing production curve, not
+            // an interpolated look. Avoid millions of per-pixel pow/log calls.
+            let key = "\(pushPull.stops.stops):\(hold.bitPattern)"
+            if curveKey != key {
+                cachedCurve = (0...Int(UInt16.max)).map { bits in
+                    Float16(PushPullTransfer.gained(code: Float(Float16(bitPattern: UInt16(bits))),
+                        stops: pushPull.stops, ceiling: hold)).bitPattern
+                }
+                curveKey = key
+            }
+            let curve = cachedCurve
+            for index in words.indices where index % 4 != 3 {
+                if index.isMultiple(of: 16_384) { try Task.checkCancellation() }
+                words[index] = curve[Int(words[index])]
+            }
+        }
+        let exposed = try texture(width: input.width, height: input.height)
+        exposed.replace(region: MTLRegionMake2D(0, 0, input.width, input.height), mipmapLevel: 0,
+                        withBytes: words, bytesPerRow: rowBytes)
+        return exposed
     }
 
     private func finish(_ command: MTLCommandBuffer) throws {

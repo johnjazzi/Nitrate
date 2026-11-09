@@ -66,6 +66,14 @@ struct DevelopPreviewRecipe: Equatable, Sendable {
     let stock: FilmStockConfig
     let gauge: PrintGauge
     let pushPull: PushPullExposure
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.url == rhs.url && lhs.isPhoto == rhs.isPhoto && lhs.cropZoom == rhs.cropZoom
+            && lhs.stock.stockId == rhs.stock.stockId && lhs.stock.lutName == rhs.stock.lutName
+            && lhs.stock.colorTemperature == rhs.stock.colorTemperature
+            && lhs.stock.outputContrast == rhs.stock.outputContrast
+            && lhs.pushPull == rhs.pushPull
+    }
 }
 
 /// A late completion must match both the request and its generation. Re-requesting

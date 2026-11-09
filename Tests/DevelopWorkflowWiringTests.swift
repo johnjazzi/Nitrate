@@ -40,6 +40,16 @@ struct DevelopWorkflowWiringTests {
         #expect(text.contains("enlarged: true)"))
     }
 
+    @Test func previewRetainsOnlyTheSameOriginalAndBoundsItsWork() throws {
+        let text = try source("App/Modules/VideoImport/DevelopPreview.swift")
+        #expect(text.contains("loadedRequest?.source == source, let frame"))
+        #expect(text.contains("if loadedRequest?.source != requested.source"))
+        #expect(text.contains("DevelopTransferLoader.load(timeout: .seconds(20))"))
+        #expect(text.contains("progress.cancellationHandler = { task.cancel() }"))
+        #expect(text.contains(".onDisappear { selectionTask?.cancel() }"))
+        #expect(text.contains("fence.accepts(token, cancelled: Task.isCancelled)"))
+    }
+
     @Test func queueBulkActionReturnsToReviewInsteadOfRenderingImmediately() throws {
         let content = try source("App/ContentView.swift")
         let start = try #require(content.range(of: "onBulkRedevelop: { ids in"))
