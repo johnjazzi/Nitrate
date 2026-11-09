@@ -507,7 +507,8 @@ exposure, grain and preview policies, and the film-stock catalogue.
 source of truth. XcodeGen feeds them into the generated Info.plist, and the
 launch splash renders them through `AppVersion` (`App/AppIdentity.swift`).
 
-- This minor-release candidate is **0.7.0 (33)**, based on **0.6.2 (32)**.
+- This release candidate is **0.7.1 (34)**, based on **0.7.0 (33)**.
+  It adds EC 100D, long-press stock information and persistent stock visibility.
   Preparing the release PR does not mean it has been distributed.
 - Advance `MARKETING_VERSION` for each release PR into `main` (a patch increment
   by default unless a larger increment is explicitly requested).
