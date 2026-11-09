@@ -24,6 +24,55 @@ struct DevelopTransferLoaderTests {
         throw Failure.denied
     }
 
+    @Test func lateRawSuccessAfterTimeoutRemovesOwnedCopy() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // This exercises file ownership only, not RAW decoding.
+        let url = directory.appendingPathComponent("photo_import_\(UUID().uuidString).dng")
+        try Data([1, 2, 3]).write(to: url)
+        var completion: (@Sendable (Result<DevelopVideoModel.DevelopPhotoTransfer?, Error>) -> Void)?
+        let progress = Progress(totalUnitCount: 1)
+        do {
+            let _: DevelopVideoModel.DevelopPhotoTransfer? = try await DevelopTransferLoader.load(
+                timeout: .milliseconds(10)) { callback in
+                completion = callback
+                return progress
+            }
+            Issue.record("Expected timeout before the provider delivers its copy")
+        } catch DevelopTransferLoader.TransferError.timedOut {
+            #expect(progress.isCancelled)
+        }
+        let callback = try #require(completion)
+        callback(.success(DevelopVideoModel.DevelopPhotoTransfer(
+            lease: VideoImportFileLease(url: url, directory: directory), originalFilename: "source.dng")))
+        for _ in 0..<200 {
+            if !FileManager.default.fileExists(atPath: url.path) { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!FileManager.default.fileExists(atPath: url.path), "Late unaccepted RAW copy must be discarded")
+    }
+
+    @Test func acceptedRawTransferSurvivesLeaseRelease() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("photo_import_\(UUID().uuidString).nef")
+        try Data([1, 2, 3]).write(to: url)
+        try await Task { @MainActor in
+            let transferred: DevelopVideoModel.DevelopPhotoTransfer? = try await DevelopTransferLoader.load { callback in
+                callback(.success(DevelopVideoModel.DevelopPhotoTransfer(
+                    lease: VideoImportFileLease(url: url, directory: directory), originalFilename: "source.nef")))
+                return Progress(totalUnitCount: 1)
+            }
+            let accepted = try #require(transferred)
+            accepted.lease.transferToQueue()
+        }.value
+        // The transfer and its continuation have been released; only queue ownership remains.
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(FileManager.default.fileExists(atPath: url.path), "Queue-owned RAW must survive transfer cleanup")
+    }
+
     @Test func neverCallingBackTimesOutAndCancelsProgress() async throws {
         let provider = Provider()
         do {

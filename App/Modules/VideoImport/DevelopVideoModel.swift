@@ -62,9 +62,15 @@ final class DevelopVideoModel {
     typealias PhotoInspectOperation = @MainActor (_ url: URL, _ originalFilename: String) async throws -> ImportedPhoto
 
     struct DevelopPhotoTransfer: Sendable {
-        let lease: VideoImportFileLease
+        let lease: DevelopPhotoFileLease
         let originalFilename: String
         var url: URL { lease.url }
+
+        init(lease: VideoImportFileLease, originalFilename: String) {
+            // Own RAW cleanup before a timed-out loader can drop a late transfer.
+            self.lease = DevelopPhotoFileLease(lease)
+            self.originalFilename = originalFilename
+        }
     }
 
     struct BulkDevelopResult: Sendable, Equatable {
@@ -204,12 +210,11 @@ final class DevelopVideoModel {
             guard !Task.isCancelled, token == generation else { break }
             do {
                 let picked = try await transfer()
-                let held = DevelopPhotoFileLease(picked.lease)
                 guard !Task.isCancelled, token == generation else { break }
                 let inspected = try await inspectPhoto(picked.url, picked.originalFilename)
                 guard !Task.isCancelled, token == generation else { break }
                 bulk.photos.append(inspected)
-                bulk.photoLeases.append(held)
+                bulk.photoLeases.append(picked.lease)
             } catch {
                 guard !Task.isCancelled, token == generation else { break }
                 bulk.skipped.append((error as? LocalizedError)?.errorDescription ?? "One photo could not be read.")
@@ -426,11 +431,10 @@ final class DevelopVideoModel {
         guard let pending = pendingPhotoTransfer, pending.token == token else { return }
         do {
             let picked = try await pending.operation()
-            let held = DevelopPhotoFileLease(picked.lease)
             guard token == generation, !Task.isCancelled else { return }
             let inspected = try await inspectPhoto(picked.url, picked.originalFilename)
             guard token == generation, !Task.isCancelled else { return }
-            photoLease = held
+            photoLease = picked.lease
             photo = inspected
         } catch {
             guard token == generation else { return }
