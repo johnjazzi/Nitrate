@@ -48,11 +48,7 @@ final class DevelopmentPhotoController: @unchecked Sendable {
     /// The still's lamp. Built from this controller's device, so there is one
     /// handle on the LED per photo graph and no shared torch state.
     private lazy var torch = FlashTorchController(device: device)
-    /// When the armed interval ends, as uptime seconds. Nil when no lamp is lit.
-    private var flashOffDeadline: TimeInterval?
-    /// Bumped whenever the lamp is re-struck, so a timer armed for an earlier
-    /// shot can never put out the lamp of a later one.
-    private var flashToken: UInt64 = 0
+
     /// A lamp level the hardware refused. The photo is still taken; the operator
     /// is told why the scene is not lit.
     var onFlashRefused: (@Sendable (String) -> Void)?
@@ -255,18 +251,20 @@ final class DevelopmentPhotoController: @unchecked Sendable {
             throw CaptureFailure("RAW capture needs the selected camera at native magnification. Tap again to reset the zoom.")
         }
         capturing = true; adjustmentGeneration &+= 1; wake?.cancel(); wake = nil; publish()
-        // The lamp is struck here, against the exposure the device has actually
-        // applied, and its record is handed to the capture so the file states
-        // what the light did.
-        let record = applyFlash(flashPlan(settings: flash))
+        // Native photo flash owns the LED. Never leave continuous torch running
+        // into a photo request, and never substitute a software-timed pulse.
+        extinguishFlash()
         let folder = directory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         do {
             let helper = try CameraPhotoCapture(output: output, pixelFormat: pixelFormat,
                 dimensions: dimensions, directory: folder, queue: queue,
-                rotationAngle: rotationAngle, flash: record) { [weak self] result in
+                rotationAngle: rotationAngle, flashRequested: flash.isPhotoLampOn) { [weak self] result in
                     guard let self else { return }
                     self.trace("capture-terminal \(result.failure ?? "success")")
-                    self.finishFlash()
+                    self.extinguishFlash()
+                    if let reason = FlashRecord.decode(result.evidence)?.refusalReason {
+                        self.onFlashRefused?(reason)
+                    }
                     self.captureHelper = nil; self.capturing = false
                     if !self.stopped { self.scheduleAdjustment() }
                     if let failure = result.failure { self.onFailure(failure) }
@@ -617,100 +615,9 @@ final class DevelopmentPhotoController: @unchecked Sendable {
 
     // MARK: - Lamp
 
-    /// What the lamp will do for this still: a record for the file, the interval
-    /// it stays lit for, and the level to drive it at. Pure — nothing here
-    /// touches the hardware, so a shot that never starts lights nothing.
-    ///
-    /// The window is the *applied* exposure read back from the device here, with
-    /// the exposure already locked, never the duration the operator asked for.
-    private struct FlashPlan {
-        let record: FlashRecord
-        /// The lit part of the window, in seconds of the exposure.
-        let interval: ClosedRange<Double>?
-        let intensity: Double
-    }
-
-    private func flashPlan(settings: FlashSettings) -> FlashPlan {
-        let exposure = device.exposureDuration.seconds
-        guard settings.isPhotoLampOn else {
-            return FlashPlan(record: FlashRecord(mode: .off, intensityPercent: settings.photoPercent,
-                                                 exposureSeconds: exposure),
-                             interval: nil, intensity: 0)
-        }
-        let timing = FlashTimingPolicy.timing(exposure: exposure,
-                                              durationPercent: settings.photoDurationPercent,
-                                              sync: .front)
-        // Below the shaping floor the lamp is held for the whole exposure at the
-        // requested intensity (§3.1), and the record says 100 % because that is
-        // what happened — a duration that was never shaped must not be written
-        // as if it had been.
-        guard let interval = timing.seconds(in: exposure) else {
-            return FlashPlan(record: FlashRecord(mode: .front,
-                                                 intensityPercent: settings.photoPercent,
-                                                 durationPercent: 100, exposureSeconds: exposure),
-                             interval: exposure > 0 ? 0...exposure : nil,
-                             intensity: settings.photoIntensity)
-        }
-        return FlashPlan(record: FlashRecord(mode: .front, intensityPercent: settings.photoPercent,
-                                             durationPercent: timing.durationPercent ?? 100,
-                                             exposureSeconds: exposure),
-                         interval: interval, intensity: settings.photoIntensity)
-    }
-
-    /// Strike the lamp and arm the timer that puts it out when its interval ends.
-    /// Returns the record the capture writes: a refused request records `off`
-    /// with the reason, because the sensor did not see light.
-    @discardableResult
-    private func applyFlash(_ plan: FlashPlan) -> FlashRecord {
-        extinguishFlash()
-        guard plan.record.mode != .off else { return plan.record }
-        switch torch.setLevel(plan.intensity) {
-        case .lit:
-            armFlashOff(after: plan.interval?.upperBound ?? 0)
-            return plan.record
-        case .off:
-            return plan.record
-        case .unavailable(let reason), .refused(let reason):
-            // The photo is still taken. A refusal is a warning and a metadata
-            // fact, never a silent dimmer lamp and never a failed shutter.
-            onFlashRefused?(reason)
-            return FlashRecord(mode: .off, intensityPercent: plan.record.intensityPercent,
-                               exposureSeconds: plan.record.exposureSeconds,
-                               refusalReason: reason)
-        }
-    }
-
-    /// Put the lamp out and cancel the armed interval. Idempotent.
+    /// Teardown only: stills never arm or set a continuous torch level.
     private func extinguishFlash() {
-        flashOffDeadline = nil
-        flashToken &+= 1
         torch.turnOff()
-    }
-
-    /// The capture is finished. The lamp goes out at whichever is later: the end
-    /// of its interval, or now. A capture that outlasts its interval never keeps
-    /// the lamp burning past it; one that finishes early does not cut the light
-    /// short and turn the shot into an unlit one.
-    private func finishFlash() {
-        guard let deadline = flashOffDeadline else {
-            torch.turnOff()
-            return
-        }
-        guard ProcessInfo.processInfo.systemUptime + 0.001 >= deadline else { return }
-        extinguishFlash()
-    }
-
-    private func armFlashOff(after seconds: Double) {
-        flashToken &+= 1
-        let token = flashToken
-        let delay = max(seconds, 0)
-        flashOffDeadline = ProcessInfo.processInfo.systemUptime + delay
-        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
-            // A newer shot owns the lamp; this timer is stale.
-            guard let self, self.flashToken == token else { return }
-            self.flashOffDeadline = nil
-            self.torch.turnOff()
-        }
     }
 
     deinit {

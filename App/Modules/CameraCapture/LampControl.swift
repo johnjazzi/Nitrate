@@ -2,9 +2,9 @@ import SwiftUI
 
 /// The flash key for the camera's top bar.
 ///
-/// A short press is the switch: on at the remembered level, off again. A long
-/// press is the tooltip: it opens the lamp's controls, and a second long press
-/// closes them. Both ticks.
+/// A short press switches native photo flash on/off, or restores the remembered
+/// video torch level. A long press opens the mode's controls; both tick.
+/// Photo offers only On/Off because the camera owns its flash pulse.
 ///
 /// The key owns its settings because the lamp is a capture fact, not a stock
 /// fact: the same level lights a take whichever film is loaded, and the store
@@ -15,10 +15,9 @@ struct LampControl: View {
 
     @State private var settings = FlashSettingsStore().settings
     @State private var showsControls = false
-    /// The level the switch returns to. Zero is off, so the key needs to know
-    /// what "on" meant last time rather than guessing full power.
+    /// The video level the switch returns to. Native photo flash is on/off;
+    /// its pulse strength and timing are controlled by the camera.
     @State private var lastVideoLevel: Double = 0.5
-    @State private var lastPhotoIntensity: Double = 0.5
     @State private var hapticTick = 0
 
     var body: some View {
@@ -65,17 +64,10 @@ struct LampControl: View {
         isOn ? .yellow : .secondary
     }
 
-    /// Short press: off if it is on, on at the last level if it is off. Photo mode
-    /// flips the lamp switch; video mode swings the level between zero and the
-    /// last level the operator actually dialled.
+    /// Photo switches native flash on/off. Video restores the adjustable lamp level.
     private func toggle() {
         if photoMode {
-            if settings.photoIntensity > 0 {
-                lastPhotoIntensity = settings.photoIntensity
-                settings.photoIntensity = 0
-            } else {
-                settings.photoIntensity = max(lastPhotoIntensity, FlashSettings.intensityRange.lowerBound + 0.25)
-            }
+            settings.photoIntensity = settings.isPhotoLampOn ? 0 : 1
         } else if settings.videoLevel > 0 {
             lastVideoLevel = settings.videoLevel
             settings.videoLevel = 0
@@ -90,42 +82,23 @@ struct LampControl: View {
         hapticTick &+= 1
     }
 
-    /// The applied shutter is too fast for the lamp to be shaped at all. The
-    /// duration control says why and is disabled: a control that silently does
-    /// nothing is worse than one that is visibly unavailable. Below the floor the
-    /// lamp still fires, for the whole exposure, at the requested intensity.
-    private var shapingReason: String? {
-        guard photoMode, settings.isPhotoLampOn else { return nil }
-        switch FlashTimingPolicy.timing(exposure: appliedShutterSeconds,
-                                        durationPercent: settings.photoDurationPercent,
-                                        sync: .front) {
-        case .unshapable(let reason): return reason
-        case .lit: return nil
-        }
-    }
-
-    /// One control per mode. Video has a level and nothing else to say; a photo
-    /// has the intensity and the fraction of the exposure the lamp covers.
+    /// Native still flash has no app-controlled pulse intensity or duration.
+    /// Keep video’s continuous lamp slider separate.
     private var controls: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Flash")
                 .font(NitrateTypography.font(.subheadline))
                 .foregroundStyle(.primary)
             if photoMode {
-                slider("Intensity", value: $settings.photoIntensity,
-                       range: FlashSettings.intensityRange,
-                       readout: settings.isPhotoLampOn ? "\(settings.photoPercent)%" : "OFF")
-                slider("Duration", value: $settings.photoDurationPercent,
-                       range: FlashSettings.durationRange,
-                       readout: "\(settings.durationPercent)%")
-                    .disabled(shapingReason != nil)
-                    .opacity(shapingReason == nil ? 1 : 0.45)
-                if let reason = shapingReason {
-                    Text(reason)
-                        .font(NitrateTypography.font(.caption2))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                Picker("Photo flash", selection: Binding(
+                    get: { settings.isPhotoLampOn },
+                    set: { settings.photoIntensity = $0 ? 1 : 0 }
+                )) {
+                    Text("Off").tag(false)
+                    Text("On").tag(true)
                 }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("camera.photoFlashMode")
             } else {
                 slider("Flash", value: $settings.videoLevel,
                        range: FlashSettings.intensityRange,

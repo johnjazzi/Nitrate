@@ -2,13 +2,8 @@ import Foundation
 
 // MARK: - Sync point
 
-/// Where in the exposure window the lamp is lit.
-///
-/// The phone has one LED behind the lens and no shutter curtain, so a "flash"
-/// is that LED held on for a while. `front` lights the window from its first
-/// instant; `rear` would end the light at the closing edge and is not offered
-/// yet — the value stays in the model so it can be added without migrating a
-/// stored preference, and so a file written by a build that has it still reads.
+/// Legacy software-timed torch sync. Retained for old records and timing tests;
+/// native still flash no longer uses these intervals.
 enum FlashSync: String, Codable, CaseIterable, Equatable, Sendable {
     case off
     case front
@@ -17,8 +12,8 @@ enum FlashSync: String, Codable, CaseIterable, Equatable, Sendable {
 
 // MARK: - Settings
 
-/// The operator's lamp settings: one global video level, and a photo intensity
-/// plus the fraction of the exposure window the lamp covers.
+/// Independent video torch level and native photo flash preference.
+/// Legacy photo power/duration keys remain readable; only intensity > 0 is used.
 ///
 /// Nothing here is per stock. The video level is one app-wide setting read once
 /// at take start; the photo values are read at the shutter tap. Both are
@@ -27,9 +22,9 @@ struct FlashSettings: Codable, Equatable, Sendable {
     /// Video: how hard the lamp is driven for a whole take, 0...1. Zero is off
     /// and must behave exactly like a build without the control.
     var videoLevel: Double
-    /// Photo: how hard the lamp is driven while it is lit, 0...1.
+    /// Photo compatibility switch: any positive legacy level requests native flash.
     var photoIntensity: Double
-    /// Photo: how much of the exposure window the lamp covers, 5...100.
+    /// Legacy photo torch duration, retained for preference compatibility only.
     var photoDurationPercent: Double
 
     static let intensityRange: ClosedRange<Double> = 0...1
@@ -67,19 +62,16 @@ struct FlashSettings: Codable, Equatable, Sendable {
 
     var durationPercent: Int { Int(photoDurationPercent.rounded()) }
 
-    /// The closed pill. Video reads the level, because the level is the only
-    /// thing it has. The photo pill reads the *duration*: the duration is the
-    /// number that changes the picture, and the intensity is one tap away.
+    /// Native photo flash has no user-measured power or duration control.
     func pillText(photoMode: Bool) -> String {
-        if photoMode { return isPhotoLampOn ? "\(durationPercent)%" : "OFF" }
+        if photoMode { return isPhotoLampOn ? "ON" : "OFF" }
         return isVideoLampOn ? "\(videoPercent)%" : "OFF"
     }
 
     /// Spoken value for the pill, matching what it reads.
     func accessibilityValue(photoMode: Bool) -> String {
         if photoMode {
-            guard isPhotoLampOn else { return "Lamp off" }
-            return "Lamp at \(photoPercent) percent for \(durationPercent) percent of the exposure"
+            return isPhotoLampOn ? "Photo flash on" : "Photo flash off"
         }
         guard isVideoLampOn else { return "Lamp off" }
         return "Lamp at \(videoPercent) percent for the take"
@@ -168,9 +160,10 @@ enum FlashTimingPolicy {
 // MARK: - What the light actually did
 
 /// The mode a file records. `continuous` is video: the lamp held for the whole
-/// take. The photo modes name where in the window the light landed.
+/// take. `native` records resolved photo flash; `front`/`rear` are historic torch.
 enum FlashMode: String, Codable, Equatable, Sendable {
     case off
+    case native
     case front
     case rear
     case continuous
@@ -181,16 +174,18 @@ enum FlashMode: String, Codable, Equatable, Sendable {
 /// says and what the diagnostics quote.
 struct FlashRecord: Equatable, Sendable {
     var mode: FlashMode
-    /// Whole percent of the level the lamp was driven at (0 when off).
-    var intensityPercent: Int
-    /// Photo only: whole percent of the exposure window the lamp covered.
-    /// Nil for video, which has no window to shape.
+    /// Legacy torch level; nil when native flash power was not measured.
+    var intensityPercent: Int?
+    /// Legacy torch photo window coverage. Nil for native flash and video.
     var durationPercent: Int?
     /// The exposure window the timing was computed against, in seconds.
     var exposureSeconds: Double?
     /// Present when the hardware refused the level (thermal, most often). The
     /// take still runs; the file says the lamp did not.
     var refusalReason: String?
+    /// Nil for historical torch records. Resolved is nil until a framework callback.
+    var requested: Bool?
+    var resolved: Bool?
 
     static let off = FlashRecord(mode: .off, intensityPercent: 0)
 
@@ -199,13 +194,26 @@ struct FlashRecord: Equatable, Sendable {
     /// Did the lamp actually light? A refused request did not.
     var didFire: Bool { mode != .off }
 
-    init(mode: FlashMode, intensityPercent: Int, durationPercent: Int? = nil,
-         exposureSeconds: Double? = nil, refusalReason: String? = nil) {
+    init(mode: FlashMode, intensityPercent: Int? = nil, durationPercent: Int? = nil,
+         exposureSeconds: Double? = nil, refusalReason: String? = nil,
+         requested: Bool? = nil, resolved: Bool? = nil) {
         self.mode = mode
-        self.intensityPercent = min(max(intensityPercent, 0), 100)
+        self.intensityPercent = intensityPercent.map { min(max($0, 0), 100) }
         self.durationPercent = durationPercent.map { min(max($0, 0), 100) }
         self.exposureSeconds = exposureSeconds.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         self.refusalReason = refusalReason
+        self.requested = requested
+        self.resolved = resolved
+    }
+
+    /// Only the framework's resolved isFlashEnabled result establishes firing.
+    /// A refusal is a warning, not a RAW capture failure; power/timing are unknown.
+    static func nativePhoto(requested: Bool, resolved: Bool?, refusalReason: String? = nil) -> FlashRecord {
+        let reason = requested && resolved == false
+            ? refusalReason ?? "The camera did not fire the requested photo flash. It may be temporarily unavailable or too hot."
+            : refusalReason
+        return FlashRecord(mode: resolved == true ? .native : .off,
+                           refusalReason: reason, requested: requested, resolved: resolved)
     }
 
     /// A video take's lamp: `continuous` at the locked level, `off` at zero.
@@ -239,11 +247,13 @@ struct FlashRecord: Equatable, Sendable {
         switch mode {
         case .off:
             return "lamp off"
+        case .native:
+            return "native photo flash fired (power and duration unmeasured)"
         case .continuous:
-            return "lamp at \(intensityPercent)% for the take"
+            return "lamp at \(intensityPercent.map(String.init) ?? "unknown")% for the take"
         case .front, .rear:
             let window = exposureSeconds.map { String(format: "%.4f", $0) } ?? "unknown"
-            return "lamp at \(intensityPercent)% for \(durationPercent ?? 100)% of a \(window)s exposure"
+            return "lamp at \(intensityPercent.map(String.init) ?? "unknown")% for \(durationPercent ?? 100)% of a \(window)s exposure"
         }
     }
 
@@ -257,13 +267,17 @@ struct FlashRecord: Equatable, Sendable {
     static let exposureKey = "flash-exposure-seconds"
     static let refusedKey = "flash-refused"
     static let refusedReasonKey = "flash-refused-reason"
+    static let requestedKey = "flash-requested"
+    static let resolvedKey = "flash-resolved-enabled"
 
     var metadataValues: [String: String] {
         var values = [
             Self.modeKey: mode.rawValue,
-            Self.intensityKey: String(intensityPercent),
             Self.refusedKey: String(wasRefused)
         ]
+        if let intensityPercent { values[Self.intensityKey] = String(intensityPercent) }
+        if let requested { values[Self.requestedKey] = String(requested) }
+        if let resolved { values[Self.resolvedKey] = String(resolved) }
         // Video has no window to shape, so it records no duration rather than a
         // misleading 100.
         if let durationPercent { values[Self.durationKey] = String(durationPercent) }
@@ -279,10 +293,13 @@ struct FlashRecord: Equatable, Sendable {
     static func decode(_ values: [String: String]) -> FlashRecord? {
         guard let raw = values[modeKey], let mode = FlashMode(rawValue: raw) else { return nil }
         return FlashRecord(mode: mode,
-                           intensityPercent: Int(values[intensityKey] ?? "") ?? 0,
+                           intensityPercent: values[intensityKey].flatMap(Int.init)
+                            ?? (mode == .native || values[requestedKey] != nil ? nil : 0),
                            durationPercent: values[durationKey].flatMap(Int.init),
                            exposureSeconds: values[exposureKey].flatMap(Double.init),
-                           refusalReason: values[refusedReasonKey].flatMap { $0.isEmpty ? nil : $0 })
+                           refusalReason: values[refusedReasonKey].flatMap { $0.isEmpty ? nil : $0 },
+                           requested: values[requestedKey].flatMap(Bool.init),
+                           resolved: values[resolvedKey].flatMap(Bool.init))
     }
 }
 

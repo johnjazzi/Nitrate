@@ -162,7 +162,7 @@ than a refusal, but ask before shipping anything derived from it.
 | Exposure | 180° shutter priority by default (shutter locked to 1/48 s, ISO meters), plus manual EV and manual ISO |
 | White balance | Locked per stock — 5600 K daylight negatives, 5500 K Ektachrome, 3200 K tungsten — so the LUT always sees the same white point |
 | Stabilization | Recording-only: Off, Standard, Cinematic, Extreme (Apple extended cinematic). The preview stays independent, and the UI calls out the crop and latency |
-| Light | Flash/lamp controls, subject to the active camera's hardware and thermal limits |
+| Light | Native photo flash (On/Off) and an independent adjustable video torch; still metadata records resolved firing, not assumed power or timing. Hardware and thermal limits apply. |
 
 The capture path is strict on purpose. It negotiates a ten-bit bi-planar format
 the device actually advertises, and validates every sample buffer — dimensions,

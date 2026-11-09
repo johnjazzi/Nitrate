@@ -22,6 +22,8 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
     /// immediately before the request, because that is what the DNG's EXIF
     /// orientation — and therefore the decoded still — follows.
     private let rotationAngle: CGFloat?
+    private let flashRequested: Bool
+    private let flashRefusalReason: String?
     private let onTerminal: @Sendable (CameraPhotoCaptureResult) -> Void
     private let timeoutInterval: TimeInterval
     private var settings: AVCapturePhotoSettings?
@@ -39,10 +41,10 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
     init(output: AVCapturePhotoOutput, pixelFormat: OSType,
          dimensions: CMVideoDimensions, directory: URL, queue: DispatchQueue,
          rotationAngle: CGFloat? = nil,
-         /// The lamp as it ran, recorded beside the DNG so the delivered still can
-         /// state it. Never derived from the request: the controller hands over
-         /// what the hardware accepted.
-         flash: FlashRecord = .off,
+         /// Legacy argument retained for source compatibility. Native evidence
+         /// is always replaced by the framework's resolved capture result.
+         flash _: FlashRecord = .off,
+         flashRequested: Bool = false,
          timeoutInterval: TimeInterval = PhotoExposureCadence.captureTransactionTimeout,
          onTerminal: @escaping @Sendable (CameraPhotoCaptureResult) -> Void) throws {
         guard timeoutInterval.isFinite, timeoutInterval > 0 else { throw CaptureError.invalidSettings }
@@ -53,6 +55,10 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
         self.directory = directory
         self.queue = queue
         self.rotationAngle = rotationAngle
+        self.flashRequested = flashRequested
+        let flashSupported = output.supportedFlashModes.contains(.on)
+        self.flashRefusalReason = flashRequested && !flashSupported
+            ? "Native photo flash is not supported by this camera output." : nil
         self.onTerminal = onTerminal
         super.init()
 
@@ -74,10 +80,9 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
               raw.maxPhotoDimensions.height == dimensions.height,
               raw.photoQualityPrioritization == .speed,
               raw.rawPhotoPixelFormatType == pixelFormat, raw.rawFileType == .dng else { throw CaptureError.invalidSettings }
-        // Custom flash is torch-only. The framework's own flash and our torch
-        // drive the same LED, so the request must carry no flash of its own: a
-        // settings object that asked for one would fight the lamp we light.
-        guard raw.flashMode == .off else { throw CaptureError.invalidSettings }
+        // The controller extinguishes torch before constructing this request.
+        // Unsupported requests stay off, with refusal evidence, never a torch fallback.
+        raw.flashMode = flashRequested && flashSupported ? .on : .off
         settings = raw
         transaction = PhotoCaptureTransactionState(uniqueID: raw.uniqueID)
         var evidence = ["status": "prepared", "rawPixelFormat": String(pixelFormat),
@@ -87,7 +92,8 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
                     "orientation": "unrecorded", "rawType": "Bayer", "fileType": "DNG"]
         // The still's flash evidence travels with the capture manifest, which is
         // the sidecar the delivered JPEG is later tagged from.
-        evidence.merge(flash.metadataValues) { _, measured in measured }
+        evidence.merge(FlashRecord.nativePhoto(requested: flashRequested, resolved: nil,
+            refusalReason: flashRefusalReason).metadataValues) { _, measured in measured }
         self.evidence = evidence
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try writeManifest()
@@ -166,11 +172,13 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
         let rawDimensions = PhotoCapturePolicy.Dimensions(width: Int(resolved.width), height: Int(resolved.height))
         let actualPixelFormat = photo.pixelBuffer.map { CVPixelBufferGetPixelFormatType($0) }
         let metadata = Self.captureMetadata(photo.metadata)
+        let flashEnabled = photo.resolvedSettings.isFlashEnabled
         let errorText = error.map { String(describing: $0) }
         queue.async { [weak self] in
             guard let self else { return }
             defer { self.processingSettled() }
             guard self.accept(id) else { return }
+            self.recordResolvedFlash(flashEnabled)
             self.evidence.merge(metadata) { _, measured in measured }
             self.evidence["resolvedRawWidth"] = String(rawDimensions.width)
             self.evidence["resolvedRawHeight"] = String(rawDimensions.height)
@@ -250,10 +258,12 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings,
                      error: Error?) {
         let id = resolvedSettings.uniqueID
+        let flashEnabled = resolvedSettings.isFlashEnabled
         let errorText = error.map { String(describing: $0) }
         queue.async { [weak self] in
             guard let self, let state = self.transaction, state.uniqueID == id,
                   state.isInFlight, !self.frameworkTerminated else { return }
+            self.recordResolvedFlash(flashEnabled)
             self.frameworkTerminated = true
             if let errorText { self.failure = self.failure ?? "capture failed: \(errorText)" }
             self.evidence["terminalReceived"] = "true"
@@ -266,6 +276,15 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
     }
 
     private var hasPendingProcessing: Bool { deliveryLock.withLock { pendingProcessing > 0 } }
+
+    /// Called only on the capture queue, after transaction ID/terminal fencing.
+    private func recordResolvedFlash(_ enabled: Bool) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        let record = FlashRecord.nativePhoto(requested: flashRequested, resolved: enabled,
+            refusalReason: enabled ? nil : flashRefusalReason)
+        evidence.removeValue(forKey: FlashRecord.refusedReasonKey)
+        evidence.merge(record.metadataValues) { _, measured in measured }
+    }
 
     private func processingSettled() {
         let settled = deliveryLock.withLock { pendingProcessing -= 1; return pendingProcessing == 0 }
@@ -341,7 +360,7 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
                            // Lamp evidence, merged from the capture's FlashRecord.
                            FlashRecord.modeKey, FlashRecord.intensityKey, FlashRecord.durationKey,
                            FlashRecord.exposureKey, FlashRecord.refusedKey,
-                           FlashRecord.refusedReasonKey])
+                           FlashRecord.refusedReasonKey, FlashRecord.requestedKey, FlashRecord.resolvedKey])
         var manifest = evidence.filter { allowed.contains($0.key) }
         if let failure { manifest["failure"] = String(failure.prefix(240)) }
         if manifest["dng"] == nil { manifest["dng"] = dngURL == nil ? "missing" : "capture.dng" }

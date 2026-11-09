@@ -232,6 +232,52 @@ final class CameraInteractionUITests: XCTestCase {
         // capture-profile/exposure readout supplements, but does not replace, media validation.
     }
 
+    /// Normal UI capture plus copied capture manifests establish actual native
+    /// flash firing; the UI assertion alone establishes only the requested state.
+    @MainActor func testNativePhotoFlashCapturesOffOnAndManualWithoutChangingVideoLamp() throws {
+        continueAfterFailure = false
+        let app = launchReadyCamera(hideDiagnosticButtons: true)
+        selectVideo(in: app)
+        let flash = app.descendants(matching: .any).matching(identifier: "camera.flash").firstMatch
+        waitUntilReady(flash, in: app, named: "native-flash-control-ready")
+        let videoLamp = flash.value as? String
+        selectPhoto(in: app)
+        selectWideLens(in: app)
+        let originallyOn = flash.value as? String == "Photo flash on"
+        flash.press(forDuration: 0.5)
+        XCTAssertTrue(app.segmentedControls["camera.photoFlashMode"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Intensity"].exists, "Native flash must not offer a fictitious power slider")
+        XCTAssertFalse(app.staticTexts["Duration"].exists, "Native flash timing is owned by the camera")
+        attachEvidence(app, named: "native-photo-flash-on-off-popover")
+        app.otherElements["camera.preview"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7)).tap()
+        defer {
+            if app.state == .runningForeground, app.buttons["photo.shutter"].exists,
+               (flash.value as? String == "Photo flash on") != originallyOn {
+                flash.tap()
+            }
+        }
+        for enabled in [false, true] {
+            if (flash.value as? String == "Photo flash on") != enabled { flash.tap() }
+            XCTAssertEqual(flash.value as? String, enabled ? "Photo flash on" : "Photo flash off")
+            app.buttons["photo.shutter"].tap()
+            waitForPhotoSaved(in: app)
+            attachEvidence(app, named: enabled ? "native-photo-flash-on-saved" : "native-photo-flash-off-saved")
+        }
+        // Pin both axes through the existing controls, not a direct session probe.
+        lockManualISO(in: app)
+        let shutterLock = app.buttons["photo.shutterLock"]
+        waitUntilReady(shutterLock, in: app, named: "native-flash-manual-shutter")
+        if shutterLock.value as? String != "Lock" { shutterLock.tap() }
+        XCTAssertEqual(shutterLock.value as? String, "Lock")
+        XCTAssertEqual(flash.value as? String, "Photo flash on")
+        app.buttons["photo.shutter"].tap()
+        waitForPhotoSaved(in: app)
+        attachEvidence(app, named: "native-photo-flash-manual-saved")
+        if (flash.value as? String == "Photo flash on") != originallyOn { flash.tap() }
+        selectVideo(in: app)
+        XCTAssertEqual(flash.value as? String, videoLamp, "Still flash must not alter the saved video lamp level")
+    }
+
     @MainActor func testVideoRecordStopThenPhotoCaptureThroughVisibleControls() throws {
         continueAfterFailure = false
         let app = launchReadyCamera()
