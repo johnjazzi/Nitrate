@@ -14,7 +14,7 @@ locking, LUT contents or delivery colour contracts. Work is on
 - Stock, gauge, push/pull and primary actions use larger type and 48–80 point touch targets.
 - Show compact Estimate/Captured/Rated readouts. Import, preview and render failures show a brief inline reason; full diagnostics and file metadata remain in Details.
 - Page position is numeric. Results use three equal-width icons in one horizontal row, with small captions below.
-- History has a visible title, short section headings and a native pull-down handle, not a close X. Missing thumbnails say No preview. Keep horizontal icon-only actions and readable VoiceOver names; storage and full metadata remain behind their icons.
+- History uses compact flat rows: a larger aspect-fit thumbnail beside a small status and horizontal Photos/Details/Re-develop actions. Preview and Share live in the row More menu; filters and Storage live in History options. Keep the visible title, short section headings, native pull-down handle and No preview fallback. Thumbnail margins stay neutral, not link-tinted. Preserve readable VoiceOver names and full metadata.
 - Keep the camera carousel and top-bar clearance unchanged.
 
 ## Interaction contract

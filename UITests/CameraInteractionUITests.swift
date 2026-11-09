@@ -28,7 +28,24 @@ final class CameraInteractionUITests: XCTestCase {
         let history = app.navigationBars["History"]
         XCTAssertTrue(history.waitForExistence(timeout: 10))
         XCTAssertFalse(history.buttons["Done"].exists, "History dismisses using its native grabber, not an X")
+        XCTAssertTrue(app.buttons["queue.options"].exists)
+        let card = app.descendants(matching: .any).matching(identifier: "queue.receiptCard").firstMatch
+        if card.exists {
+            XCTAssertLessThanOrEqual(card.frame.height, 128, "A receipt is one compact row, not stacked controls")
+            XCTAssertGreaterThanOrEqual(card.frame.height, 104, "Keep the larger preview")
+        }
+        app.buttons["queue.options"].tap()
+        let allHistory = app.buttons["Show all"]
+        XCTAssertTrue(allHistory.waitForExistence(timeout: 3))
+        allHistory.tap()
         attachEvidence(app, named: "history-title-placeholder-handle")
+        let more = app.buttons.matching(identifier: "queue.more").firstMatch
+        if more.exists {
+            more.tap()
+            XCTAssertTrue(app.buttons["Share"].waitForExistence(timeout: 3))
+            attachEvidence(app, named: "history-overflow-actions")
+            history.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
         let handle = history.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
         let down = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85))
         handle.press(forDuration: 0.05, thenDragTo: down)

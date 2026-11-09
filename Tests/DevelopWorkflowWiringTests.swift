@@ -87,7 +87,9 @@ struct DevelopWorkflowWiringTests {
 
     @Test func importedVideoCanExposeRedevelopmentWithoutPlaybackOrSharing() throws {
         let card = try source("App/Modules/RenderQueue/QueueReceiptViews.swift")
-        #expect(card.contains("job.receiptActions.playLocal || job.receiptActions.shareLocal || redevelop != nil"))
+        #expect(card.contains("Menu { localActions }"))
+        #expect(card.contains("job.receiptActions.playLocal || job.receiptActions.shareLocal"))
+        #expect(card.contains("redevelopmentAction"))
         #expect(card.contains("if job.hasRedevelopableSource, let redevelop"))
         #expect(card.contains("\"queue.redevelopVideo\""))
         let sheet = try source("App/Modules/RenderQueue/QueueSheetView.swift")

@@ -76,8 +76,10 @@ struct QueueSheetView: View {
                             if isSelecting, canReviewOriginal(latestRender) {
                                 selectionToggle(for: latestRender)
                             }
-                            receiptCard(for: latestRender, prominent: true)
+                            receiptCard(for: latestRender)
                         }
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                        .listRowBackground(Color.clear)
                     } header: {
                         Text("Latest")
                     }
@@ -153,6 +155,8 @@ struct QueueSheetView: View {
                                         .buttonStyle(.borderless)
                                     }
                                 }
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                                .listRowBackground(Color.clear)
                             }
                         } header: {
                             Text("Earlier")
@@ -160,6 +164,10 @@ struct QueueSheetView: View {
                     }
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .listRowSpacing(0)
+            .environment(\.defaultMinListHeaderHeight, 24)
             .labelStyle(.iconOnly)
             .animation(.default, value: viewModel.jobs)
             .navigationTitle("History")
@@ -174,18 +182,22 @@ struct QueueSheetView: View {
                             Label("Cancel", systemImage: "arrow.uturn.backward").frame(width: 44, height: 44)
                         }
                     } else {
-                        Button { showAll.toggle() } label: {
-                            Label(showAll ? "This session" : "Show all", systemImage: showAll ? "clock" : "clock.badge.checkmark")
-                                .frame(width: 44, height: 44)
+                        Menu {
+                            Button { showAll.toggle() } label: {
+                                Label(showAll ? "This session" : "Show all", systemImage: "clock")
+                            }
+                            Button { showsStorage = true } label: {
+                                Label("Storage", systemImage: "internaldrive")
+                            }
+                            Button(action: openPhotos) {
+                                Label("Open Photos", systemImage: "photo.on.rectangle")
+                            }
+                            .accessibilityIdentifier(QueueReceiptPresentation.photosActionID + ".general")
+                        } label: {
+                            Label("History options", systemImage: "ellipsis")
                         }
+                        .accessibilityIdentifier("queue.options")
                         .accessibilityValue(showAll ? "All history" : "This session")
-                        Button { showsStorage = true } label: {
-                            Label("Storage", systemImage: "internaldrive").frame(width: 44, height: 44)
-                        }
-                        Button(action: openPhotos) {
-                            Label("Open Photos", systemImage: "photo.on.rectangle").frame(width: 44, height: 44)
-                        }
-                        .accessibilityIdentifier(QueueReceiptPresentation.photosActionID + ".general")
                     }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -195,7 +207,7 @@ struct QueueSheetView: View {
                     } else if visibleHistory.contains(where: canReviewOriginal)
                         || latestRender.map(canReviewOriginal) == true {
                         Button { isSelecting = true } label: {
-                            Label("Select", systemImage: "checkmark.circle").frame(width: 44, height: 44)
+                            Label("Select", systemImage: "checkmark.circle")
                         }
                         .accessibilityIdentifier("queue.select")
                     }
@@ -308,8 +320,8 @@ struct QueueSheetView: View {
         .buttonStyle(.bordered)
     }
 
-    private func receiptCard(for job: RenderJob, prominent: Bool = false) -> some View {
-        QueueReceiptCard(job: job, prominent: prominent, openPhotos: openPhotos,
+    private func receiptCard(for job: RenderJob) -> some View {
+        QueueReceiptCard(job: job, openPhotos: openPhotos,
                          showMetadata: { metadataJob = job },
                          playLocal: {
                              guard job.isImportedVideo != true, job.retainedOutputURL != nil else { return }

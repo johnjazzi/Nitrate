@@ -193,8 +193,9 @@ switch and shared-camera behaviour.
   keys inset in a well.
 - **History & Queue** opens from the status LCD with a History title, labelled
   sections and a pull-down handle instead of a close X. Missing thumbnails say
-  No preview. Actions remain horizontal and icon-only. Storage and remaining-time estimates sit
-  behind the drive icon; metadata, retained-source reasons and errors remain
+  No preview. Compact flat rows place larger thumbnails beside horizontal
+  icon-only actions; Preview/Share live in More. Filters, storage and remaining-time
+  estimates live in History options; metadata, retained-source reasons and errors remain
   available through the info icon. Develop also shows brief import, preview and
   render errors inline, without requiring a tap for the reason. Retry, selection
   and queue recovery are preserved.

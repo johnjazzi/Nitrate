@@ -19,7 +19,6 @@ extension RenderJob {
 /// Independent sibling controls: the image never wraps the metadata/play/share actions.
 struct QueueReceiptCard: View {
     let job: RenderJob
-    var prominent = false
     let openPhotos: () -> Void
     let showMetadata: () -> Void
     let playLocal: () -> Void
@@ -28,55 +27,64 @@ struct QueueReceiptCard: View {
     var redevelop: (() -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 12) {
-                if !job.permitsLocalMedia {
-                    poster
-                } else if job.isPhoto == true, job.retainedOutputURL != nil {
-                    Button(action: playLocal) { poster }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Preview rendered photo")
-                        .accessibilityIdentifier("queue.photoPreview")
-                } else if job.receiptActions.openPhotos {
-                    Button(action: openPhotos) { poster }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Open Photos for saved recording")
-                        .accessibilityHint("Opens Photos, not this specific video. Look in Recently Saved.")
-                        .accessibilityIdentifier(QueueReceiptPresentation.photosActionID + ".thumbnail")
-                } else {
-                    poster.accessibilityLabel("Local thumbnail; Photos save not confirmed")
-                }
-                Spacer(minLength: 0)
-                Button(action: showMetadata) {
+        HStack(spacing: 12) {
+            posterControl
+            VStack(alignment: .trailing, spacing: 8) {
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
                     Image(systemName: statusSymbol)
+                        .font(NitrateTypography.font(.subheadline))
                         .foregroundStyle(statusColor)
-                        .frame(width: 44, height: 44)
-                        .overlay(alignment: .topTrailing) {
-                            if job.retainedReason != nil || job.cleanupWarning != nil {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .font(NitrateTypography.font(.caption))
-                                    .foregroundStyle(.orange)
-                            }
+                        .accessibilityLabel(statusDescription)
+                    if job.retainedReason != nil || job.cleanupWarning != nil {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(NitrateTypography.font(.caption))
+                            .foregroundStyle(.orange)
+                            .accessibilityLabel("Warning; open details")
+                    }
+                    if job.receiptActions.playLocal || job.receiptActions.shareLocal {
+                        Menu { localActions } label: {
+                            Label("More", systemImage: "ellipsis")
+                                .frame(width: 44, height: 44)
                         }
+                        .accessibilityIdentifier("queue.more")
+                    }
                 }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(statusDescription + ((job.retainedReason != nil || job.cleanupWarning != nil)
-                    ? "; warning, open details" : ""))
-            }
-            HStack(spacing: 0) {
-                primaryActions
-                if job.receiptActions.playLocal || job.receiptActions.shareLocal || redevelop != nil {
-                    localActions
+                .frame(height: 44)
+                HStack(spacing: 0) {
+                    primaryActions
+                    redevelopmentAction
                 }
             }
+            .frame(minWidth: 132, maxWidth: .infinity, alignment: .trailing)
         }
         .labelStyle(.iconOnly)
-        .font(NitrateTypography.font(.title2))
-        .padding(.vertical, prominent ? 8 : 4)
+        .font(NitrateTypography.font(.title3))
+        .tint(.primary)
         .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("queue.receiptCard")
         .accessibilityLabel(job.receiptTitle)
         .accessibilityValue((job.receipt?.recordedAt ?? job.createdAt)
             .formatted(date: .abbreviated, time: .shortened))
+    }
+
+    @ViewBuilder private var posterControl: some View {
+        if !job.permitsLocalMedia {
+            poster
+        } else if job.isPhoto == true, job.retainedOutputURL != nil {
+            Button(action: playLocal) { poster }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Preview rendered photo")
+                .accessibilityIdentifier("queue.photoPreview")
+        } else if job.receiptActions.openPhotos {
+            Button(action: openPhotos) { poster }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Open Photos for saved recording")
+                .accessibilityHint("Opens Photos, not this specific video. Look in Recently Saved.")
+                .accessibilityIdentifier(QueueReceiptPresentation.photosActionID + ".thumbnail")
+        } else {
+            poster.accessibilityLabel("Local thumbnail; Photos save not confirmed")
+        }
     }
 
     private var statusSymbol: String {
@@ -117,8 +125,8 @@ struct QueueReceiptCard: View {
                 .foregroundStyle(.secondary)
             }
         }
-        .frame(width: prominent ? 112 : 80, height: prominent ? 84 : 60)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        .frame(minWidth: 80, maxWidth: 136, minHeight: 104, maxHeight: 104)
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8))
         .clipped()
     }
 
@@ -144,17 +152,18 @@ struct QueueReceiptCard: View {
     @ViewBuilder private var localActions: some View {
         if job.receiptActions.playLocal {
             Button(action: playLocal) {
-                Label(job.isPhoto == true ? "Preview photo" : "Play local copy",
+                Label(job.isPhoto == true ? "Preview" : "Play",
                       systemImage: job.isPhoto == true ? "photo" : "play.circle")
-                    .frame(width: 44, height: 44)
-            }.buttonStyle(.borderless)
+            }
         }
         if job.receiptActions.shareLocal {
             Button(action: shareLocal) {
-                Label("Share local copy", systemImage: "square.and.arrow.up")
-                    .frame(width: 44, height: 44)
-            }.buttonStyle(.borderless)
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
         }
+    }
+
+    @ViewBuilder private var redevelopmentAction: some View {
         if job.hasRedevelopableSource, let redevelop {
             Button(action: redevelop) {
                 Label("Re-develop", systemImage: "arrow.counterclockwise")
