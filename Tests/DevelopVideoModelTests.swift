@@ -267,6 +267,271 @@ struct DevelopVideoModelTests {
     }
 }
 
+extension DevelopVideoModelTests {
+    @Test func singlePhotoUsesSharedReviewAndKeepsCapturedRating() async throws {
+        let files = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let source = files.directory.appendingPathComponent("photo_import_single.nef")
+        try Data([1]).write(to: source)
+        let queue = Self.queue(files, render: { _ in files.output }, persist: { _ in })
+        queue.renderAllowed = { false }
+        let model = DevelopVideoModel(queue: queue, inspectPhoto: { url, name in
+            ImportedPhoto(url: url, originalFilename: name, pixelWidth: 4000, pixelHeight: 3000,
+                          iso: 800, capturedAt: nil)
+        })
+        await model.stagePhotos(transfers: [{
+            DevelopVideoModel.DevelopPhotoTransfer(lease: VideoImportFileLease(url: source, directory: files.directory),
+                                                   originalFilename: "DSC_001.NEF")
+        }])
+        #expect(queue.jobs.isEmpty)
+        #expect(model.sources.first?.originalFilename == "DSC_001.NEF")
+        #expect(model.sources.first?.iso == 800)
+        #expect(model.sources.first?.capturedOffsetEV == nil)
+        #expect(model.develop(stock: Self.stock(), iso: 100, gauge: .eightMillimetre,
+                              pushPull: .manual(.pullOne)).queued == 1)
+        #expect(queue.jobs.first?.iso == 800)
+        #expect(queue.jobs.first?.isImportedPhoto == true)
+        #expect(queue.jobs.first?.shouldSaveOriginal == false)
+        #expect(queue.jobs.first?.retainsDevelopmentSource == true)
+        model.startOver()
+        #expect(FileManager.default.fileExists(atPath: source.path), "accepted RAW ownership is queue-only")
+    }
+
+    @Test func cancelledPhotoInspectionReleasesItsRawCopyWithoutResurrectingSelection() async throws {
+        let files = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let source = files.directory.appendingPathComponent("photo_import_cancel.nef")
+        try Data([1]).write(to: source)
+        let gate = DevelopGate()
+        let queue = Self.queue(files, render: { _ in files.output })
+        let model = DevelopVideoModel(queue: queue, inspectPhoto: { url, name in
+            await gate.suspend()
+            return ImportedPhoto(url: url, originalFilename: name, pixelWidth: 4000, pixelHeight: 3000,
+                                 iso: nil, capturedAt: nil)
+        })
+        let old = Task { @MainActor in
+            await model.stagePhotos(transfers: [{
+                DevelopVideoModel.DevelopPhotoTransfer(lease: VideoImportFileLease(url: source, directory: files.directory),
+                                                       originalFilename: "DSC_001.NEF")
+            }])
+        }
+        await gate.waitUntilSuspended()
+        model.startOver()
+        await gate.resume()
+        await old.value
+        #expect(model.sources.isEmpty)
+        #expect(queue.jobs.isEmpty)
+        try await Self.waitUntil { !FileManager.default.fileExists(atPath: source.path) }
+    }
+
+    @Test func failedPhotoEnqueueKeepsRawUntilExplicitCancellation() async throws {
+        let files = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let source = files.directory.appendingPathComponent("photo_import_retry.dng")
+        try Data([1]).write(to: source)
+        let queue = Self.queue(files, render: { _ in files.output }, persist: { _ in throw Failure.denied })
+        let model = DevelopVideoModel(queue: queue, inspectPhoto: { url, name in
+            ImportedPhoto(url: url, originalFilename: name, pixelWidth: 4000, pixelHeight: 3000,
+                          iso: nil, capturedAt: nil)
+        })
+        await model.stagePhotos(transfers: [{
+            DevelopVideoModel.DevelopPhotoTransfer(lease: VideoImportFileLease(url: source, directory: files.directory),
+                                                   originalFilename: "RAW.dng")
+        }])
+        #expect(model.develop(stock: Self.stock(), iso: 400, gauge: .neutral, pushPull: .neutral).queued == 0)
+        #expect(model.sources.map(\.url) == [source])
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        model.startOver()
+        try await Self.waitUntil { !FileManager.default.fileExists(atPath: source.path) }
+    }
+
+    @Test func singleVideoStagesForExplicitDevelopAndFreezesRecipe() async throws {
+        let files = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let source = try Self.clipFile(files)
+        var rendered: [RenderJob] = []
+        let queue = Self.queue(files, render: { job in rendered.append(job); return files.output })
+        let model = DevelopVideoModel(queue: queue, inspect: { url, _ in Self.inspected(url) })
+        await model.stageVideos(transfers: [{ Self.transfer(source, directory: files.directory) }])
+        #expect(queue.jobs.isEmpty)
+        #expect(model.sources.map(\.url) == [source])
+        #expect(model.sources.first?.iso == nil)
+        #expect(model.sources.first?.capturedOffsetEV == nil)
+        #expect(model.canDevelop(stock: Self.stock()))
+        let result = model.develop(stock: Self.stock(), iso: 640, gauge: .eightMillimetre,
+                                   pushPull: .manual(.pullTwo))
+        #expect(result.queued == 1)
+        #expect(model.hasActiveRenders)
+        #expect(!model.canDevelop(stock: Self.stock()))
+        #expect(model.resultJobIDs == queue.jobs.map(\.id))
+        #expect(model.batchJobIDs == model.resultJobIDs)
+        #expect(model.activeJobID == model.resultJobIDs.first)
+        #expect(queue.jobs.first?.retainsDevelopmentSource == true)
+        #expect(queue.jobs.first?.sourceOriginalFilename == source.lastPathComponent)
+        try await Self.waitUntil { queue.jobs.first?.status == .completed }
+        #expect(rendered.first?.iso == 640)
+        #expect(rendered.first?.printGauge == .eightMillimetre)
+        #expect(rendered.first?.pushPull == .manual(.pullTwo))
+    }
+
+    @Test func bulkPersistenceRefusalKeepsEveryUnacceptedLeaseForRetry() async throws {
+        let files = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let first = try Self.clipFile(files)
+        let second = try Self.clipFile(files)
+        var deny = true
+        let queue = Self.queue(files, render: { _ in files.output }, persist: { _ in
+            if deny { throw Failure.denied }
+        })
+        queue.renderAllowed = { false }
+        let model = DevelopVideoModel(queue: queue, inspect: { url, _ in Self.inspected(url) })
+        await model.stageVideos(transfers: [
+            { Self.transfer(first, directory: files.directory) },
+            { Self.transfer(second, directory: files.directory) }
+        ])
+        let refused = model.develop(stock: Self.stock(), iso: 400, gauge: .neutral, pushPull: .neutral)
+        #expect(refused.queued == 0)
+        #expect(refused.skipped.count == 2)
+        #expect(model.sources.map(\.url) == [first, second])
+        #expect(model.bulk.videoLeases.count == 2)
+        #expect(FileManager.default.fileExists(atPath: first.path))
+        #expect(FileManager.default.fileExists(atPath: second.path))
+        deny = false
+        queue.resume()
+        let accepted = model.develop(stock: Self.stock(), iso: 400, gauge: .neutral, pushPull: .neutral)
+        #expect(accepted.queued == 2)
+        #expect(model.sources.isEmpty)
+        #expect(model.resultJobIDs == queue.jobs.map(\.id))
+        model.startOver()
+        #expect(model.resultJobIDs.isEmpty)
+        #expect(queue.jobs.count == 2)
+        #expect(FileManager.default.fileExists(atPath: first.path))
+        #expect(FileManager.default.fileExists(atPath: second.path))
+    }
+
+    @Test func staleBulkInspectionCannotAppendIntoNewerPick() async throws {
+        let files = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let old = try Self.clipFile(files)
+        let newer = try Self.clipFile(files)
+        let gate = DevelopGate()
+        let queue = Self.queue(files, render: { _ in files.output })
+        let model = DevelopVideoModel(queue: queue, inspect: { url, _ in
+            if url == old { await gate.suspend() }
+            return Self.inspected(url)
+        })
+        let stale = Task { @MainActor in
+            await model.stageVideos(transfers: [{ Self.transfer(old, directory: files.directory) }])
+        }
+        await gate.waitUntilSuspended()
+        await model.stageVideos(transfers: [{ Self.transfer(newer, directory: files.directory) }])
+        await gate.resume()
+        await stale.value
+        #expect(model.sources.map(\.url) == [newer])
+        #expect(model.bulk.total == 1)
+        #expect(model.bulk.read == 1)
+        #expect(!model.isLoading)
+        try await Self.waitUntil { !FileManager.default.fileExists(atPath: old.path) }
+        model.startOver()
+        try await Self.waitUntil { !FileManager.default.fileExists(atPath: newer.path) }
+    }
+
+    @Test func cancelledBulkTransferCannotResurrectReview() async throws {
+        let files = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let source = try Self.clipFile(files)
+        let gate = DevelopGate()
+        let queue = Self.queue(files, render: { _ in files.output })
+        let model = DevelopVideoModel(queue: queue, inspect: { url, _ in Self.inspected(url) })
+        let task = Task { @MainActor in
+            await model.stageVideos(transfers: [{
+                await gate.suspend()
+                return Self.transfer(source, directory: files.directory)
+            }])
+        }
+        await gate.waitUntilSuspended()
+        model.startOver()
+        await gate.resume()
+        await task.value
+        #expect(model.sources.isEmpty)
+        #expect(model.bulk.total == 0)
+        #expect(queue.jobs.isEmpty)
+        try await Self.waitUntil { !FileManager.default.fileExists(atPath: source.path) }
+    }
+
+    @Test func adoptMixedJobsOnlyReviewsThenExplicitDevelopRequeuesInSourceOrder() async throws {
+        let files = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let video = try Self.clipFile(files)
+        let photo = files.directory.appendingPathComponent("photo_import_original.dng")
+        try Data([1]).write(to: photo)
+        var videoJob = RenderJob(sourceURL: video, stockId: "old", iso: 500,
+                                 pushPull: .automatic(meteredOffsetEV: 1.5))
+        videoJob.isImportedVideo = true
+        videoJob.capturePolicy = RenderCapturePolicy(60, sourceProfile: .hlgBT2020)
+        videoJob.deliveryPreferences = .init(saveOriginalLog: true)
+        videoJob.status = .completed
+        videoJob.sourceOriginalFilename = "take.mov"
+        var photoJob = RenderJob(sourceURL: photo, stockId: "old", iso: 800)
+        photoJob.isPhoto = true
+        photoJob.isImportedPhoto = true
+        photoJob.photoCropZoom = 1.8
+        photoJob.photoGrainSeed = 73
+        photoJob.status = .failed
+        photoJob.sourceOriginalFilename = "DSC_001.NEF"
+        let queue = Self.queue(files, render: { _ in files.output }, persist: { _ in })
+        queue.renderAllowed = { false }
+        queue.jobs = [photoJob, videoJob]
+        let model = DevelopVideoModel(queue: queue)
+        await model.adoptExistingJobs([videoJob, photoJob, videoJob])
+        #expect(model.sources.map(\.url) == [video, photo])
+        #expect(model.sources.first?.capturedOffsetEV == 1.5)
+        #expect(model.sources.last?.iso == 800)
+        #expect(model.sources.last?.cropZoom == 1.8)
+        #expect(model.sources.last?.originalFilename == "DSC_001.NEF")
+        #expect(model.resultJobIDs.isEmpty)
+        #expect(queue.jobs == [photoJob, videoJob], "adopting must not enqueue or mutate recipes")
+        let result = model.develop(stock: Self.stock(), iso: 100, gauge: .eightMillimetre,
+                                   pushPull: .manual(.pushOne))
+        #expect(result.queued == 2)
+        #expect(model.resultJobIDs == [videoJob.id, photoJob.id])
+        #expect(queue.jobs.allSatisfy { $0.status == .pending && $0.stockId == "test" })
+        #expect(queue.jobs.first?.photoCropZoom == 1.8)
+        #expect(queue.jobs.first?.photoGrainSeed == 73)
+        #expect(queue.jobs.first?.iso == 800)
+        #expect(queue.jobs.last?.sourceCapturedOffsetEV == 1.5)
+        #expect(queue.jobs.last?.iso == 500)
+        #expect(queue.jobs.last?.capturePolicy == videoJob.capturePolicy)
+        #expect(queue.jobs.last?.deliveryPreferences == videoJob.deliveryPreferences)
+        #expect(queue.jobs.last?.isImportedVideo == true)
+        model.startOver()
+        #expect(FileManager.default.fileExists(atPath: photo.path))
+        #expect(FileManager.default.fileExists(atPath: video.path))
+    }
+
+    @Test func mixedAdoptionExplainsMissingOriginalWithoutUsingItsOutput() async throws {
+        let files = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let source = try Self.clipFile(files)
+        var good = RenderJob(sourceURL: source, stockId: "test", iso: 400)
+        good.status = .completed
+        var missing = RenderJob(sourceURL: files.directory.appendingPathComponent("gone.mov"),
+                                stockId: "test", iso: 400)
+        missing.status = .completed
+        missing.outputURL = files.output
+        let queue = Self.queue(files, render: { _ in files.output })
+        queue.jobs = [good, missing]
+        let model = DevelopVideoModel(queue: queue)
+        await model.adoptExistingJobs([missing, good])
+        #expect(model.sources.map(\.url) == [source])
+        #expect(model.errorMessage?.contains("gone.mov") == true)
+        #expect(model.canDevelop(stock: Self.stock()))
+        model.startOver()
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(queue.jobs.count == 2)
+    }
+}
+
 /// Suspends a lifecycle step until the test resumes it.
 private actor DevelopGate {
     private var continuation: CheckedContinuation<Void, Never>?

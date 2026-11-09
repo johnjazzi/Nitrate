@@ -77,7 +77,44 @@ struct RenderExportReceiptTests {
                                           space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         bitmap.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         let red = stride(from: 0, to: bytes.count, by: 4).map { bytes[$0] }
+        let enlarged = await RenderReceiptService.capture(url: url, renderDurationSeconds: nil,
+                                                           maximumThumbnailSize: 1600)
+        let enlargedData = try #require(enlarged.thumbnailJPEG)
+        let enlargedSource = try #require(CGImageSourceCreateWithData(enlargedData as CFData, nil))
+        let enlargedImage = try #require(CGImageSourceCreateImageAtIndex(enlargedSource, 0, nil))
+        #expect(max(enlargedImage.width, enlargedImage.height) > 320)
+        #expect(max(enlargedImage.width, enlargedImage.height) <= 1600)
+        #expect(enlargedImage.height > enlargedImage.width)
+        #expect(enlargedData.count <= 1024 * 1024)
         #expect(Int(red.max() ?? 0) - Int(red.min() ?? 0) > 80)
+    }
+
+    @Test func deliveredImagePosterCapsAt1600EvenWhenCallerAsksForMore() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("poster-\(UUID().uuidString).jpg")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try #require(CGContext(data: nil, width: 2400, height: 1200,
+            bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(CGColor(red: 0.1, green: 0.2, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 2400, height: 1200))
+        context.setFillColor(CGColor(red: 0.9, green: 0.7, blue: 0.1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 1200, height: 1200))
+        let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try #require(context.makeImage()), nil)
+        #expect(CGImageDestinationFinalize(destination))
+        let receipt = await RenderReceiptService.capture(url: url, renderDurationSeconds: nil,
+                                                          maximumThumbnailSize: Int.max)
+        let jpeg = try #require(receipt.thumbnailJPEG)
+        let source = try #require(CGImageSourceCreateWithData(jpeg as CFData, nil))
+        let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(image.width == 1600)
+        #expect(image.height == 800)
+        #expect(jpeg.count <= 1024 * 1024)
+        let omitted = await RenderReceiptService.capture(url: url, renderDurationSeconds: nil,
+                                                          includeThumbnail: false, maximumThumbnailSize: 1600)
+        #expect(omitted.thumbnailJPEG == nil)
+        #expect(omitted.pixelWidth == 2400)
     }
 
     @Test func unreadablePosterStillReturnsMetadataPlaceholder() async {
