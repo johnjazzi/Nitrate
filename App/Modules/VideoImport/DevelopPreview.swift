@@ -57,12 +57,18 @@ struct DevelopPreview: View {
                 case .chooser: chooser
                 }
             }
-            if model.errorMessage != nil, !model.isLoading {
-                Button("Details", systemImage: "exclamationmark.circle") { showHelp = true }
-                    .font(NitrateTypography.font(.body))
-                    .foregroundStyle(DevelopPreviewChrome.warning)
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("develop.error")
+            if let issue = model.errorMessage, !model.isLoading {
+                HStack(spacing: 8) {
+                    Text(DevelopWorkflowPresentation.issueSummary(issue))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("develop.error.summary")
+                    Button("Details", systemImage: "info.circle") { showHelp = true }
+                        .labelStyle(.iconOnly)
+                        .frame(width: 44, height: 44)
+                        .accessibilityIdentifier("develop.error")
+                }
+                .font(NitrateTypography.font(.callout))
+                .foregroundStyle(DevelopPreviewChrome.warning)
             }
         }
         .padding(12)
@@ -409,9 +415,14 @@ private struct DevelopSourcePage: View {
                             }
                         }
                         .accessibilityIdentifier("develop.preview")
-                } else if loadedRequest == request, failure != nil {
-                    VStack(spacing: 16) {
+                } else if loadedRequest == request, let failure {
+                    VStack(spacing: 12) {
                         Text("Preview unavailable")
+                        Text(DevelopWorkflowPresentation.issueSummary(failure))
+                            .font(NitrateTypography.font(.callout))
+                            .foregroundStyle(DevelopPreviewChrome.warning)
+                            .multilineTextAlignment(.center)
+                            .accessibilityIdentifier("develop.preview.issue")
                         Button("Retry") { retry += 1 }.frame(minHeight: 48)
                     }
                 } else if stock == nil {

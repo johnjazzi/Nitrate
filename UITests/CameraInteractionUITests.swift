@@ -19,6 +19,24 @@ final class CameraInteractionUITests: XCTestCase {
         return false
     }
 
+    @MainActor func testHistoryHasTitleAndPullDownDismissal() throws {
+        continueAfterFailure = false
+        let app = launchReadyCamera()
+        let lcd = app.descendants(matching: .any).matching(identifier: "camera.queueLCD").firstMatch
+        waitUntilReady(lcd, in: app, named: "history-queue-ready")
+        lcd.tap()
+        let history = app.navigationBars["History"]
+        XCTAssertTrue(history.waitForExistence(timeout: 10))
+        XCTAssertFalse(history.buttons["Done"].exists, "History dismisses using its native grabber, not an X")
+        attachEvidence(app, named: "history-title-placeholder-handle")
+        let handle = history.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+        let down = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85))
+        handle.press(forDuration: 0.05, thenDragTo: down)
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: history)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 10), .completed)
+        XCTAssertTrue(lcd.isHittable)
+    }
+
     @MainActor func testDevelopMinimalChooser() throws {
         continueAfterFailure = false
         let app = launchReadyCamera()

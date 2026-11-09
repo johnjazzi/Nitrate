@@ -12,9 +12,9 @@ locking, LUT contents or delivery colour contracts. Work is on
 - Visible labels use at most two words. No explanatory paragraphs on the main screens.
 - The still fills the available canvas; no nested vertical scrolling or fixed 210-point thumbnail.
 - Stock, gauge, push/pull and primary actions use larger type and 48–80 point touch targets.
-- Show compact Estimate/Captured/Rated readouts only; file metadata and full error reasons live behind Details.
+- Show compact Estimate/Captured/Rated readouts. Import, preview and render failures show a brief inline reason; full diagnostics and file metadata remain in Details.
 - Page position is numeric. Results use three equal-width icons in one horizontal row, with small captions below.
-- History uses thumbnail/status icons and a horizontal icon-only action row, without captions. Keep readable VoiceOver names. Storage and complete metadata/error reasons remain behind their icons.
+- History has a visible title, short section headings and a native pull-down handle, not a close X. Missing thumbnails say No preview. Keep horizontal icon-only actions and readable VoiceOver names; storage and full metadata remain behind their icons.
 - Keep the camera carousel and top-bar clearance unchanged.
 
 ## Interaction contract

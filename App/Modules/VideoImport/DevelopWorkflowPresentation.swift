@@ -51,6 +51,18 @@ enum DevelopWorkflowPresentation {
         }
     }
 
+    /// A visible first-line reason, without turning the review into an error log.
+    /// Full diagnostics remain unchanged in the existing Details surface.
+    static func issueSummary(_ message: String) -> String {
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: .newlines).first ?? ""
+        guard !text.isEmpty else { return "Unavailable" }
+        guard text.count > 120 else { return text }
+        let prefix = String(text.prefix(120))
+        let end = prefix.range(of: " ", options: .backwards)?.lowerBound ?? prefix.endIndex
+        return String(prefix[..<end]) + "…"
+    }
+
     static func zoom(_ value: CGFloat) -> CGFloat {
         guard value.isFinite else { return 1 }
         return min(max(value, 1), 8)

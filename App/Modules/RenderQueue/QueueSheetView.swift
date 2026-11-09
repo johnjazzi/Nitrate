@@ -79,15 +79,18 @@ struct QueueSheetView: View {
                             receiptCard(for: latestRender, prominent: true)
                         }
                     } header: {
-                        Label("Latest render", systemImage: "star")
+                        Text("Latest")
                     }
                 }
                 if isEmpty {
-                    Image(systemName: "tray")
-                        .font(NitrateTypography.font(size: 44))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 160)
-                        .accessibilityLabel("No render jobs")
+                    VStack(spacing: 12) {
+                        Image(systemName: "tray")
+                            .font(NitrateTypography.font(size: 44))
+                        Text("No history")
+                            .font(NitrateTypography.font(.body))
+                    }
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 160)
                 } else {
                     if !visibleAwaitingStock.isEmpty {
                         Section {
@@ -105,14 +108,14 @@ struct QueueSheetView: View {
                                 }
                             }
                         } header: {
-                            Label("Awaiting stock", systemImage: "film")
+                            Text("Choose stock")
                         }
                     }
                     if let current = visibleQueuedJobs.first(where: { $0.status == .processing }) {
                         Section {
                             JobRow(job: current, isCurrent: true, onDetails: { metadataJob = current })
                         } header: {
-                            Label("Processing", systemImage: "arrow.triangle.2.circlepath")
+                            Text("Processing")
                         }
                     }
                     let pending = visibleQueuedJobs.filter { $0.status == .pending }
@@ -129,7 +132,7 @@ struct QueueSheetView: View {
                                     }
                             }
                         } header: {
-                            Label("Pending", systemImage: "clock")
+                            Text("Queued")
                         }
                     }
                     if !visibleHistory.isEmpty {
@@ -152,26 +155,23 @@ struct QueueSheetView: View {
                                 }
                             }
                         } header: {
-                            Label("History", systemImage: "clock.arrow.circlepath")
+                            Text("Earlier")
                         }
                     }
                 }
             }
             .labelStyle(.iconOnly)
             .animation(.default, value: viewModel.jobs)
-            .navigationTitle("")
+            .navigationTitle("History")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Image(systemName: "clock.arrow.circlepath").accessibilityLabel("History")
-                }
                 ToolbarItemGroup(placement: .topBarLeading) {
                     if isSelecting {
                         Button {
                             isSelecting = false
                             selection.removeAll()
                         } label: {
-                            Label("Cancel", systemImage: "xmark").frame(width: 44, height: 44)
+                            Label("Cancel", systemImage: "arrow.uturn.backward").frame(width: 44, height: 44)
                         }
                     } else {
                         Button { showAll.toggle() } label: {
@@ -198,9 +198,6 @@ struct QueueSheetView: View {
                             Label("Select", systemImage: "checkmark.circle").frame(width: 44, height: 44)
                         }
                         .accessibilityIdentifier("queue.select")
-                    }
-                    Button { isPresented = false } label: {
-                        Label("Done", systemImage: "xmark").frame(width: 44, height: 44)
                     }
                 }
             }
@@ -274,6 +271,7 @@ struct QueueSheetView: View {
                 Text(PhotosLibraryOpener.failureMessage)
             }
         }
+        .presentationDragIndicator(.visible)
         .onAppear { cameraViewModel.updateFreeSpace() }
     }
 

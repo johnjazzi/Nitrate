@@ -31,9 +31,7 @@ struct QueueReceiptCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 12) {
                 if !job.permitsLocalMedia {
-                    Image(systemName: "film")
-                        .font(NitrateTypography.font(.title2))
-                        .foregroundStyle(.secondary)
+                    poster
                 } else if job.isPhoto == true, job.retainedOutputURL != nil {
                     Button(action: playLocal) { poster }
                         .buttonStyle(.borderless)
@@ -110,8 +108,13 @@ struct QueueReceiptCard: View {
             if job.permitsLocalMedia, let data = job.receipt?.thumbnailJPEG, let image = UIImage(data: data) {
                 Image(uiImage: image).resizable().scaledToFit()
             } else {
-                Image(systemName: "photo")
-                    .foregroundStyle(.secondary)
+                VStack(spacing: 4) {
+                    Image(systemName: "photo")
+                    Text("No preview")
+                        .font(NitrateTypography.font(.caption))
+                        .multilineTextAlignment(.center)
+                }
+                .foregroundStyle(.secondary)
             }
         }
         .frame(width: prominent ? 112 : 80, height: prominent ? 84 : 60)

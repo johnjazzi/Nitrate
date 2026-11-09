@@ -54,6 +54,13 @@ private struct DevelopResultPage: View {
             if let job {
                 resultImage(job)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if job.status == .failed, let issue = job.errorMessage {
+                    Text(DevelopWorkflowPresentation.issueSummary(issue))
+                        .font(NitrateTypography.font(.callout))
+                        .foregroundStyle(DevelopPreviewChrome.warning)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("develop.result.issue")
+                }
                 HStack {
                     Text(DevelopWorkflowPresentation.deliveryLabel(job))
                         .font(NitrateTypography.font(.body))

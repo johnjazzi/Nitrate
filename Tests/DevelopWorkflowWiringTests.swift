@@ -27,6 +27,20 @@ struct DevelopWorkflowWiringTests {
         }
     }
 
+    @Test func importPreviewAndRenderFailuresShowAnInlineReason() throws {
+        let preview = try source("App/Modules/VideoImport/DevelopPreview.swift")
+        #expect(preview.contains("Text(DevelopWorkflowPresentation.issueSummary(issue))"))
+        #expect(preview.contains("Text(DevelopWorkflowPresentation.issueSummary(failure))"))
+        #expect(preview.contains("develop.error.summary"))
+        #expect(preview.contains("develop.preview.issue"))
+        #expect(preview.contains("DevelopMediaHelp(refusal: model.errorMessage"))
+        #expect(preview.contains("Text(failure ??"), "Full preview diagnostics remain in Details")
+        let results = try source("App/Modules/VideoImport/DevelopResultsPager.swift")
+        #expect(results.contains("Text(DevelopWorkflowPresentation.issueSummary(issue))"))
+        #expect(results.contains("develop.result.issue"))
+        #expect(results.contains("Text(job?.errorMessage"))
+    }
+
     @Test func previewUsesAvailableSpaceInsteadOfSmallFixedCards() throws {
         for file in ["DevelopPreview.swift", "DevelopResultsPager.swift"] {
             let text = try source("App/Modules/VideoImport/" + file)

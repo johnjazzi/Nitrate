@@ -53,6 +53,24 @@ struct DevelopWorkflowPresentationTests {
         #expect(DevelopWorkflowPresentation.deliveryLabel(item) == "Saved")
     }
 
+    @Test func issueSummaryShowsTheReasonInsteadOfJustAnInfoIcon() {
+        #expect(DevelopWorkflowPresentation.issueSummary("Unsupported video format.") == "Unsupported video format.")
+        #expect(DevelopWorkflowPresentation.issueSummary("  Preview timeout\nDecoder diagnostics  ") == "Preview timeout")
+        #expect(DevelopWorkflowPresentation.issueSummary(" \n ") == "Unavailable")
+    }
+
+    @Test func issueSummaryBoundsLongDiagnosticsWithoutChangingTheOriginal() {
+        let message = String(repeating: "Decoder could not read this source. ", count: 12)
+        let summary = DevelopWorkflowPresentation.issueSummary(message)
+        #expect(summary.count <= 121)
+        #expect(summary.hasSuffix("…"))
+        #expect(summary.hasPrefix("Decoder could not read this source."))
+        #expect(message.count > summary.count)
+        let unbroken = DevelopWorkflowPresentation.issueSummary(String(repeating: "é", count: 150))
+        #expect(unbroken.count == 121)
+        #expect(unbroken.hasSuffix("…"))
+    }
+
     @Test func exposureIsSignedAndMissingMetadataIsNeverAssumedNeutral() {
         #expect(DevelopWorkflowPresentation.exposure(1.3) == "+1.3 EV")
         #expect(DevelopWorkflowPresentation.exposure(-2) == "-2.0 EV")
