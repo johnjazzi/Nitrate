@@ -48,12 +48,12 @@ struct DevelopFramePreviewRendererTests {
 
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires Metal and bundled film resources"))
     func numericalFilmOutputIsFiniteAndRetainsSpatialDynamicRange() throws {
-        let film = try StillFilmRenderResources(stockID: "kodak5219", gauge: .neutral, seed: 0, bundle: bundle)
+        let color = try DevelopColorPreviewResources(bundle: bundle)
         let image = DevelopPreviewFixtures.linearImage()
-        let finished = try DevelopmentPhotoRenderer.develop(linearImage: image, film: film,
-                                                            sceneLiftStops: 1, halationHeadroom: 1)
+        let prepared = try RAWToLog2Stage.apply(image)
+        let finished = try color.grade(color.materialize(prepared), stock: stock(), pushPull: .neutral)
         var values = [Float](repeating: 0, count: 128 * 80 * 4)
-        film.context.render(finished, toBitmap: &values, rowBytes: 128 * 16, bounds: image.extent,
+        color.context.render(finished, toBitmap: &values, rowBytes: 128 * 16, bounds: image.extent,
                             format: .RGBAf, colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!)
         let channels = values.enumerated().filter { $0.offset % 4 != 3 }.map(\.element)
         #expect(channels.allSatisfy { $0.isFinite })
@@ -81,7 +81,7 @@ struct DevelopFramePreviewRendererTests {
     }
 
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires Metal and bundled film resources"))
-    func photoGaugeAndStockChangesGradePixelsWithoutChangingSourceExposure() async throws {
+    func photoGaugeIsIgnoredAndStockChangesPixelsWithoutChangingSourceExposure() async throws {
         let renderer = DevelopFramePreviewRenderer(bundle: bundle)
         let config = try stock()
         let fine = try await renderer.gradientPhoto(config, gauge: .seventyFiveMillimetre)
@@ -89,8 +89,14 @@ struct DevelopFramePreviewRendererTests {
             let result = try await renderer.gradientPhoto(config, gauge: gauge)
             try assertSpatialRange(result.image)
             #expect(result.measuredOffsetEV == fine.measuredOffsetEV)
-            if gauge != .seventyFiveMillimetre { #expect(try pixels(result.image) != pixels(fine.image)) }
+            #expect(try pixels(result.image) == pixels(fine.image))
         }
+        var effects = config.overridingDiffusion(.disabled)
+        effects.halationRadiusFraction = 0.2
+        effects.halationTint = SIMD3(1, 0.8, 0.6)
+        effects.defaultISO = 3200
+        let altered = try await renderer.gradientPhoto(effects, gauge: .eightMillimetre)
+        #expect(try pixels(altered.image) == pixels(fine.image))
         let other = try await renderer.gradientPhoto(stock("kodakektachrome100d"), gauge: .seventyFiveMillimetre)
         #expect(try pixels(other.image) != pixels(fine.image))
         #expect(other.measuredOffsetEV == fine.measuredOffsetEV)
@@ -110,8 +116,15 @@ struct DevelopFramePreviewRendererTests {
         #expect(push.measuredOffsetEV == neutral.measuredOffsetEV)
         #expect(neutral.captureDescription == nil)
         let coarse = try await renderer.gradientVideo(config, gauge: .eightMillimetre)
-        #expect(try pixels(coarse.image) != pixels(neutral.image))
+        #expect(try pixels(coarse.image) == pixels(neutral.image))
         #expect(coarse.measuredOffsetEV == neutral.measuredOffsetEV)
+        let other = try await renderer.gradientVideo(stock("kodakektachrome100d"))
+        #expect(try pixels(other.image) != pixels(neutral.image))
+        var effects = config.overridingDiffusion(.disabled)
+        effects.halationRadiusFraction = 0.2
+        effects.defaultISO = 3200
+        let altered = try await renderer.gradientVideo(effects)
+        #expect(try pixels(altered.image) == pixels(neutral.image))
     }
 
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires Metal and bundled film resources"))

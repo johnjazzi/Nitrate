@@ -57,7 +57,14 @@ actor DevelopFramePreviewRenderer {
     private var cache: [SourceKey: Source] = [:]
     private var recency: [SourceKey] = []
     private var latestRequest = UUID()
-    private var videoRenderer: PipelineRenderer?
+    private var colorResources: DevelopColorPreviewResources?
+
+    private func resources() throws -> DevelopColorPreviewResources {
+        if let colorResources { return colorResources }
+        let resources = try DevelopColorPreviewResources(bundle: bundle)
+        colorResources = resources
+        return resources
+    }
 
     init(bundle: Bundle = .main) { self.bundle = bundle }
 
@@ -128,10 +135,10 @@ actor DevelopFramePreviewRenderer {
     }
 
     private func loadPhoto(_ url: URL) throws -> PhotoSource {
-        guard let raw = CIRAWFilter(imageURL: url), let device = MTLCreateSystemDefaultDevice(),
-              let queue = device.makeCommandQueue() else { throw PreviewError.decode }
+        let color = try resources()
+        guard let raw = CIRAWFilter(imageURL: url) else { throw PreviewError.decode }
         let balance = WhiteBalance(temperature: raw.neutralTemperature, tint: raw.neutralTint)
-        let decoder = try RAWPhotoDecoder(device: device, queue: queue)
+        let decoder = try RAWPhotoDecoder(device: color.device, queue: color.queue)
         let decoded = try decoder.decode(url: url, temperature: balance.temperature, tint: balance.tint,
                                          maximumDimension: Self.maximumDimension)
         let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
@@ -147,8 +154,7 @@ actor DevelopFramePreviewRenderer {
                      pushPull: PushPullExposure, cropZoom: Double = 1, measurement: Double?,
                      captureDescription: String?) throws -> DevelopFramePreview {
         try Task.checkCancellation()
-        let film = try StillFilmRenderResources(stockID: stock.stockId, gauge: gauge, seed: 0,
-                                                bundle: bundle, pushPull: pushPull)
+        let color = try resources()
         // The texture is the materialized bounded decode. Reusing the lazy RAW
         // CIImage here would silently demosaic the file again on every control.
         let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
@@ -157,9 +163,10 @@ actor DevelopFramePreviewRenderer {
             throw PreviewError.invalidSource
         }
         let image = Self.normalized(frozen.cropped(to: crop))
-        let finished = try DevelopmentPhotoRenderer.develop(linearImage: image, film: film,
-                                                            sceneLiftStops: decoded.sceneLiftStops,
-                                                            halationHeadroom: decoded.halationHeadroom)
+        let prepared = try RAWToLog2Stage.apply(image)
+        let finished = try color.grade(color.materialize(prepared), stock: stock, pushPull: pushPull,
+                                       ceiling: SpatialEffectsStage.halationCeiling(
+                                        sceneLiftStops: decoded.sceneLiftStops, headroom: decoded.halationHeadroom))
         try Task.checkCancellation()
         return DevelopFramePreview(image: try FilmOutputDisplayConverter.makeSRGBImage(fromGamma24: finished),
                                    measuredOffsetEV: measurement, captureDescription: captureDescription)
@@ -235,7 +242,7 @@ actor DevelopFramePreviewRenderer {
         throw PreviewError.unsupportedVideo
     }
 
-    /// PipelineRenderer performs the actual production source-profile adapter,
+    /// Color-only resources use the production source-profile adapter,
     /// including native HLG. Its highlight ceiling is frame-specific, NOT the
     /// full-export eight-frame measurement. The meter never consumes the grade.
     func renderVideo(_ buffer: CVPixelBuffer, transform: CGAffineTransform = .identity,
@@ -243,17 +250,9 @@ actor DevelopFramePreviewRenderer {
                      cropZoom: Double = 1, measurement: Double?, captureDescription: String?) throws -> DevelopFramePreview {
         try Task.checkCancellation()
         guard RenderInputColorProvenance.profile(of: buffer) != nil else { throw PreviewError.unsupportedVideo }
-        if videoRenderer == nil { videoRenderer = try PipelineRenderer(resourceBundle: bundle) }
-        let config = stock.overridingGauge(gauge).overridingPushPull(pushPull)
-        var parameters = PipelineRenderer.DebugFrameParameters(config: config)
-        parameters.applyGauge(gauge)
+        let color = try resources()
         let source = try Self.boundedBuffer(buffer, cropZoom: cropZoom)
-        guard let rendered = videoRenderer?.renderDebugFrame(pixelBuffer: source, config: config, parameters: parameters) else {
-            throw PreviewError.grade
-        }
-        // Preserve numeric gamma-2.4 channels until the shared output converter.
-        let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
-        let finished = CIImage(cvPixelBuffer: rendered.pixelBuffer, options: [.colorSpace: space])
+        let finished = try color.grade(color.prepare(source), stock: stock, pushPull: pushPull)
         let rotation = CGAffineTransform(a: transform.a, b: transform.b, c: transform.c, d: transform.d, tx: 0, ty: 0)
         let upright = Self.normalized(finished.transformed(by: rotation))
         try Task.checkCancellation()
