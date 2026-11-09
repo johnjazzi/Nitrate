@@ -13,7 +13,7 @@ struct DevelopProgressPresentation: Equatable, Sendable {
 
     init(progress: RenderJobProgress?, queued: Bool) {
         guard !queued else {
-            caption = "Queued to render"
+            caption = "Queued"
             fraction = nil
             return
         }
@@ -28,7 +28,7 @@ struct DevelopProgressPresentation: Equatable, Sendable {
                 caption = "Rendering…"
             }
         case .saving:
-            caption = "Saving to Photos…"
+            caption = "Saving…"
             fraction = nil
         case nil:
             caption = "Preparing…"
@@ -67,7 +67,7 @@ struct DevelopProgressOverlay: View {
                         .tint(SettingsControlChrome.halationOrange)
                 }
                 Text(presentation.caption)
-                    .font(NitrateTypography.font(.callout))
+                    .font(NitrateTypography.font(.title2))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
             }

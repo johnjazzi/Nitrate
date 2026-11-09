@@ -130,6 +130,9 @@ FILE_FIXTURES: tuple[str, ...] = (
     "App/Modules/RenderQueue/QueueReceiptViews.swift",
     "App/Modules/RenderQueue/QueueSheetView.swift",
     "App/Modules/RenderQueue/PhotosLibraryOpener.swift",
+    "App/Modules/VideoImport/DevelopPreview.swift",
+    "App/Modules/VideoImport/DevelopResultsPager.swift",
+    "App/Modules/VideoImport/DevelopMediaHelp.swift",
 )
 
 # The shipped Resolve LUT set is read as one directory (the catalogue test

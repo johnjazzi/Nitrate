@@ -7,6 +7,15 @@ Develop surface. This change does not change camera capture, camera white-balanc
 locking, LUT contents or delivery colour contracts. Work is on
 `feat/unified-development`, separate from the completed 0.7.1 release.
 
+## Minimal presentation
+
+- Visible labels use at most two words. No explanatory paragraphs on the main screens.
+- The still fills the available canvas; no nested vertical scrolling or fixed 210-point thumbnail.
+- Stock, gauge, push/pull and primary actions use larger type and 48–80 point touch targets.
+- Show compact Estimate/Captured/Rated readouts only; file metadata and full error reasons live behind Details.
+- Page position is numeric. Results retain three actions in one row.
+- Keep the camera carousel and top-bar clearance unchanged.
+
 ## Interaction contract
 
 1. **Choose files.** Start with Photo and Video entry points. One selected file and

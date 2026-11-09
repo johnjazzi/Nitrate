@@ -21,12 +21,12 @@ struct DevelopProgressOverlayTests {
             progress: RenderJobProgress(phase: .saving, fractionComplete: 0.42), queued: false)
         #expect(saving.fraction == nil, "saving must stay indeterminate, never a fake percentage")
         #expect(saving.isDeterminate == false)
-        #expect(saving.caption == "Saving to Photos…")
+        #expect(saving.caption == "Saving…")
 
         let queued = DevelopProgressPresentation(
             progress: RenderJobProgress(phase: .rendering, fractionComplete: 0.9), queued: true)
         #expect(queued.fraction == nil)
-        #expect(queued.caption == "Queued to render")
+        #expect(queued.caption == "Queued")
     }
 
     @Test func renderingFractionIsClampedAndRejectsNonFinite() {

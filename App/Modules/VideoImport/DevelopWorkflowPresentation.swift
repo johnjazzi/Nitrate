@@ -31,23 +31,23 @@ enum DevelopWorkflowPresentation {
     }
 
     static func exposure(_ value: Double?) -> String {
-        guard let value, value.isFinite else { return "Unavailable" }
+        guard let value, value.isFinite else { return "—" }
         return String(format: "%+.1f EV", locale: Locale(identifier: "en_US_POSIX"), value)
     }
 
     static func captureRating(_ iso: Float?) -> String {
-        guard let iso, iso.isFinite, iso > 0 else { return "Recorded ISO / EI unavailable" }
-        return String(format: "Recorded ISO / EI %.0f", locale: Locale(identifier: "en_US_POSIX"), iso)
+        guard let iso, iso.isFinite, iso > 0 else { return "—" }
+        return String(format: "ISO %.0f", locale: Locale(identifier: "en_US_POSIX"), iso)
     }
 
     static func deliveryLabel(_ job: RenderJob) -> String {
         switch job.status {
         case .completed:
-            return job.outputSavedToPhotos == true ? "Saved to Photos" : "Developed · Photos save not confirmed"
-        case .failed: return "Development failed"
-        case .pending: return "Queued to render"
+            return job.outputSavedToPhotos == true ? "Saved" : "Local only"
+        case .failed: return "Failed"
+        case .pending: return "Queued"
         case .processing: return "Developing…"
-        case .awaitingStock: return "Waiting for stock"
+        case .awaitingStock: return "Choose stock"
         }
     }
 

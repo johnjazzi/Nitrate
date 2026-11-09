@@ -19,6 +19,49 @@ final class CameraInteractionUITests: XCTestCase {
         return false
     }
 
+    @MainActor func testDevelopMinimalChooser() throws {
+        continueAfterFailure = false
+        let app = launchReadyCamera()
+        let develop = app.buttons["cameraMode.develop"]
+        waitUntilReady(develop, in: app, named: "develop-mode-ready")
+        develop.tap()
+        let photo = app.buttons["develop.choosePhoto"]
+        let video = app.buttons["develop.choose"]
+        waitUntilReady(photo, in: app, named: "develop-photo-choice")
+        waitUntilReady(video, in: app, named: "develop-video-choice")
+        XCTAssertGreaterThanOrEqual(photo.frame.height, 80)
+        XCTAssertGreaterThanOrEqual(video.frame.height, 80)
+        XCTAssertEqual(photo.label, "Photo")
+        XCTAssertEqual(video.label, "Video")
+        XCTAssertFalse(app.staticTexts["Choose a raw photo or Apple Log 2 clip. Nothing develops until you review it."].exists)
+        attachEvidence(app, named: "develop-minimal-chooser")
+    }
+
+    @MainActor func testDevelopMinimalRetainedReview() throws {
+        continueAfterFailure = false
+        let app = launchReadyCamera()
+        let lcd = app.descendants(matching: .any).matching(identifier: "camera.queueLCD").firstMatch
+        waitUntilReady(lcd, in: app, named: "develop-queue-ready")
+        lcd.tap()
+        let redevelop = app.buttons.matching(NSPredicate(format: "identifier IN %@",
+            ["queue.redevelopPhoto", "queue.redevelopVideo"])).firstMatch
+        guard redevelop.waitForExistence(timeout: 10) else {
+            throw XCTSkip("No retained original; this check never creates or deletes user media")
+        }
+        redevelop.tap()
+        let preview = app.buttons["develop.preview"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 45), "The original must genuinely decode and grade")
+        XCTAssertTrue(preview.isHittable)
+        XCTAssertGreaterThan(preview.frame.height, 210)
+        XCTAssertTrue(app.buttons["develop.bulkCommit"].isHittable)
+        attachEvidence(app, named: "develop-minimal-review")
+        preview.tap()
+        let done = app.buttons["develop.zoom.done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 5))
+        attachEvidence(app, named: "develop-minimal-enlarged")
+        done.tap()
+    }
+
     @MainActor func testManual60FPSRecordsTenSecondsThroughVisibleControls() throws {
         try recordManualRateThroughVisibleControls(fps: 60)
     }

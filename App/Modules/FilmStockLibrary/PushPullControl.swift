@@ -18,14 +18,15 @@ struct PushPullControl: View {
     @Binding var manualStops: PushPullStops
     /// Called after any change so the caller can persist the preference.
     var onChange: () -> Void = {}
+    var enlarged = false
 
     var body: some View {
         Menu {
             Button { chooseAutomatic() } label: {
                 if isAutomatic {
-                    Label("Auto from the meter", systemImage: "checkmark")
+                    Label(enlarged ? "Auto" : "Auto from the meter", systemImage: "checkmark")
                 } else {
-                    Text("Auto from the meter")
+                    Text(enlarged ? "Auto" : "Auto from the meter")
                 }
             }
             Divider()
@@ -43,18 +44,18 @@ struct PushPullControl: View {
                 // The word is the label above the control; the amount is what the
                 // operator reads at a glance, so it goes in the pill itself.
                 Text(resolved.stops.effectWord)
-                    .font(NitrateTypography.font(.caption2))
+                    .font(NitrateTypography.font(enlarged ? .subheadline : .caption2))
                     .fontWeight(.semibold)
                     .kerning(0.5)
                     .foregroundStyle(tint)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                 Text(resolved.stops.displayName)
-                    .font(NitrateTypography.font(.caption2).monospacedDigit())
+                    .font(NitrateTypography.font(enlarged ? .title3 : .caption2).monospacedDigit())
                     .foregroundStyle(tint)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 30)
+                    .frame(height: enlarged ? 48 : 30)
                     .background(Capsule().fill(tint.opacity(0.16)))
                     .overlay { Capsule().stroke(tint.opacity(0.6), lineWidth: 1) }
                     .contentShape(Capsule())

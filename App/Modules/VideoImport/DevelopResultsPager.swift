@@ -12,7 +12,7 @@ struct DevelopResultsPager: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             TabView(selection: $page) {
                 ForEach(Array(ids.enumerated()), id: \.element) { index, id in
                     DevelopResultPage(job: jobs[index], queue: queue, active: page == index)
@@ -21,11 +21,13 @@ struct DevelopResultsPager: View {
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
-            .frame(height: 300)
-            Text("Result \(min(page + 1, ids.count)) of \(ids.count) · Swipe to browse")
-                .font(NitrateTypography.font(.caption))
-                .foregroundStyle(DevelopPreviewChrome.muted)
-                .accessibilityIdentifier("develop.result.position")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if ids.count > 1 {
+                Text("\(page + 1)/\(ids.count)")
+                    .font(NitrateTypography.font(.body).monospacedDigit())
+                    .foregroundStyle(DevelopPreviewChrome.muted)
+                    .accessibilityIdentifier("develop.result.position")
+            }
         }
         .onChange(of: ids) { _, _ in page = 0 }
     }
@@ -43,34 +45,37 @@ private struct DevelopResultPage: View {
     @State private var image: CGImage?
     @State private var loadedRequest: DevelopResultRequest?
     @State private var fence = DevelopPreviewFence()
+    @State private var showDetails = false
 
     private var request: DevelopResultRequest { .init(job: job, active: active) }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 8) {
-                if let job {
-                    resultImage(job)
+        VStack(spacing: 10) {
+            if let job {
+                resultImage(job)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                HStack {
                     Text(DevelopWorkflowPresentation.deliveryLabel(job))
-                        .font(NitrateTypography.font(.callout))
+                        .font(NitrateTypography.font(.body))
                         .foregroundStyle(.white)
-                        .multilineTextAlignment(.center)
                     if job.status == .failed {
-                        Text(job.errorMessage ?? "Could not complete this item.")
-                            .font(NitrateTypography.font(.caption))
-                            .foregroundStyle(DevelopPreviewChrome.warning)
-                            .multilineTextAlignment(.center)
-                        Button("Retry this item") { queue.retry(jobId: job.id) }
-                            .frame(minHeight: 44)
+                        Spacer()
+                        Button("Details") { showDetails = true }
+                        Button("Retry") { queue.retry(jobId: job.id) }
+                            .frame(minHeight: 48)
                             .accessibilityIdentifier("develop.result.retry")
                     }
-                } else {
-                    Text("This result is no longer in the queue. Open Photos to look for saved items.")
-                        .foregroundStyle(DevelopPreviewChrome.muted)
-                        .multilineTextAlignment(.center)
                 }
+            } else {
+                Text("Unavailable")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity)
+        }
+        .font(NitrateTypography.font(.body))
+        .alert("Details", isPresented: $showDetails) {
+            Button("Done", role: .cancel) {}
+        } message: {
+            Text(job?.errorMessage ?? "Unavailable")
         }
         .task(id: request) { await load(request) }
     }
@@ -78,24 +83,22 @@ private struct DevelopResultPage: View {
     @ViewBuilder private func resultImage(_ job: RenderJob) -> some View {
         if job.status == .pending || job.status == .processing {
             DevelopProgressOverlay(progress: queue.progress(for: job.id), queued: job.status == .pending)
-                .frame(height: 210)
                 .animation(.easeInOut(duration: 0.2), value: queue.progress(for: job.id))
                 .clipped()
         } else if let image, loadedRequest == request {
-            DevelopExpandableStill(image: image, label: "Developed output")
-                .frame(height: 210)
+            DevelopExpandableStill(image: image, label: "Output")
                 .accessibilityIdentifier("develop.result.image")
         } else if job.status == .completed {
             if loadedRequest == request {
-                Text("Output preview unavailable. Open Photos to view saved results.")
-                    .font(NitrateTypography.font(.caption))
+                Text("Preview unavailable")
                     .foregroundStyle(DevelopPreviewChrome.muted)
-                    .multilineTextAlignment(.center)
-                    .frame(height: 210)
             } else {
-                ProgressView("Loading delivered still…")
-                    .frame(height: 210)
+                ProgressView().controlSize(.large)
             }
+        } else {
+            Image(systemName: "exclamationmark.circle")
+                .font(.largeTitle)
+                .foregroundStyle(DevelopPreviewChrome.warning)
         }
     }
 
@@ -106,8 +109,6 @@ private struct DevelopResultPage: View {
         loadedRequest = nil
         guard requested.active, let job = requested.job, job.status == .completed else { return }
         var decoded: CGImage?
-        // The actual delivered file has priority; the durable poster is a fallback,
-        // never a newly graded source or a full movie retained merely for zoom.
         if let url = job.outputURL {
             decoded = await DevelopPreviewLoader.image(for: url, isPhoto: job.isPhoto == true)
         }

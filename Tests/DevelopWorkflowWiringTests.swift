@@ -9,6 +9,37 @@ struct DevelopWorkflowWiringTests {
         try String(contentsOf: TestRepository.root.appendingPathComponent(relative), encoding: .utf8)
     }
 
+    @Test func developLabelsStayWithinTwoWords() throws {
+        let files = ["DevelopPreview.swift", "DevelopResultsPager.swift", "DevelopMediaHelp.swift"]
+        let pattern = #"(?:Text|Button|Label|ProgressView|readout|LabeledContent|navigationTitle)\("([^"\n]*)"#
+        let labels = try NSRegularExpression(pattern: pattern)
+        let interpolation = try NSRegularExpression(pattern: #"\\\([^)]*\)"#)
+        for file in files {
+            let text = try source("App/Modules/VideoImport/" + file)
+            let range = NSRange(text.startIndex..., in: text)
+            for match in labels.matches(in: text, range: range) {
+                let label = (text as NSString).substring(with: match.range(at: 1))
+                let literal = interpolation.stringByReplacingMatches(in: label,
+                    range: NSRange(label.startIndex..., in: label), withTemplate: "0")
+                #expect(literal.split(whereSeparator: \.isWhitespace).count <= 2,
+                        "\(file): \(label)")
+            }
+        }
+    }
+
+    @Test func previewUsesAvailableSpaceInsteadOfSmallFixedCards() throws {
+        for file in ["DevelopPreview.swift", "DevelopResultsPager.swift"] {
+            let text = try source("App/Modules/VideoImport/" + file)
+            #expect(!text.contains(".frame(height: 210)"))
+            #expect(!text.contains(".frame(height: 380)"))
+            #expect(!text.contains("ScrollView(.vertical"))
+            #expect(text.contains(".frame(maxWidth: .infinity, maxHeight: .infinity)"))
+        }
+        let text = try source("App/Modules/VideoImport/DevelopPreview.swift")
+        #expect(text.contains("GaugeControl(gauge: $gauge, enlarged: true)"))
+        #expect(text.contains("enlarged: true)"))
+    }
+
     @Test func queueBulkActionReturnsToReviewInsteadOfRenderingImmediately() throws {
         let content = try source("App/ContentView.swift")
         let start = try #require(content.range(of: "onBulkRedevelop: { ids in"))

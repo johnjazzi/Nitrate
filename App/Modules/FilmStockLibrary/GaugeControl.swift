@@ -13,6 +13,7 @@ import SwiftUI
 /// info sheet says so; halation is the stock's, not the gauge's.
 struct GaugeControl: View {
     @Binding var gauge: PrintGauge
+    var enlarged = false
     /// Sheet state is owned here so every caller gets the same explanation
     /// without wiring a presentation up itself.
     @State private var showsInfo = false
@@ -20,33 +21,53 @@ struct GaugeControl: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
-                Text("Gauge · mm")
-                    .font(NitrateTypography.font(.caption2))
+                Text(enlarged ? "Gauge" : "Gauge · mm")
+                    .font(NitrateTypography.font(enlarged ? .subheadline : .caption2))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
-                Button { showsInfo = true } label: {
-                    Image(systemName: "info.circle.fill")
-                        .font(NitrateTypography.font(.footnote))
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
+                if !enlarged {
+                    Button { showsInfo = true } label: {
+                        Image(systemName: "info.circle.fill")
+                            .font(NitrateTypography.font(.footnote))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("stock.gaugeInfo")
+                    .accessibilityLabel("What the print gauge changes")
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("stock.gaugeInfo")
-                .accessibilityLabel("What the print gauge changes")
                 Spacer(minLength: 0)
             }
-            Picker("Print Gauge", selection: $gauge) {
-                ForEach(PrintGauge.allCases, id: \.self) { candidate in
-                    Text(Self.shortLabel(candidate)).tag(candidate)
+            if enlarged {
+                HStack(spacing: 4) {
+                    ForEach(PrintGauge.allCases, id: \.self) { candidate in
+                        Button { gauge = candidate } label: {
+                            Text(Self.shortLabel(candidate))
+                                .font(NitrateTypography.font(.title3).monospacedDigit())
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                                .background(gauge == candidate ? Color.white.opacity(0.2) : .clear,
+                                            in: RoundedRectangle(cornerRadius: 9))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(candidate.displayName)
+                        .accessibilityAddTraits(gauge == candidate ? .isSelected : [])
+                    }
                 }
+                .accessibilityIdentifier("stock.gauge")
+            } else {
+                Picker("Print Gauge", selection: $gauge) {
+                    ForEach(PrintGauge.allCases, id: \.self) { candidate in
+                        Text(Self.shortLabel(candidate)).tag(candidate)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(height: 34)
+                .accessibilityIdentifier("stock.gauge")
+                .accessibilityValue(gauge.displayName)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(height: 34)
-            .accessibilityIdentifier("stock.gauge")
-            .accessibilityValue(gauge.displayName)
         }
         .sheet(isPresented: $showsInfo) { GaugeInfoSheet(isPresented: $showsInfo) }
     }

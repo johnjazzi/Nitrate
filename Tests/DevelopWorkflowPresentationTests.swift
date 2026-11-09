@@ -41,16 +41,16 @@ struct DevelopWorkflowPresentationTests {
         item.outputSavedToPhotos = true
         for status in [RenderJob.JobStatus.pending, .processing, .failed, .awaitingStock] {
             item.status = status
-            #expect(DevelopWorkflowPresentation.deliveryLabel(item) != "Saved to Photos")
+            #expect(DevelopWorkflowPresentation.deliveryLabel(item) != "Saved")
         }
         item.status = .completed
         item.sourceSavedToPhotos = true
         for confirmed in [Bool?.none, .some(false)] {
             item.outputSavedToPhotos = confirmed
-            #expect(DevelopWorkflowPresentation.deliveryLabel(item) == "Developed · Photos save not confirmed")
+            #expect(DevelopWorkflowPresentation.deliveryLabel(item) == "Local only")
         }
         item.outputSavedToPhotos = true
-        #expect(DevelopWorkflowPresentation.deliveryLabel(item) == "Saved to Photos")
+        #expect(DevelopWorkflowPresentation.deliveryLabel(item) == "Saved")
     }
 
     @Test func exposureIsSignedAndMissingMetadataIsNeverAssumedNeutral() {
@@ -58,11 +58,11 @@ struct DevelopWorkflowPresentationTests {
         #expect(DevelopWorkflowPresentation.exposure(-2) == "-2.0 EV")
         #expect(DevelopWorkflowPresentation.exposure(0) == "+0.0 EV")
         for missing in [Double?.none, .some(.nan), .some(.infinity), .some(-.infinity)] {
-            #expect(DevelopWorkflowPresentation.exposure(missing) == "Unavailable")
+            #expect(DevelopWorkflowPresentation.exposure(missing) == "—")
         }
-        #expect(DevelopWorkflowPresentation.captureRating(640) == "Recorded ISO / EI 640")
+        #expect(DevelopWorkflowPresentation.captureRating(640) == "ISO 640")
         for missing in [Float?.none, .some(.nan), .some(.infinity), .some(0), .some(-1)] {
-            #expect(DevelopWorkflowPresentation.captureRating(missing) == "Recorded ISO / EI unavailable")
+            #expect(DevelopWorkflowPresentation.captureRating(missing) == "—")
         }
     }
 

@@ -24,7 +24,7 @@ struct DevelopPreview: View {
     @State private var selectionTask: Task<Void, Never>?
     @State private var renderer = DevelopFramePreviewRenderer()
     @State private var sourcePage = 0
-    @State private var bulkStatus: String?
+    @State private var reviewingRemaining = false
     @State private var showHelp = false
     @State private var photosOpenFailed = false
 
@@ -46,34 +46,26 @@ struct DevelopPreview: View {
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 14) {
+        VStack(spacing: 12) {
+            if reviewingRemaining, !model.sources.isEmpty, !model.hasActiveRenders {
+                reviewState
+            } else {
                 switch stage {
                 case .loading: transferState
                 case .review: reviewState
                 case .rendering, .results: resultsState
                 case .chooser: chooser
                 }
-                if let message = model.errorMessage, !model.isLoading {
-                    Text(message)
-                        .foregroundStyle(DevelopPreviewChrome.warning)
-                        .font(NitrateTypography.font(.footnote))
-                        .multilineTextAlignment(.center)
-                        .accessibilityIdentifier("develop.error")
-                    Button("Why?") { showHelp = true }
-                        .frame(minHeight: 44)
-                }
-                if let bulkStatus {
-                    Text(bulkStatus)
-                        .font(NitrateTypography.font(.caption))
-                        .foregroundStyle(DevelopPreviewChrome.muted)
-                        .accessibilityIdentifier("develop.bulkStatus")
-                }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity)
+            if model.errorMessage != nil, !model.isLoading {
+                Button("Details", systemImage: "exclamationmark.circle") { showHelp = true }
+                    .font(NitrateTypography.font(.body))
+                    .foregroundStyle(DevelopPreviewChrome.warning)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("develop.error")
+            }
         }
+        .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(DevelopPreviewChrome.surface)
         .onChange(of: pickerItems) { _, items in
@@ -88,32 +80,52 @@ struct DevelopPreview: View {
         }
         .onChange(of: model.sources.map(\.id)) { _, _ in sourcePage = 0 }
         .onChange(of: gauge) { _, _ in onControlsChanged() }
-        .sheet(isPresented: $showHelp) { DevelopMediaHelp(refusal: model.errorMessage) }
-        .alert("Could not open Photos", isPresented: $photosOpenFailed) {
+        .sheet(isPresented: $showHelp) {
+            DevelopMediaHelp(refusal: model.errorMessage ?? (model.bulk.skipped.isEmpty
+                ? nil : model.bulk.skipped.joined(separator: "\n")))
+        }
+        .alert("Photos unavailable", isPresented: $photosOpenFailed) {
             Button("OK", role: .cancel) {}
-        } message: {
-            Text(PhotosLibraryOpener.failureMessage)
         }
     }
 
     private var chooser: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 10) {
+        VStack(spacing: 20) {
+            Spacer(minLength: 0)
+            HStack(spacing: 16) {
                 photoPicker
                 videoPicker
             }
-            Text("Choose a raw photo or Apple Log 2 clip. Nothing develops until you review it.")
-                .font(NitrateTypography.font(.footnote))
-                .foregroundStyle(DevelopPreviewChrome.muted)
-                .multilineTextAlignment(.center)
-            Button("What can I develop?") { showHelp = true }
-                .frame(minHeight: 44)
-                .accessibilityIdentifier("develop.help")
+            Button { showHelp = true } label: {
+                Image(systemName: "info.circle")
+                    .font(.title2)
+                    .frame(width: 48, height: 48)
+            }
+            .accessibilityLabel("Info")
+            .accessibilityIdentifier("develop.help")
+            Spacer(minLength: 0)
         }
     }
 
     private var reviewState: some View {
         VStack(spacing: 12) {
+            HStack {
+                stockMenu
+                Spacer(minLength: 8)
+                if !model.bulk.skipped.isEmpty {
+                    Button("Skipped \(model.bulk.skipped.count)") { showHelp = true }
+                        .foregroundStyle(DevelopPreviewChrome.warning)
+                        .frame(minHeight: 48)
+                        .accessibilityIdentifier("develop.bulkSkipped")
+                }
+                Button(action: startOver) {
+                    Image(systemName: "xmark")
+                        .font(.title3)
+                        .frame(width: 48, height: 48)
+                }
+                .accessibilityLabel("Cancel")
+                .accessibilityIdentifier("develop.bulkCancel")
+            }
             TabView(selection: $sourcePage) {
                 ForEach(Array(model.sources.enumerated()), id: \.element.id) { index, source in
                     DevelopSourcePage(source: source, stock: stock, gauge: gauge,
@@ -122,127 +134,97 @@ struct DevelopPreview: View {
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
-            .frame(height: 380)
-            Text("File \(min(sourcePage + 1, model.sources.count)) of \(model.sources.count) · Swipe to browse")
-                .font(NitrateTypography.font(.caption))
-                .foregroundStyle(DevelopPreviewChrome.muted)
-                .accessibilityIdentifier("develop.source.position")
-            if !model.bulk.skipped.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(model.bulk.skipped.count) files skipped")
-                    ForEach(Array(model.bulk.skipped.enumerated()), id: \.offset) { _, reason in
-                        Text(reason)
-                    }
-                }
-                .font(NitrateTypography.font(.caption))
-                .foregroundStyle(DevelopPreviewChrome.warning)
-                .accessibilityIdentifier("develop.bulkSkipped")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if model.sources.count > 1 {
+                Text("\(sourcePage + 1)/\(model.sources.count)")
+                    .font(NitrateTypography.font(.body).monospacedDigit())
+                    .foregroundStyle(DevelopPreviewChrome.muted)
+                    .accessibilityIdentifier("develop.source.position")
             }
-            stockMenu
             controlRow
-            Button("Develop \(model.sources.count)", action: develop)
-                .buttonStyle(.borderedProminent)
-                .tint(DevelopPreviewChrome.orange)
-                .frame(minHeight: 44)
+            Button(action: develop) {
+                Text("Develop")
+                    .font(NitrateTypography.font(.title3))
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .background(DevelopPreviewChrome.orange, in: RoundedRectangle(cornerRadius: 12))
+                    .contentShape(Rectangle())
+            }
+                .buttonStyle(.plain)
+                .foregroundStyle(.black)
                 .disabled(!model.canDevelop(stock: stock))
                 .accessibilityIdentifier("develop.bulkCommit")
-            Button("Cancel", action: startOver)
-                .frame(minHeight: 44)
-                .accessibilityIdentifier("develop.bulkCancel")
         }
     }
 
     private var resultsState: some View {
         VStack(spacing: 12) {
             DevelopResultsPager(ids: model.resultJobIDs, queue: queue)
-            if model.hasActiveRenders {
-                Text("Developing in the render queue")
-                    .font(NitrateTypography.font(.callout))
-                    .foregroundStyle(.white)
-                // The current job's live progress remains visible even while the
-                // user swipes to an already completed result in the batch.
-                if let current = resultJobs.first(where: { $0.status == .processing })
-                    ?? resultJobs.first(where: { $0.status == .pending }) {
-                    let progress = DevelopProgressPresentation(progress: queue.progress(for: current.id),
-                                                               queued: current.status == .pending)
-                    Text(progress.caption)
-                        .font(NitrateTypography.font(.caption).monospacedDigit())
-                        .foregroundStyle(DevelopPreviewChrome.muted)
-                }
-            } else {
-                resultActions
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !model.hasActiveRenders {
                 if !model.sources.isEmpty {
-                    Text("Some originals were not queued. Review them below and try Develop again.")
-                        .foregroundStyle(DevelopPreviewChrome.warning)
-                    reviewState
+                    Button("Review remaining") { reviewingRemaining = true }
+                        .font(NitrateTypography.font(.body))
+                        .frame(minHeight: 48)
                 }
-            }
-            if resultJobs.contains(where: { $0.status == .failed }) {
-                Text("Some items failed. Swipe to each failed item to retry it.")
-                    .font(NitrateTypography.font(.caption))
-                    .foregroundStyle(DevelopPreviewChrome.warning)
+                resultActions
             }
             if model.hasActiveRenders || resultJobs.contains(where: { $0.status == .failed }) {
-                Button("View render queue", action: onOpenResults)
-                    .font(NitrateTypography.font(.footnote))
-                    .frame(minHeight: 44)
+                Button("Queue", action: onOpenResults)
+                    .font(NitrateTypography.font(.body))
+                    .frame(minHeight: 48)
                     .accessibilityIdentifier("develop.queue")
             }
         }
     }
 
     private var resultActions: some View {
-        VStack(spacing: 8) {
-            Button("Develop more", action: startOver)
-                .accessibilityIdentifier("develop.more")
-            Button("Re-develop", action: redevelop)
-                .disabled(!redevelopment.isEnabled)
-                .accessibilityIdentifier("develop.redevelop")
-            Button("Open Photos") {
-                Task { @MainActor in photosOpenFailed = !(await PhotosLibraryOpener.open()) }
-            }
-            .accessibilityIdentifier("develop.openPhotos")
-            if !redevelopment.isEnabled {
-                Text("Originals are no longer on this device. Use Develop more to pick them again.")
-                    .font(NitrateTypography.font(.caption))
-                    .foregroundStyle(DevelopPreviewChrome.muted)
-            } else {
-                let missing = redevelopment.missingCount
-                if missing > 0 {
-                    Text("\(missing) originals unavailable; Re-develop reviews the remaining originals.")
-                        .font(NitrateTypography.font(.caption))
-                        .foregroundStyle(DevelopPreviewChrome.warning)
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Button("Develop more", action: startOver)
+                    .frame(maxWidth: .infinity, minHeight: 56)
+                    .accessibilityIdentifier("develop.more")
+                Button("Re-develop", action: redevelop)
+                    .frame(maxWidth: .infinity, minHeight: 56)
+                    .disabled(!redevelopment.isEnabled)
+                    .accessibilityHint(redevelopment.isEnabled ? "Review originals" : "Originals unavailable")
+                    .accessibilityIdentifier("develop.redevelop")
+                Button("Open Photos") {
+                    Task { @MainActor in photosOpenFailed = !(await PhotosLibraryOpener.open()) }
                 }
+                .frame(maxWidth: .infinity, minHeight: 56)
+                .accessibilityIdentifier("develop.openPhotos")
             }
-            Text("Photos opens your library, not a specific asset. Look in Recently Saved.")
-                .font(NitrateTypography.font(.caption))
-                .foregroundStyle(DevelopPreviewChrome.muted)
+            if redevelopment.missingCount > 0 {
+                Text("Missing \(redevelopment.missingCount)")
+                    .foregroundStyle(DevelopPreviewChrome.warning)
+            }
         }
+        .font(NitrateTypography.font(.body))
         .buttonStyle(.bordered)
         .controlSize(.large)
-        .multilineTextAlignment(.center)
     }
 
     private var transferState: some View {
-        VStack(spacing: 12) {
-            ProgressView().tint(DevelopPreviewChrome.orange)
-            Text(model.bulk.total > 0
-                 ? "Reading \(min(model.bulk.read, model.bulk.total)) of \(model.bulk.total)…"
-                 : "Loading originals…")
-                .font(NitrateTypography.font(.callout))
-                .foregroundStyle(.white)
+        VStack(spacing: 24) {
+            Spacer(minLength: 0)
+            ProgressView().controlSize(.large).tint(DevelopPreviewChrome.orange)
+            Text("Loading").font(NitrateTypography.font(.title2))
+            if model.bulk.total > 0 {
+                Text("\(min(model.bulk.read, model.bulk.total))/\(model.bulk.total)")
+                    .font(NitrateTypography.font(.title3).monospacedDigit())
+            }
             Button("Cancel", action: startOver)
-                .frame(minHeight: 44)
+                .font(NitrateTypography.font(.body))
+                .frame(minHeight: 52)
                 .accessibilityIdentifier("develop.cancel")
+            Spacer(minLength: 0)
         }
     }
 
     private var stockMenu: some View {
         Menu {
             ForEach(stockOptions, id: \.stockId) { option in
-                Button {
-                    onSelectStock(option)
-                } label: {
+                Button { onSelectStock(option) } label: {
                     if option.stockId == stock?.stockId {
                         Label(option.displayName, systemImage: "checkmark")
                     } else {
@@ -251,21 +233,22 @@ struct DevelopPreview: View {
                 }
             }
         } label: {
-            Label(stock?.displayName ?? "Choose a stock", systemImage: "chevron.up.chevron.down")
-                .font(NitrateTypography.font(.subheadline))
+            Label(stock?.displayName ?? "Choose stock", systemImage: "chevron.up.chevron.down")
+                .font(NitrateTypography.font(.title3))
                 .foregroundStyle(.white)
-                .padding(12)
+                .padding(.horizontal, 16)
+                .frame(minHeight: 48)
                 .background(DevelopPreviewChrome.control, in: Capsule())
         }
         .accessibilityIdentifier("develop.bulkStock")
     }
 
     private var controlRow: some View {
-        HStack(alignment: .bottom, spacing: StockSheetLayout.controlSpacing) {
-            GaugeControl(gauge: $gauge)
+        HStack(alignment: .bottom, spacing: 16) {
+            GaugeControl(gauge: $gauge, enlarged: true)
             PushPullControl(resolved: resolvedPushPull, isAutomatic: $pushPullAutomatic,
-                            manualStops: $pushPullStops, onChange: onControlsChanged)
-                .frame(maxWidth: 74)
+                            manualStops: $pushPullStops, onChange: onControlsChanged, enlarged: true)
+                .frame(width: 90)
         }
         .accessibilityIdentifier("develop.controls")
     }
@@ -274,7 +257,8 @@ struct DevelopPreview: View {
         PhotosPicker(selection: $pickerItems, maxSelectionCount: 0, matching: .videos,
                      preferredItemEncoding: .current) {
             Label("Video", systemImage: "photo.on.rectangle")
-                .frame(maxWidth: .infinity, minHeight: 52)
+                .font(NitrateTypography.font(.title2))
+                .frame(maxWidth: .infinity, minHeight: 80)
         }
         .buttonStyle(.bordered)
         .disabled(model.hasActiveRenders)
@@ -285,7 +269,8 @@ struct DevelopPreview: View {
         PhotosPicker(selection: $photoPickerItems, maxSelectionCount: 0, matching: .images,
                      preferredItemEncoding: .current) {
             Label("Photo", systemImage: "camera.aperture")
-                .frame(maxWidth: .infinity, minHeight: 52)
+                .font(NitrateTypography.font(.title2))
+                .frame(maxWidth: .infinity, minHeight: 80)
         }
         .buttonStyle(.bordered)
         .disabled(model.hasActiveRenders)
@@ -294,7 +279,7 @@ struct DevelopPreview: View {
 
     private func stageClips(_ items: [PhotosPickerItem]) {
         selectionTask?.cancel()
-        bulkStatus = nil
+        reviewingRemaining = false
         selectionTask = Task { @MainActor in
             let transfers: [DevelopVideoModel.TransferOperation] = items.map { item in
                 { @MainActor in try await model.loadClip(from: item) }
@@ -305,7 +290,7 @@ struct DevelopPreview: View {
 
     private func stagePhotos(_ items: [PhotosPickerItem]) {
         selectionTask?.cancel()
-        bulkStatus = nil
+        reviewingRemaining = false
         selectionTask = Task { @MainActor in
             let transfers: [DevelopVideoModel.PhotoTransferOperation] = items.map { item in
                 { @MainActor in try await model.loadPhoto(from: item) }
@@ -316,15 +301,15 @@ struct DevelopPreview: View {
 
     private func develop() {
         guard let stock, model.canDevelop(stock: stock) else { return }
-        let result = model.develop(stock: stock, iso: stock.defaultISO, gauge: gauge, pushPull: resolvedPushPull)
-        bulkStatus = Self.bulkSummary(result)
+        reviewingRemaining = false
+        _ = model.develop(stock: stock, iso: stock.defaultISO, gauge: gauge, pushPull: resolvedPushPull)
     }
 
     private func startOver() {
         selectionTask?.cancel()
         selectionTask = nil
         model.startOver()
-        bulkStatus = nil
+        reviewingRemaining = false
         pickerItems = []
         photoPickerItems = []
     }
@@ -343,7 +328,7 @@ struct DevelopPreview: View {
             pushPullStops = first.pushPull?.stops ?? .none
             onControlsChanged()
         }
-        bulkStatus = nil
+        reviewingRemaining = false
         selectionTask?.cancel()
         selectionTask = Task { @MainActor in await model.adoptExistingJobs(jobs) }
     }
@@ -387,6 +372,7 @@ private struct DevelopSourcePage: View {
     @State private var failure: String?
     @State private var retry = 0
     @State private var fence = DevelopPreviewFence()
+    @State private var showDetails = false
 
     private var request: DevelopSourceRequest {
         .init(source: source, recipe: stock.map {
@@ -396,49 +382,58 @@ private struct DevelopSourcePage: View {
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 8) {
-                Text(source.originalFilename)
-                    .font(NitrateTypography.font(.callout))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
+        VStack(spacing: 10) {
+            ZStack {
                 if loadedRequest == request, let frame {
-                    DevelopExpandableStill(image: frame.image, label: "Graded preview of \(source.originalFilename)")
-                        .frame(height: 210)
+                    DevelopExpandableStill(image: frame.image, label: "Preview")
                         .accessibilityIdentifier("develop.preview")
-                    Text("Center-weighted file exposure estimate: "
-                         + DevelopWorkflowPresentation.exposure(frame.measuredOffsetEV))
-                        .accessibilityIdentifier("develop.exposure.estimate")
-                    Text(frame.captureDescription ?? "Recorded capture metadata unavailable")
-                } else if loadedRequest == request, let failure {
-                    Text(failure).foregroundStyle(DevelopPreviewChrome.warning)
-                    Button("Retry preview") { retry += 1 }
-                        .frame(minHeight: 44)
+                } else if loadedRequest == request, failure != nil {
+                    VStack(spacing: 16) {
+                        Text("Preview unavailable")
+                        Button("Retry") { retry += 1 }.frame(minHeight: 48)
+                    }
                 } else if stock == nil {
-                    Text("Choose a stock to preview this original.")
-                        .frame(height: 210)
+                    Text("Choose stock")
                 } else {
-                    ProgressView("Grading preview…").frame(height: 210)
+                    ProgressView().controlSize(.large)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 16) {
+                readout("Estimate", value: DevelopWorkflowPresentation.exposure(frame?.measuredOffsetEV))
+                    .accessibilityIdentifier("develop.exposure.estimate")
+                if let rating = source.capturedOffsetEV {
+                    readout("Captured", value: DevelopWorkflowPresentation.exposure(Double(rating)))
                 }
                 if let iso = source.iso {
-                    Text(DevelopWorkflowPresentation.captureRating(iso))
+                    readout("Rated", value: DevelopWorkflowPresentation.captureRating(iso))
                         .accessibilityIdentifier("develop.exposure.captureRating")
                 }
-                Text("Saved capture meter offset: "
-                     + DevelopWorkflowPresentation.exposure(source.capturedOffsetEV.map(Double.init)))
-                Text(source.isPhoto
-                     ? "Estimate relative to 18% gray, not calibrated EV100. Preview is not a saved output."
-                     : "Estimate relative to 18% gray, not calibrated EV100. One video still; full export can measure highlight protection across more frames.")
+                Spacer(minLength: 0)
+                Button { showDetails = true } label: {
+                    Image(systemName: "info.circle").font(.title3).frame(width: 44, height: 48)
+                }
+                .accessibilityLabel("Details")
             }
-            .font(NitrateTypography.font(.caption))
-            .foregroundStyle(DevelopPreviewChrome.muted)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
+        }
+        .font(NitrateTypography.font(.body))
+        .foregroundStyle(.white)
+        .alert("Details", isPresented: $showDetails) {
+            Button("Done", role: .cancel) {}
+        } message: {
+            Text(failure ?? [source.originalFilename, frame?.captureDescription].compactMap { $0 }.joined(separator: "\n"))
         }
         .task(id: request) { await load(request) }
         .task(id: retry) {
             guard retry > 0 else { return }
             await load(request)
+        }
+    }
+
+    private func readout(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(NitrateTypography.font(.subheadline)).foregroundStyle(DevelopPreviewChrome.muted)
+            Text(value).font(NitrateTypography.font(.title3).monospacedDigit())
         }
     }
 
