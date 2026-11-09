@@ -36,8 +36,8 @@ enum DevelopWorkflowPresentation {
     }
 
     static func captureRating(_ iso: Float?) -> String {
-        guard let iso, iso.isFinite, iso > 0 else { return "Capture ISO unavailable" }
-        return String(format: "Capture ISO %.0f", locale: Locale(identifier: "en_US_POSIX"), iso)
+        guard let iso, iso.isFinite, iso > 0 else { return "Recorded ISO / EI unavailable" }
+        return String(format: "Recorded ISO / EI %.0f", locale: Locale(identifier: "en_US_POSIX"), iso)
     }
 
     static func deliveryLabel(_ job: RenderJob) -> String {

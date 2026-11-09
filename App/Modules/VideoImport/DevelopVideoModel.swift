@@ -265,12 +265,12 @@ final class DevelopVideoModel {
                                         iso: source.iso ?? iso, gauge: gauge, cropZoom: source.cropZoom,
                                         seed: Self.grainSeed(for: imported), pushPull: pushPull,
                                         isImported: true, retainsDevelopmentSource: true,
-                                        originalFilename: source.originalFilename)
+                                        originalFilename: source.originalFilename, sourceCaptureISO: source.iso)
             } else if !source.isPhoto {
                 id = queue.enqueueImportedVideo(sourceURL: source.url, stockId: stock.stockId,
                                                 iso: source.iso ?? iso, gauge: gauge, pushPull: pushPull,
                                                 retainsDevelopmentSource: true,
-                                                originalFilename: source.originalFilename)
+                                                originalFilename: source.originalFilename, sourceCaptureISO: source.iso)
             } else {
                 id = nil
             }
@@ -344,7 +344,7 @@ final class DevelopVideoModel {
             }
             let source = DevelopSource(url: job.sourceURL,
                                        originalFilename: job.sourceOriginalFilename ?? job.sourceURL.lastPathComponent,
-                                       isPhoto: job.isPhoto == true, iso: job.iso,
+                                       isPhoto: job.isPhoto == true, iso: job.sourceCaptureISO,
                                        capturedOffsetEV: job.sourceCapturedOffsetEV ?? job.pushPull?.meteredOffsetEV,
                                        cropZoom: job.photoCropZoom ?? 1)
             if seen.insert(source.id).inserted { adoptedSources.append(source) }

@@ -200,7 +200,7 @@ final class RenderQueueViewModel {
                               pushPull: PushPullExposure? = nil,
                               preferences: RenderDeliveryPreferences? = nil,
                               retainsDevelopmentSource: Bool = false,
-                              originalFilename: String? = nil) -> UUID? {
+                              originalFilename: String? = nil, sourceCaptureISO: Float? = nil) -> UUID? {
         guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
         guard Self.isUsableFile(sourceURL) else {
             reportRenderError("The selected video could not be read. Choose it again.")
@@ -222,6 +222,7 @@ final class RenderQueueViewModel {
         imported.isImportedVideo = true
         if retainsDevelopmentSource { imported.retainsDevelopmentSource = true }
         imported.sourceOriginalFilename = originalFilename
+        imported.sourceCaptureISO = sourceCaptureISO.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         jobs.append(imported)
         guard persistJobs() else {
             jobs.removeAll { $0.id == imported.id }
@@ -245,7 +246,7 @@ final class RenderQueueViewModel {
                       pushPull: PushPullExposure? = nil,
                       preferences: RenderDeliveryPreferences? = nil,
                       isImported: Bool = false, retainsDevelopmentSource: Bool = false,
-                      originalFilename: String? = nil) -> UUID? {
+                      originalFilename: String? = nil, sourceCaptureISO: Float? = nil) -> UUID? {
         guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
         // Any raw the still renderer can develop, not only a DNG: the importer
         // already proved the file opens through the system RAW pipeline.
@@ -270,6 +271,7 @@ final class RenderQueueViewModel {
         if isImported { photo.isImportedPhoto = true }
         if retainsDevelopmentSource { photo.retainsDevelopmentSource = true }
         photo.sourceOriginalFilename = originalFilename
+        photo.sourceCaptureISO = sourceCaptureISO.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         jobs.append(photo)
         guard persistJobs() else {
             jobs.removeAll { $0.id == photo.id }

@@ -182,10 +182,12 @@ struct DevelopPreview: View {
                     .font(NitrateTypography.font(.caption))
                     .foregroundStyle(DevelopPreviewChrome.warning)
             }
-            Button("View render queue", action: onOpenResults)
-                .font(NitrateTypography.font(.footnote))
-                .frame(minHeight: 44)
-                .accessibilityIdentifier("develop.queue")
+            if model.hasActiveRenders || resultJobs.contains(where: { $0.status == .failed }) {
+                Button("View render queue", action: onOpenResults)
+                    .font(NitrateTypography.font(.footnote))
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("develop.queue")
+            }
         }
     }
 
@@ -335,7 +337,9 @@ struct DevelopPreview: View {
                 onSelectStock(priorStock)
             }
             if let priorGauge = first.printGauge { gauge = priorGauge }
-            pushPullAutomatic = first.pushPull?.origin == .automatic
+            // Recall the resolved recipe, not a live-meter mode that resolves
+            // neutral for imports and would silently drop a captured auto pull.
+            pushPullAutomatic = false
             pushPullStops = first.pushPull?.stops ?? .none
             onControlsChanged()
         }
@@ -416,8 +420,10 @@ private struct DevelopSourcePage: View {
                 } else {
                     ProgressView("Grading preview…").frame(height: 210)
                 }
-                Text(DevelopWorkflowPresentation.captureRating(source.iso))
-                    .accessibilityIdentifier("develop.exposure.captureRating")
+                if let iso = source.iso {
+                    Text(DevelopWorkflowPresentation.captureRating(iso))
+                        .accessibilityIdentifier("develop.exposure.captureRating")
+                }
                 Text("Saved capture meter offset: "
                      + DevelopWorkflowPresentation.exposure(source.capturedOffsetEV.map(Double.init)))
                 Text(source.isPhoto

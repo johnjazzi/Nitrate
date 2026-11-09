@@ -24,7 +24,7 @@ struct QueueReceiptCard: View {
     let showMetadata: () -> Void
     let playLocal: () -> Void
     let shareLocal: () -> Void
-    /// Photo-only: re-develop from the retained original. Absent for video jobs.
+    /// Return a retained photo or video original to the shared Develop review.
     var redevelop: (() -> Void)? = nil
 
     var body: some View {
@@ -63,7 +63,7 @@ struct QueueReceiptCard: View {
                 HStack { primaryActions }
                 VStack(alignment: .leading) { primaryActions }
             }
-            if job.receiptActions.playLocal || job.receiptActions.shareLocal {
+            if job.receiptActions.playLocal || job.receiptActions.shareLocal || redevelop != nil {
                 ViewThatFits(in: .horizontal) {
                     HStack { localActions }
                     VStack(alignment: .leading) { localActions }
@@ -133,12 +133,12 @@ struct QueueReceiptCard: View {
                 Label("Share local copy", systemImage: "square.and.arrow.up").frame(minHeight: 44)
             }.buttonStyle(.borderless)
         }
-        if job.hasRedevelopableOriginal, let redevelop {
+        if job.hasRedevelopableSource, let redevelop {
             Button(action: redevelop) {
                 Label("Re-develop", systemImage: "slider.horizontal.3").frame(minHeight: 44)
             }.buttonStyle(.borderless)
-            .accessibilityHint("Returns the photo to Develop so you can choose a new gauge and push/pull.")
-            .accessibilityIdentifier("queue.redevelopPhoto")
+            .accessibilityHint("Returns the original to Develop for preview, gauge and push/pull before rendering.")
+            .accessibilityIdentifier(job.isPhoto == true ? "queue.redevelopPhoto" : "queue.redevelopVideo")
         }
     }
 }

@@ -268,6 +268,35 @@ struct DevelopVideoModelTests {
 }
 
 extension DevelopVideoModelTests {
+    @Test(arguments: [false, true])
+    func missingCaptureISOStaysUnavailableAfterDevelopmentAndAdoption(isPhoto: Bool) async throws {
+        let files = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let source = files.directory.appendingPathComponent(isPhoto ? "photo_import_no_iso.dng" : "clip_import_no_iso.mov")
+        try Data([1]).write(to: source)
+        let queue = Self.queue(files, render: { _ in files.output })
+        let model = DevelopVideoModel(queue: queue,
+            inspect: { url, _ in Self.inspected(url) },
+            inspectPhoto: { url, name in
+                ImportedPhoto(url: url, originalFilename: name, pixelWidth: 100, pixelHeight: 80,
+                              iso: nil, capturedAt: nil)
+            })
+        if isPhoto {
+            await model.stagePhotos(transfers: [{
+                DevelopVideoModel.DevelopPhotoTransfer(lease: VideoImportFileLease(url: source, directory: files.directory),
+                                                       originalFilename: source.lastPathComponent)
+            }])
+        } else {
+            await model.stageVideos(transfers: [{ Self.transfer(source, directory: files.directory) }])
+        }
+        #expect(model.sources.first?.iso == nil)
+        #expect(model.develop(stock: Self.stock(), iso: 640, gauge: .neutral, pushPull: .neutral).queued == 1)
+        try await Self.waitUntil { queue.jobs.first?.status == .completed }
+        #expect(queue.jobs.first?.iso == 640, "render recipe ISO remains valid independently")
+        await model.adoptExistingJobs(queue.jobs)
+        #expect(model.sources.first?.iso == nil, "a fallback render ISO is not recorded capture metadata")
+    }
+
     @Test func singlePhotoUsesSharedReviewAndKeepsCapturedRating() async throws {
         let files = try Self.scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }
@@ -479,6 +508,7 @@ extension DevelopVideoModelTests {
         photoJob.photoGrainSeed = 73
         photoJob.status = .failed
         photoJob.sourceOriginalFilename = "DSC_001.NEF"
+        photoJob.sourceCaptureISO = 800
         let queue = Self.queue(files, render: { _ in files.output }, persist: { _ in })
         queue.renderAllowed = { false }
         queue.jobs = [photoJob, videoJob]

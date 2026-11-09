@@ -36,6 +36,9 @@ struct RenderJob: Codable, Identifiable, Equatable {
     /// File identity and original capture reading survive changes to the recipe.
     var sourceOriginalFilename: String? = nil
     var sourceCapturedOffsetEV: Float? = nil
+    /// Actual source metadata, never the stock's fallback render-recipe ISO.
+    /// Nil preserves unknown capture ISO across re-development and old queues.
+    var sourceCaptureISO: Float? = nil
     /// Photo jobs share queue persistence/retry but retain their DNG and JPEG.
     /// Optional fields keep every pre-Photo queue readable as a Video queue.
     var isPhoto: Bool? = nil
@@ -54,9 +57,12 @@ struct RenderJob: Codable, Identifiable, Equatable {
     /// qualifies. A receipt/poster or a zero-byte placeholder is not an original.
     var hasRedevelopableSource: Bool {
         guard sourceURL.isFileURL,
-              let values = try? sourceURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
-              values.isRegularFile == true else { return false }
-        return (values.fileSize ?? 0) > 0
+              let values = try? FileManager.default.attributesOfItem(atPath: sourceURL.path),
+              values[.type] as? FileAttributeType == .typeRegular,
+              let size = values[.size] as? NSNumber else { return false }
+        // NSURL resource values can remain cached after truncation/removal.
+        // Re-development requires the file that exists now, not an old stat.
+        return size.uint64Value > 0
     }
 
     /// Durable removal intent. Recovery and Retry clean files without rendering.

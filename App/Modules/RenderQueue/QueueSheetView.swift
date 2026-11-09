@@ -11,7 +11,7 @@ struct QueueSheetView: View {
     /// Load one finished develop back into the Develop panel, at step one, with
     /// the gauge and push/pull controls — the operator picks a new look there.
     var onRedevelop: (RenderJob) -> Void = { _ in }
-    /// Re-develop several at once with the settings currently selected.
+    /// Load several originals for review; this action never starts a render.
     var onBulkRedevelop: (Set<UUID>) -> Void = { _ in }
     @State private var selection: Set<UUID> = []
     @State private var isSelecting = false
@@ -84,12 +84,17 @@ struct QueueSheetView: View {
                             .frame(minHeight: QueueReceiptPresentation.minimumActionHeight)
                     }
                     .accessibilityIdentifier(QueueReceiptPresentation.photosActionID + ".general")
-                    Text("Opens Photos, not a specific video. Look in Recently Saved for confirmed saves.")
+                    Text("Opens Photos, not specific items. Look in Recently Saved for confirmed saves.")
                         .font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
                 }
                 if let latestRender {
                     Section("Latest render") {
-                        receiptCard(for: latestRender, prominent: true)
+                        HStack(spacing: 10) {
+                            if isSelecting, canReviewOriginal(latestRender) {
+                                selectionToggle(for: latestRender)
+                            }
+                            receiptCard(for: latestRender, prominent: true)
+                        }
                     }
                 }
                 if isEmpty {
@@ -138,7 +143,7 @@ struct QueueSheetView: View {
                             ForEach(visibleHistory) { job in
                                 if job.status == .completed {
                                     HStack(spacing: 10) {
-                                        if isSelecting, job.isPhoto == true, job.hasRedevelopableOriginal {
+                                        if isSelecting, canReviewOriginal(job) {
                                             selectionToggle(for: job)
                                         }
                                         receiptCard(for: job)
@@ -180,7 +185,8 @@ struct QueueSheetView: View {
                         Text("\(selection.count) selected")
                             .font(NitrateTypography.font(.footnote))
                             .foregroundStyle(.secondary)
-                    } else if visibleHistory.contains(where: { $0.isPhoto == true && $0.hasRedevelopableOriginal }) {
+                    } else if visibleHistory.contains(where: canReviewOriginal)
+                        || latestRender.map(canReviewOriginal) == true {
                         Button("Select") { isSelecting = true }
                             .accessibilityIdentifier("queue.select")
                     } else {
@@ -273,7 +279,12 @@ struct QueueSheetView: View {
                              guard job.isImportedVideo != true, job.retainedOutputURL != nil else { return }
                              playbackJob = job
                          }, shareLocal: { shareVideo(job) },
-                         redevelop: job.isPhoto == true ? { onRedevelop(job) } : nil)
+                         redevelop: canReviewOriginal(job) ? { onRedevelop(job) } : nil)
+    }
+
+    private func canReviewOriginal(_ job: RenderJob) -> Bool {
+        job.originalOnly != true && job.hasRedevelopableSource
+            && (job.status == .completed || job.status == .failed)
     }
 
     /// Tap target that adds or removes a finished develop from the bulk selection.

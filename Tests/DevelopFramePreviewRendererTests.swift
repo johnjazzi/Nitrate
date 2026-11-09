@@ -5,6 +5,7 @@ import CoreVideo
 import Foundation
 import Metal
 import Testing
+import VideoToolbox
 
 @Suite(.serialized)
 struct DevelopFramePreviewRendererTests {
@@ -176,6 +177,54 @@ struct DevelopFramePreviewRendererTests {
         #expect(throws: DevelopFramePreviewRenderer.PreviewError.self) {
             try DevelopFramePreviewRenderer.sourceProfile([])
         }
+    }
+
+    @Test func actualTaggedMovieDecodeUsesTheFilePreviewEntryPoint() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("develop-hlg-\(UUID().uuidString).mov")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let writer = try AVAssetWriter(url: url, fileType: .mov)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.hevc,
+            AVVideoCompressionPropertiesKey: [
+                AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel
+            ],
+            AVVideoWidthKey: 128, AVVideoHeightKey: 80,
+            AVVideoColorPropertiesKey: [
+                AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
+            ]
+        ])
+        input.transform = CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 80, ty: 0)
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input,
+            sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String:
+                kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange])
+        #expect(writer.canAdd(input))
+        writer.add(input)
+        #expect(writer.startWriting())
+        writer.startSession(atSourceTime: .zero)
+        let frame = try DevelopPreviewFixtures.hlgBuffer()
+        for index in 0..<12 {
+            let deadline = Date().addingTimeInterval(5)
+            while !input.isReadyForMoreMediaData, Date() < deadline {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            try #require(input.isReadyForMoreMediaData)
+            try #require(adaptor.append(frame, withPresentationTime: CMTime(value: Int64(index), timescale: 24)))
+        }
+        input.markAsFinished()
+        await writer.finishWriting()
+        try #require(writer.status == .completed, "\(String(describing: writer.error))")
+        let renderer = DevelopFramePreviewRenderer(bundle: bundle)
+        let neutral = try await renderer.preview(url: url, isPhoto: false, stock: stock(),
+                                                 gauge: .neutral, pushPull: .neutral)
+        let pull = try await renderer.preview(url: url, isPhoto: false, stock: stock(),
+                                              gauge: .neutral, pushPull: .manual(.pullOne))
+        #expect(neutral.image.width == 80 && neutral.image.height == 128)
+        try assertSpatialRange(neutral.image)
+        #expect(try mean(pull.image) < mean(neutral.image))
+        #expect(pull.measuredOffsetEV == neutral.measuredOffsetEV)
+        #expect(neutral.captureDescription == nil, "the generated movie has no capture-exposure metadata")
     }
 
     @Test func cancellationAndMissingOriginalNeverReturnAPlaceholderPreview() async throws {

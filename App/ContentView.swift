@@ -1327,15 +1327,14 @@ struct ContentView: View {
             showsStockHint: stockSelectorHint.isCueVisible,
             horizontalInset: horizontalInset,
             isDevelopMode: isDevelopMode,
-            developCanRender: developModel.canRender(stock: selectedStock, queue: renderQueueViewModel),
+            developCanRender: developModel.canDevelop(stock: selectedStock),
             developIsBusy: developIsBusy,
             onDevelopRender: {
                 guard let stock = selectedStock else { return }
                 // The panel's controls ARE the render settings: no second read of
                 // the library at render time, so what is on screen is applied.
-                _ = developModel.render(stock: stock, iso: currentISO, gauge: developGauge,
-                                        pushPull: developPushPull,
-                                        queue: renderQueueViewModel)
+                _ = developModel.develop(stock: stock, iso: currentISO, gauge: developGauge,
+                                         pushPull: developPushPull)
             },
             isPhotoMode: isPhotoMode,
             photoStatus: photoDeliveryStatus,
@@ -1452,6 +1451,17 @@ struct ContentView: View {
     /// Return a finished develop to step one: same file, back in the panel with
     /// the gauge and push/pull controls, so the next render can be a new look.
     private func redevelop(_ job: RenderJob) {
+        reviewDevelops([job])
+    }
+
+    /// A queue selection is only loaded here. Rendering still requires review
+    /// and an explicit Develop action, identically for photos and videos.
+    private func reviewDevelops(_ jobs: [RenderJob]) {
+        guard let first = jobs.first else { return }
+        guard !developModel.hasActiveRenders else {
+            showModeRefusal("Finish the current develop before choosing another original.")
+            return
+        }
         showQueueSheet = false
         Task { @MainActor in
             // The sheet is dismissing on this runloop, and the mode switch is
@@ -1464,18 +1474,27 @@ struct ContentView: View {
                 selectCameraMode(.develop)
             }
             guard isDevelopMode else {
-                showModeRefusal("Close the queue before re-developing this photo.")
+                showModeRefusal("Close the queue and finish the current capture before re-developing.")
                 return
             }
             // The original job stays untouched; normal pickers only receive enabled stocks.
             guard !captureBusy, !cameraViewModel.isPhotoCaptureBusy else { return }
-            if let stock = library.preferredVisibleStock(for: job.stockId) {
+            if let stock = library.preferredVisibleStock(for: first.stockId) {
                 selectedStock = stock.overridingISO(library.lastISO(for: stock.stockId))
                 currentISO = library.lastISO(for: stock.stockId)
             }
             restoreDevelopControls()
-            await developModel.adoptExistingPhoto(url: job.sourceURL,
-                                                  originalFilename: job.sourceURL.lastPathComponent)
+            await developModel.adoptExistingJobs(jobs)
+            // Restore the actual prior recipe after stock observation settles,
+            // rather than silently replacing it with the camera's last settings.
+            if let gauge = first.printGauge { developGauge = gauge }
+            if let pushPull = first.pushPull {
+                developPushPullAutomatic = false
+                developPushPullStops = pushPull.stops
+            }
+            // The panel's onAppear/stock-change hooks restore this same recipe,
+            // rather than racing a later view update back to stale preferences.
+            persistDevelopControls()
         }
     }
 
@@ -1497,9 +1516,7 @@ struct ContentView: View {
     }
 
     private var developIsBusy: Bool {
-        guard let id = developModel.activeJobID,
-              let job = renderQueueViewModel.jobs.first(where: { $0.id == id }) else { return false }
-        return job.status == .pending || job.status == .processing
+        developModel.hasActiveRenders
     }
 
     /// Say why a mode change was refused, where the operator is looking.
@@ -1701,13 +1718,7 @@ struct ContentView: View {
             isPresented: $showQueueSheet,
             onRedevelop: redevelop,
             onBulkRedevelop: { ids in
-                // Bulk uses what the Develop panel currently shows, so the look
-                // is one deliberate choice applied to the whole selection.
-                renderQueueViewModel.redevelopPhotos(
-                    jobIds: Array(ids),
-                    stockId: selectedStock?.stockId,
-                    gauge: developGauge,
-                    pushPull: developPushPull)
+                reviewDevelops(renderQueueViewModel.jobs.filter { ids.contains($0.id) })
             }
         )
     }

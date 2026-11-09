@@ -60,9 +60,9 @@ struct DevelopWorkflowPresentationTests {
         for missing in [Double?.none, .some(.nan), .some(.infinity), .some(-.infinity)] {
             #expect(DevelopWorkflowPresentation.exposure(missing) == "Unavailable")
         }
-        #expect(DevelopWorkflowPresentation.captureRating(640) == "Capture ISO 640")
+        #expect(DevelopWorkflowPresentation.captureRating(640) == "Recorded ISO / EI 640")
         for missing in [Float?.none, .some(.nan), .some(.infinity), .some(0), .some(-1)] {
-            #expect(DevelopWorkflowPresentation.captureRating(missing) == "Capture ISO unavailable")
+            #expect(DevelopWorkflowPresentation.captureRating(missing) == "Recorded ISO / EI unavailable")
         }
     }
 

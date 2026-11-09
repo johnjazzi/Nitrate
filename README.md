@@ -58,17 +58,27 @@ Three commitments follow from that:
 
 **Nitrate will never add trimming, timelines, projects, or editing adjustments.**
 
-Choose **D** below the shutter to open Develop, then **choose a clip → choose a
-stock and gauge → press Render → save to Photos**. Storage & Queue shows jobs
-and saved results; clip selection lives in Develop.
+Choose **D** below the shutter to open Develop. Photo, Video and Re-develop use
+one flow: **select files → load → review a graded still → choose stock, gauge and
+push/pull → Develop → view results**. One file and a batch use the same controls;
+push/pull updates the preview before rendering. Results can be swiped and enlarged,
+with **Develop more**, **Re-develop** and **Open Photos** actions. Queue Re-develop
+also returns originals to review instead of immediately rendering them.
+
+The preview shows an explicitly approximate, center-weighted file exposure estimate
+separately from recorded capture values when present. It is not a calibrated light
+meter, and missing capture metadata is not replaced with the current camera reading.
+See [the shared workflow and acceptance checks](docs/development-workflow.md).
 
 Video import in Develop accepts **Apple Log 2 only**. HLG support applies to
 recordings made by Nitrate; it does not admit HLG or Apple Log 1 imports. Watch
 finished videos in Photos.
 
-Develop accesses only the video selected through the system Photos picker,
-without requesting photo-library read permission. Saving uses add-only Photos
-access. The original video remains unchanged.
+Develop accesses only files selected through the system Photos picker, without
+requesting photo-library read permission. Saving uses add-only Photos access.
+Originals remain unchanged; scoped retained Develop originals support re-development.
+Open Photos is a general handoff, not a guarantee that iOS selects specific assets;
+look in Recently Saved for confirmed saves.
 
 This scope applies to future releases as well.
 

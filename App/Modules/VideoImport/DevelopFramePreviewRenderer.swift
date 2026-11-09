@@ -211,13 +211,17 @@ actor DevelopFramePreviewRenderer {
         }
         try Task.checkCancellation()
         guard let sample = sampleBox.value.flatMap({ $0 }) else { throw PreviewError.decode }
-        let buffer = try sample.withUnsafeSampleBuffer { sampleBuffer in
+        let bufferBox = try sample.withUnsafeSampleBuffer { sampleBuffer in
             guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer),
                   RenderInputColorProvenance.profile(of: buffer) == profile else {
                 throw PreviewError.unsupportedVideo
             }
-            return try Self.boundedBuffer(buffer)
+            // Retain the frame through the existing immutable ownership bridge.
+            // Only this preview actor reads it after the provider is finished;
+            // neither the cached frame nor its planes are mutated after handoff.
+            return RacedInputs(try Self.boundedBuffer(buffer))
         }
+        let buffer = bufferBox.value
         try Task.checkCancellation()
         let description = try await Self.videoCaptureDescription(asset)
         return VideoSource(buffer: buffer, transform: transform, measurement: Self.measureVideo(buffer),
