@@ -29,9 +29,11 @@ struct QueueReceiptCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
                 if !job.permitsLocalMedia {
-                    Image(systemName: "film").foregroundStyle(.secondary)
+                    Image(systemName: "film")
+                        .font(NitrateTypography.font(.title2))
+                        .foregroundStyle(.secondary)
                 } else if job.isPhoto == true, job.retainedOutputURL != nil {
                     Button(action: playLocal) { poster }
                         .buttonStyle(.borderless)
@@ -46,44 +48,61 @@ struct QueueReceiptCard: View {
                 } else {
                     poster.accessibilityLabel("Local thumbnail; Photos save not confirmed")
                 }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(job.receiptTitle).font(NitrateTypography.font(.headline))
-                    Text(subtitle)
-                        .font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
-                    Text((job.receipt?.recordedAt ?? job.createdAt).formatted(date: .abbreviated, time: .shortened))
-                        .font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
-                    if job.outputSavedToPhotos == true {
-                        Text("Rendered saved to Photos").font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
-                    } else if job.sourceSavedToPhotos == true {
-                        Text("Original saved to Photos").font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
-                    }
+                Spacer(minLength: 0)
+                Button(action: showMetadata) {
+                    Image(systemName: statusSymbol)
+                        .foregroundStyle(statusColor)
+                        .frame(width: 44, height: 44)
+                        .overlay(alignment: .topTrailing) {
+                            if job.retainedReason != nil || job.cleanupWarning != nil {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(NitrateTypography.font(.caption))
+                                    .foregroundStyle(.orange)
+                            }
+                        }
                 }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(statusDescription + ((job.retainedReason != nil || job.cleanupWarning != nil)
+                    ? "; warning, open details" : ""))
             }
-            ViewThatFits(in: .horizontal) {
-                HStack { primaryActions }
-                VStack(alignment: .leading) { primaryActions }
-            }
-            if job.receiptActions.playLocal || job.receiptActions.shareLocal || redevelop != nil {
-                ViewThatFits(in: .horizontal) {
-                    HStack { localActions }
-                    VStack(alignment: .leading) { localActions }
+            HStack(spacing: 0) {
+                primaryActions
+                if job.receiptActions.playLocal || job.receiptActions.shareLocal || redevelop != nil {
+                    localActions
                 }
-            }
-            if let reason = job.retainedReason {
-                Text("Kept original: \(reason)").font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
-            }
-            if let warning = job.cleanupWarning {
-                Label(warning, systemImage: "exclamationmark.triangle")
-                    .font(NitrateTypography.font(.caption)).foregroundStyle(.orange)
             }
         }
+        .labelStyle(.iconOnly)
+        .font(NitrateTypography.font(.title2))
         .padding(.vertical, prominent ? 8 : 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(job.receiptTitle)
+        .accessibilityValue((job.receipt?.recordedAt ?? job.createdAt)
+            .formatted(date: .abbreviated, time: .shortened))
     }
 
-    private var subtitle: String {
-        if job.originalOnly == true { return "Original · no rendered look" }
-        if job.status == .failed { return "Failed · retry available" }
-        return job.isPhoto == true ? "Rendered photo" : "Rendered video"
+    private var statusSymbol: String {
+        switch job.status {
+        case .failed: "exclamationmark.circle.fill"
+        case .pending: "clock"
+        case .processing: "arrow.triangle.2.circlepath"
+        case .awaitingStock: "film"
+        case .completed:
+            job.outputSavedToPhotos == true ? "checkmark.circle.fill"
+                : (job.sourceSavedToPhotos == true ? "doc.badge.checkmark" : "internaldrive")
+        }
+    }
+
+    private var statusColor: Color {
+        if job.status == .failed { return .red }
+        return job.outputSavedToPhotos == true ? .green : .secondary
+    }
+
+    private var statusDescription: String {
+        if job.status == .failed { return "Failed; open details" }
+        if job.outputSavedToPhotos == true { return "Rendered output saved to Photos" }
+        if job.sourceSavedToPhotos == true { return "Original saved to Photos; output save unconfirmed" }
+        return "Local media; Photos save unconfirmed"
     }
 
     private var poster: some View {
@@ -91,11 +110,8 @@ struct QueueReceiptCard: View {
             if job.permitsLocalMedia, let data = job.receipt?.thumbnailJPEG, let image = UIImage(data: data) {
                 Image(uiImage: image).resizable().scaledToFit()
             } else {
-                VStack(spacing: 4) {
-                    Image(systemName: "photo")
-                    Text("No thumbnail").font(NitrateTypography.font(.caption2))
-                }
-                .foregroundStyle(.secondary)
+                Image(systemName: "photo")
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(width: prominent ? 112 : 80, height: prominent ? 84 : 60)
@@ -107,7 +123,7 @@ struct QueueReceiptCard: View {
         if job.receiptActions.openPhotos {
             Button(action: openPhotos) {
                 Label("Open Photos", systemImage: "photo.on.rectangle")
-                    .frame(minHeight: QueueReceiptPresentation.minimumActionHeight)
+                    .frame(width: 44, height: QueueReceiptPresentation.minimumActionHeight)
             }
             .buttonStyle(.borderless)
             .accessibilityHint("Opens Photos generally. Look in Recently Saved.")
@@ -115,7 +131,7 @@ struct QueueReceiptCard: View {
         }
         Button(action: showMetadata) {
             Label("Metadata", systemImage: "info.circle")
-                .frame(minHeight: QueueReceiptPresentation.minimumActionHeight)
+                .frame(width: 44, height: QueueReceiptPresentation.minimumActionHeight)
         }
         .buttonStyle(.borderless)
         .accessibilityLabel("Metadata for \(job.receiptTitle)")
@@ -125,17 +141,21 @@ struct QueueReceiptCard: View {
     @ViewBuilder private var localActions: some View {
         if job.receiptActions.playLocal {
             Button(action: playLocal) {
-                Label(job.isPhoto == true ? "Preview photo" : "Play local copy", systemImage: job.isPhoto == true ? "photo" : "play.circle").frame(minHeight: 44)
+                Label(job.isPhoto == true ? "Preview photo" : "Play local copy",
+                      systemImage: job.isPhoto == true ? "photo" : "play.circle")
+                    .frame(width: 44, height: 44)
             }.buttonStyle(.borderless)
         }
         if job.receiptActions.shareLocal {
             Button(action: shareLocal) {
-                Label("Share local copy", systemImage: "square.and.arrow.up").frame(minHeight: 44)
+                Label("Share local copy", systemImage: "square.and.arrow.up")
+                    .frame(width: 44, height: 44)
             }.buttonStyle(.borderless)
         }
         if job.hasRedevelopableSource, let redevelop {
             Button(action: redevelop) {
-                Label("Re-develop", systemImage: "slider.horizontal.3").frame(minHeight: 44)
+                Label("Re-develop", systemImage: "arrow.counterclockwise")
+                    .frame(width: 44, height: 44)
             }.buttonStyle(.borderless)
             .accessibilityHint("Returns the original to Develop for preview, gauge and push/pull before rendering.")
             .accessibilityIdentifier(job.isPhoto == true ? "queue.redevelopPhoto" : "queue.redevelopVideo")
@@ -164,8 +184,13 @@ struct QueueReceiptMetadataView: View {
     /// sits collapsed beneath the cards rather than replacing them.
     private var recordDetails: [(label: String, value: String)] {
         var details: [(label: String, value: String)] = [
-            ("Stock", value("stock-name")),
-            ("Selected render ISO", QueueReceiptPresentation.numericMetadata(metadata, "iso")),
+            ("Record", job.receiptTitle),
+            ("Queued", job.createdAt.formatted(date: .abbreviated, time: .shortened)),
+            ("Stock", value("stock-name") == QueueReceiptPresentation.unavailable
+                ? QueueReceiptPresentation.text(job.stockId) : value("stock-name")),
+            ("Selected render ISO", metadata.isEmpty
+                ? QueueReceiptPresentation.number(Double(job.iso))
+                : QueueReceiptPresentation.numericMetadata(metadata, "iso")),
             ("Print gauge", value("print-gauge")),
             ("Diffusion", ReceiptMetadataCards.diffusionValue(metadata, job: job)),
             ("Push / pull", ReceiptMetadataCards.pushPullValue(metadata, job: job)),
@@ -199,6 +224,8 @@ struct QueueReceiptMetadataView: View {
             ("Capture policy", capturePolicyValue),
             ("Job id", job.id.uuidString)
         ]
+        if let reason = job.retainedReason { details.append(("Kept original", reason)) }
+        if let error = job.errorMessage { details.append(("Error", error)) }
         if let warning = job.cleanupWarning { details.append(("Cleanup warning", warning)) }
         return details
     }

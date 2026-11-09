@@ -14,6 +14,7 @@ locking, LUT contents or delivery colour contracts. Work is on
 - Stock, gauge, push/pull and primary actions use larger type and 48–80 point touch targets.
 - Show compact Estimate/Captured/Rated readouts only; file metadata and full error reasons live behind Details.
 - Page position is numeric. Results use three equal-width icons in one horizontal row, with small captions below.
+- History uses thumbnail/status icons and a horizontal icon-only action row, without captions. Keep readable VoiceOver names. Storage and complete metadata/error reasons remain behind their icons.
 - Keep the camera carousel and top-bar clearance unchanged.
 
 ## Interaction contract

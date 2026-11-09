@@ -79,6 +79,28 @@ struct QueueReceiptPresentationTests {
         }
     }
 
+    @Test func historyCardsUseIconsWhilePreservingDetails() throws {
+        let folder = TestRepository.root.appendingPathComponent("App/Modules/RenderQueue")
+        let views = try String(contentsOf: folder.appendingPathComponent("QueueReceiptViews.swift"), encoding: .utf8)
+        let sheet = try String(contentsOf: folder.appendingPathComponent("QueueSheetView.swift"), encoding: .utf8)
+        let start = try #require(views.range(of: "struct QueueReceiptCard: View"))
+        let end = try #require(views.range(of: "struct QueueReceiptMetadataView: View"))
+        let card = String(views[start.lowerBound..<end.lowerBound])
+        #expect(!card.contains("Text("), "History cards must not render text captions or metadata")
+        #expect(card.contains(".labelStyle(.iconOnly)"))
+        #expect(card.contains("HStack(spacing: 0)"))
+        #expect(!card.contains("ViewThatFits"), "Actions stay in one horizontal icon row")
+        let surface = try #require(sheet.range(of: ".sheet(item: $shareTarget)"))
+        let main = String(sheet[..<surface.lowerBound])
+        #expect(main.contains(".labelStyle(.iconOnly)"))
+        #expect(!main.contains("Text("))
+        #expect(!main.contains("CameraStorageSummary("), "Storage belongs behind its icon")
+        #expect(sheet.contains(".sheet(isPresented: $showsStorage)"))
+        #expect(views.contains("details.append((\"Kept original\", reason))"))
+        #expect(views.contains("details.append((\"Error\", error))"))
+        #expect(views.contains("details.append((\"Cleanup warning\", warning))"))
+    }
+
     @Test func actionsHaveDistinctStableTargetsAndMinimumTouchHeight() {
         #expect(QueueReceiptPresentation.photosActionID != QueueReceiptPresentation.metadataActionID)
         #expect(QueueReceiptPresentation.minimumActionHeight >= 44)

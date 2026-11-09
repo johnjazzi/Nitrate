@@ -188,9 +188,10 @@ switch and shared-camera behaviour.
   exposure readout gives a manual ISO change something to match.
 - Lens selection is one button at the top right that opens a popout of raised
   keys inset in a well.
-- **Storage & Queue** is a single sheet opened by one tap on the status LCD:
-  space and remaining-time estimate first, queue activity and history below,
-  with render progress, saved history, metadata, retry and error detail.
+- **History & Queue** opens from the status LCD with thumbnails, status symbols
+  and icon-only horizontal actions. Storage and remaining-time estimates sit
+  behind the drive icon; metadata, retained-source reasons and errors remain
+  available through the info icon. Retry, selection and queue recovery are preserved.
 - **Frame mode** fits the preview into a bounded viewfinder between the top and
   bottom control bars, with black around it, instead of leaving a thin border
   over full-screen video. Focus taps, metering coordinates and pinch zoom stay
