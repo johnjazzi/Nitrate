@@ -98,7 +98,9 @@ final class RAWPhotoDecoder {
         ])
     }
 
-    func decode(url: URL, temperature: Float, tint: Float = 0) throws -> Decoded {
+    /// Preview-only size seam. Nil retains the shipping full-resolution decode.
+    func decode(url: URL, temperature: Float, tint: Float = 0,
+                maximumDimension: Int? = nil) throws -> Decoded {
         guard temperature.isFinite, (2000...50000).contains(temperature), tint.isFinite, (-150...150).contains(tint) else {
             throw DecodeError.invalidWhiteBalance
         }
@@ -111,6 +113,12 @@ final class RAWPhotoDecoder {
         guard let version else { throw DecodeError.unsupported("no supported decoder version") }
         raw.decoderVersion = version
         raw.scaleFactor = 1
+        if let maximumDimension {
+            guard maximumDimension > 0 else { throw DecodeError.emptyOutput }
+            let longest = max(raw.nativeSize.width, raw.nativeSize.height)
+            guard longest.isFinite, longest > 0 else { throw DecodeError.emptyOutput }
+            raw.scaleFactor = Float(min(1, CGFloat(maximumDimension) / longest))
+        }
         raw.exposure = Self.baseExposureEV
         // `baselineExposure` is deliberately NOT zeroed: the DNG's BaselineExposure
         // is the capture's exposure compensation (measured +0.98 EV and +2.49 EV on
@@ -126,7 +134,7 @@ final class RAWPhotoDecoder {
         raw.neutralTint = tint
 
         var settings: [String: String] = [
-            "decoderVersion": raw.decoderVersion.rawValue, "scaleFactor": "1",
+            "decoderVersion": raw.decoderVersion.rawValue, "scaleFactor": maximumDimension == nil ? "1" : String(raw.scaleFactor),
             "exposure": String(format: "%.2f (still base)", Self.baseExposureEV),
             "baselineExposure": String(format: "%.3f (DNG-provided)", dngBaselineExposure), "shadowBias": "0",
             "boostAmount": "0", "boostShadowAmount": "0", "gamutMappingEnabled": "false",
@@ -161,7 +169,16 @@ final class RAWPhotoDecoder {
             settings["highlightRecovery"] = "supported=true,enabled=false"
         } else { settings["highlightRecovery"] = "supported=false,unchanged" }
 
-        guard let image = raw.outputImage else { throw DecodeError.emptyOutput }
+        guard let outputImage = raw.outputImage else { throw DecodeError.emptyOutput }
+        // Some RAW decoders round their scale-factor raster. Enforce the preview
+        // bound before materializing a texture; nil leaves delivery unchanged.
+        let image: CIImage
+        if let maximumDimension, max(outputImage.extent.width, outputImage.extent.height) > CGFloat(maximumDimension) {
+            let scale = CGFloat(maximumDimension) / max(outputImage.extent.width, outputImage.extent.height)
+            image = outputImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        } else {
+            image = outputImage
+        }
         let extent = image.extent
         guard extent.origin.x.isFinite, extent.origin.y.isFinite,
               extent.width.isFinite, extent.height.isFinite,
