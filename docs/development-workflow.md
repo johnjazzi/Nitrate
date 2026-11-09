@@ -13,7 +13,7 @@ locking, LUT contents or delivery colour contracts. Work is on
 - The still fills the available canvas; no nested vertical scrolling or fixed 210-point thumbnail.
 - Stock, gauge, push/pull and primary actions use larger type and 48–80 point touch targets.
 - Show compact Estimate/Captured/Rated readouts only; file metadata and full error reasons live behind Details.
-- Page position is numeric. Results retain three actions in one row.
+- Page position is numeric. Results use three equal-width icons in one horizontal row, with small captions below.
 - Keep the camera carousel and top-bar clearance unchanged.
 
 ## Interaction contract

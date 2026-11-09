@@ -180,28 +180,44 @@ struct DevelopPreview: View {
     private var resultActions: some View {
         VStack(spacing: 6) {
             HStack(spacing: 8) {
-                Button("Develop more", action: startOver)
-                    .frame(maxWidth: .infinity, minHeight: 56)
-                    .accessibilityIdentifier("develop.more")
-                Button("Re-develop", action: redevelop)
-                    .frame(maxWidth: .infinity, minHeight: 56)
-                    .disabled(!redevelopment.isEnabled)
-                    .accessibilityHint(redevelopment.isEnabled ? "Review originals" : "Originals unavailable")
-                    .accessibilityIdentifier("develop.redevelop")
-                Button("Open Photos") {
-                    Task { @MainActor in photosOpenFailed = !(await PhotosLibraryOpener.open()) }
+                Button(action: startOver) {
+                    resultActionLabel("Develop more", systemImage: "plus")
                 }
-                .frame(maxWidth: .infinity, minHeight: 56)
+                .accessibilityIdentifier("develop.more")
+                Button(action: redevelop) {
+                    resultActionLabel("Re-develop", systemImage: "arrow.counterclockwise")
+                }
+                .disabled(!redevelopment.isEnabled)
+                .opacity(redevelopment.isEnabled ? 1 : 0.35)
+                .accessibilityHint(redevelopment.isEnabled ? "Review originals" : "Originals unavailable")
+                .accessibilityIdentifier("develop.redevelop")
+                Button {
+                    Task { @MainActor in photosOpenFailed = !(await PhotosLibraryOpener.open()) }
+                } label: {
+                    resultActionLabel("Open Photos", systemImage: "photo.on.rectangle")
+                }
                 .accessibilityIdentifier("develop.openPhotos")
             }
+            .buttonStyle(.plain)
             if redevelopment.missingCount > 0 {
                 Text("Missing \(redevelopment.missingCount)")
                     .foregroundStyle(DevelopPreviewChrome.warning)
             }
         }
         .font(NitrateTypography.font(.body))
-        .buttonStyle(.bordered)
-        .controlSize(.large)
+    }
+
+    private func resultActionLabel(_ title: String, systemImage: String) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(NitrateTypography.font(size: 24, relativeTo: .title2))
+                .accessibilityHidden(true)
+            Text(title)
+                .font(NitrateTypography.font(.caption))
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: 64)
+        .contentShape(Rectangle())
     }
 
     private var transferState: some View {

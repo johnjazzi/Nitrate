@@ -11,7 +11,7 @@ struct DevelopWorkflowWiringTests {
 
     @Test func developLabelsStayWithinTwoWords() throws {
         let files = ["DevelopPreview.swift", "DevelopResultsPager.swift", "DevelopMediaHelp.swift"]
-        let pattern = #"(?:Text|Button|Label|ProgressView|readout|LabeledContent|navigationTitle)\("([^"\n]*)"#
+        let pattern = #"(?:Text|Button|Label|ProgressView|readout|resultActionLabel|LabeledContent|navigationTitle)\("([^"\n]*)"#
         let labels = try NSRegularExpression(pattern: pattern)
         let interpolation = try NSRegularExpression(pattern: #"\\\([^)]*\)"#)
         for file in files {
