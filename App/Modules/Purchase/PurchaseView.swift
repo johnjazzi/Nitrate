@@ -21,6 +21,7 @@ struct PurchaseView: View {
     var cameraControlSupported = false
     /// Supplied by the active camera owner at the current session rate.
     var availableCaptureFormats: [CaptureFormat] = []
+    var stockLibrary: FilmStockLibrary? = nil
     @State private var pricingExpanded = false
     @State private var legalExpanded = false
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
@@ -62,6 +63,7 @@ struct PurchaseView: View {
 
                     // Preview mode
                     previewModeSection
+                    filmStocksSection
                     exportSection
 
 #if DEBUG
@@ -304,6 +306,31 @@ struct PurchaseView: View {
     }
 
     // MARK: - Preview Mode
+
+    @ViewBuilder private var filmStocksSection: some View {
+        if let library = stockLibrary {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Film Stocks")
+                    .font(NitrateTypography.font(.headline))
+                ForEach(library.stocks, id: \.stockId) { stock in
+                    SettingsToggleRow(icon: "film", title: stock.displayName,
+                                      accessibilityTitle: stock.displayName,
+                                      help: "Show this stock in film stock pickers.",
+                                      isOn: Binding(
+                                        get: { library.isStockVisible(stock.stockId) },
+                                        set: { library.setStockVisible($0, for: stock.stockId) }))
+                        .disabled(stock.category == .video && library.isStockVisible(stock.stockId)
+                                  && library.videoStocks().count == 1)
+                }
+                Text("Keep at least one stock enabled.")
+                    .font(NitrateTypography.font(.caption))
+                    .foregroundStyle(.secondary)
+            }
+            .padding()
+            .background(.regularMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+    }
 
     private var previewModeSection: some View {
         VStack(alignment: .leading, spacing: 12) {

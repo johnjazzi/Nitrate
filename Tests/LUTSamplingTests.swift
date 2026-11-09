@@ -109,7 +109,8 @@ struct LUTSamplingTests {
 
         for lutName in [
             "5207 - Apple Log 2.cube",
-            "5219 - Apple Log 2.cube"
+            "5219 - Apple Log 2.cube",
+            "Ektachrome 100D - Apple Log 2.cube"
         ] {
             let cube = try Self.parseCube(named: lutName)
             #expect(cube.size == 33, "\(lutName): expected 33³ cube")

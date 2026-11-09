@@ -346,7 +346,7 @@ struct CameraPreviewPolicyTests {
         let urls = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("Resources/LUTs"),
                                                                includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "cube" }
-        #expect(urls.count == 8)
+        #expect(urls.count == 9)
         for url in urls {
             let text = try String(contentsOf: url, encoding: .utf8)
             let cube = try CameraPreviewCube.parse(text)
