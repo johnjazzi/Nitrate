@@ -33,17 +33,34 @@ struct DevelopMediaHelp: View {
                         .accessibilityIdentifier("develop.help.refusal")
                     }
 
-                    row("Video", "Apple Log 2 only",
-                        "Nitrate's own camera records it. From the iPhone camera: "
-                        + "Settings → Camera → Formats → ProRAW & Resolution Control, "
-                        + "then the LOG control in Camera.")
+                    row("Video", "Apple Log 2 imports",
+                        "Choose an original Apple Log 2 clip. Re-develop can also load supported "
+                        + "retained Nitrate camera originals. Videos are reviewed as stills, not playback.")
                     row("Photo", "Raw files only",
                         "DNG (including ProRAW), NEF, ARW, CR2/CR3, RAF, ORF, RW2 — any raw "
                         + "this iPhone's decoder can open.")
                     row("If a raw is refused", "Check the copy",
                         "Photos can hand over a converted JPEG instead of the original. Turn on "
                         + "Settings → Photos → Keep Originals, then pick the file again.")
-                    Text("Anything else is refused before it is copied, so it never lands in storage.")
+                    row("Review", "Choose the look before developing",
+                        "Single files and batches use the same stock, gauge and push/pull controls. "
+                        + "Swipe to review each file. Tap a still to enlarge it, pinch to zoom, "
+                        + "or use Reset and Done.")
+                    row("Exposure", "An estimate, not calibration",
+                        "The center-weighted file estimate is relative to 18% scene-linear gray. "
+                        + "It is not calibrated EV100 or an incident-light reading. Recorded ISO, "
+                        + "capture metadata and saved meter offsets are shown separately when available. "
+                        + "Auto stays neutral for imports; it does not use this estimate. A video "
+                        + "still does not measure the entire take's highlight protection.")
+                    row("Results", "Delivered stills and retained originals",
+                        "Results show delivered files or their stored posters. Re-develop returns "
+                        + "available originals to review without rendering immediately. Develop more "
+                        + "returns to Photo and Video selection; it never deletes accepted jobs.")
+                    row("Open Photos", "General library handoff",
+                        "Open Photos does not select a specific new asset. Look in Recently Saved. "
+                        + "A Saved label appears only after the queue confirms delivery.")
+                    Text("Unsupported files are refused. Cancel releases unqueued app-owned copies; "
+                         + "your library originals are never edited.")
                         .font(NitrateTypography.font(.caption))
                         .foregroundStyle(DevelopPreviewChrome.muted)
                         .fixedSize(horizontal: false, vertical: true)
