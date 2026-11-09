@@ -82,29 +82,19 @@ extension DevelopVideoModel {
     }
 
     func loadPhoto(from item: PhotosPickerItem) async throws -> DevelopPhotoTransfer {
-        try await withCheckedThrowingContinuation { continuation in
-            let progress = item.loadTransferable(type: DevelopPickedPhoto.self) { result in
-                switch result {
-                case .success(let picked?): continuation.resume(returning: picked.transfer)
-                case .success(nil): continuation.resume(throwing: PhotoImportError.unreadable)
-                case .failure(let error): continuation.resume(throwing: error)
-                }
-            }
-            attachTransferProgress(progress)
+        let picked = try await DevelopTransferLoader.load(onStart: attachTransferProgress) { completion in
+            item.loadTransferable(type: DevelopPickedPhoto.self, completionHandler: completion)
         }
+        guard let picked else { throw PhotoImportError.unreadable }
+        return picked.transfer
     }
 
     func loadClip(from item: PhotosPickerItem) async throws -> DevelopClipTransfer {
-        try await withCheckedThrowingContinuation { continuation in
-            let progress = item.loadTransferable(type: DevelopPickedVideo.self) { result in
-                switch result {
-                case .success(let picked?): continuation.resume(returning: picked.transfer)
-                case .success(nil): continuation.resume(throwing: VideoImportError.unreadable)
-                case .failure(let error): continuation.resume(throwing: error)
-                }
-            }
-            attachTransferProgress(progress)
+        let picked = try await DevelopTransferLoader.load(onStart: attachTransferProgress) { completion in
+            item.loadTransferable(type: DevelopPickedVideo.self, completionHandler: completion)
         }
+        guard let picked else { throw VideoImportError.unreadable }
+        return picked.transfer
     }
 }
 #endif

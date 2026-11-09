@@ -30,6 +30,15 @@ struct RenderJob: Codable, Identifiable, Equatable {
     /// Nil preserves legacy camera jobs. Imported assets never expose playback
     /// or export another copy of their original into Photos.
     var isImportedVideo: Bool? = nil
+    /// Scoped opt-in for the shared Develop workflow. Nil/false preserves legacy
+    /// movie cleanup and imported-video thumbnail privacy on old queue records.
+    var retainsDevelopmentSource: Bool? = nil
+    /// File identity and original capture reading survive changes to the recipe.
+    var sourceOriginalFilename: String? = nil
+    var sourceCapturedOffsetEV: Float? = nil
+    /// Actual source metadata, never the stock's fallback render-recipe ISO.
+    /// Nil preserves unknown capture ISO across re-development and old queues.
+    var sourceCaptureISO: Float? = nil
     /// Photo jobs share queue persistence/retry but retain their DNG and JPEG.
     /// Optional fields keep every pre-Photo queue readable as a Video queue.
     var isPhoto: Bool? = nil
@@ -42,17 +51,25 @@ struct RenderJob: Codable, Identifiable, Equatable {
         return outputURL
     }
     /// The retained DNG is still on disk, so a Photo job can be developed again.
-    var hasRedevelopableOriginal: Bool {
-        guard isPhoto == true, sourceURL.isFileURL else { return false }
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory),
-              !isDirectory.boolValue else { return false }
-        return (try? sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) ?? 0 > 0
+    var hasRedevelopableOriginal: Bool { isPhoto == true && hasRedevelopableSource }
+
+    /// Both media types can return to review, but only an actual retained file
+    /// qualifies. A receipt/poster or a zero-byte placeholder is not an original.
+    var hasRedevelopableSource: Bool {
+        guard sourceURL.isFileURL,
+              let values = try? FileManager.default.attributesOfItem(atPath: sourceURL.path),
+              values[.type] as? FileAttributeType == .typeRegular,
+              let size = values[.size] as? NSNumber else { return false }
+        // NSURL resource values can remain cached after truncation/removal.
+        // Re-development requires the file that exists now, not an old stat.
+        return size.uint64Value > 0
     }
 
     /// Durable removal intent. Recovery and Retry clean files without rendering.
     var discardImportedMedia: Bool? = nil
-    var isDiscardingImport: Bool { isImportedVideo == true && discardImportedMedia == true }
+    var isDiscardingImport: Bool {
+        (isImportedVideo == true || retainsDevelopmentSource == true) && discardImportedMedia == true
+    }
     var permitsLocalMedia: Bool { isImportedVideo != true }
     /// Media-aware original delivery: a Photo job honours the independent RAW
     /// switch, a video honours `saveOriginalLog`.

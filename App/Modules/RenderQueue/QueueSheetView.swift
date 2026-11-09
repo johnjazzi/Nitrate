@@ -11,7 +11,7 @@ struct QueueSheetView: View {
     /// Load one finished develop back into the Develop panel, at step one, with
     /// the gauge and push/pull controls — the operator picks a new look there.
     var onRedevelop: (RenderJob) -> Void = { _ in }
-    /// Re-develop several at once with the settings currently selected.
+    /// Load several originals for review; this action never starts a render.
     var onBulkRedevelop: (Set<UUID>) -> Void = { _ in }
     @State private var selection: Set<UUID> = []
     @State private var isSelecting = false
@@ -20,6 +20,8 @@ struct QueueSheetView: View {
     @State private var playbackJob: RenderJob?
     @State private var metadataJob: RenderJob?
     @State private var photosOpenFailed = false
+    @State private var showsStorage = false
+    @State private var queueNotice: String?
 
     private var latestRender: RenderJob? {
         let candidates = viewModel.jobs.map {
@@ -49,145 +51,169 @@ struct QueueSheetView: View {
         NavigationStack {
             List {
                 if viewModel.isRenderPausedForAccess {
-                    Section {
-                        Label("Rendering is paused", systemImage: "lock.fill")
-                            .font(NitrateTypography.font(.subheadline).weight(.semibold))
-                        Text("Rendering the film look needs an active subscription. "
-                             + "Your recordings are kept here and render once you subscribe.")
-                            .font(NitrateTypography.font(.caption))
-                            .foregroundStyle(.secondary)
+                    Button {
+                        queueNotice = "Rendering needs an active subscription. Your originals are kept."
+                    } label: {
+                        Label("Rendering paused", systemImage: "lock.fill").frame(minHeight: 44)
                     }
                 }
                 if viewModel.isPersistenceBlocked {
-                    Section {
-                        Button {
-                            viewModel.resume()
-                        } label: {
-                            Label("Resume queue", systemImage: "arrow.clockwise")
-                                .frame(minHeight: 44)
+                    HStack {
+                        Button { viewModel.resume() } label: {
+                            Label("Resume queue", systemImage: "arrow.clockwise").frame(width: 44, height: 44)
                         }
-                        Text("The queue is paused because a change could not be saved. Existing media is kept in the app; free space if needed, then resume to retry.")
-                            .font(NitrateTypography.font(.caption))
-                            .foregroundStyle(.secondary)
+                        Button {
+                            queueNotice = "The queue could not save a change. Existing media is kept; free space if needed, then resume."
+                        } label: {
+                            Label("Details", systemImage: "exclamationmark.triangle").frame(width: 44, height: 44)
+                        }
                     }
-                }
-                Section("Storage") {
-                    CameraStorageSummary(
-                        freeSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.freeSpaceBytes : nil,
-                        totalSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.totalSpaceBytes : nil,
-                        estimatedSeconds: estimatedRemainingSeconds
-                    )
-                }
-                Section("Photos") {
-                    Button(action: openPhotos) {
-                        Label("Open Photos", systemImage: "photo.on.rectangle")
-                            .frame(minHeight: QueueReceiptPresentation.minimumActionHeight)
-                    }
-                    .accessibilityIdentifier(QueueReceiptPresentation.photosActionID + ".general")
-                    Text("Opens Photos, not a specific video. Look in Recently Saved for confirmed saves.")
-                        .font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
+                    .buttonStyle(.borderless)
                 }
                 if let latestRender {
-                    Section("Latest render") {
-                        receiptCard(for: latestRender, prominent: true)
+                    Section {
+                        HStack(spacing: 10) {
+                            if isSelecting, canReviewOriginal(latestRender) {
+                                selectionToggle(for: latestRender)
+                            }
+                            receiptCard(for: latestRender)
+                        }
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                        .listRowBackground(Color.clear)
+                    } header: {
+                        Text("Latest")
                     }
                 }
                 if isEmpty {
-                    Section("Render queue") {
-                        ContentUnavailableView(
-                            "No Render Jobs",
-                            systemImage: "tray",
-                            description: Text("Capture a photo, record a video, or use Develop to choose a clip.")
-                        )
+                    VStack(spacing: 12) {
+                        Image(systemName: "tray")
+                            .font(NitrateTypography.font(size: 44))
+                        Text("No history")
+                            .font(NitrateTypography.font(.body))
                     }
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 160)
                 } else {
                     if !visibleAwaitingStock.isEmpty {
-                        Section("Awaiting stock (\(visibleAwaitingStock.count))") {
+                        Section {
                             ForEach(visibleAwaitingStock) { job in
-                                VStack(alignment: .leading, spacing: 6) {
-                                    JobRow(job: job)
+                                HStack {
+                                    JobRow(job: job, onDetails: { metadataJob = job })
                                     chooseStockMenu(for: job)
                                     Button {
                                         viewModel.exportOriginal(jobId: job.id)
                                     } label: {
-                                        Text("Save original").frame(minHeight: 44)
+                                        Label("Save original", systemImage: "square.and.arrow.down")
+                                            .frame(width: 44, height: 44)
                                     }
-                                    .buttonStyle(.bordered)
+                                    .buttonStyle(.borderless)
                                 }
                             }
+                        } header: {
+                            Text("Choose stock")
                         }
                     }
                     if let current = visibleQueuedJobs.first(where: { $0.status == .processing }) {
-                        Section("Processing") { JobRow(job: current, isCurrent: true) }
+                        Section {
+                            JobRow(job: current, isCurrent: true, onDetails: { metadataJob = current })
+                        } header: {
+                            Text("Processing")
+                        }
                     }
                     let pending = visibleQueuedJobs.filter { $0.status == .pending }
                     if !pending.isEmpty {
-                        Section("Pending (\(pending.count))") {
+                        Section {
                             ForEach(pending) { job in
-                                JobRow(job: job)
+                                JobRow(job: job, onDetails: { metadataJob = job })
                                     .swipeActions {
-                                        Button("Remove", role: .destructive) {
+                                        Button(role: .destructive) {
                                             viewModel.remove(jobId: job.id)
+                                        } label: {
+                                            Label("Remove", systemImage: "trash")
                                         }
                                     }
                             }
+                        } header: {
+                            Text("Queued")
                         }
                     }
                     if !visibleHistory.isEmpty {
-                        Section("History (\(visibleHistory.count))") {
+                        Section {
                             ForEach(visibleHistory) { job in
-                                if job.status == .completed {
+                                VStack(alignment: .leading, spacing: 4) {
                                     HStack(spacing: 10) {
-                                        if isSelecting, job.isPhoto == true, job.hasRedevelopableOriginal {
+                                        if isSelecting, canReviewOriginal(job) {
                                             selectionToggle(for: job)
                                         }
                                         receiptCard(for: job)
                                     }
-                                } else {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        JobRow(job: job)
-                                        if let error = job.errorMessage {
-                                            Text(error).font(NitrateTypography.font(.caption)).foregroundStyle(.red)
-                                        }
-                                        receiptCard(for: job)
+                                    if job.status == .failed {
                                         Button { viewModel.retry(jobId: job.id) } label: {
-                                            Text("Retry").frame(minHeight: 44)
+                                            Label("Retry", systemImage: "arrow.clockwise")
+                                                .frame(width: 44, height: 44)
                                         }
-                                        .buttonStyle(.bordered)
+                                        .buttonStyle(.borderless)
                                     }
                                 }
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                                .listRowBackground(Color.clear)
                             }
+                        } header: {
+                            Text("Earlier")
                         }
                     }
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .listRowSpacing(0)
+            .environment(\.defaultMinListHeaderHeight, 24)
+            .labelStyle(.iconOnly)
             .animation(.default, value: viewModel.jobs)
-            .navigationTitle("Storage & Queue")
+            .navigationTitle("History")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItemGroup(placement: .topBarLeading) {
                     if isSelecting {
-                        Button("Cancel") {
+                        Button {
                             isSelecting = false
                             selection.removeAll()
+                        } label: {
+                            Label("Cancel", systemImage: "arrow.uturn.backward").frame(width: 44, height: 44)
                         }
                     } else {
-                        Button(showAll ? "This session" : "Show all") { showAll.toggle() }
+                        Menu {
+                            Button { showAll.toggle() } label: {
+                                Label(showAll ? "This session" : "Show all", systemImage: "clock")
+                            }
+                            Button { showsStorage = true } label: {
+                                Label("Storage", systemImage: "internaldrive")
+                            }
+                            Button(action: openPhotos) {
+                                Label("Open Photos", systemImage: "photo.on.rectangle")
+                            }
+                            .accessibilityIdentifier(QueueReceiptPresentation.photosActionID + ".general")
+                        } label: {
+                            Label("History options", systemImage: "ellipsis")
+                        }
+                        .accessibilityIdentifier("queue.options")
+                        .accessibilityValue(showAll ? "All history" : "This session")
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     if isSelecting {
-                        Text("\(selection.count) selected")
-                            .font(NitrateTypography.font(.footnote))
-                            .foregroundStyle(.secondary)
-                    } else if visibleHistory.contains(where: { $0.isPhoto == true && $0.hasRedevelopableOriginal }) {
-                        Button("Select") { isSelecting = true }
-                            .accessibilityIdentifier("queue.select")
-                    } else {
-                        Button("Done") { isPresented = false }
+                        Image(systemName: "checkmark.circle.fill")
+                            .accessibilityLabel("\(selection.count) selected")
+                    } else if visibleHistory.contains(where: canReviewOriginal)
+                        || latestRender.map(canReviewOriginal) == true {
+                        Button { isSelecting = true } label: {
+                            Label("Select", systemImage: "checkmark.circle")
+                        }
+                        .accessibilityIdentifier("queue.select")
                     }
                 }
             }
+            .labelStyle(.iconOnly)
             // Bulk action lives at the bottom, where a thumb is, and only while
             // something is selected: a disabled bar would be permanent chrome.
             .safeAreaInset(edge: .bottom) {
@@ -197,8 +223,9 @@ struct QueueSheetView: View {
                         isSelecting = false
                         selection.removeAll()
                     } label: {
-                        Text("Re-develop \(selection.count)")
-                            .font(NitrateTypography.font(.headline))
+                        Label("Re-develop \(selection.count)", systemImage: "arrow.counterclockwise")
+                            .labelStyle(.iconOnly)
+                            .font(NitrateTypography.font(.title2))
                             .frame(maxWidth: .infinity, minHeight: 50)
                     }
                     .buttonStyle(.borderedProminent)
@@ -223,6 +250,32 @@ struct QueueSheetView: View {
             }
             .sheet(item: $metadataJob) { job in
                 QueueReceiptMetadataView(job: job)
+                    .labelStyle(.titleAndIcon)
+            }
+            .sheet(isPresented: $showsStorage) {
+                NavigationStack {
+                    CameraStorageSummary(
+                        freeSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.freeSpaceBytes : nil,
+                        totalSpaceBytes: cameraViewModel.hasStorageSnapshot ? cameraViewModel.totalSpaceBytes : nil,
+                        estimatedSeconds: estimatedRemainingSeconds
+                    )
+                    .padding()
+                    .navigationTitle("Storage")
+                    .toolbar {
+                        Button { showsStorage = false } label: {
+                            Label("Done", systemImage: "xmark").labelStyle(.iconOnly)
+                        }
+                    }
+                }
+                .labelStyle(.titleAndIcon)
+                .presentationDetents([.medium])
+            }
+            .alert("Details", isPresented: Binding(
+                get: { queueNotice != nil }, set: { if !$0 { queueNotice = nil } }
+            )) {
+                Button("OK", role: .cancel) { queueNotice = nil }
+            } message: {
+                Text(queueNotice ?? "")
             }
             .alert("Could not open Photos", isPresented: $photosOpenFailed) {
                 Button("OK", role: .cancel) {}
@@ -230,6 +283,7 @@ struct QueueSheetView: View {
                 Text(PhotosLibraryOpener.failureMessage)
             }
         }
+        .presentationDragIndicator(.visible)
         .onAppear { cameraViewModel.updateFreeSpace() }
     }
 
@@ -266,14 +320,19 @@ struct QueueSheetView: View {
         .buttonStyle(.bordered)
     }
 
-    private func receiptCard(for job: RenderJob, prominent: Bool = false) -> some View {
-        QueueReceiptCard(job: job, prominent: prominent, openPhotos: openPhotos,
+    private func receiptCard(for job: RenderJob) -> some View {
+        QueueReceiptCard(job: job, openPhotos: openPhotos,
                          showMetadata: { metadataJob = job },
                          playLocal: {
                              guard job.isImportedVideo != true, job.retainedOutputURL != nil else { return }
                              playbackJob = job
                          }, shareLocal: { shareVideo(job) },
-                         redevelop: job.isPhoto == true ? { onRedevelop(job) } : nil)
+                         redevelop: canReviewOriginal(job) ? { onRedevelop(job) } : nil)
+    }
+
+    private func canReviewOriginal(_ job: RenderJob) -> Bool {
+        job.originalOnly != true && job.hasRedevelopableSource
+            && (job.status == .completed || job.status == .failed)
     }
 
     /// Tap target that adds or removes a finished develop from the bulk selection.
@@ -363,68 +422,47 @@ private struct VideoPreviewSheet: View {
 private struct JobRow: View {
     let job: RenderJob
     var isCurrent = false
-    @Environment(\.locale) private var locale
+    var onDetails: () -> Void = {}
 
     var body: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(job.originalOnly == true ? "Original recording" : (job.stockId.isEmpty ? "Unassigned recording" : job.stockId))
-                    .font(NitrateTypography.font(.caption).weight(.semibold))
-                if !job.stockId.isEmpty {
-                    Text("Selected render ISO \(QueueReceiptPresentation.number(Double(job.iso)))")
-                        .font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
-                }
-                if let reason = job.retainedReason {
-                    Text("Kept original: \(reason)").font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
-                }
-                if job.outputSavedToPhotos == true {
-                    Text(job.sourceSavedToPhotos == true ? "Rendered + original saved to Photos" : "Rendered saved to Photos")
-                        .font(NitrateTypography.font(.caption2))
-                        .foregroundStyle(.secondary)
-                } else if job.sourceSavedToPhotos == true {
-                    Text("Original saved to Photos").font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
-                }
-                HStack(spacing: 3) {
-                    Text("Queued")
-                    Text(job.createdAt.formatted(queuedDateFormat))
-                }
-                .font(NitrateTypography.font(.caption))
-                .foregroundStyle(.secondary)
-                .accessibilityElement(children: .combine)
-            }
-            Spacer()
+            Image(systemName: job.isPhoto == true ? "photo" : "film")
+                .font(NitrateTypography.font(.title2))
+                .frame(width: 44, height: 44)
+            Spacer(minLength: 0)
             statusLabel
+            Button(action: onDetails) {
+                Label("Details", systemImage: "info.circle")
+                    .labelStyle(.iconOnly)
+                    .font(NitrateTypography.font(.title2))
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.borderless)
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(job.receiptTitle)
+        .accessibilityValue(job.createdAt.formatted(date: .abbreviated, time: .shortened))
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: job.status)
-    }
-
-    private var queuedDateFormat: Date.FormatStyle {
-        .dateTime
-            .year()
-            .month(.abbreviated)
-            .day()
-            .hour()
-            .minute()
-            .second()
-            .locale(locale)
     }
 
     private var statusLabel: some View {
         Group {
             switch job.status {
-            case .pending:   Text("Pending").font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
+            case .pending:
+                Image(systemName: "clock").foregroundStyle(.secondary).accessibilityLabel("Pending")
             case .processing:
-                HStack {
-                    ProgressView().scaleEffect(0.8)
-                    Text(job.originalOnly == true || job.outputSavedToPhotos == true ? "Saving original" : "Rendering / saving")
-                        .font(NitrateTypography.font(.caption2)).foregroundStyle(.orange)
-                }
-            case .completed: Label("Done", systemImage: "checkmark.circle.fill").font(NitrateTypography.font(.caption2)).foregroundStyle(.green)
-            case .failed: Label("Failed", systemImage: "xmark.circle.fill").font(NitrateTypography.font(.caption2)).foregroundStyle(.red)
-            case .awaitingStock: Label("Awaiting stock", systemImage: "film").font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
+                ProgressView().accessibilityLabel("Processing")
+            case .completed:
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).accessibilityLabel("Done")
+            case .failed:
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.red).accessibilityLabel("Failed")
+            case .awaitingStock:
+                Image(systemName: "film").foregroundStyle(.secondary).accessibilityLabel("Awaiting stock")
             }
         }
+        .font(NitrateTypography.font(.title3))
+        .frame(width: 44, height: 44)
         .id(job.status)
         .transition(.opacity.combined(with: .scale))
     }

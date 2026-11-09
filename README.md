@@ -58,17 +58,30 @@ Three commitments follow from that:
 
 **Nitrate will never add trimming, timelines, projects, or editing adjustments.**
 
-Choose **D** below the shutter to open Develop, then **choose a clip → choose a
-stock and gauge → press Render → save to Photos**. Storage & Queue shows jobs
-and saved results; clip selection lives in Develop.
+Choose **D** below the shutter to open Develop. Photo, Video and Re-develop use
+one flow: **select files → load → review a graded still → choose stock, gauge and
+push/pull → Develop → view results**. One file and a batch use the same controls;
+previews show stock colour and push/pull only. Grain, halation, glow and diffusion
+remain in the final render; changing gauge does not restart the preview. Inputs
+and colour resources are cached, and cancelled/stalled loads settle with retry
+instead of waiting indefinitely. Results can be swiped and enlarged,
+with **Develop more**, **Re-develop** and **Open Photos** actions. Queue Re-develop
+also returns originals to review instead of immediately rendering them.
+
+The preview shows an explicitly approximate, center-weighted file exposure estimate
+separately from recorded capture values when present. It is not a calibrated light
+meter, and missing capture metadata is not replaced with the current camera reading.
+See [the shared workflow and acceptance checks](docs/development-workflow.md).
 
 Video import in Develop accepts **Apple Log 2 only**. HLG support applies to
 recordings made by Nitrate; it does not admit HLG or Apple Log 1 imports. Watch
 finished videos in Photos.
 
-Develop accesses only the video selected through the system Photos picker,
-without requesting photo-library read permission. Saving uses add-only Photos
-access. The original video remains unchanged.
+Develop accesses only files selected through the system Photos picker, without
+requesting photo-library read permission. Saving uses add-only Photos access.
+Originals remain unchanged; scoped retained Develop originals support re-development.
+Open Photos is a general handoff, not a guarantee that iOS selects specific assets;
+look in Recently Saved for confirmed saves.
 
 This scope applies to future releases as well.
 
@@ -178,9 +191,14 @@ switch and shared-camera behaviour.
   exposure readout gives a manual ISO change something to match.
 - Lens selection is one button at the top right that opens a popout of raised
   keys inset in a well.
-- **Storage & Queue** is a single sheet opened by one tap on the status LCD:
-  space and remaining-time estimate first, queue activity and history below,
-  with render progress, saved history, metadata, retry and error detail.
+- **History & Queue** opens from the status LCD with a History title, labelled
+  sections and a pull-down handle instead of a close X. Missing thumbnails say
+  No preview. Compact flat rows place larger thumbnails beside horizontal
+  icon-only actions; Preview/Share live in More. Filters, storage and remaining-time
+  estimates live in History options; metadata, retained-source reasons and errors remain
+  available through the info icon. Develop also shows brief import, preview and
+  render errors inline, without requiring a tap for the reason. Retry, selection
+  and queue recovery are preserved.
 - **Frame mode** fits the preview into a bounded viewfinder between the top and
   bottom control bars, with black around it, instead of leaving a thin border
   over full-screen video. Focus taps, metering coordinates and pinch zoom stay
@@ -507,8 +525,10 @@ exposure, grain and preview policies, and the film-stock catalogue.
 source of truth. XcodeGen feeds them into the generated Info.plist, and the
 launch splash renders them through `AppVersion` (`App/AppIdentity.swift`).
 
-- This release candidate is **0.7.1 (34)**, based on **0.7.0 (33)**.
-  It adds EC 100D, long-press stock information and persistent stock visibility.
+- This release candidate is **0.8.0 (35)**, based on **0.7.1 (34)**.
+  It unifies Photo, Video and Re-develop into review-first development, adds
+  colour/push-pull still previews and exposure estimates, improves cancellation
+  and load deadlines, and makes History more compact with larger previews.
   Preparing the release PR does not mean it has been distributed.
 - Advance `MARKETING_VERSION` for each release PR into `main` (a patch increment
   by default unless a larger increment is explicitly requested).

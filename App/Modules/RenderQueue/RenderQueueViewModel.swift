@@ -129,7 +129,9 @@ final class RenderQueueViewModel {
             let persisted = try (loadOverride ?? { try self.persister.load() })()
             jobs = persisted.map { job in
                 var recovered = job
-                if recovered.isImportedVideo == true { recovered.receipt?.thumbnailJPEG = nil }
+                if recovered.isImportedVideo == true, recovered.retainsDevelopmentSource != true {
+                    recovered.receipt?.thumbnailJPEG = nil
+                }
                 if recovered.status == .processing {
                     recovered.status = .pending
                     recovered.sessionId = sessionId
@@ -196,7 +198,9 @@ final class RenderQueueViewModel {
     @discardableResult
     func enqueueImportedVideo(sourceURL: URL, stockId: String, iso: Float, gauge: PrintGauge? = nil,
                               pushPull: PushPullExposure? = nil,
-                              preferences: RenderDeliveryPreferences? = nil) -> UUID? {
+                              preferences: RenderDeliveryPreferences? = nil,
+                              retainsDevelopmentSource: Bool = false,
+                              originalFilename: String? = nil, sourceCaptureISO: Float? = nil) -> UUID? {
         guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
         guard Self.isUsableFile(sourceURL) else {
             reportRenderError("The selected video could not be read. Choose it again.")
@@ -216,6 +220,9 @@ final class RenderQueueViewModel {
                                  pushPull: resolvedPushPull,
                                  sessionId: sessionId, deliveryPreferences: delivery)
         imported.isImportedVideo = true
+        if retainsDevelopmentSource { imported.retainsDevelopmentSource = true }
+        imported.sourceOriginalFilename = originalFilename
+        imported.sourceCaptureISO = sourceCaptureISO.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         jobs.append(imported)
         guard persistJobs() else {
             jobs.removeAll { $0.id == imported.id }
@@ -238,7 +245,8 @@ final class RenderQueueViewModel {
                       cropZoom: Double, seed: UInt32,
                       pushPull: PushPullExposure? = nil,
                       preferences: RenderDeliveryPreferences? = nil,
-                      isImported: Bool = false) -> UUID? {
+                      isImported: Bool = false, retainsDevelopmentSource: Bool = false,
+                      originalFilename: String? = nil, sourceCaptureISO: Float? = nil) -> UUID? {
         guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
         // Any raw the still renderer can develop, not only a DNG: the importer
         // already proved the file opens through the system RAW pipeline.
@@ -261,6 +269,9 @@ final class RenderQueueViewModel {
         photo.photoCropZoom = cropZoom
         photo.photoGrainSeed = seed
         if isImported { photo.isImportedPhoto = true }
+        if retainsDevelopmentSource { photo.retainsDevelopmentSource = true }
+        photo.sourceOriginalFilename = originalFilename
+        photo.sourceCaptureISO = sourceCaptureISO.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         jobs.append(photo)
         guard persistJobs() else {
             jobs.removeAll { $0.id == photo.id }
@@ -408,23 +419,7 @@ final class RenderQueueViewModel {
     /// DNG is the durable source, so a wrong-looking JPEG can be replaced
     /// without recapturing and without touching any Video job.
     func redevelopPhoto(jobId: UUID) {
-        guard let index = jobs.firstIndex(where: { $0.id == jobId }),
-              jobs[index].isPhoto == true, jobs[index].hasRedevelopableOriginal,
-              jobs[index].status == .completed || jobs[index].status == .failed else { return }
-        if let stale = jobs[index].outputURL { try? FileManager.default.removeItem(at: stale) }
-        jobs[index].status = .pending
-        jobs[index].outputURL = nil
-        jobs[index].receipt = nil
-        jobs[index].outputSavedToPhotos = nil
-        jobs[index].errorMessage = nil
-        jobs[index].sessionId = sessionId
-        clearProgress(jobId: jobId)
-        guard persistJobs() else {
-            isPersistenceBlocked = true
-            publishQueueMessage()
-            return
-        }
-        processNext()
+        _ = redevelopPhotos(jobIds: [jobId])
     }
 
     /// Re-develop several finished photos at once with one set of settings.
@@ -439,36 +434,65 @@ final class RenderQueueViewModel {
     @discardableResult
     func redevelopPhotos(jobIds: [UUID], stockId: String? = nil, gauge: PrintGauge? = nil,
                          pushPull: PushPullExposure? = nil) -> Int {
+        let photoIDs = jobIds.filter { id in jobs.contains { $0.id == id && $0.isPhoto == true } }
+        return redevelopJobs(jobIds: photoIDs, stockId: stockId, gauge: gauge, pushPull: pushPull)
+    }
+
+    /// Requeue retained originals through the same serial durable worker. Recipe
+    /// edits are transactional: a rejected write leaves review and old results
+    /// intact. Capture ISO, policy, trim, crop, grain and delivery stay unchanged.
+    @discardableResult
+    func redevelopJobs(jobIds: [UUID], stockId: String? = nil, gauge: PrintGauge? = nil,
+                       pushPull: PushPullExposure? = nil) -> Int {
         guard !isPersistenceBlocked else { publishQueueMessage(); return 0 }
-        var requeued = 0
+        let previous = jobs
+        var requeued: [UUID] = []
+        var staleOutputs: [URL] = []
         for jobId in jobIds {
-            guard let index = jobs.firstIndex(where: { $0.id == jobId }),
-                  jobs[index].isPhoto == true,
-                  jobs[index].hasRedevelopableOriginal,
+            guard !requeued.contains(jobId),
+                  let index = jobs.firstIndex(where: { $0.id == jobId }),
+                  jobs[index].hasRedevelopableSource, !jobs[index].isDiscardingImport,
+                  jobs[index].originalOnly != true,
                   jobs[index].status == .completed || jobs[index].status == .failed else { continue }
+            // Preserve the source capture reading before a manual recipe erases
+            // the old automatic push/pull's captured meter value.
+            if jobs[index].sourceCapturedOffsetEV == nil {
+                jobs[index].sourceCapturedOffsetEV = jobs[index].pushPull?.meteredOffsetEV
+            }
             if let stockId { jobs[index].stockId = stockId }
             if let gauge { jobs[index].printGauge = gauge }
             if let pushPull { jobs[index].pushPull = pushPull }
-            if let stale = jobs[index].outputURL {
-                try? FileManager.default.removeItem(at: stale)
-            }
+            if jobs[index].isPhoto != true { jobs[index].retainsDevelopmentSource = true }
+            if let stale = jobs[index].outputURL { staleOutputs.append(stale) }
             jobs[index].status = .pending
             jobs[index].outputURL = nil
             jobs[index].receipt = nil
             jobs[index].outputSavedToPhotos = nil
+            jobs[index].mediaCleanupCompleted = nil
+            jobs[index].cleanupWarning = nil
             jobs[index].errorMessage = nil
             jobs[index].sessionId = sessionId
-            clearProgress(jobId: jobId)
-            requeued += 1
+            requeued.append(jobId)
         }
-        guard requeued > 0 else { return 0 }
+        guard !requeued.isEmpty else { return 0 }
         guard persistJobs() else {
+            jobs = previous
             isPersistenceBlocked = true
             publishQueueMessage()
             return 0
         }
+        // Never unlink a file referenced by another job or a retained original.
+        // Movie deletion uses the narrow ownership capability; photo delivery
+        // writes its same-path JPEG atomically, so no pre-emptive unlink needed.
+        for stale in staleOutputs where !jobs.contains(where: {
+            $0.sourceURL.standardizedFileURL == stale.standardizedFileURL
+                || $0.outputURL?.standardizedFileURL == stale.standardizedFileURL
+        }) {
+            _ = try? mediaCleanup.removeIfOwned(stale)
+        }
+        for id in requeued { clearProgress(jobId: id) }
         processNext()
-        return requeued
+        return requeued.count
     }
 
     func retry(jobId: UUID) {
@@ -519,7 +543,8 @@ final class RenderQueueViewModel {
             failureAlert = nil
             presentedFailureEventId = nil
         }
-        if let index = jobs.firstIndex(where: { $0.id == jobId }), jobs[index].isImportedVideo == true {
+        if let index = jobs.firstIndex(where: { $0.id == jobId }),
+           jobs[index].isImportedVideo == true || jobs[index].retainsDevelopmentSource == true {
             requestImportDiscard(at: index)
             return
         }
@@ -531,7 +556,7 @@ final class RenderQueueViewModel {
     private func requestImportDiscard(at index: Int) {
         jobs[index].discardImportedMedia = true
         jobs[index].status = .failed
-        jobs[index].errorMessage = "Removing video…"
+        jobs[index].errorMessage = "Removing media…"
         jobs[index].cleanupWarning = nil
         guard persistJobs() else {
             isPersistenceBlocked = true
@@ -554,7 +579,8 @@ final class RenderQueueViewModel {
     @discardableResult
     private func persistJobs(allowWhileBlocked: Bool = false) -> Bool {
         guard allowWhileBlocked || !isPersistenceBlocked else { return false }
-        for index in jobs.indices where jobs[index].isImportedVideo == true {
+        for index in jobs.indices where jobs[index].isImportedVideo == true
+            && jobs[index].retainsDevelopmentSource != true {
             jobs[index].receipt?.thumbnailJPEG = nil
         }
         do {
@@ -659,8 +685,8 @@ final class RenderQueueViewModel {
 
     private static func needsMediaCleanup(_ job: RenderJob) -> Bool {
         // Photo history plays the retained JPEG; never unlink its original DNG.
-        guard job.isPhoto != true else { return false }
         if job.isDiscardingImport { return true }
+        guard job.isPhoto != true else { return false }
         guard job.status == .completed, job.receipt != nil,
               job.mediaCleanupCompleted != true else { return false }
         if job.originalOnly == true, job.isImportedVideo != true { return job.sourceSavedToPhotos == true }
@@ -679,6 +705,7 @@ final class RenderQueueViewModel {
     private func captureReceipt(_ id: UUID, url: URL, elapsed: Double?) async -> RenderReceipt {
         let job = job(id)
         let imported = job?.isImportedVideo == true
+        let retainsSource = job?.retainsDevelopmentSource == true
         // The original is read here, before delivery cleanup removes it, so the
         // "Original" row of the metadata cards has real evidence.
         let original = job.map { $0.sourceURL.isFileURL && Self.isUsableFile($0.sourceURL) ? $0.sourceURL : nil } ?? nil
@@ -688,9 +715,10 @@ final class RenderQueueViewModel {
         } else {
             receipt = await RenderReceiptService.capture(url: url, originalURL: original,
                                                          renderDurationSeconds: elapsed,
-                                                         includeThumbnail: !imported)
+                                                         includeThumbnail: !imported || retainsSource,
+                                                         maximumThumbnailSize: retainsSource ? 1600 : 320)
         }
-        if imported { receipt.thumbnailJPEG = nil }
+        if imported && !retainsSource { receipt.thumbnailJPEG = nil }
         return receipt
     }
 
@@ -712,12 +740,22 @@ final class RenderQueueViewModel {
             guard !isPersistenceBlocked, let latest = job(id), Self.needsMediaCleanup(latest) else { continue }
             var allRemoved = true
             var warnings: [String] = []
-            let urls = [latest.sourceURL] + [latest.outputURL].compactMap { $0 }
+            let keepSource = latest.retainsDevelopmentSource == true && !latest.isDiscardingImport
+            var urls = (keepSource ? [] : [latest.sourceURL]) + [latest.outputURL].compactMap { $0 }
+            // A failed photo re-develop may have no current output reference,
+            // but its earlier same-stem delivered JPEG is still app-owned.
+            if latest.isDiscardingImport, latest.isPhoto == true {
+                let still = latest.sourceURL.deletingPathExtension().appendingPathExtension("jpg")
+                if !urls.contains(still) { urls.append(still) }
+            }
             for url in urls {
                 let path = RenderMediaCleanup.canonicalPath(url)
+                if keepSource, path == RenderMediaCleanup.canonicalPath(latest.sourceURL) { continue }
                 let protected = jobs.contains { other in
-                    guard other.id != id, !other.isDiscardingImport,
-                          !Self.isFullyDeliveredReceipt(other) else { return false }
+                    guard other.id != id, !other.isDiscardingImport else { return false }
+                    if other.retainsDevelopmentSource == true,
+                       RenderMediaCleanup.canonicalPath(other.sourceURL) == path { return true }
+                    guard !Self.isFullyDeliveredReceipt(other) else { return false }
                     return ([other.sourceURL] + [other.outputURL].compactMap { $0 }).contains {
                         RenderMediaCleanup.canonicalPath($0) == path
                     }
@@ -728,7 +766,7 @@ final class RenderQueueViewModel {
                     continue
                 }
                 do {
-                    if try mediaCleanup.removeIfOwned(url) {
+                    if try mediaCleanup.removeIfOwned(url, includeDevelopmentPhoto: latest.isDiscardingImport) {
                         update(id) { if $0.outputURL == url { $0.outputURL = nil } }
                     } else {
                         allRemoved = false
@@ -745,7 +783,7 @@ final class RenderQueueViewModel {
                 update(id) {
                     $0.mediaCleanupCompleted = allRemoved
                     $0.cleanupWarning = warnings.isEmpty ? nil : Array(Set(warnings)).sorted().joined(separator: " ")
-                    if latest.isDiscardingImport { $0.errorMessage = "Could not remove the video. Try again." }
+                    if latest.isDiscardingImport { $0.errorMessage = "Could not remove the media. Try again." }
                 }
             }
             // Cleanup write failure never changes delivery into a retry. Missing

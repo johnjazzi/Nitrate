@@ -31,15 +31,20 @@ struct RenderMediaCleanup {
 
     /// Missing owned movies count as cleaned, including after a crash between
     /// unlink and the cleanup-state write. Symlinks and directories never do.
-    func removeIfOwned(_ url: URL) throws -> Bool {
+    func removeIfOwned(_ url: URL, includeDevelopmentPhoto: Bool = false) throws -> Bool {
+        let isMovie = url.pathExtension == "mov"
+        let isDevelopmentPhoto = includeDevelopmentPhoto
+            && url.lastPathComponent.hasPrefix("photo_import_")
+            && (RawPhotoType.extensions.contains(url.pathExtension.lowercased())
+                || url.pathExtension.lowercased() == "jpg")
         guard url.isFileURL, !url.pathComponents.contains(".."),
-              url.pathExtension == "mov" else { return false }
+              isMovie || isDevelopmentPhoto else { return false }
         let normalized = url.standardizedFileURL
         let parent = normalized.deletingLastPathComponent()
         let matchesSource = parent.path == sourceRoot.standardizedFileURL.path
-            && normalized.lastPathComponent.hasPrefix("clip_")
+            && ((isMovie && normalized.lastPathComponent.hasPrefix("clip_")) || isDevelopmentPhoto)
         let matchesOutput = parent.path == outputRoot.standardizedFileURL.path
-            && normalized.lastPathComponent.hasPrefix("render_")
+            && isMovie && normalized.lastPathComponent.hasPrefix("render_")
         guard matchesSource || matchesOutput,
               Self.systemPath(normalized) == Self.canonicalPath(normalized),
               Self.systemPath(parent) == Self.canonicalPath(parent) else { return false }

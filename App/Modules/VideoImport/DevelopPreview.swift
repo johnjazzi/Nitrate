@@ -5,432 +5,249 @@ import AVFoundation
 import ImageIO
 import CoreGraphics
 
-/// Inline Develop surface for the D-V mode.
-///
-/// It chooses a clip OR a raw photo, shows an UNGRADED frame of what was picked so
-/// the operator can see they selected the right thing, carries the gauge and
-/// push/pull controls (the shared components the stock sheet presents), shows
-/// genuine render progress while a job is pending or processing, and reports
-/// completion or failure. The parent owns the stock and the shutter starts the
-/// render; the gauge and push/pull here ARE the parent's, bound in.
+/// One staged review and durable-queue result surface for every import count and
+/// retained-original re-development. The parent still owns the camera chrome.
 struct DevelopPreview: View {
     let model: DevelopVideoModel
     let queue: RenderQueueViewModel
-    /// The stock a bulk pick queues with; nil disables bulk (no target stock).
     var stock: FilmStockConfig? = nil
-    /// Stocks offered in the bulk staging view, so a batch can be developed with
-    /// a different stock than the camera is set to.
     var stockOptions: [FilmStockConfig] = []
     var onSelectStock: (FilmStockConfig) -> Void = { _ in }
-    /// Opens the queue, so a finished batch can be looked at straight away.
     var onOpenResults: () -> Void = {}
     @Binding var gauge: PrintGauge
     @Binding var pushPullAutomatic: Bool
     @Binding var pushPullStops: PushPullStops
-    /// Called after a change so the parent can persist the preference.
     var onControlsChanged: () -> Void = {}
-    /// The exposure the parent resolved for this render, shown in the pill.
-    /// Derived from the pill the panel actually shows. This used to be a stored
-    /// property defaulting to `.neutral`, so the chosen push/pull never reached
-    /// the render and every import developed two stops away from what was picked.
-    /// An import has no meter, so automatic resolves neutral here (never a guess).
+
+    @State private var pickerItems: [PhotosPickerItem] = []
+    @State private var photoPickerItems: [PhotosPickerItem] = []
+    @State private var selectionTask: Task<Void, Never>?
+    @State private var renderer = DevelopFramePreviewRenderer()
+    @State private var sourcePage = 0
+    @State private var reviewingRemaining = false
+    @State private var showHelp = false
+    @State private var photosOpenFailed = false
+
     private var resolvedPushPull: PushPullExposure {
         DevelopVideoModel.resolvedPushPull(automatic: pushPullAutomatic, stops: pushPullStops)
     }
 
-    @State private var pickerItems: [PhotosPickerItem] = []
-    @State private var photoPickerItems: [PhotosPickerItem] = []
-    /// What a bulk pick is doing, so a multi-select is not silent.
-    @State private var bulkStatus: String?
-    @State private var batchPreview: CGImage?
-    @State private var preview: CGImage?
-    /// The delivered render, decoded from the file the queue wrote. Separate
-    /// from `preview` so the pre-render frame and the graded result can never be
-    /// confused: one is the file as shot, the other is the stock applied to it.
-    @State private var renderedPreview: CGImage?
-    @State private var showHelp = false
-    @State private var helpRefusal: String?
+    private var resultJobs: [RenderJob] {
+        DevelopWorkflowPresentation.orderedJobs(ids: model.resultJobIDs, jobs: queue.jobs).compactMap { $0 }
+    }
+
+    private var stage: DevelopWorkflowPresentation.Stage {
+        DevelopWorkflowPresentation.stage(loading: model.isLoading, active: model.hasActiveRenders,
+                                          sourceCount: model.sources.count, resultCount: model.resultJobIDs.count)
+    }
+
+    private var redevelopment: DevelopWorkflowPresentation.Redevelopment {
+        DevelopWorkflowPresentation.redevelopment(jobs: resultJobs, requestedCount: model.resultJobIDs.count)
+    }
 
     var body: some View {
-        ZStack {
-            chooser
-            if isActive, let job = activeJob {
-                DevelopProgressOverlay(progress: queue.progress(for: job.id),
-                                       queued: job.status == .pending)
-                    .transition(.opacity)
+        VStack(spacing: 12) {
+            if reviewingRemaining, !model.sources.isEmpty, !model.hasActiveRenders {
+                reviewState
+            } else {
+                switch stage {
+                case .loading: transferState
+                case .review: reviewState
+                case .rendering, .results: resultsState
+                case .chooser: chooser
+                }
+            }
+            if let issue = model.errorMessage, !model.isLoading {
+                HStack(spacing: 8) {
+                    Text(DevelopWorkflowPresentation.issueSummary(issue))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("develop.error.summary")
+                    Button("Details", systemImage: "info.circle") { showHelp = true }
+                        .labelStyle(.iconOnly)
+                        .frame(width: 44, height: 44)
+                        .accessibilityIdentifier("develop.error")
+                }
+                .font(NitrateTypography.font(.callout))
+                .foregroundStyle(DevelopPreviewChrome.warning)
             }
         }
+        .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(DevelopPreviewChrome.surface)
-        // One pick keeps the old step-one flow — preview, gauge, push/pull. More
-        // than one skips the preview (there is only one panel to show it in) and
-        // queues them all with what is selected now.
         .onChange(of: pickerItems) { _, items in
             guard !items.isEmpty else { return }
-            let picked = items
             pickerItems = []
-            if picked.count == 1 { model.select(picked[0]) } else { stageClips(picked) }
+            stageClips(items)
         }
         .onChange(of: photoPickerItems) { _, items in
             guard !items.isEmpty else { return }
-            let picked = items
             photoPickerItems = []
-            if picked.count == 1 { model.selectPhoto(picked[0]) } else { stagePhotos(picked) }
+            stagePhotos(items)
         }
-        // The ungraded frame follows whatever is selected. Both are decoded from
-        // the file itself, NOT through the render pipeline, so what is shown
-        // before rendering is the file as shot.
-        .task(id: selectedURL) {
-            await loadPreview()
-        }
-        // The finished render is shown from the queue's own output file, so what
-        // is on screen is the delivered artifact and not a re-render done for the
-        // preview. A file that has already been cleaned up shows nothing.
-        .task(id: renderedKey) {
-            await loadRenderedPreview()
-        }
-        // The batch preview follows the first result that lands, so "Done!" is
-        // shown with the picture that proves it.
-        .task(id: batchPreviewKey) {
-            await loadBatchPreview()
-        }
+        .onChange(of: model.sources.map(\.id)) { _, _ in sourcePage = 0 }
+        .onChange(of: gauge) { _, _ in onControlsChanged() }
+        .onDisappear { selectionTask?.cancel() }
         .sheet(isPresented: $showHelp) {
-            DevelopMediaHelp(refusal: helpRefusal)
+            DevelopMediaHelp(refusal: model.errorMessage ?? (model.bulk.skipped.isEmpty
+                ? nil : model.bulk.skipped.joined(separator: "\n")))
+        }
+        .alert("Photos unavailable", isPresented: $photosOpenFailed) {
+            Button("OK", role: .cancel) {}
         }
     }
-
-    private var batchPreviewKey: String {
-        guard !model.batchJobIDs.isEmpty else { return "none" }
-        let completed = batchJobs.filter { $0.status == .completed }
-        return "\(model.batchJobIDs.count)-\(completed.count)-\(completed.first?.receipt?.thumbnailJPEG?.count ?? 0)"
-    }
-
-    private func loadBatchPreview() async {
-        guard !model.batchJobIDs.isEmpty else {
-            batchPreview = nil
-            return
-        }
-        guard let job = batchJobs.first(where: { $0.status == .completed }) else { return }
-        if let data = job.receipt?.thumbnailJPEG,
-           let image = DevelopPreviewLoader.thumbnail(from: data) {
-            batchPreview = image
-            return
-        }
-        guard let url = job.outputURL else { return }
-        batchPreview = await DevelopPreviewLoader.image(for: url, isPhoto: job.isPhoto == true)
-    }
-
-    private var renderedKey: String {
-        guard let job = activeJob else { return "none" }
-        // Receipt thumbnail size is part of the key: the durable thumbnail can
-        // arrive after the file is gone, and the preview must then refresh.
-        return "\(job.id)-\(job.status)-\(job.receipt?.thumbnailJPEG?.count ?? 0)"
-            + "-\(job.outputURL?.path ?? "-")"
-    }
-
-    private func loadRenderedPreview() async {
-        guard let job = activeJob, job.status == .completed else {
-            renderedPreview = nil
-            return
-        }
-        // The receipt's thumbnail is durable — it survives the local output being
-        // cleaned up after delivery — so it is preferred over the file itself.
-        if let receipt = job.receipt?.thumbnailJPEG,
-           let image = DevelopPreviewLoader.thumbnail(from: receipt) {
-            renderedPreview = image
-            return
-        }
-        guard let url = job.outputURL else {
-            renderedPreview = nil
-            return
-        }
-        renderedPreview = await DevelopPreviewLoader.image(for: url, isPhoto: job.isPhoto == true)
-    }
-
-    /// A multi-pick STAGES the files. Nothing renders until the operator has
-    /// seen them and chosen a stock, gauge and push/pull for the batch.
-    private func stageClips(_ items: [PhotosPickerItem]) {
-        bulkStatus = nil
-        Task { @MainActor in
-            let transfers: [DevelopVideoModel.TransferOperation] = items.map { item in
-                { @MainActor in try await model.loadClip(from: item) }
-            }
-            await model.stageVideos(transfers: transfers)
-            await loadBulkPreview()
-        }
-    }
-
-    private func stagePhotos(_ items: [PhotosPickerItem]) {
-        bulkStatus = nil
-        Task { @MainActor in
-            let transfers: [DevelopVideoModel.PhotoTransferOperation] = items.map { item in
-                { @MainActor in try await model.loadPhoto(from: item) }
-            }
-            await model.stagePhotos(transfers: transfers)
-            await loadBulkPreview()
-        }
-    }
-
-    private func commitBulk() {
-        guard let stock else { return }
-        let result = model.commitBulk(stock: stock, gauge: gauge,
-                                      pushPull: resolvedPushPull, queue: queue)
-        bulkStatus = Self.bulkSummary(result)
-        preview = nil
-    }
-
-    private func loadBulkPreview() async {
-        guard let url = model.bulk.previewURL else { return }
-        preview = await DevelopPreviewLoader.image(for: url, isPhoto: model.bulk.isPhotoStaging)
-    }
-
-    /// "Queued 5" or "Queued 4 · 1 skipped", because a bulk action that silently
-    /// drops a file is worse than one that refuses them all.
-    static func bulkSummary(_ result: DevelopVideoModel.BulkDevelopResult) -> String {
-        let queued = "\(result.queued) added"
-        guard !result.skipped.isEmpty else { return queued }
-        return queued + " · \(result.skipped.count) skipped"
-    }
-
-    private var selectedURL: URL? {
-        model.video?.url ?? model.photo?.url
-    }
-
-    private func loadPreview() async {
-        guard let url = selectedURL else {
-            preview = nil
-            return
-        }
-        let isPhoto = model.photo != nil
-        preview = await DevelopPreviewLoader.image(for: url, isPhoto: isPhoto)
-    }
-
-    // MARK: - Derived state
-
-    private var activeJob: RenderJob? {
-        guard let id = model.activeJobID else { return nil }
-        return queue.jobs.first { $0.id == id }
-    }
-
-    private var isActive: Bool {
-        guard let job = activeJob else { return false }
-        return job.status == .pending || job.status == .processing
-    }
-
-    // MARK: - Content
 
     private var chooser: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-        VStack(spacing: 14) {
-            if model.isLoading {
-                transferState
-            } else if !model.bulk.isEmpty {
-                bulkState
-            } else if !model.batchJobIDs.isEmpty {
-                batchState
-            } else if let job = activeJob, job.status == .completed {
-                completedState
-            } else if let job = activeJob, job.status == .failed {
-                failedState(job)
-            } else {
-                clipSelection
+        VStack(spacing: 20) {
+            Spacer(minLength: 0)
+            HStack(spacing: 16) {
+                photoPicker
+                videoPicker
             }
-            if let message = model.errorMessage, !model.isLoading {
-                // Short on screen, detailed behind Why?. A refusal is the moment
-                // the operator is most likely to give up, so it names the file
-                // type and offers the way out in the same breath.
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(message)
-                        .font(NitrateTypography.font(.footnote))
-                        .foregroundStyle(DevelopPreviewChrome.warning)
-                        .multilineTextAlignment(.center)
-                        .accessibilityIdentifier("develop.error")
-                    Button("Why?") {
-                        helpRefusal = message
-                        showHelp = true
-                    }
-                    .font(NitrateTypography.font(.footnote))
-                    .foregroundStyle(DevelopPreviewChrome.orange)
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("develop.error.why")
-                }
+            Button { showHelp = true } label: {
+                Image(systemName: "info.circle")
+                    .font(.title2)
+                    .frame(width: 48, height: 48)
             }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    /// The batch after Develop N: what is rendering, then what finished.
-    ///
-    /// A bulk develop is several jobs the panel did not open, so it reports their
-    /// progress here rather than through the single-job overlay, and when they
-    /// settle it offers the results instead of only counting them.
-    private var batchState: some View {
-        VStack(spacing: 14) {
-            if let batchPreview {
-                Image(decorative: batchPreview, scale: 1)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 180)
-                    .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .accessibilityIdentifier("develop.batchPreview")
-            }
-            if batchSettled {
-                Text(batchDoneTitle)
-                    .font(NitrateTypography.font(.headline))
-                    .foregroundStyle(.white)
-                    .accessibilityIdentifier("develop.batchDone")
-                if batchFailed > 0 {
-                    Text("\(batchFailed) failed — open the queue to retry")
-                        .font(NitrateTypography.font(.caption2))
-                        .foregroundStyle(DevelopPreviewChrome.warning)
-                        .multilineTextAlignment(.center)
-                }
-                Button(action: onOpenResults) {
-                    Text("See results")
-                        .font(NitrateTypography.font(.headline))
-                        .foregroundStyle(.black)
-                        .frame(maxWidth: .infinity, minHeight: 50)
-                        .background(DevelopPreviewChrome.orange, in: RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("develop.batchResults")
-                Button("Develop more") { model.dismissBatch(); batchPreview = nil }
-                    .font(NitrateTypography.font(.callout))
-                    .foregroundStyle(DevelopPreviewChrome.muted)
-                    .accessibilityIdentifier("develop.batchAgain")
-            } else {
-                // The bar is the animation: it moves as jobs finish, so a batch of
-                // eight does not sit silent for a minute.
-                ProgressView(value: Double(batchSettledCount), total: Double(max(batchTotal, 1)))
-                    .progressViewStyle(.linear)
-                    .tint(DevelopPreviewChrome.orange)
-                    .animation(.easeInOut(duration: 0.35), value: batchSettledCount)
-                    .accessibilityIdentifier("develop.batchProgress")
-                Text("Developing \(batchSettledCount) of \(batchTotal)…")
-                    .font(NitrateTypography.font(.callout))
-                    .foregroundStyle(.white)
-                    .contentTransition(.numericText())
-                    .animation(.default, value: batchSettledCount)
-                    .accessibilityIdentifier("develop.batchCount")
-            }
+            .accessibilityLabel("Info")
+            .accessibilityIdentifier("develop.help")
+            Spacer(minLength: 0)
         }
     }
 
-    /// "Reading 2 of 3…" while a batch is being taken in, so a slow pick of large
-    /// raws is not an anonymous spinner.
-    private var bulkReadingText: String? {
-        guard model.isLoading, model.bulk.total > 0 else { return nil }
-        let current = min(model.bulk.read + 1, model.bulk.total)
-        return "Reading \(current) of \(model.bulk.total)…"
-    }
-
-    private var batchJobs: [RenderJob] {
-        model.batchJobIDs.compactMap { id in queue.jobs.first { $0.id == id } }
-    }
-
-    private var batchTotal: Int { model.batchJobIDs.count }
-
-    private var batchSettledCount: Int {
-        batchJobs.filter { $0.status == .completed || $0.status == .failed }.count
-    }
-
-    private var batchFailed: Int { batchJobs.filter { $0.status == .failed }.count }
-
-    private var batchSettled: Bool { batchTotal > 0 && batchSettledCount == batchTotal }
-
-    private var batchDoneTitle: String {
-        let done = batchJobs.filter { $0.status == .completed }.count
-        return done == 1 ? "Done! 1 develop" : "Done! \(done) develops"
-    }
-
-    /// Everything picked in bulk, held before any of it renders.
-    ///
-    /// The same gauge and push/pull controls the single-file flow uses, plus the
-    /// stock, so one deliberate choice covers the batch. Files that were refused
-    /// are counted here rather than dropped silently.
-    private var bulkState: some View {
+    private var reviewState: some View {
         VStack(spacing: 12) {
-            if let preview {
-                Image(decorative: preview, scale: 1)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 150)
-                    .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .overlay(alignment: .bottomTrailing) {
-                        Text("\(model.bulk.count) files")
-                            .font(NitrateTypography.font(.caption2))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(.black.opacity(0.6), in: Capsule())
-                            .padding(8)
-                    }
-                    .accessibilityIdentifier("develop.bulkPreview")
-            }
-            Text(bulkHeadline)
-                .font(NitrateTypography.font(.callout))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .accessibilityIdentifier("develop.bulkCount")
-            if !model.bulk.skipped.isEmpty {
-                VStack(spacing: 2) {
-                    Text("\(model.bulk.skipped.count) skipped")
-                        .font(NitrateTypography.font(.caption2))
+            HStack {
+                stockMenu
+                Spacer(minLength: 8)
+                if !model.bulk.skipped.isEmpty {
+                    Button("Skipped \(model.bulk.skipped.count)") { showHelp = true }
                         .foregroundStyle(DevelopPreviewChrome.warning)
-                    if let reason = model.bulk.skipped.first {
-                        Text(reason)
-                            .font(NitrateTypography.font(.caption2))
-                            .foregroundStyle(DevelopPreviewChrome.muted)
-                            .multilineTextAlignment(.center)
-                            .lineLimit(2)
-                    }
+                        .frame(minHeight: 48)
+                        .accessibilityIdentifier("develop.bulkSkipped")
                 }
-                .accessibilityIdentifier("develop.bulkSkipped")
+                Button(action: startOver) {
+                    Image(systemName: "xmark")
+                        .font(.title3)
+                        .frame(width: 48, height: 48)
+                }
+                .accessibilityLabel("Cancel")
+                .accessibilityIdentifier("develop.bulkCancel")
             }
-            stockMenu
+            TabView(selection: $sourcePage) {
+                ForEach(Array(model.sources.enumerated()), id: \.element.id) { index, source in
+                    DevelopSourcePage(source: source, stock: stock, gauge: gauge,
+                                      pushPull: resolvedPushPull, renderer: renderer, active: index == sourcePage)
+                        .tag(index)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if model.sources.count > 1 {
+                Text("\(sourcePage + 1)/\(model.sources.count)")
+                    .font(NitrateTypography.font(.body).monospacedDigit())
+                    .foregroundStyle(DevelopPreviewChrome.muted)
+                    .accessibilityIdentifier("develop.source.position")
+            }
             controlRow
-            Button(action: commitBulk) {
-                Text("Develop \(model.bulk.count)")
-                    .font(NitrateTypography.font(.headline))
-                    .foregroundStyle(.black)
-                    .frame(maxWidth: .infinity, minHeight: 50)
+            Button(action: develop) {
+                Text("Develop")
+                    .font(NitrateTypography.font(.title3))
+                    .frame(maxWidth: .infinity, minHeight: 52)
                     .background(DevelopPreviewChrome.orange, in: RoundedRectangle(cornerRadius: 12))
+                    .contentShape(Rectangle())
+            }
+                .buttonStyle(.plain)
+                .foregroundStyle(.black)
+                .disabled(!model.canDevelop(stock: stock))
+                .accessibilityIdentifier("develop.bulkCommit")
+        }
+    }
+
+    private var resultsState: some View {
+        VStack(spacing: 12) {
+            DevelopResultsPager(ids: model.resultJobIDs, queue: queue)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !model.hasActiveRenders {
+                if !model.sources.isEmpty {
+                    Button("Review remaining") { reviewingRemaining = true }
+                        .font(NitrateTypography.font(.body))
+                        .frame(minHeight: 48)
+                }
+                resultActions
+            }
+            if model.hasActiveRenders || resultJobs.contains(where: { $0.status == .failed }) {
+                Button("Queue", action: onOpenResults)
+                    .font(NitrateTypography.font(.body))
+                    .frame(minHeight: 48)
+                    .accessibilityIdentifier("develop.queue")
+            }
+        }
+    }
+
+    private var resultActions: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Button(action: startOver) {
+                    resultActionLabel("Develop more", systemImage: "plus")
+                }
+                .accessibilityIdentifier("develop.more")
+                Button(action: redevelop) {
+                    resultActionLabel("Re-develop", systemImage: "arrow.counterclockwise")
+                }
+                .disabled(!redevelopment.isEnabled)
+                .opacity(redevelopment.isEnabled ? 1 : 0.35)
+                .accessibilityHint(redevelopment.isEnabled ? "Review originals" : "Originals unavailable")
+                .accessibilityIdentifier("develop.redevelop")
+                Button {
+                    Task { @MainActor in photosOpenFailed = !(await PhotosLibraryOpener.open()) }
+                } label: {
+                    resultActionLabel("Open Photos", systemImage: "photo.on.rectangle")
+                }
+                .accessibilityIdentifier("develop.openPhotos")
             }
             .buttonStyle(.plain)
-            .disabled(stock == nil || model.bulk.isEmpty)
-            .accessibilityIdentifier("develop.bulkCommit")
-            Button("Cancel") { model.clearBulk(); preview = nil }
-                .font(NitrateTypography.font(.callout))
-                .foregroundStyle(DevelopPreviewChrome.muted)
-                .accessibilityIdentifier("develop.bulkCancel")
+            if redevelopment.missingCount > 0 {
+                Text("Missing \(redevelopment.missingCount)")
+                    .foregroundStyle(DevelopPreviewChrome.warning)
+            }
+        }
+        .font(NitrateTypography.font(.body))
+    }
+
+    private func resultActionLabel(_ title: String, systemImage: String) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(NitrateTypography.font(size: 24, relativeTo: .title2))
+                .accessibilityHidden(true)
+            Text(title)
+                .font(NitrateTypography.font(.caption))
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: 64)
+        .contentShape(Rectangle())
+    }
+
+    private var transferState: some View {
+        VStack(spacing: 24) {
+            Spacer(minLength: 0)
+            ProgressView().controlSize(.large).tint(DevelopPreviewChrome.orange)
+            Text("Loading").font(NitrateTypography.font(.title2))
+            if model.bulk.total > 0 {
+                Text("\(min(model.bulk.read, model.bulk.total))/\(model.bulk.total)")
+                    .font(NitrateTypography.font(.title3).monospacedDigit())
+            }
+            Button("Cancel", action: startOver)
+                .font(NitrateTypography.font(.body))
+                .frame(minHeight: 52)
+                .accessibilityIdentifier("develop.cancel")
+            Spacer(minLength: 0)
         }
     }
 
-    private var bulkHeadline: String {
-        let photos = model.bulk.photos.count
-        let videos = model.bulk.videos.count
-        switch (photos, videos) {
-        case (let p, 0): return "\(p) photo\(p == 1 ? "" : "s") ready"
-        case (0, let v): return "\(v) clip\(v == 1 ? "" : "s") ready"
-        default: return "\(photos) photos · \(videos) clips ready"
-        }
-    }
-
-    /// Stock choice for the batch, so a staged set is not locked to whatever the
-    /// camera happens to be set to.
     private var stockMenu: some View {
         Menu {
             ForEach(stockOptions, id: \.stockId) { option in
-                Button {
-                    onSelectStock(option)
-                } label: {
+                Button { onSelectStock(option) } label: {
                     if option.stockId == stock?.stockId {
                         Label(option.displayName, systemImage: "checkmark")
                     } else {
@@ -439,237 +256,112 @@ struct DevelopPreview: View {
                 }
             }
         } label: {
-            HStack(spacing: 6) {
-                Text(stock?.displayName ?? "Choose a stock")
-                    .font(NitrateTypography.font(.subheadline))
-                Image(systemName: "chevron.up.chevron.down").font(.caption2)
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(DevelopPreviewChrome.control, in: Capsule())
+            Label(stock?.displayName ?? "Choose stock", systemImage: "chevron.up.chevron.down")
+                .font(NitrateTypography.font(.title3))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .frame(minHeight: 48)
+                .background(DevelopPreviewChrome.control, in: Capsule())
         }
         .accessibilityIdentifier("develop.bulkStock")
     }
 
-    private var clipSelection: some View {
-        VStack(spacing: 16) {
-            // Two entry points, so the operator picks the medium first instead of
-            // hunting for the right file type inside one picker.
-            HStack(spacing: 10) {
-                clipPicker(model.video == nil && model.photo == nil ? "Select Video" : "Change Video")
-                photoPicker(model.video == nil && model.photo == nil ? "Select Photo" : "Change Photo")
-            }
-            // One line, and a way in to the rest. The picker cannot filter by
-            // file type, so the rule is stated here rather than discovered after
-            // a refusal, but a paragraph above the buttons pushes them off a
-            // small screen.
-            HStack(spacing: 6) {
-                Text("Apple Log 2 · raw")
-                    .font(NitrateTypography.font(.caption2))
-                    .foregroundStyle(DevelopPreviewChrome.muted)
-                Button {
-                    helpRefusal = nil
-                    showHelp = true
-                } label: {
-                    Image(systemName: "info.circle")
-                        .font(.caption2)
-                        .foregroundStyle(DevelopPreviewChrome.muted)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("develop.help")
-                .accessibilityLabel("What can I develop?")
-            }
-            .accessibilityIdentifier("develop.entryHint")
-            if let video = model.video {
-                identity(title: Self.videoTitle(video), detail: Self.videoDetail(video))
-            } else if let photo = model.photo {
-                identity(title: Self.photoTitle(photo), detail: photo.detailSummary)
-            } else {
-                Text("Choose a clip or a raw photo.")
-                    .font(NitrateTypography.font(.footnote))
-                    .foregroundStyle(DevelopPreviewChrome.muted)
-            }
-
-            if let preview {
-                VStack(spacing: 6) {
-                    // Fill the panel's width and crop the overflow. Sizing by
-                    // height (`aspectRatio: .fit`) collapsed a portrait photo to
-                    // a narrow column in a wide panel, which is what made this
-                    // read as compressed.
-                    Image(decorative: preview, scale: 1)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 196)
-                        .clipped()
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    // Say plainly that this is the file, not the look: the grade
-                    // only exists after the render.
-                    Text("Ungraded · as shot")
-                        .font(NitrateTypography.font(.caption2))
-                        .foregroundStyle(DevelopPreviewChrome.muted)
-                }
-                .accessibilityIdentifier("develop.preview")
-            }
-
-            if let bulkStatus {
-                Text(bulkStatus)
-                    .font(NitrateTypography.font(.caption))
-                    .foregroundStyle(DevelopPreviewChrome.muted)
-                    .accessibilityIdentifier("develop.bulkStatus")
-            }
-
-            if selectedURL != nil {
-                controlRow
-            }
-        }
-    }
-
-    /// The same gauge and push/pull controls the stock sheet presents, bound to
-    /// the parent's state so the render applies exactly what is shown here.
     private var controlRow: some View {
-        HStack(alignment: .bottom, spacing: StockSheetLayout.controlSpacing) {
-            GaugeControl(gauge: $gauge)
-            PushPullControl(resolved: resolvedPushPull,
-                            isAutomatic: $pushPullAutomatic,
-                            manualStops: $pushPullStops,
-                            onChange: onControlsChanged)
-                .frame(maxWidth: 74)
+        HStack(alignment: .bottom, spacing: 16) {
+            GaugeControl(gauge: $gauge, enlarged: true)
+            PushPullControl(resolved: resolvedPushPull, isAutomatic: $pushPullAutomatic,
+                            manualStops: $pushPullStops, onChange: onControlsChanged, enlarged: true)
+                .frame(width: 90)
         }
         .accessibilityIdentifier("develop.controls")
     }
 
-    /// The identity of what was picked. A capture date and the media's own
-    /// numbers, never the app's `clip_import_<UUID>.mov` working name.
-    private func identity(title: String, detail: String) -> some View {
-        VStack(spacing: 4) {
-            Text(title)
-                .font(NitrateTypography.font(.callout))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-            Text(detail)
-                .font(NitrateTypography.font(.caption).monospacedDigit())
-                .foregroundStyle(DevelopPreviewChrome.muted)
-                .multilineTextAlignment(.center)
-        }
-        .accessibilityIdentifier("develop.clipInfo")
-    }
-
-    private var transferState: some View {
-        VStack(spacing: 14) {
-            ProgressView().tint(DevelopPreviewChrome.orange)
-            Text(bulkReadingText ?? "Preparing clip…")
-                .font(NitrateTypography.font(.callout))
-                .foregroundStyle(.white)
-            Button("Cancel") {
-                model.cancelSelection()
-                pickerItems = []
-                photoPickerItems = []
-            }
-            .font(NitrateTypography.font(.callout))
-            .foregroundStyle(DevelopPreviewChrome.orange)
-            .frame(minHeight: 44)
-            .accessibilityIdentifier("develop.cancel")
-        }
-    }
-
-    private var completedState: some View {
-        VStack(spacing: 14) {
-            if let renderedPreview {
-                VStack(spacing: 6) {
-                    Image(decorative: renderedPreview, scale: 1)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 224)
-                        .clipped()
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    Text("Graded · delivered file")
-                        .font(NitrateTypography.font(.caption2))
-                        .foregroundStyle(DevelopPreviewChrome.muted)
-                }
-                .accessibilityIdentifier("develop.renderedPreview")
-            } else {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 40))
-                    .foregroundStyle(DevelopPreviewChrome.orange)
-            }
-            Text("Saved to Photos")
-                .font(NitrateTypography.font(.headline))
-                .foregroundStyle(.white)
-                .accessibilityIdentifier("develop.saved")
-            chooseAnotherActions
-        }
-    }
-
-    private func failedState(_ job: RenderJob) -> some View {
-        VStack(spacing: 14) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 34))
-                .foregroundStyle(DevelopPreviewChrome.orange)
-            Text(job.errorMessage ?? "The render could not be completed.")
-                .font(NitrateTypography.font(.callout))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .accessibilityIdentifier("develop.failure")
-            Button("Retry") { queue.retry(jobId: job.id) }
-                .font(NitrateTypography.font(.headline))
-                .foregroundStyle(.black)
-                .frame(maxWidth: .infinity, minHeight: 48)
-                .background(DevelopPreviewChrome.orange, in: RoundedRectangle(cornerRadius: 12))
-                .accessibilityIdentifier("develop.retry")
-            chooseAnotherActions
-        }
-    }
-
-    /// The way out of a finished or failed render: one title, then the same two
-    /// entry points the panel starts with, so the next medium is a deliberate
-    /// choice rather than whatever the single old button happened to open.
-    private var chooseAnotherActions: some View {
-        VStack(spacing: 10) {
-            Text("Choose another")
-                .font(NitrateTypography.font(.subheadline))
-                .foregroundStyle(DevelopPreviewChrome.muted)
-            HStack(spacing: 10) {
-                clipPicker("Video")
-                photoPicker("Photo")
-            }
-        }
-        .accessibilityIdentifier("develop.chooseAnother")
-    }
-
-    private func clipPicker(_ title: String) -> some View {
+    private var videoPicker: some View {
         PhotosPicker(selection: $pickerItems, maxSelectionCount: 0, matching: .videos,
                      preferredItemEncoding: .current) {
-            Label(title, systemImage: "photo.on.rectangle")
-                .font(NitrateTypography.font(.headline))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, minHeight: 52)
-                .background(DevelopPreviewChrome.control, in: RoundedRectangle(cornerRadius: 14))
+            Label("Video", systemImage: "photo.on.rectangle")
+                .font(NitrateTypography.font(.title2))
+                .frame(maxWidth: .infinity, minHeight: 80)
         }
-        .buttonStyle(.plain)
-        .disabled(isActive)
+        .buttonStyle(.bordered)
+        .disabled(model.hasActiveRenders)
         .accessibilityIdentifier("develop.choose")
     }
 
-    private func photoPicker(_ title: String) -> some View {
+    private var photoPicker: some View {
         PhotosPicker(selection: $photoPickerItems, maxSelectionCount: 0, matching: .images,
                      preferredItemEncoding: .current) {
-            Label(title, systemImage: "camera.aperture")
-                .font(NitrateTypography.font(.headline))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, minHeight: 52)
-                .background(DevelopPreviewChrome.control, in: RoundedRectangle(cornerRadius: 14))
+            Label("Photo", systemImage: "camera.aperture")
+                .font(NitrateTypography.font(.title2))
+                .frame(maxWidth: .infinity, minHeight: 80)
         }
-        .buttonStyle(.plain)
-        .disabled(isActive)
+        .buttonStyle(.bordered)
+        .disabled(model.hasActiveRenders)
         .accessibilityIdentifier("develop.choosePhoto")
     }
 
-    /// "12 Nov 2026 at 14:03", or the only honest thing left when the file has no
-    /// date: that the clip is selected.
+    private func stageClips(_ items: [PhotosPickerItem]) {
+        selectionTask?.cancel()
+        reviewingRemaining = false
+        selectionTask = Task { @MainActor in
+            let transfers: [DevelopVideoModel.TransferOperation] = items.map { item in
+                { @MainActor in try await model.loadClip(from: item) }
+            }
+            await model.stageVideos(transfers: transfers)
+        }
+    }
+
+    private func stagePhotos(_ items: [PhotosPickerItem]) {
+        selectionTask?.cancel()
+        reviewingRemaining = false
+        selectionTask = Task { @MainActor in
+            let transfers: [DevelopVideoModel.PhotoTransferOperation] = items.map { item in
+                { @MainActor in try await model.loadPhoto(from: item) }
+            }
+            await model.stagePhotos(transfers: transfers)
+        }
+    }
+
+    private func develop() {
+        guard let stock, model.canDevelop(stock: stock) else { return }
+        reviewingRemaining = false
+        _ = model.develop(stock: stock, iso: stock.defaultISO, gauge: gauge, pushPull: resolvedPushPull)
+    }
+
+    private func startOver() {
+        selectionTask?.cancel()
+        selectionTask = nil
+        model.startOver()
+        reviewingRemaining = false
+        pickerItems = []
+        photoPickerItems = []
+    }
+
+    private func redevelop() {
+        let jobs = resultJobs
+        guard redevelopment.isEnabled else { return }
+        if let first = jobs.first(where: \.hasRedevelopableSource) {
+            if let priorStock = stockOptions.first(where: { $0.stockId == first.stockId }) {
+                onSelectStock(priorStock)
+            }
+            if let priorGauge = first.printGauge { gauge = priorGauge }
+            // Recall the resolved recipe, not a live-meter mode that resolves
+            // neutral for imports and would silently drop a captured auto pull.
+            pushPullAutomatic = false
+            pushPullStops = first.pushPull?.stops ?? .none
+            onControlsChanged()
+        }
+        reviewingRemaining = false
+        selectionTask?.cancel()
+        selectionTask = Task { @MainActor in await model.adoptExistingJobs(jobs) }
+    }
+
+    // Compatibility helpers used by existing callers and tests.
+    static func bulkSummary(_ result: DevelopVideoModel.BulkDevelopResult) -> String {
+        let queued = "\(result.queued) added"
+        return result.skipped.isEmpty ? queued : queued + " · \(result.skipped.count) skipped"
+    }
+
     static func videoTitle(_ video: ImportedVideo) -> String {
         video.capturedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Selected clip"
     }
@@ -685,46 +377,177 @@ struct DevelopPreview: View {
     }
 }
 
-/// Decodes the picked file's own first frame / thumbnail, with NO stock applied.
-///
-/// The grade only exists after the render, so the pre-render preview must not
-/// pretend to it: this reads the file through AVFoundation or ImageIO and never
-/// touches the render pipeline, the LUT or the film stages.
+private struct DevelopSourceRequest: Equatable {
+    let source: DevelopSource
+    let recipe: DevelopPreviewRecipe?
+    let active: Bool
+}
+
+private struct DevelopSourcePage: View {
+    let source: DevelopSource
+    let stock: FilmStockConfig?
+    let gauge: PrintGauge
+    let pushPull: PushPullExposure
+    let renderer: DevelopFramePreviewRenderer
+    let active: Bool
+    @State private var frame: DevelopFramePreview?
+    @State private var loadedRequest: DevelopSourceRequest?
+    @State private var failure: String?
+    @State private var retry = 0
+    @State private var fence = DevelopPreviewFence()
+    @State private var showDetails = false
+
+    private var request: DevelopSourceRequest {
+        .init(source: source, recipe: stock.map {
+            DevelopPreviewRecipe(url: source.url, isPhoto: source.isPhoto, cropZoom: source.cropZoom,
+                                 stock: $0, gauge: gauge, pushPull: pushPull)
+        }, active: active)
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            ZStack {
+                if loadedRequest?.source == source, let frame {
+                    DevelopExpandableStill(image: frame.image, label: "Preview")
+                        .overlay(alignment: .topTrailing) {
+                            if loadedRequest != request {
+                                ProgressView().padding(12)
+                            }
+                        }
+                        .accessibilityIdentifier("develop.preview")
+                } else if loadedRequest == request, let failure {
+                    VStack(spacing: 12) {
+                        Text("Preview unavailable")
+                        Text(DevelopWorkflowPresentation.issueSummary(failure))
+                            .font(NitrateTypography.font(.callout))
+                            .foregroundStyle(DevelopPreviewChrome.warning)
+                            .multilineTextAlignment(.center)
+                            .accessibilityIdentifier("develop.preview.issue")
+                        Button("Retry") { retry += 1 }.frame(minHeight: 48)
+                    }
+                } else if stock == nil {
+                    Text("Choose stock")
+                } else {
+                    ProgressView().controlSize(.large)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 16) {
+                readout("Estimate", value: DevelopWorkflowPresentation.exposure(frame?.measuredOffsetEV))
+                    .accessibilityIdentifier("develop.exposure.estimate")
+                if let rating = source.capturedOffsetEV {
+                    readout("Captured", value: DevelopWorkflowPresentation.exposure(Double(rating)))
+                }
+                if let iso = source.iso {
+                    readout("Rated", value: DevelopWorkflowPresentation.captureRating(iso))
+                        .accessibilityIdentifier("develop.exposure.captureRating")
+                }
+                Spacer(minLength: 0)
+                Button { showDetails = true } label: {
+                    Image(systemName: "info.circle").font(.title3).frame(width: 44, height: 48)
+                }
+                .accessibilityLabel("Details")
+            }
+        }
+        .font(NitrateTypography.font(.body))
+        .foregroundStyle(.white)
+        .alert("Details", isPresented: $showDetails) {
+            Button("Done", role: .cancel) {}
+        } message: {
+            Text(failure ?? [source.originalFilename, frame?.captureDescription].compactMap { $0 }.joined(separator: "\n"))
+        }
+        .task(id: request) { await load(request) }
+        .task(id: retry) {
+            guard retry > 0 else { return }
+            await load(request)
+        }
+    }
+
+    private func readout(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(NitrateTypography.font(.subheadline)).foregroundStyle(DevelopPreviewChrome.muted)
+            Text(value).font(NitrateTypography.font(.title3).monospacedDigit())
+        }
+    }
+
+    @MainActor private func load(_ requested: DevelopSourceRequest) async {
+        guard requested == request, !Task.isCancelled else { return }
+        let token = fence.begin()
+        if loadedRequest?.source != requested.source {
+            frame = nil
+            loadedRequest = nil
+        }
+        failure = nil
+        guard requested.active, let recipe = requested.recipe else { return }
+        do {
+            // SwiftUI cancels on every recipe/source/page change; debounce knobs
+            // before decoding, and fence actors that finish despite cancellation.
+            try await Task.sleep(for: .milliseconds(180))
+            try Task.checkCancellation()
+            let rendered: DevelopFramePreview? = try await DevelopTransferLoader.load(timeout: .seconds(20)) { completion in
+                let progress = Progress(totalUnitCount: 1)
+                let task = Task {
+                    do {
+                        let image = try await renderer.preview(url: recipe.url, isPhoto: recipe.isPhoto,
+                            stock: recipe.stock, gauge: recipe.gauge, pushPull: recipe.pushPull, cropZoom: recipe.cropZoom)
+                        completion(.success(image))
+                    } catch {
+                        completion(.failure(error))
+                    }
+                }
+                progress.cancellationHandler = { task.cancel() }
+                return progress
+            }
+            guard let rendered else { throw DevelopFramePreviewRenderer.PreviewError.decode }
+            guard fence.accepts(token, cancelled: Task.isCancelled), requested == request else { return }
+            frame = rendered
+            loadedRequest = requested
+        } catch {
+            guard fence.accepts(token, cancelled: Task.isCancelled), requested == request else { return }
+            frame = nil
+            failure = error is DevelopTransferLoader.TransferError ? "Preview timeout" : error.localizedDescription
+            loadedRequest = requested
+        }
+    }
+}
+
+/// Bounded delivered-file and durable-poster decoding only. Source grading uses
+/// DevelopFramePreviewRenderer, never ImageIO display thumbnails as Log input.
 enum DevelopPreviewLoader {
     static let maxPixelSize: CGFloat = 1600
 
     static func image(for url: URL, isPhoto: Bool) async -> CGImage? {
-        if isPhoto { return thumbnail(for: url) }
+        if isPhoto {
+            return await Task.detached(priority: .userInitiated) { thumbnail(for: url) }.value
+        }
         let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: maxPixelSize, height: maxPixelSize)
-        // Frame 1 rather than 0: some encoders write a black first sample.
         generator.requestedTimeToleranceBefore = .positiveInfinity
         generator.requestedTimeToleranceAfter = .positiveInfinity
         return try? await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)).image
     }
 
-    /// Decode the receipt's stored thumbnail, so the finished render is still
-    /// visible after the local output file has been cleaned up.
     static func thumbnail(from data: Data) -> CGImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+        return thumbnail(source)
     }
 
     static func thumbnail(for url: URL) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return thumbnail(source)
+    }
+
+    private static func thumbnail(_ source: CGImageSource) -> CGImage? {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
         ]
-        // A raw's embedded preview is enough to identify the shot and is far
-        // cheaper than developing it before the render.
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 }
 
-/// Understated white/orange chrome shared with the rest of the app.
 enum DevelopPreviewChrome {
     static let orange = SettingsControlChrome.halationOrange
     static let muted = Color.white.opacity(0.65)

@@ -35,7 +35,10 @@ enum RenderReceiptService {
     private static let maximumPayloadBytes = 65_536
 
     static func capture(url: URL, originalURL: URL? = nil, renderDurationSeconds: Double?,
-                        includeThumbnail: Bool = true) async -> RenderReceipt {
+                        includeThumbnail: Bool = true,
+                        maximumThumbnailSize: Int = 320) async -> RenderReceipt {
+        // Durable result zoom is a bounded delivered still, never the full movie.
+        let thumbnailSize = min(max(maximumThumbnailSize, 1), 1600)
         var receipt = RenderReceipt(renderDurationSeconds: renderDurationSeconds)
         receipt.appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         receipt.appBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
@@ -57,8 +60,8 @@ enum RenderReceiptService {
             if includeThumbnail, let thumbnail = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: 320
-            ] as CFDictionary) { receipt.thumbnailJPEG = jpeg(thumbnail) }
+                kCGImageSourceThumbnailMaxPixelSize: thumbnailSize
+            ] as CFDictionary) { receipt.thumbnailJPEG = jpeg(thumbnail, maximumSize: thumbnailSize) }
             return receipt
         }
         let asset = AVURLAsset(url: url)
@@ -98,9 +101,9 @@ enum RenderReceiptService {
         guard includeThumbnail else { return receipt }
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 320, height: 320)
+        generator.maximumSize = CGSize(width: thumbnailSize, height: thumbnailSize)
         if let result = try? await generator.image(at: .zero) {
-            receipt.thumbnailJPEG = jpeg(result.image)
+            receipt.thumbnailJPEG = jpeg(result.image, maximumSize: thumbnailSize)
         }
         return receipt
     }
@@ -181,15 +184,16 @@ enum RenderReceiptService {
         return values.isEmpty ? nil : values
     }
 
-    private static func jpeg(_ image: CGImage) -> Data? {
-        guard max(image.width, image.height) <= 320 else { return nil }
+    private static func jpeg(_ image: CGImage, maximumSize: Int) -> Data? {
+        guard max(image.width, image.height) <= maximumSize else { return nil }
+        let maximumBytes = maximumSize <= 320 ? 64 * 1024 : 1024 * 1024
         for quality in [0.75, 0.5, 0.3, 0.1] {
             let data = NSMutableData()
             guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else {
                 return nil
             }
             CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
-            if CGImageDestinationFinalize(destination), data.length <= 64 * 1024 { return data as Data }
+            if CGImageDestinationFinalize(destination), data.length <= maximumBytes { return data as Data }
         }
         return nil
     }
