@@ -525,8 +525,10 @@ exposure, grain and preview policies, and the film-stock catalogue.
 source of truth. XcodeGen feeds them into the generated Info.plist, and the
 launch splash renders them through `AppVersion` (`App/AppIdentity.swift`).
 
-- This release candidate is **0.7.1 (34)**, based on **0.7.0 (33)**.
-  It adds EC 100D, long-press stock information and persistent stock visibility.
+- This release candidate is **0.8.0 (35)**, based on **0.7.1 (34)**.
+  It unifies Photo, Video and Re-develop into review-first development, adds
+  colour/push-pull still previews and exposure estimates, improves cancellation
+  and load deadlines, and makes History more compact with larger previews.
   Preparing the release PR does not mean it has been distributed.
 - Advance `MARKETING_VERSION` for each release PR into `main` (a patch increment
   by default unless a larger increment is explicitly requested).

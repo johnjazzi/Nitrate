@@ -4,8 +4,8 @@
 
 Photo import, video import and re-development of retained originals use the same
 Develop surface. This change does not change camera capture, camera white-balance
-locking, LUT contents or delivery colour contracts. Work is on
-`feat/unified-development`, separate from the completed 0.7.1 release.
+locking, LUT contents or delivery colour contracts. This is the 0.8.0 minor
+release candidate on `feat/unified-development`, based on the completed 0.7.1 release.
 
 ## Minimal presentation
 
