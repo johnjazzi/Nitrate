@@ -67,7 +67,9 @@ struct ContentView: View {
         self.purchaseViewModel = purchaseViewModel
         self.stockSelectorHint = stockSelectorHint
         let stock = library.lastSelectedStockId.flatMap { id in
-            library.videoStocks().first { $0.stockId == id }
+            library.stocks.contains(where: { $0.stockId == id })
+                ? library.preferredVisibleStock(for: id)
+                    .map { $0.overridingISO(library.lastISO(for: $0.stockId)) } : nil
         }
         _selectedStock = State(initialValue: stock)
         _currentISO = State(initialValue: stock?.defaultISO ?? 400)
@@ -394,13 +396,15 @@ struct ContentView: View {
         .sheet(isPresented: $showQueueSheet) { queueSheet }
         .sheet(isPresented: $showSettings, onDismiss: {
             cameraViewModel.applyCaptureFormatPreference()
+            reconcileStockVisibility()
         }) {
             PurchaseView(viewModel: purchaseViewModel, showFramedPreview: $showFramedPreview,
                          manualFocusEnabled: manualFocusBinding,
                          zoomControlsEnabled: zoomControlsSetting,
                          legacyManualControlsEnabled: legacyManualControlsSetting,
                          cameraControlSupported: cameraViewModel.supportsCameraControl,
-                         availableCaptureFormats: cameraViewModel.availableCaptureFormats)
+                         availableCaptureFormats: cameraViewModel.availableCaptureFormats,
+                         stockLibrary: library)
         }
         .onChange(of: cameraViewModel.lastRecordedURL) { _, newURL in
             guard let url = newURL else { return }
@@ -482,6 +486,9 @@ struct ContentView: View {
             // arrows' ramp rather than let it race the reconfigure.
             if busy { cameraViewModel.endSlowZoom() }
         }
+        .onChange(of: cameraViewModel.canChangeShootingMode) { _, allowed in
+            if allowed { reconcileStockVisibility() }
+        }
         .onChange(of: showsAdvisoryTips) { _, enabled in
             // Turning advisory tips off clears whatever cue is on screen and any
             // half-accrued sustained condition. It never resets the persisted
@@ -490,6 +497,7 @@ struct ContentView: View {
             stockSelectorHint.update(stockHintInputs)
         }
         .onChange(of: scenePhase) { _, phase in
+            if phase == .active { reconcileStockVisibility() }
             if phase != .active {
                 focusReadGeneration &+= 1
                 showDaylightRescue = false
@@ -582,6 +590,18 @@ struct ContentView: View {
 #endif
 
     // MARK: - Helpers
+
+    /// Settings may change picker availability, never an in-flight capture or queued job.
+    private func reconcileStockVisibility() {
+        guard !showSettings, scenePhase == .active, cameraViewModel.canChangeShootingMode,
+              !captureBusy, !cameraViewModel.isPhotoCaptureBusy,
+              let current = selectedStock, !library.isStockVisible(current.stockId),
+              let fallback = library.preferredVisibleStock(for: current.stockId) else { return }
+        selectedStock = fallback.overridingISO(library.lastISO(for: fallback.stockId))
+        currentISO = library.lastISO(for: fallback.stockId)
+        library.setSelectedStock(fallback.stockId)
+        restoreDevelopControls()
+    }
 
     private func enqueueRender(sourceURL: URL, stock: FilmStockConfig) {
         renderQueueViewModel.enqueue(
@@ -1067,6 +1087,8 @@ struct ContentView: View {
 
     private var settingsButton: some View {
         Button {
+            guard !captureBusy, !cameraViewModel.isPhotoCaptureBusy,
+                  cameraViewModel.canChangeShootingMode else { return }
             showSettings = true
         } label: {
             Image(systemName: "gearshape.fill")
@@ -1432,12 +1454,6 @@ struct ContentView: View {
     private func redevelop(_ job: RenderJob) {
         showQueueSheet = false
         Task { @MainActor in
-            // The job knows which stock it was developed with; select it so the
-            // panel's gauge and push/pull seed from the right stock.
-            if let stock = library.config(for: job.stockId,
-                                          iso: library.lastISO(for: job.stockId)) {
-                selectedStock = stock
-            }
             // The sheet is dismissing on this runloop, and the mode switch is
             // refused while the camera is busy — so give it a tick, try once more,
             // and SAY SO instead of returning silently if it still cannot switch.
@@ -1450,6 +1466,12 @@ struct ContentView: View {
             guard isDevelopMode else {
                 showModeRefusal("Close the queue before re-developing this photo.")
                 return
+            }
+            // The original job stays untouched; normal pickers only receive enabled stocks.
+            guard !captureBusy, !cameraViewModel.isPhotoCaptureBusy else { return }
+            if let stock = library.preferredVisibleStock(for: job.stockId) {
+                selectedStock = stock.overridingISO(library.lastISO(for: stock.stockId))
+                currentISO = library.lastISO(for: stock.stockId)
             }
             restoreDevelopControls()
             await developModel.adoptExistingPhoto(url: job.sourceURL,
@@ -1798,7 +1820,8 @@ private struct StockSheetView: View {
             .onAppear {
                 stocks = library.videoStocks()
                 if localSelection == nil {
-                    localSelection = selectedStock ?? stocks.first
+                    localSelection = library.preferredVisibleStock(for: selectedStock?.stockId)
+                        .map { $0.overridingISO(library.lastISO(for: $0.stockId)) }
                     gauge = localSelection.flatMap { library.lastGauge(for: $0.stockId) } ?? .thirtyFiveMillimetre
                     restorePushPull(for: localSelection)
                 }
