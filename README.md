@@ -22,6 +22,11 @@ You shoot neutral. The film look comes back from the render.
   LUT generated from a spectral model, and it is only part of the look: halation bleeds light from
   the highlights, glow blooms the graded highlights, and grain is a real
   volumetric plate. None of it is a filter over a finished image.
+- **Native Photo flash.** The bolt toggles the camera's still flash; Video keeps
+  its adjustable continuous lamp. When capture confirms that native flash fired,
+  RAW development preserves the camera's baseline exposure without the additional
+  +1 EV ambient-still lift. Flash-off and unconfirmed shots keep their existing
+  development exposure. Originals and manual exposure controls are unchanged.
 - **Non-destructive development.** Open gate changes what is recorded, not
   what is kept — the Apple Log 2 or HDR HLG original stays intact during
   development and every look is a render of it. Enable saving the original to

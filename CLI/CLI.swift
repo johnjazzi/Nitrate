@@ -50,6 +50,23 @@ import Foundation
             }
             return
         }
+        if arguments.first == "--photo-render", arguments.count == 4 {
+            do {
+                let resources = URL(fileURLWithPath: CommandLine.arguments[0])
+                    .deletingLastPathComponent().appendingPathComponent("RenderCLITests.xctest")
+                let directory = URL(fileURLWithPath: arguments[3], isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let result = try DevelopmentPhotoRenderer.render(
+                    originalDNG: URL(fileURLWithPath: arguments[1]), stockID: arguments[2],
+                    gauge: .sixteenMillimetre, seed: 42, bundle: Bundle(url: resources) ?? .main)
+                let output = directory.appendingPathComponent("developed.jpg")
+                try FileManager.default.copyItem(at: result, to: output)
+                print("PHOTO-OUTPUT \(output.path)")
+            } catch {
+                print("Photo render failed: \(error)"); exit(1)
+            }
+            return
+        }
         if arguments.first == "--photo-probe", arguments.count == 4 {
             do {
                 try PhotoPipelineProbe.run(input: URL(fileURLWithPath: arguments[1]), stock: arguments[2],
