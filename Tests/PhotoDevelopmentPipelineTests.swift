@@ -105,6 +105,25 @@ struct PhotoDevelopmentPipelineTests {
         #expect(max(0, wallAtTwoStopsLift - lifted.x) == 0)
     }
 
+    @Test func nativeFlashUsesItsMeteredExposureWithoutTheAmbientStillLift() {
+        #expect(RAWPhotoDecoder.exposureEV(for: .nativePhoto(requested: true, resolved: true)) == 0)
+        let controls: [FlashRecord?] = [nil, .off,
+            .nativePhoto(requested: true, resolved: false),
+            .nativePhoto(requested: true, resolved: nil),
+            .nativePhoto(requested: true, resolved: true, refusalReason: "Unavailable"),
+            FlashRecord(mode: .native, resolved: false),
+            FlashRecord(mode: .native, requested: true),
+            FlashRecord(mode: .off, resolved: true),
+            FlashRecord(mode: .front, intensityPercent: 100),
+            FlashRecord(mode: .rear, intensityPercent: 100),
+            FlashRecord(mode: .continuous, intensityPercent: 100)]
+        for record in controls {
+            #expect(RAWPhotoDecoder.exposureEV(for: record) == RAWPhotoDecoder.baseExposureEV)
+        }
+        #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 2.988, exposureEV: 0) == 2.988)
+        #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 0, exposureEV: 0) == 0)
+    }
+
     /// A DNG offers the DNG-tagged decoder version; a NEF, ARW or CR2 offers its
     /// own and never "8.dng". Requiring the tagged one refused every non-DNG raw
     /// at the first line of the decode, which is what a Nikon file hit.

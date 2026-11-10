@@ -141,6 +141,22 @@ struct PhotoDeliveryMetadataTests {
         #expect((exif[kCGImagePropertyExifFlash] as? NSNumber)?.intValue == (fired ? 1 : 0))
     }
 
+    @Test func exposureMetadataSeparatesAppliedLiftFromTotalSceneLift() throws {
+        for exposure: Float in [0, 1] {
+            for baseline: Float in [0, 2.988] {
+                let total = RAWPhotoDecoder.sceneLiftStops(baselineExposure: baseline, exposureEV: exposure)
+                let values = try payload(PhotoDeliveryMetadata.properties(config: config(gauge: nil),
+                    capture: .init(), deliveredSize: CGSize(width: 64, height: 96),
+                    sceneLiftStops: total, exposureEV: exposure))
+                #expect(values["photo-exposure-ev"] == String(format: "%.2f", exposure))
+                #expect(values["halation-scene-lift-ev"] == String(format: "%.2f", total))
+            }
+        }
+        let legacy = try payload(try writtenProperties(config(gauge: nil), capture: .init()))
+        #expect(legacy["photo-exposure-ev"] == "1.00")
+        #expect(legacy["halation-scene-lift-ev"] == nil)
+    }
+
     @Test func captureExposureReplacesTheMoviesNominalShutter() throws {
         let config = try config(gauge: .thirtyFiveMillimetre)
         let capture = PhotoDeliveryMetadata.StillCapture(exposureSeconds: 1.0 / 500.0, iso: 800)

@@ -94,14 +94,16 @@ enum PhotoDeliveryMetadata {
     /// compression settings by the caller.
     /// - Parameter raw: the DNG's own sensor numbers, when the delivered file
     ///   came from one. Reported only; nothing branches on them.
-    /// - Parameter sceneLiftStops: how far the decode lifted this frame, which
+    /// - Parameter sceneLiftStops: total baseline plus applied exposure EV, which
     ///   is also the factor the halation knees were scaled by. Recorded so a
-    ///   render can be audited instead of trusted.
+    ///   render can be audited instead of trusted. Not the baseline alone.
+    /// - Parameter exposureEV: the decode's additional lift; legacy callers retain +1 EV.
     static func properties(config: FilmStockConfig, capture: StillCapture,
                            deliveredSize: CGSize,
                            raw: DNGMetadata? = nil,
                            sceneLiftStops: Float? = nil,
-                           halationHeadroom: Float? = nil) throws -> [CFString: Any] {
+                           halationHeadroom: Float? = nil,
+                           exposureEV: Float = RAWPhotoDecoder.baseExposureEV) throws -> [CFString: Any] {
         let orientation = RenderDeliveryOrientation.from(naturalSize: deliveredSize,
                                                         preferredTransform: .identity)
         let caption = RenderConsumerMetadata.caption(stockName: config.displayName,
@@ -123,7 +125,7 @@ enum PhotoDeliveryMetadata {
         if let focalLength = capture.focalLengthMM, focalLength.isFinite, focalLength > 0 {
             overrides["focal-length-mm"] = String(focalLength)
         }
-        if let sceneLiftStops, sceneLiftStops.isFinite, sceneLiftStops != 0 {
+        if let sceneLiftStops, sceneLiftStops.isFinite {
             overrides["halation-scene-lift-ev"] = String(format: "%.2f", sceneLiftStops)
         }
         // The file's measured highlight ceiling, in the same lifted units the
@@ -132,9 +134,9 @@ enum PhotoDeliveryMetadata {
         if let halationHeadroom, halationHeadroom.isFinite {
             overrides["halation-headroom"] = String(format: "%.2f", halationHeadroom)
         }
-        // The base exposure every still gets, so a delivered file says what it
+        // The additional exposure this decode applied, so a delivered file says what it
         // was lifted by rather than leaving it to be inferred.
-        overrides["photo-exposure-ev"] = String(format: "%.2f", RAWPhotoDecoder.baseExposureEV)
+        overrides["photo-exposure-ev"] = String(format: "%.2f", exposureEV)
         // The shares the still render applied, and the amount actually mixed:
         // the recipe's keys describe the take, so a photo states its own.
         overrides["halation-still-scale"] = String(format: "%.2f", config.effectiveStillHalationScale)

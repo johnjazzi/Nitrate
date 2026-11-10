@@ -62,8 +62,8 @@ enum DevelopmentPhotoRenderer {
         for (key, value) in try PhotoDeliveryMetadata.properties(
             config: film.config, capture: capture,
             deliveredSize: CGSize(width: cg.width, height: cg.height),
-            raw: decodedRAW.metadata, sceneLiftStops: decodedRAW.baselineExposure,
-            halationHeadroom: decodedRAW.halationHeadroom) {
+            raw: decodedRAW.metadata, sceneLiftStops: decodedRAW.sceneLiftStops,
+            halationHeadroom: decodedRAW.halationHeadroom, exposureEV: decodedRAW.exposureEV) {
             properties[key] = value
         }
         CGImageDestinationAddImage(sink, cg, properties as CFDictionary)

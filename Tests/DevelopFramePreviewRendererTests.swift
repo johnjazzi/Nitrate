@@ -38,6 +38,17 @@ struct DevelopFramePreviewRendererTests {
         } / Double(image.width * image.height)
     }
 
+    @Test func photoMeterRemovesOnlyTheAppliedDecodeExposure() throws {
+        let flash = CIImage(color: CIColor(red: 0.18, green: 0.18, blue: 0.18))
+            .cropped(to: CGRect(x: 0, y: 0, width: 32, height: 32))
+        let ambient = CIImage(color: CIColor(red: 0.36, green: 0.36, blue: 0.36))
+            .cropped(to: flash.extent)
+        let flashReading = try #require(DevelopFramePreviewRenderer.measurePhoto(flash, exposureEV: 0))
+        let ambientReading = try #require(DevelopFramePreviewRenderer.measurePhoto(ambient, exposureEV: 1))
+        #expect(abs(flashReading - ambientReading) < 0.001)
+        #expect(DevelopFramePreviewRenderer.measurePhoto(ambient) == ambientReading)
+    }
+
     private func assertSpatialRange(_ image: CGImage) throws {
         let bytes = try pixels(image)
         let red = stride(from: 0, to: bytes.count, by: 4).map { Double(bytes[$0]) / 255 }
