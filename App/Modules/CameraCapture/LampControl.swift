@@ -2,9 +2,9 @@ import SwiftUI
 
 /// The flash key for the camera's top bar.
 ///
-/// A short press switches native photo flash on/off, or restores the remembered
-/// video torch level. A long press opens the mode's controls; both tick.
-/// Photo offers only On/Off because the camera owns its flash pulse.
+/// A press switches native photo flash on/off, or restores the remembered
+/// video torch level. Holding the video key opens its level control.
+/// Photo has no adjustment popover because the camera owns its flash pulse.
 ///
 /// The key owns its settings because the lamp is a capture fact, not a stock
 /// fact: the same level lights a take whichever film is loaded, and the store
@@ -37,8 +37,12 @@ struct LampControl: View {
         .contentShape(Circle())
         .onTapGesture { toggle() }
         .onLongPressGesture(minimumDuration: 0.4) {
-            showsControls.toggle()
-            tick()
+            if photoMode {
+                toggle()
+            } else {
+                showsControls.toggle()
+                tick()
+            }
         }
         .sensoryFeedback(.impact(weight: .medium), trigger: hapticTick)
         // .top puts the card BELOW the key. The arrow edge names the side of
@@ -54,6 +58,7 @@ struct LampControl: View {
         .onChange(of: settings) { _, value in
             FlashSettingsStore().settings = value
         }
+        .onChange(of: photoMode) { _, _ in showsControls = false }
     }
 
     private var isOn: Bool {
@@ -89,21 +94,9 @@ struct LampControl: View {
             Text("Flash")
                 .font(NitrateTypography.font(.subheadline))
                 .foregroundStyle(.primary)
-            if photoMode {
-                Picker("Photo flash", selection: Binding(
-                    get: { settings.isPhotoLampOn },
-                    set: { settings.photoIntensity = $0 ? 1 : 0 }
-                )) {
-                    Text("Off").tag(false)
-                    Text("On").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("camera.photoFlashMode")
-            } else {
-                slider("Flash", value: $settings.videoLevel,
-                       range: FlashSettings.intensityRange,
-                       readout: settings.isVideoLampOn ? "\(settings.videoPercent)%" : "OFF")
-            }
+            slider("Flash", value: $settings.videoLevel,
+                   range: FlashSettings.intensityRange,
+                   readout: settings.isVideoLampOn ? "\(settings.videoPercent)%" : "OFF")
         }
         .padding(16)
         .frame(width: 280)

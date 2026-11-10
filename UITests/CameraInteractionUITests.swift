@@ -244,12 +244,6 @@ final class CameraInteractionUITests: XCTestCase {
         selectPhoto(in: app)
         selectWideLens(in: app)
         let originallyOn = flash.value as? String == "Photo flash on"
-        flash.press(forDuration: 0.5)
-        XCTAssertTrue(app.segmentedControls["camera.photoFlashMode"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.staticTexts["Intensity"].exists, "Native flash must not offer a fictitious power slider")
-        XCTAssertFalse(app.staticTexts["Duration"].exists, "Native flash timing is owned by the camera")
-        attachEvidence(app, named: "native-photo-flash-on-off-popover")
-        app.otherElements["camera.preview"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7)).tap()
         defer {
             if app.state == .runningForeground, app.buttons["photo.shutter"].exists,
                (flash.value as? String == "Photo flash on") != originallyOn {
@@ -276,6 +270,24 @@ final class CameraInteractionUITests: XCTestCase {
         if (flash.value as? String == "Photo flash on") != originallyOn { flash.tap() }
         selectVideo(in: app)
         XCTAssertEqual(flash.value as? String, videoLamp, "Still flash must not alter the saved video lamp level")
+    }
+
+    @MainActor func testNativePhotoFlashUsesOneToggleWithoutAdjustmentPopover() throws {
+        continueAfterFailure = false
+        let app = launchReadyCamera(hideDiagnosticButtons: true)
+        selectPhoto(in: app)
+        let flash = app.descendants(matching: .any).matching(identifier: "camera.flash").firstMatch
+        waitUntilReady(flash, in: app, named: "native-flash-toggle-ready")
+        let original = flash.value as? String
+        defer { if flash.value as? String != original { flash.tap() } }
+        flash.tap()
+        XCTAssertEqual(flash.value as? String, original == "Photo flash on" ? "Photo flash off" : "Photo flash on")
+        flash.press(forDuration: 0.7)
+        XCTAssertEqual(flash.value as? String, original, "A hold switches the same native flash, without another panel")
+        XCTAssertEqual(app.sliders.count, 0, "Photo must not expose video torch level or pretend to adjust native pulse power")
+        XCTAssertFalse(app.staticTexts["Intensity"].exists)
+        XCTAssertFalse(app.staticTexts["Duration"].exists)
+        attachEvidence(app, named: "native-photo-flash-single-toggle")
     }
 
     @MainActor func testVideoRecordStopThenPhotoCaptureThroughVisibleControls() throws {
