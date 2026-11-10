@@ -143,7 +143,7 @@ actor DevelopFramePreviewRenderer {
                                          maximumDimension: Self.maximumDimension)
         let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
         guard let frozen = CIImage(mtlTexture: decoded.texture, options: [.colorSpace: space]) else { throw PreviewError.decode }
-        let reading = Self.measurePhoto(frozen)
+        let reading = Self.measurePhoto(frozen, exposureEV: decoded.exposureEV)
         return PhotoSource(decoder: decoder, balance: balance, decoded: decoded, measurement: reading,
                            description: Self.captureDescription(PhotoDeliveryMetadata.capture(fromDNG: url)))
     }
@@ -319,7 +319,7 @@ actor DevelopFramePreviewRenderer {
         return destination
     }
 
-    static func measurePhoto(_ image: CIImage) -> Double? {
+    static func measurePhoto(_ image: CIImage, exposureEV: Float = RAWPhotoDecoder.baseExposureEV) -> Double? {
         let size = 96
         let scale = CGFloat(size) / max(image.extent.width, image.extent.height)
         let small = normalized(image).transformed(by: CGAffineTransform(scaleX: scale, y: scale))
@@ -329,7 +329,7 @@ actor DevelopFramePreviewRenderer {
         let context = CIContext(options: [.workingColorSpace: space, .cacheIntermediates: false])
         context.render(small, toBitmap: &pixels, rowBytes: width * 16,
                        bounds: CGRect(x: 0, y: 0, width: width, height: height), format: .RGBAf, colorSpace: space)
-        let baseGain = pow(2, Double(RAWPhotoDecoder.baseExposureEV))
+        let baseGain = pow(2, Double(exposureEV))
         let luminance = stride(from: 0, to: pixels.count, by: 4).map { index in
             DevelopExposureMeter.linearSRGBLuminance(SIMD3(Double(pixels[index]), Double(pixels[index + 1]),
                                                           Double(pixels[index + 2]))) / baseGain

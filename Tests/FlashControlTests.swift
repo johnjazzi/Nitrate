@@ -1,10 +1,7 @@
 import Foundation
 import Testing
 
-/// The lamp's contracts: the shaping window, the settings that clamp, the store
-/// that persists them, and the record a delivered file carries. Plus the one
-/// rule that must never regress — the framework's own photo flash is never set,
-/// because it and this torch drive the same LED.
+/// Native still flash, independent video torch preferences, and legacy lamp records.
 struct FlashControlTests {
     // MARK: - Timing
 
@@ -107,12 +104,15 @@ struct FlashControlTests {
         #expect(nan.photoDurationPercent == 100)
     }
 
-    @Test func thePillReadsTheLevelInVideoAndTheDurationInPhoto() {
+    @Test func thePillReadsTheLevelInVideoAndOnOffInPhoto() {
         let video = FlashSettings(videoLevel: 0.4)
         #expect(video.pillText(photoMode: false) == "40%")
         #expect(video.pillText(photoMode: true) == "OFF")
         let photo = FlashSettings(photoIntensity: 0.5, photoDurationPercent: 25)
-        #expect(photo.pillText(photoMode: true) == "25%", "the duration is the number that matters")
+        #expect(photo.pillText(photoMode: true) == "ON")
+        #expect(photo.accessibilityValue(photoMode: true) == "Photo flash on")
+        #expect(FlashSettings.standard.accessibilityValue(photoMode: true) == "Photo flash off")
+        #expect(video.accessibilityValue(photoMode: false) == "Lamp at 40 percent for the take")
         #expect(photo.pillText(photoMode: false) == "OFF", "a photo setting cannot light a take")
         // Intensity zero is the switch: nothing fires and the pill says so.
         let off = FlashSettings(photoIntensity: 0, photoDurationPercent: 40)
@@ -209,35 +209,117 @@ struct FlashControlTests {
 
     // MARK: - The rule that must never regress
 
-    /// Custom flash is torch-only. `AVCapturePhotoSettings.flashMode` and the
-    /// torch drive the same LED, so any code path that set the framework's flash
-    /// would fight the lamp — and the capture would be metered twice.
-    @Test func noCodePathSetsThePhotoSettingsFlashMode() throws {
-        let files = [
-            "App/Modules/CameraCapture/CameraPhotoCapture.swift",
-            "App/Modules/CameraCapture/FlashTorchController.swift",
-            "App/Modules/CameraCapture/DevelopmentPhotoController.swift",
-            "App/Modules/CameraCapture/CameraSession.swift",
-            "App/Modules/CameraCapture/CameraViewModel.swift"
-        ]
-        for path in files {
-            let source = try String(contentsOf: TestRepository.url(for: path), encoding: .utf8)
-            // A write is `.flashMode = <mode>`; the capture builder's own
-            // `.flashMode == .off` guard is a read and must stay allowed.
-            #expect(source.range(of: #"\.flashMode\s*=(?!=)"#, options: .regularExpression) == nil,
-                    "\(path) assigns AVCapturePhotoSettings.flashMode")
-            #expect(!source.contains("flashMode:"), "\(path) passes a flashMode into a settings builder")
-            #expect(!source.contains("flashMode = .on"), "\(path) asks the framework to fire the LED")
-            #expect(!source.contains("flashMode = .auto"), "\(path) asks the framework to fire the LED")
+    @Test func nativeFlashRecordsResolvedFiringWithoutInventingPowerOrDuration() throws {
+        let record = FlashRecord.nativePhoto(requested: true, resolved: true)
+        #expect(record.mode == .native)
+        #expect(record.didFire)
+        #expect(!record.wasRefused)
+        #expect(record.intensityPercent == nil)
+        #expect(record.durationPercent == nil)
+        #expect(record.exposureSeconds == nil)
+        #expect(record.metadataValues[FlashRecord.intensityKey] == nil)
+        #expect(record.metadataValues[FlashRecord.durationKey] == nil)
+        #expect(record.metadataValues[FlashRecord.requestedKey] == "true")
+        #expect(record.metadataValues[FlashRecord.resolvedKey] == "true")
+        // The sidecar and JPEG payload both transport string dictionaries.
+        let data = try JSONSerialization.data(withJSONObject: record.metadataValues)
+        let values = try #require(JSONSerialization.jsonObject(with: data) as? [String: String])
+        #expect(FlashRecord.decode(values) == record)
+        #expect(record.summary == "native photo flash fired (power and duration unmeasured)")
+    }
+
+    @Test func nativeFlashRefusalDoesNotClaimFiringOrMeasuredPower() {
+        for reason in [nil, "Native photo flash is not supported by this camera output.", "The flash is too hot."] as [String?] {
+            let record = FlashRecord.nativePhoto(requested: true, resolved: false, refusalReason: reason)
+            #expect(record.mode == .off)
+            #expect(!record.didFire)
+            #expect(record.wasRefused)
+            #expect(record.refusalReason != nil)
+            if let reason { #expect(record.refusalReason == reason) }
+            #expect(record.intensityPercent == nil)
+            #expect(record.durationPercent == nil)
+            #expect(record.metadataValues[FlashRecord.intensityKey] == nil)
+            #expect(record.metadataValues[FlashRecord.durationKey] == nil)
+            #expect(record.metadataValues[FlashRecord.requestedKey] == "true")
+            #expect(record.metadataValues[FlashRecord.resolvedKey] == "false")
+            #expect(FlashRecord.decode(record.metadataValues) == record)
         }
-        // The capture builder asserts the request carries no flash of its own,
-        // so the rule is enforced at runtime as well as here.
+    }
+
+    @Test func nativeFlashIntentAloneIsNotEvidenceOfFiring() {
+        let pending = FlashRecord.nativePhoto(requested: true, resolved: nil)
+        #expect(!pending.didFire)
+        #expect(!pending.wasRefused)
+        #expect(pending.metadataValues[FlashRecord.resolvedKey] == nil)
+        #expect(FlashRecord.decode(pending.metadataValues) == pending)
+        let off = FlashRecord.nativePhoto(requested: false, resolved: false)
+        #expect(!off.didFire)
+        #expect(!off.wasRefused)
+        #expect(FlashRecord.decode(off.metadataValues) == off)
+        // Resolution, not intent, controls the delivered EXIF fired bit.
+        #expect(FlashRecord.nativePhoto(requested: false, resolved: true).didFire)
+    }
+
+    @Test func historicTorchMetadataStillDecodesUnchanged() {
+        for mode in [FlashMode.front, .rear, .continuous, .off] {
+            var values = ["flash-mode": mode.rawValue, "flash-intensity-percent": "40",
+                          "flash-duration-percent": "25", "flash-exposure-seconds": "0.250000",
+                          "flash-refused": "false"]
+            let record = FlashRecord(mode: mode, intensityPercent: 40, durationPercent: 25, exposureSeconds: 0.25)
+            #expect(FlashRecord.decode(values) == record)
+            #expect(record.metadataValues == values)
+            values["flash-refused"] = "true"
+            values["flash-refused-reason"] = "The lamp was too hot."
+            #expect(FlashRecord.decode(values)?.refusalReason == "The lamp was too hot.")
+        }
+        #expect(FlashRecord.decode(["flash-mode": "off"]) == .off)
+    }
+
+    @Test func legacySettingsDecodeAndPhotoToggleLeavesVideoPreferencesIndependent() throws {
+        let data = Data(#"{"videoLevel":0.35,"photoIntensity":0.6,"photoDurationPercent":40}"#.utf8)
+        var settings = try JSONDecoder().decode(FlashSettings.self, from: data)
+        #expect(settings.pillText(photoMode: true) == "ON")
+        #expect(settings.photoDurationPercent == 40)
+        let defaults = try #require(UserDefaults(suiteName: "native-flash-tests-\(UUID().uuidString)"))
+        let store = FlashSettingsStore(userDefaults: defaults)
+        for level in [0.0, 1.0] {
+            settings.photoIntensity = level
+            store.settings = settings
+            #expect(store.settings.videoLevel == 0.35)
+            #expect(store.settings.pillText(photoMode: false) == "35%")
+            #expect(store.settings.photoDurationPercent == 40)
+            #expect(store.settings.isPhotoLampOn == (level > 0))
+        }
+        #expect(FlashRecord.video(level: store.settings.videoLevel, exposureSeconds: nil,
+                                  refusalReason: nil).intensityPercent == 35)
+    }
+
+    @Test func captureBridgeUsesResolvedFlashInsideItsExistingTransactionFence() throws {
         let builder = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraPhotoCapture.swift"),
                                  encoding: .utf8)
-        #expect(builder.contains("guard raw.flashMode == .off"),
-                "the still request must prove it carries no framework flash")
-        #expect(builder.contains("output.capturePhoto(with: settings, delegate: self)"),
-                "the request is still the one the builder validated")
+        #expect(builder.contains("flashRequested: Bool = false"), "old direct smoke callers remain off")
+        #expect(builder.contains("photo.resolvedSettings.isFlashEnabled"))
+        #expect(builder.contains("resolvedSettings.isFlashEnabled"))
+        #expect(builder.contains("guard self.accept(id) else { return }"))
+        #expect(builder.contains("state.uniqueID == id"))
+        #expect(builder.contains("self.recordResolvedFlash(flashEnabled)"))
+        #expect(builder.contains("FlashRecord.requestedKey, FlashRecord.resolvedKey"), "manifest allowlist carries both facts")
+        #expect(builder.contains("data.count <= 4096"))
+    }
+
+    @Test func normalStillsUseNativeFlashWithoutPhotoTorchLevels() throws {
+        let builder = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraPhotoCapture.swift"),
+                                 encoding: .utf8)
+        let controller = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/DevelopmentPhotoController.swift"),
+                                    encoding: .utf8)
+        #expect(builder.range(of: #"raw\.flashMode\s*=(?!=)"#, options: .regularExpression) != nil,
+                "the normal RAW helper must explicitly assign native flash mode")
+        #expect(builder.contains("supportedFlashModes"), "unsupported native flash must be refused")
+        #expect(controller.contains("flashRequested: flash.isPhotoLampOn"))
+        #expect(!controller.contains("torch.setLevel("), "Photo must not substitute continuous torch for native flash")
+        #expect(!controller.contains("armFlashOff("), "Photo must not time a software torch pulse")
+        #expect(controller.contains("torch.turnOff()"), "retain torch teardown safety")
+        #expect(builder.contains("output.capturePhoto(with: settings, delegate: self)"))
     }
 
     /// The torch is touched in exactly one type: a second caller is how a lamp

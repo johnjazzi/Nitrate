@@ -22,6 +22,11 @@ You shoot neutral. The film look comes back from the render.
   LUT generated from a spectral model, and it is only part of the look: halation bleeds light from
   the highlights, glow blooms the graded highlights, and grain is a real
   volumetric plate. None of it is a filter over a finished image.
+- **Native Photo flash.** The bolt toggles the camera's still flash; Video keeps
+  its adjustable continuous lamp. When capture confirms that native flash fired,
+  RAW development preserves the camera's baseline exposure without the additional
+  +1 EV ambient-still lift. Flash-off and unconfirmed shots keep their existing
+  development exposure. Originals and manual exposure controls are unchanged.
 - **Non-destructive development.** Open gate changes what is recorded, not
   what is kept — the Apple Log 2 or HDR HLG original stays intact during
   development and every look is a render of it. Enable saving the original to
@@ -162,7 +167,7 @@ than a refusal, but ask before shipping anything derived from it.
 | Exposure | 180° shutter priority by default (shutter locked to 1/48 s, ISO meters), plus manual EV and manual ISO |
 | White balance | Locked per stock — 5600 K daylight negatives, 5500 K Ektachrome, 3200 K tungsten — so the LUT always sees the same white point |
 | Stabilization | Recording-only: Off, Standard, Cinematic, Extreme (Apple extended cinematic). The preview stays independent, and the UI calls out the crop and latency |
-| Light | Flash/lamp controls, subject to the active camera's hardware and thermal limits |
+| Light | Native photo flash (On/Off) and an independent adjustable video torch; still metadata records resolved firing, not assumed power or timing. Hardware and thermal limits apply. |
 
 The capture path is strict on purpose. It negotiates a ten-bit bi-planar format
 the device actually advertises, and validates every sample buffer — dimensions,

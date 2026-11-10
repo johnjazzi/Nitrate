@@ -37,9 +37,8 @@ protocol FlashTorchDriving: AnyObject {
 
 /// The only place in the app that touches the torch.
 ///
-/// There is no second mechanism: `AVCapturePhotoSettings.flashMode` is never
-/// set anywhere, because the framework's flash and this torch fight over the
-/// same LED. Custom flash here is torch-only, always.
+/// Video uses this adjustable continuous torch. Stills use native photo flash
+/// instead, with the torch extinguished before submitting their request.
 ///
 /// The device is locked for the write and unlocked immediately; `turnOff` is
 /// idempotent and safe to call from any of the lifecycle points that must

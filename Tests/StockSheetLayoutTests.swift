@@ -238,11 +238,16 @@ struct StockSheetLayoutTests {
         #expect(source.contains("slider(\"Flash\""),
                 "Video has one level, and it is called flash.")
         #expect(!source.contains("Fire the lamp"),
-                "There is no second switch: intensity zero is off.")
-        #expect(source.contains("slider(\"Intensity\""))
-        #expect(source.contains("slider(\"Duration\""))
-        #expect(source.contains(".disabled(shapingReason != nil)"),
-                "Below the shaping floor the duration control is disabled, not silently inert.")
+                "Video keeps its existing zero-is-off level control.")
+        let lamp = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/LampControl.swift"),
+                              encoding: .utf8)
+        #expect(lamp.contains("settings.photoIntensity = settings.isPhotoLampOn ? 0 : 1"))
+        #expect(lamp.contains("if photoMode {\n                toggle()"),
+                "Holding Photo's bolt must use the same On/Off action, not open an adjustment panel")
+        #expect(!lamp.contains("Picker(\"Photo flash\""), "Native flash does not need a second On/Off control")
+        #expect(!lamp.contains("slider(\"Intensity\""), "Native photo flash has no power slider")
+        #expect(!lamp.contains("slider(\"Duration\""), "Native photo flash timing is camera-controlled")
+        #expect(!lamp.contains("shapingReason"), "The legacy torch shaping limit must not gate native flash")
         for guidance in ["distance", "metres away", "m away", "\\(distance)"] {
             #expect(!source.contains(guidance), "No distance guidance ships in the UI.")
         }

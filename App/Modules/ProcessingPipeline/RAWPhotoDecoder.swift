@@ -24,14 +24,32 @@ final class RAWPhotoDecoder {
         /// `SpatialEffectsStage.halationReferenceSuperwhite`).
         let halationHeadroom: Float
 
+        /// Additional lift actually applied by CIRAWFilter, separate from its baseline.
+        let exposureEV: Float
+
+        init(texture: MTLTexture, linearImage: CIImage, nativeSize: CGSize,
+             orientedExtent: CGRect, settings: [String: String], baselineExposure: Float,
+             metadata: DNGMetadata?, halationHeadroom: Float,
+             exposureEV: Float = RAWPhotoDecoder.baseExposureEV) {
+            self.texture = texture
+            self.linearImage = linearImage
+            self.nativeSize = nativeSize
+            self.orientedExtent = orientedExtent
+            self.settings = settings
+            self.baselineExposure = baselineExposure
+            self.metadata = metadata
+            self.halationHeadroom = halationHeadroom
+            self.exposureEV = exposureEV
+        }
+
         /// Total stops this frame was lifted by before the film stages: the
         /// capture's baseline plus the still base exposure.
         var sceneLiftStops: Float {
-            RAWPhotoDecoder.sceneLiftStops(baselineExposure: baselineExposure)
+            RAWPhotoDecoder.sceneLiftStops(baselineExposure: baselineExposure, exposureEV: exposureEV)
         }
     }
 
-    /// Base exposure every still gets before the film stages.
+    /// Legacy ambient still exposure before the film stages.
     ///
     /// The RAW pipeline's neutral rendering sits low: a develop came out about a
     /// stop under what the same capture looks like in Photos, consistently, on
@@ -43,10 +61,18 @@ final class RAWPhotoDecoder {
     /// un-lifted knees, which is the bug that made raw blooms orange.
     static let baseExposureEV: Float = 1
 
+    static func exposureEV(for flash: FlashRecord?) -> Float {
+        guard let flash, flash.mode == .native, flash.resolved == true, !flash.wasRefused else {
+            return baseExposureEV
+        }
+        // Native flash already meters the shot; do not add the ambient still lift.
+        return 0
+    }
+
     /// Total stops the film stages see this frame lifted by: the capture's own
     /// `BaselineExposure` plus the still base exposure above.
-    static func sceneLiftStops(baselineExposure: Float) -> Float {
-        baselineExposure + baseExposureEV
+    static func sceneLiftStops(baselineExposure: Float, exposureEV: Float = baseExposureEV) -> Float {
+        baselineExposure + exposureEV
     }
 
     /// The decoder version to pin for a file: the DNG-tagged one when the file
@@ -119,7 +145,9 @@ final class RAWPhotoDecoder {
             guard longest.isFinite, longest > 0 else { throw DecodeError.emptyOutput }
             raw.scaleFactor = Float(min(1, CGFloat(maximumDimension) / longest))
         }
-        raw.exposure = Self.baseExposureEV
+        let capture = PhotoDeliveryMetadata.capture(fromDNG: url)
+        let exposureEV = Self.exposureEV(for: capture.flash)
+        raw.exposure = exposureEV
         // `baselineExposure` is deliberately NOT zeroed: the DNG's BaselineExposure
         // is the capture's exposure compensation (measured +0.98 EV and +2.49 EV on
         // real captures). Forcing it to 0 developed every photo ~2–5x darker than
@@ -135,7 +163,7 @@ final class RAWPhotoDecoder {
 
         var settings: [String: String] = [
             "decoderVersion": raw.decoderVersion.rawValue, "scaleFactor": maximumDimension == nil ? "1" : String(raw.scaleFactor),
-            "exposure": String(format: "%.2f (still base)", Self.baseExposureEV),
+            "exposure": String(format: "%.2f (still base)", exposureEV),
             "baselineExposure": String(format: "%.3f (DNG-provided)", dngBaselineExposure), "shadowBias": "0",
             "boostAmount": "0", "boostShadowAmount": "0", "gamutMappingEnabled": "false",
             "extendedDynamicRangeAmount": "1", "neutralTemperature": String(raw.neutralTemperature),
@@ -155,7 +183,7 @@ final class RAWPhotoDecoder {
         // and only as far as the capture's own ISO justifies: an untouched Bayer
         // frame carries the sensor's multicoloured chroma speckle, which is exactly
         // what an operator reads as "wrong grain". See PhotoNoiseReductionPolicy.
-        let captureISO = PhotoDeliveryMetadata.capture(fromDNG: url).iso
+        let captureISO = capture.iso
         let colorNoiseReduction = PhotoNoiseReductionPolicy.colorAmount(iso: captureISO)
         if raw.isColorNoiseReductionSupported { raw.colorNoiseReductionAmount = colorNoiseReduction }
         settings["colorNoiseReduction"] = raw.isColorNoiseReductionSupported
@@ -196,7 +224,7 @@ final class RAWPhotoDecoder {
                        orientedExtent: CGRect(origin: .zero, size: CGSize(width: extent.width, height: extent.height)),
                        settings: settings, baselineExposure: dngBaselineExposure,
                        metadata: DNGMetadata.read(url),
-                       halationHeadroom: measureHeadroom(of: normalized))
+                       halationHeadroom: measureHeadroom(of: normalized), exposureEV: exposureEV)
     }
 
     /// The file's highlight ceiling, in the lifted units the film stages see.

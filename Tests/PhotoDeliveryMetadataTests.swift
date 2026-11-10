@@ -125,6 +125,38 @@ struct PhotoDeliveryMetadataTests {
         #expect(still["film-stock"] == "test")
     }
 
+    @Test(arguments: [false, true])
+    func nativeFlashResolutionSurvivesActualJPEGMetadataRoundTrip(fired: Bool) throws {
+        let record = FlashRecord.nativePhoto(requested: true, resolved: fired)
+        let capture = PhotoDeliveryMetadata.StillCapture(exposureSeconds: 1.0 / 125.0, iso: 400, flash: record)
+        let properties = try writtenProperties(config(gauge: nil), capture: capture)
+        let values = try payload(properties)
+        #expect(FlashRecord.decode(values) == record)
+        #expect(values[FlashRecord.modeKey] == (fired ? "native" : "off"))
+        #expect(values[FlashRecord.requestedKey] == "true")
+        #expect(values[FlashRecord.resolvedKey] == String(fired))
+        #expect(values[FlashRecord.intensityKey] == nil, "Native pulse strength is not measured")
+        #expect(values[FlashRecord.durationKey] == nil, "Native pulse duration is not measured")
+        let exif = try #require(properties[kCGImagePropertyExifDictionary] as? [CFString: Any])
+        #expect((exif[kCGImagePropertyExifFlash] as? NSNumber)?.intValue == (fired ? 1 : 0))
+    }
+
+    @Test func exposureMetadataSeparatesAppliedLiftFromTotalSceneLift() throws {
+        for exposure: Float in [0, 1] {
+            for baseline: Float in [0, 2.988] {
+                let total = RAWPhotoDecoder.sceneLiftStops(baselineExposure: baseline, exposureEV: exposure)
+                let values = try payload(PhotoDeliveryMetadata.properties(config: config(gauge: nil),
+                    capture: .init(), deliveredSize: CGSize(width: 64, height: 96),
+                    sceneLiftStops: total, exposureEV: exposure))
+                #expect(values["photo-exposure-ev"] == String(format: "%.2f", exposure))
+                #expect(values["halation-scene-lift-ev"] == String(format: "%.2f", total))
+            }
+        }
+        let legacy = try payload(try writtenProperties(config(gauge: nil), capture: .init()))
+        #expect(legacy["photo-exposure-ev"] == "1.00")
+        #expect(legacy["halation-scene-lift-ev"] == nil)
+    }
+
     @Test func captureExposureReplacesTheMoviesNominalShutter() throws {
         let config = try config(gauge: .thirtyFiveMillimetre)
         let capture = PhotoDeliveryMetadata.StillCapture(exposureSeconds: 1.0 / 500.0, iso: 800)
