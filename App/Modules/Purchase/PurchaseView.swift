@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// AD-1: Purchase/settings screen — 7-day trial, $4.99/year, $9.99 lifetime.
+/// AD-1: Purchase/settings screen — 20-day evaluation, $4.99/year, $9.99 lifetime.
 struct PurchaseView: View {
     @State var viewModel: PurchaseViewModel
     @Binding var showFramedPreview: Bool
@@ -56,26 +56,41 @@ struct PurchaseView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    // Trial status
-                    trialStatusSection
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 24) {
+                        // Access status, and the way to the purchase options.
+                        trialStatusSection(revealPricing: {
+                            pricingExpanded = true
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                proxy.scrollTo(Self.pricingAnchor, anchor: .top)
+                            }
+                        })
 
-                    // Preview mode
-                    previewModeSection
-                    filmStocksSection
-                    exportSection
+                        // Preview mode
+                        previewModeSection
+                        filmStocksSection
+                        exportSection
 
 #if DEBUG
-                    debugSection
+                        debugSection
 #endif
 
-                    // App info
-                    appInfoSection
-                    pricingDisclosure
-                    legalDisclosure
+#if NITRATE_LOCAL_DEVELOPMENT
+                        // A DevRelease build is a release configuration, so
+                        // DEBUG is off and the Debug panel above does not exist.
+                        // Local-only developer actions live in their own section.
+                        developmentSection
+#endif
+
+                        // App info
+                        appInfoSection
+                        pricingDisclosure
+                            .id(Self.pricingAnchor)
+                        legalDisclosure
+                    }
+                    .padding()
                 }
-                .padding()
             }
             .navigationTitle("Settings")
             .onAppear {
@@ -96,19 +111,29 @@ struct PurchaseView: View {
 
     private var pricingDisclosure: some View {
         DisclosureGroup("Pricing", isExpanded: $pricingExpanded) {
+#if DEBUG || NITRATE_LOCAL_DEVELOPMENT
             if let preview = viewModel.launchPricingPreview {
                 launchPricingPreview(preview)
-            } else if !viewModel.isPurchased {
-                purchaseOptionsSection
-                // Keep terms and privacy reachable alongside checkout.
-                legalLinksSection
             } else {
-                purchasedBanner
+                customerPricingContent
             }
+#else
+            customerPricingContent
+#endif
         }
         .padding()
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder private var customerPricingContent: some View {
+        if !viewModel.isPurchased {
+            purchaseOptionsSection
+            legalLinksSection
+        } else {
+            purchasedBanner
+            accountActionsRow
+        }
     }
 
     private var legalDisclosure: some View {
@@ -120,8 +145,14 @@ struct PurchaseView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private var trialStatusSection: some View {
+    /// Anchor the status card scrolls to when it offers the purchase options.
+    private static let pricingAnchor = "settings.pricing"
+
+    /// Access status at the top of Settings: how long rendering is included, or
+    /// that it is unlocked, plus the one action that matters from here.
+    private func trialStatusSection(revealPricing: @escaping () -> Void) -> some View {
         VStack(spacing: 8) {
+#if DEBUG || NITRATE_LOCAL_DEVELOPMENT
             if viewModel.isDevelopmentBuild {
                 Image(systemName: "hammer.fill")
                     .font(NitrateTypography.font(.largeTitle))
@@ -132,38 +163,16 @@ struct PurchaseView: View {
                      + "Customers installing from the App Store are unaffected.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-            } else if viewModel.isBetaAccess {
-                Image(systemName: "testtube.2")
-                    .font(NitrateTypography.font(.largeTitle))
-                    .foregroundStyle(.tint)
-                Text("Unrestricted Beta")
-                    .font(NitrateTypography.font(.title2).bold())
-                Text("Film rendering is unlocked during the beta. No purchase or checkout is required.")
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            } else if viewModel.isPurchased {
-                Image(systemName: "checkmark.seal.fill")
-                    .font(NitrateTypography.font(.largeTitle))
-                    .foregroundStyle(.green)
-                Text("Unlocked")
-                    .font(NitrateTypography.font(.title2).bold())
-            } else if viewModel.isTrialActive {
-                Image(systemName: "clock.badge.checkmark")
-                    .font(NitrateTypography.font(.largeTitle))
-                    .foregroundStyle(.tint)
-                Text("Free Trial")
-                    .font(NitrateTypography.font(.title2).bold())
-                Text("\(viewModel.daysRemaining) days remaining")
-                    .foregroundStyle(.secondary)
+                // The customer card stays visible so the evaluation count and the
+                // route to checkout can be checked on a local build that never
+                // gates rendering.
+                customerTrialStatusContent(revealPricing: revealPricing)
             } else {
-                Image(systemName: "lock.fill")
-                    .font(NitrateTypography.font(.largeTitle))
-                    .foregroundStyle(.secondary)
-                Text("Trial Expired")
-                    .font(NitrateTypography.font(.title2).bold())
-                Text("Unlock film rendering to continue. Recording stays free.")
-                    .foregroundStyle(.secondary)
+                customerTrialStatusContent(revealPricing: revealPricing)
             }
+#else
+            customerTrialStatusContent(revealPricing: revealPricing)
+#endif
         }
         .padding()
         .frame(maxWidth: .infinity)
@@ -171,11 +180,75 @@ struct PurchaseView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    /// The non-purchasable price information for an unrestricted channel
-    /// (development/DEBUG and the TestFlight beta). It carries the owner-approved
-    /// US launch amounts and states that recording stays free and the tester is
-    /// not charged; there is deliberately no checkout button here, because this
-    /// copy is not a fallback purchase price.
+    @ViewBuilder private func customerTrialStatusContent(revealPricing: @escaping () -> Void) -> some View {
+        if viewModel.isPurchased {
+            unlockedStatus
+        } else if viewModel.isTrialActive {
+            Image(systemName: "clock.badge.checkmark")
+                .font(NitrateTypography.font(.largeTitle))
+                .foregroundStyle(.tint)
+            Text(daysRemainingTitle)
+                .font(NitrateTypography.font(.title2).bold())
+            // Literal: this period is included, it does not turn into a
+            // subscription by itself, and nothing is charged when it ends.
+            Text("Film rendering is included. No charge, and nothing starts a subscription.")
+                .font(NitrateTypography.font(.caption))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            purchaseOptionsButton(revealPricing: revealPricing)
+        } else if viewModel.isDevelopmentBuild {
+            // A local build never gates rendering, so a lapsed evaluation is not
+            // a paused state here.
+            unlockedStatus
+        } else {
+            Image(systemName: "lock.fill")
+                .font(NitrateTypography.font(.largeTitle))
+                .foregroundStyle(.secondary)
+            Text("Rendering paused")
+                .font(NitrateTypography.font(.title2).bold())
+            Text("Recording stays free. Unlock film rendering to develop what you shoot.")
+                .font(NitrateTypography.font(.caption))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            purchaseOptionsButton(revealPricing: revealPricing)
+        }
+    }
+
+    private var unlockedStatus: some View {
+        Group {
+            Image(systemName: "checkmark.seal.fill")
+                .font(NitrateTypography.font(.largeTitle))
+                .foregroundStyle(.green)
+            Text("Unlocked")
+                .font(NitrateTypography.font(.title2).bold())
+        }
+    }
+
+    private var daysRemainingTitle: String {
+        let days = max(1, viewModel.daysRemaining)
+        return days == 1 ? "Last day included" : "\(days) days included"
+    }
+
+    private func purchaseOptionsButton(revealPricing: @escaping () -> Void) -> some View {
+        Button(action: revealPricing) {
+            Text("See purchase options")
+                .font(NitrateTypography.font(.footnote).weight(.semibold))
+                .padding(.horizontal, 16)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderedProminent)
+        .accessibilityIdentifier("settings.purchaseOptions")
+        .padding(.top, 4)
+    }
+
+#if DEBUG || NITRATE_LOCAL_DEVELOPMENT
+    /// The non-purchasable price information for a local development build
+    /// (DEBUG or `NITRATE_LOCAL_DEVELOPMENT`). It carries the owner-approved US
+    /// launch amounts and states that recording stays free and the build is not
+    /// charged; there is deliberately no checkout button here, because this copy
+    /// is not a fallback purchase price. Every customer channel — including
+    /// sandbox (TestFlight and App Review) — renders the live checkout instead.
     private func launchPricingPreview(_ preview: LaunchPricingPreview) -> some View {
         VStack(spacing: 10) {
             Text(preview.headline)
@@ -214,6 +287,8 @@ struct PurchaseView: View {
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
+
+#endif
 
     private func priceAmount(_ amount: String, billing: String) -> some View {
         VStack(alignment: .trailing, spacing: 2) {
@@ -276,12 +351,23 @@ struct PurchaseView: View {
             .buttonStyle(.plain)
             .disabled(viewModel.lifetimePrice == nil)
 
-            // Restore purchases
+            accountActionsRow
+        }
+    }
+
+    /// Restore keeps a reinstall or a second device in sync; redemption accepts
+    /// an Apple offer code. Both are always shown on a checkout channel so a
+    /// customer with an existing grant or a code is never stuck at the paywall.
+    private var accountActionsRow: some View {
+        HStack(spacing: 16) {
             Button("Restore Purchases") {
                 viewModel.restorePurchases()
             }
-            .font(NitrateTypography.font(.caption))
+            Button("Redeem Code") {
+                viewModel.redeemOfferCode()
+            }
         }
+        .font(NitrateTypography.font(.caption))
     }
 
     /// L12: a real product-load failure is shown, never masked by a fallback
@@ -549,8 +635,8 @@ struct PurchaseView: View {
     }
 
     /// The published privacy, terms and support pages. Rendered on every channel
-    /// — a free trial, an expired trial, a paid checkout and the beta all show
-    /// the same rows — so the policy is reachable without buying first. Each row
+    /// — a free trial, an expired trial and a paid checkout all show the same
+    /// rows — so the policy is reachable without buying first. Each row
     /// is a real tappable `Link` with a 44pt target, not a caption-sized label.
     private var legalLinksSection: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -615,6 +701,28 @@ struct PurchaseView: View {
                 .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
             Text("Shows the previous manual panel for comparison.")
+                .font(NitrateTypography.font(.caption))
+                .foregroundStyle(.secondary)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+#endif
+
+#if NITRATE_LOCAL_DEVELOPMENT
+    /// Local-only developer actions. A DevRelease build is a release
+    /// configuration (no DEBUG), so these cannot live in `debugSection`, and
+    /// nothing here is compiled into a distribution Release.
+    private var developmentSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Development")
+                .font(NitrateTypography.font(.headline))
+            Button("Restart evaluation") {
+                viewModel.restartEvaluation()
+            }
+            Text("Clears the install anchor so the twenty-day evaluation starts again on this device.")
                 .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
         }

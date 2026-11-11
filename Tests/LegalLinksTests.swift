@@ -77,6 +77,6 @@ struct LegalLinksTests {
 
     @Test func accessChannelsCoverFreeAndPaidCases() {
         #expect(Set(LegalLinks.Channel.allCases.map(\.rawValue))
-            == ["development", "beta", "trialActive", "trialExpired", "purchased"])
+            == ["development", "trialActive", "trialExpired", "purchased"])
     }
 }

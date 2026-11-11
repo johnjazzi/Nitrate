@@ -37,9 +37,6 @@ final class RenderQueueViewModel {
     /// Injected by the app root. Rendering the film look is the paid feature.
     /// Defaults to allowed so tests and any unwired context behave as before.
     @ObservationIgnored var renderAllowed: @MainActor () -> Bool = { true }
-    private static let renderPausedMessage =
-        "Rendering the film look needs an active subscription. Your recordings are safe in the queue "
-        + "and will render once you subscribe."
     private let sessionId: String
     // A failure is a new alert on each failed transition, including a retry of
     // the same job. The retained job list remains independent of acknowledgement.
@@ -604,7 +601,11 @@ final class RenderQueueViewModel {
         } else if let externalErrorMessage {
             rendererErrorMessage = externalErrorMessage
         } else if isRenderPausedForAccess {
-            rendererErrorMessage = Self.renderPausedMessage
+            // Holding pending work for access is an expected state, not a
+            // failure: the take is already captured and durable, so the queue
+            // reports the pause through `isRenderPausedForAccess` instead of a
+            // render error the user would read as a lost photo.
+            rendererErrorMessage = nil
         } else if let failureAlert,
                   acknowledgedFailureEventId != failureAlert.eventId,
                   jobs.contains(where: { $0.id == failureAlert.jobId && $0.status == .failed && $0.sessionId == sessionId }) {
