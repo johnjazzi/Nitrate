@@ -156,6 +156,10 @@ struct PurchaseView: View {
                      + "Customers installing from the App Store are unaffected.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                // The customer card stays visible so the evaluation count and the
+                // route to checkout can be checked on a local build that never
+                // gates rendering.
+                customerTrialStatusContent(revealPricing: revealPricing)
             } else {
                 customerTrialStatusContent(revealPricing: revealPricing)
             }
@@ -171,11 +175,7 @@ struct PurchaseView: View {
 
     @ViewBuilder private func customerTrialStatusContent(revealPricing: @escaping () -> Void) -> some View {
         if viewModel.isPurchased {
-            Image(systemName: "checkmark.seal.fill")
-                .font(NitrateTypography.font(.largeTitle))
-                .foregroundStyle(.green)
-            Text("Unlocked")
-                .font(NitrateTypography.font(.title2).bold())
+            unlockedStatus
         } else if viewModel.isTrialActive {
             Image(systemName: "clock.badge.checkmark")
                 .font(NitrateTypography.font(.largeTitle))
@@ -189,6 +189,10 @@ struct PurchaseView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             purchaseOptionsButton(revealPricing: revealPricing)
+        } else if viewModel.isDevelopmentBuild {
+            // A local build never gates rendering, so a lapsed evaluation is not
+            // a paused state here.
+            unlockedStatus
         } else {
             Image(systemName: "lock.fill")
                 .font(NitrateTypography.font(.largeTitle))
@@ -200,6 +204,16 @@ struct PurchaseView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             purchaseOptionsButton(revealPricing: revealPricing)
+        }
+    }
+
+    private var unlockedStatus: some View {
+        Group {
+            Image(systemName: "checkmark.seal.fill")
+                .font(NitrateTypography.font(.largeTitle))
+                .foregroundStyle(.green)
+            Text("Unlocked")
+                .font(NitrateTypography.font(.title2).bold())
         }
     }
 
