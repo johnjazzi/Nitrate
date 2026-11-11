@@ -132,6 +132,11 @@ struct PurchaseView: View {
             legalLinksSection
         } else {
             purchasedBanner
+            // The products stay reachable once something is owned: a customer
+            // may want the other plan, and App Review needs a purchase that can
+            // actually be completed on an account that already owns one product.
+            purchaseOptionsSection
+            legalLinksSection
             accountActionsRow
         }
     }
