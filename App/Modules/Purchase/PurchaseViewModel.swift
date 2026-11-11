@@ -141,9 +141,11 @@ final class PurchaseViewModel {
         }
     }
 
-#if DEBUG
+#if DEBUG || NITRATE_LOCAL_DEVELOPMENT
     /// Development-only: clear the install anchor so the twenty-day evaluation
-    /// can be seen again on this device. Compiled out of every shipped build.
+    /// can be seen again on this device. Compiled out of every shipped build:
+    /// DevRelease defines NITRATE_LOCAL_DEVELOPMENT, a distribution Release
+    /// defines neither flag.
     func restartEvaluation() {
         UserDefaults.standard.removeObject(forKey: StoreManager.installDateKey)
         Task { await loadState() }

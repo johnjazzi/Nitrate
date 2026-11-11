@@ -76,6 +76,13 @@ struct PurchaseView: View {
                         debugSection
 #endif
 
+#if NITRATE_LOCAL_DEVELOPMENT
+                        // A DevRelease build is a release configuration, so
+                        // DEBUG is off and the Debug panel above does not exist.
+                        // Local-only developer actions live in their own section.
+                        developmentSection
+#endif
+
                         // App info
                         appInfoSection
                         pricingDisclosure
@@ -689,17 +696,33 @@ struct PurchaseView: View {
             Toggle("Show DEBUG button", isOn: $showsDebugButton)
             Toggle("Show FAULT test button", isOn: $showsFaultButton)
             Toggle("Legacy Manual Controls", isOn: legacyManualControlsEnabled)
-            Button("Restart evaluation") {
-                viewModel.restartEvaluation()
-            }
-            Text("Clears the install anchor so the twenty-day evaluation starts again on this device.")
-                .font(NitrateTypography.font(.caption))
-                .foregroundStyle(.secondary)
             Text("The FAULT button previews the recording-failure overlay. "
                  + "Same switches as the debug sheet.")
                 .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
             Text("Shows the previous manual panel for comparison.")
+                .font(NitrateTypography.font(.caption))
+                .foregroundStyle(.secondary)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+#endif
+
+#if NITRATE_LOCAL_DEVELOPMENT
+    /// Local-only developer actions. A DevRelease build is a release
+    /// configuration (no DEBUG), so these cannot live in `debugSection`, and
+    /// nothing here is compiled into a distribution Release.
+    private var developmentSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Development")
+                .font(NitrateTypography.font(.headline))
+            Button("Restart evaluation") {
+                viewModel.restartEvaluation()
+            }
+            Text("Clears the install anchor so the twenty-day evaluation starts again on this device.")
                 .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
         }
