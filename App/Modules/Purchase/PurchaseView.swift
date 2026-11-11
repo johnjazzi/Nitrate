@@ -76,7 +76,7 @@ struct PurchaseView: View {
                         debugSection
 #endif
 
-#if NITRATE_LOCAL_DEVELOPMENT
+#if NITRATE_LOCAL_DEVELOPMENT || NITRATE_EVALUATION_TOOLS
                         // A DevRelease build is a release configuration, so
                         // DEBUG is off and the Debug panel above does not exist.
                         // Local-only developer actions live in their own section.
@@ -711,7 +711,7 @@ struct PurchaseView: View {
     }
 #endif
 
-#if NITRATE_LOCAL_DEVELOPMENT
+#if NITRATE_LOCAL_DEVELOPMENT || NITRATE_EVALUATION_TOOLS
     /// Local-only developer actions. A DevRelease build is a release
     /// configuration (no DEBUG), so these cannot live in `debugSection`, and
     /// nothing here is compiled into a distribution Release.
@@ -723,6 +723,12 @@ struct PurchaseView: View {
                 viewModel.restartEvaluation()
             }
             Text("Clears the install anchor so the twenty-day evaluation starts again on this device.")
+                .font(NitrateTypography.font(.caption))
+                .foregroundStyle(.secondary)
+            Button("Expire evaluation") {
+                viewModel.expireEvaluation()
+            }
+            Text("Moves the install anchor past the deadline, so captures arrive without render access.")
                 .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
         }

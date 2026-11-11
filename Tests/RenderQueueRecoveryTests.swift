@@ -94,6 +94,31 @@ struct RenderQueueRecoveryTests {
         #expect(!model.isRenderPausedForAccess)
     }
 
+    @Test func expiredEvaluationDeliversAPhotoOriginalNotAValidationFailure() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let dng = files.directory.appendingPathComponent("frame.dng")
+        try Data([1, 2, 3, 4]).write(to: dng)
+        var renders = 0
+        var saves: [URL] = []
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in renders += 1; return files.output },
+                                         save: { url in saves.append(url) }, sessionId: launchSession)
+        model.renderAllowed = { false }
+        model.enqueuePhoto(sourceURL: dng, stockId: "test", iso: 400, gauge: .neutral,
+                           cropZoom: 1, seed: 0)
+
+        // A photo original is a DNG. Routing it through the video saver made
+        // the delivery fail as an invalid recording, so it is saved as a photo.
+        try await waitUntil { model.jobs.first?.status == .completed }
+        #expect(renders == 0)
+        #expect(saves == [dng])
+        #expect(model.jobs.first?.isPhoto == true)
+        #expect(model.jobs.first?.sourceSavedToPhotos == true)
+        #expect(model.jobs.first?.errorMessage == nil)
+        #expect(model.rendererErrorMessage == nil)
+    }
+
     @Test func rescueDeliveryIsNeverGatedByThePaidRenderFeature() async throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }

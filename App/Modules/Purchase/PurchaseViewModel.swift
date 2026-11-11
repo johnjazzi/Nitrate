@@ -141,13 +141,23 @@ final class PurchaseViewModel {
         }
     }
 
-#if DEBUG || NITRATE_LOCAL_DEVELOPMENT
+#if DEBUG || NITRATE_LOCAL_DEVELOPMENT || NITRATE_EVALUATION_TOOLS
     /// Development-only: clear the install anchor so the twenty-day evaluation
     /// can be seen again on this device. Compiled out of every shipped build:
     /// DevRelease defines NITRATE_LOCAL_DEVELOPMENT, a distribution Release
     /// defines neither flag.
     func restartEvaluation() {
         UserDefaults.standard.removeObject(forKey: StoreManager.installDateKey)
+        Task { await loadState() }
+    }
+
+    /// Development-only: move the install anchor past the deadline so the
+    /// no-access path can be exercised on a build that does not bypass access.
+    /// `NITRATE_EVALUATION_TOOLS` exists for exactly that: it enables these
+    /// controls without enabling the local unlock.
+    func expireEvaluation() {
+        UserDefaults.standard.set(AppAccessPolicy.expiredAnchor(now: Date()),
+                                  forKey: StoreManager.installDateKey)
         Task { await loadState() }
     }
 #endif

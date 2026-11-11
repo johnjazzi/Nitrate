@@ -925,21 +925,23 @@ final class RenderQueueViewModel {
             update(jobId) {
                 $0.status = .failed
                 $0.sourceSavedToPhotos = false
-                $0.errorMessage = "The kept recording is no longer available to save\(reasonSuffix)."
+                $0.errorMessage = "The kept capture is no longer available to save\(reasonSuffix)."
             }
             recordFailureState()
             return
         }
         do {
             guard await ensureReceipt(jobId, url: job.sourceURL) else { return }
-            try await saveOperation(job.sourceURL)
+            // A photo original is a DNG; the video saver rejects it. Route by
+            // media kind or the delivery fails as an invalid recording.
+            try await saveOriginalSource(job.sourceURL, isPhoto: job.isPhoto == true)
             update(jobId) { $0.status = .completed; $0.sourceSavedToPhotos = true; $0.errorMessage = nil }
             guard persistJobs() else { pauseAfterDurableFailure(jobId); return }
         } catch {
             update(jobId) {
                 $0.status = .failed
                 $0.sourceSavedToPhotos = false
-                $0.errorMessage = "Recording did not pass validation\(reasonSuffix). "
+                $0.errorMessage = "The capture did not pass validation\(reasonSuffix). "
                     + "Saving the original to Photos failed: \(error.localizedDescription). "
                     + "It remains in the app."
             }
