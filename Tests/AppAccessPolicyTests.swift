@@ -550,7 +550,7 @@ struct LaunchPricingPresentationTests {
     @Test func launchPricingIsTheExactApprovedUSAmounts() {
         #expect(LaunchPricingPresentation.yearlyPrice == "US $4.99")
         #expect(LaunchPricingPresentation.lifetimePrice == "US $9.99")
-        #expect(LaunchPricingPresentation.headline == "US launch pricing")
+        #expect(LaunchPricingPresentation.headline == "Developer pricing preview")
     }
 
     @Test func previewIsShownOnlyForLocalDevelopmentBuilds() {
@@ -581,7 +581,10 @@ struct LaunchPricingPresentationTests {
         let development = LaunchPricingPresentation.preview(for: .development)
         #expect(development?.yearlyPrice == "US $4.99")
         #expect(development?.lifetimePrice == "US $9.99")
-        #expect(development?.footnote.contains("not charged") == true)
+        // The block must describe itself honestly: it is a developer preview in
+        // a build that cannot transact, not customer pricing.
+        #expect(development?.headline == "Developer pricing preview")
+        #expect(development?.footnote.contains("Not purchasable") == true)
         #expect(development?.footnote.contains("stays free") == true)
     }
 }

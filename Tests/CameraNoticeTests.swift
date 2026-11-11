@@ -28,4 +28,48 @@ struct CameraNoticeTests {
         #expect(notice.id != CameraNotice(severity: .warning, message: message).id,
                 "each notice is distinct, so a replacement resets the timer")
     }
+
+    @Test func aNoticeDefaultsToTheCompactGenericForm() {
+        let notice = CameraNotice(severity: .warning, message: "Anything")
+        #expect(notice.kind == .generic)
+        #expect(notice.emphasis == .compact)
+    }
+}
+
+/// The emphasis contract: an actionable condition explains itself the first
+/// time in a session, then only flags. Nothing else opens unprompted.
+struct CameraNoticeEmphasisTests {
+    private let actionable: [CameraNotice.Kind] = [.accessRequired, .renderFailed,
+                                                   .operationFailed, .storage, .cameraRecovery]
+
+    @Test func firstOccurrenceOfEachActionableKindIsProminent() {
+        for kind in actionable {
+            var policy = CameraNoticeEmphasisPolicy()
+            #expect(policy.emphasis(for: kind) == .prominent,
+                    "\(kind.rawValue) must explain itself the first time")
+        }
+    }
+
+    @Test func repeatsOfTheSameKindStayCompact() {
+        for kind in actionable {
+            var policy = CameraNoticeEmphasisPolicy()
+            _ = policy.emphasis(for: kind)
+            #expect(policy.emphasis(for: kind) == .compact)
+            #expect(policy.emphasis(for: kind) == .compact)
+        }
+    }
+
+    @Test func kindsAreTrackedIndependently() {
+        var policy = CameraNoticeEmphasisPolicy()
+        #expect(policy.emphasis(for: .accessRequired) == .prominent)
+        #expect(policy.emphasis(for: .renderFailed) == .prominent,
+                "a second kind is still its own first occurrence")
+        #expect(policy.emphasis(for: .accessRequired) == .compact)
+    }
+
+    @Test func genericNoticesNeverOpenByThemselves() {
+        var policy = CameraNoticeEmphasisPolicy()
+        #expect(policy.emphasis(for: .generic) == .compact)
+        #expect(policy.emphasis(for: .generic) == .compact)
+    }
 }

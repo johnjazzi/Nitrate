@@ -96,25 +96,51 @@ final class CameraViewModel {
     /// lifetime so a warning cannot outlive a moment while an error lingers.
     private(set) var notice: CameraNotice?
     private var noticeDismissTask: Task<Void, Never>?
+    /// Session-scoped: the first notice of an actionable kind explains itself,
+    /// every repeat is the compact flag.
+    private var noticeEmphasis = CameraNoticeEmphasisPolicy()
+
+    /// True only for a message that means the camera itself is unusable, which
+    /// keeps the blocking banner. Everything else is a notice: the operator can
+    /// still frame, and the message should not sit over the viewfinder.
+    var isBlockingErrorMessage: Bool {
+        guard let errorMessage else { return false }
+        return errorMessage.hasPrefix("Camera access denied")
+            || errorMessage.hasPrefix("Camera access is required")
+            || errorMessage.hasPrefix("Unknown camera authorization status")
+    }
 
     /// Post a notice. The message is the operator's text; severity decides how
-    /// long it stands and what the flag looks like.
-    func showNotice(_ message: String, severity: CameraNotice.Severity) {
-        let notice = CameraNotice(severity: severity, message: message)
+    /// long it stands and what the flag looks like, and the kind decides whether
+    /// this occurrence is worth opening the full panel for.
+    func showNotice(_ message: String, severity: CameraNotice.Severity,
+                    kind: CameraNotice.Kind = .generic) {
+        let emphasis = noticeEmphasis.emphasis(for: kind)
+        let notice = CameraNotice(severity: severity, message: message,
+                                  kind: kind, emphasis: emphasis)
         self.notice = notice
         noticeDismissTask?.cancel()
         noticeDismissTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(notice.lifetime * 1_000_000_000))
             guard !Task.isCancelled, self?.notice?.id == notice.id else { return }
             self?.notice = nil
+            self?.clearMirroredError(notice.message)
         }
     }
 
     /// Clear the notice early — the operator opened it and is done with it.
     func dismissNotice() {
+        if let message = notice?.message { clearMirroredError(message) }
         noticeDismissTask?.cancel()
         noticeDismissTask = nil
         notice = nil
+    }
+
+    /// A notice that mirrors `errorMessage` keeps that message alive until it is
+    /// read. Once the notice ends, the mirrored text goes too: an invisible
+    /// error must never keep blocking a control after its notice cleared.
+    private func clearMirroredError(_ message: String) {
+        if errorMessage == message { errorMessage = nil }
     }
     private(set) var lastRecordedURL: URL?
     /// Set when a take finished with a readable original that failed validation.
