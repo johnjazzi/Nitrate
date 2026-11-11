@@ -649,10 +649,30 @@ final class RenderQueueViewModel {
         }
         // Delivering a kept original is not the paid feature, so a rescue job
         // always runs. Only rendering the film look is gated.
-        if job.originalOnly != true || job.isImportedVideo == true, !renderAllowed() {
-            isRenderPausedForAccess = true
-            publishQueueMessage()
-            return
+        //
+        // A capture made without render access is delivered as its original
+        // rather than held: saving must never wait for a purchase. The file
+        // lands in Photos, the operator keeps working, and the film look is
+        // still there to develop once access exists. An imported clip is the
+        // operator's own file, so it is left untouched instead.
+        if !renderAllowed() {
+            // Only captures the app itself made are delivered this way. An
+            // imported clip or photo is already the operator's own file, so it
+            // waits for access instead of being "saved back" at them.
+            guard job.isImportedVideo != true, job.isImportedPhoto != true else {
+                isRenderPausedForAccess = true
+                publishQueueMessage()
+                return
+            }
+            if job.originalOnly != true {
+                update(job.id) { $0.originalOnly = true }
+                guard persistJobs() else {
+                    update(job.id) { $0.originalOnly = false }
+                    isPersistenceBlocked = true
+                    publishQueueMessage()
+                    return
+                }
+            }
         }
         isRenderPausedForAccess = false
         update(job.id) { $0.status = .processing; $0.errorMessage = nil; $0.sessionId = sessionId }
