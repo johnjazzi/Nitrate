@@ -7,7 +7,8 @@ import StoreKit
 /// `AppAccessPolicy` inputs (`AccessDistribution` + `[VerifiedEntitlement]`).
 /// It never derives access from a user-editable flag: the distribution channel
 /// comes from the App Store-signed `AppTransaction`, and purchases only count
-/// when the transaction verifies against a known product.
+/// when the transaction verifies against a known product. A missing receipt is
+/// not evidence of anything — it must never unlock paid features.
 @MainActor
 final class StoreManager {
     static let yearlySubscriptionID = PaidProduct.yearlySubscription.rawValue
@@ -18,9 +19,21 @@ final class StoreManager {
     static let installDateKey = "install_date"
 
     /// The last verified install channel. Used only when this launch cannot reach
-    /// the App Store, so an offline TestFlight tester is not locked out of
-    /// capture. It records a StoreKit-verified fact, not a user-set preference.
+    /// the App Store. It records a StoreKit-verified channel (`.sandbox` or
+    /// `.appStore`), never a user-set preference or a development unlock.
     static let distributionCacheKey = "resolved_access_distribution"
+
+    /// True only when this binary was compiled for local development
+    /// (`NITRATE_LOCAL_DEVELOPMENT`, set by the DevRelease configuration) or as a
+    /// Debug build. No App Store or TestFlight submission contains the flag, so
+    /// neither can resolve `.development`.
+    static var localDevelopmentEnabled: Bool {
+        #if DEBUG || NITRATE_LOCAL_DEVELOPMENT
+        return true
+        #else
+        return false
+        #endif
+    }
 
     private(set) var products: [Product] = []
     /// Non-nil when the last product load failed; surfaced so the UI can show an
@@ -63,24 +76,20 @@ final class StoreManager {
     /// transaction, falling back to the last verified channel when the store
     /// cannot answer (offline launch).
     ///
-    /// A Debug build is unrestricted by default. A Debug build launched with the
-    /// explicit StoreKit-testing argument (the dedicated `NitrateStoreKitTest`
-    /// scheme) is resolved straight to `.storeKitTesting` — bypassing the
-    /// receipt-guard fall-through, which would otherwise return `.development`
-    /// (a free unlock) because a Debug build has no App Store receipt. The real
-    /// local StoreKit configuration then drives purchase and entitlement reads,
-    /// so evaluation, purchase, expiry and refund can be exercised. A Release
-    /// build never honours that override: the store decides, exactly as before.
+    /// A Debug build resolves through the compile-time override (unrestricted, or
+    /// the StoreKit-testing fixture when requested). A Release build asks StoreKit
+    /// and maps the verified environment; a sandbox environment — TestFlight and
+    /// App Review — stays gated exactly like production.
     func resolveDistribution() async -> AccessDistribution {
-        #if DEBUG
-        if let debugOverride = AppAccessPolicy.debugChannelOverride(
-            isDebugBuild: true,
-            storeKitTestingRequested: StoreKitTestingLaunchMode.isRequested(
-                arguments: ProcessInfo.processInfo.arguments)) {
-            return debugOverride
-        }
-        #endif
-        let current = await verifiedDistribution()
+        // Local modes must not wait for StoreKit or trigger account prompts.
+        // Neither bypass is compiled into the production Release configuration.
+        if let debugOverride = debugDistributionOverride { return debugOverride }
+        if Self.localDevelopmentEnabled { return .development }
+        let environment = await storeEnvironment()
+        let current = AppAccessPolicy.distribution(
+            environment: environment,
+            debugOverride: debugDistributionOverride,
+            localDevelopmentEnabled: Self.localDevelopmentEnabled)
         let resolved = AppAccessPolicy.resolvedChannel(current: current, cached: cachedDistribution)
         if resolved.isCacheable {
             UserDefaults.standard.set(resolved.rawValue, forKey: Self.distributionCacheKey)
@@ -88,50 +97,57 @@ final class StoreManager {
         return resolved
     }
 
-    var cachedDistribution: AccessDistribution? {
-        UserDefaults.standard.string(forKey: Self.distributionCacheKey)
-            .flatMap(AccessDistribution.init(rawValue:))
+    /// The Debug-only compile-time decision. `nil` in every non-Debug build, so a
+    /// release submission can never honour a launch argument.
+    private var debugDistributionOverride: AccessDistribution? {
+        #if DEBUG
+        return AppAccessPolicy.debugChannelOverride(
+            isDebugBuild: true,
+            storeKitTestingRequested: StoreKitTestingLaunchMode.isRequested(
+                arguments: ProcessInfo.processInfo.arguments))
+        #else
+        return nil
+        #endif
     }
 
-    private func verifiedDistribution() async -> AccessDistribution {
-        // A build with no App Store receipt did not come from the App Store: a
-        // development install or a locally signed Release build. App Store
-        // installs always carry a receipt, so this cannot unlock a real
-        // customer. It is also what keeps the developer unblocked without a
-        // personal subscription.
-        //
-        // `appStoreReceiptURL` is deprecated in iOS 18 in favour of
-        // `AppTransaction.shared`, and this call is deliberately NOT migrated
-        // yet. The receipt check is the only thing standing between an
-        // unresolved launch and `.development`, and `.development` grants
-        // unrestricted access. If `AppTransaction.shared` throws for an offline
-        // App Store install as well as for a receipt-less development build,
-        // collapsing the two into one `catch` would hand every offline
-        // production user the paid features for free. That distinction can only
-        // be verified against a real App Store install, which does not exist
-        // until the app ships; `#if DEBUG` short-circuits before this code, so a
-        // local build cannot exercise it either. Migrate after launch, verified.
-        guard let receiptURL = Bundle.main.appStoreReceiptURL,
-              FileManager.default.fileExists(atPath: receiptURL.path) else {
-            return .development
+    /// The last verified, cacheable channel, or `nil`. A cached `.debug` or
+    /// `.development` is rejected outright, and the legacy `testFlight` raw value
+    /// is rewritten to `.sandbox` when it is read.
+    var cachedDistribution: AccessDistribution? {
+        let raw = UserDefaults.standard.string(forKey: Self.distributionCacheKey)
+        guard let cached = AppAccessPolicy.cachedChannel(fromPersistedRawValue: raw) else {
+            return nil
         }
+        if raw != cached.rawValue {
+            UserDefaults.standard.set(cached.rawValue, forKey: Self.distributionCacheKey)
+        }
+        return cached
+    }
+
+    /// The verified StoreKit environment, or `nil` when the App Store could not
+    /// answer. It always attempts `AppTransaction.shared`; there is no receipt
+    /// check, because a missing receipt must not decide access either way.
+    private func storeEnvironment() async -> StoreEnvironmentInput? {
         do {
             switch try await AppTransaction.shared {
             case .verified(let appTransaction):
-                let environment = appTransaction.environment
-                if environment == .production { return .appStore }
-                if environment == .sandbox { return .testFlight }
-                // `.xcode` means a local StoreKit configuration file is active.
-                // Exercise the real paywall rather than a free unlock.
-                if environment == .xcode { return .storeKitTesting }
-                return .unknown
+                switch appTransaction.environment {
+                case .production:
+                    return .production
+                case .sandbox:
+                    return .sandbox
+                case .xcode:
+                    return .xcode
+                default:
+                    return .unknown
+                }
             case .unverified:
-                return .unknown
+                return nil
             }
         } catch {
             // App Transaction needs the App Store to answer; an offline or
-            // unauthenticated launch is "unknown", not a free grant.
-            return .unknown
+            // unauthenticated launch is unresolved, not a free grant.
+            return nil
         }
     }
 

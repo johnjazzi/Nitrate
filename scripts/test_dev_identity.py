@@ -66,6 +66,15 @@ class DevIdentityTests(unittest.TestCase):
                 self.assertEqual(settings["SWIFT_COMPILATION_MODE"], "wholemodule")
                 self.assertEqual(settings.get("ENABLE_TESTABILITY", "NO"), "NO")
 
+    def test_only_local_release_can_bypass_store_access(self):
+        flag = "NITRATE_LOCAL_DEVELOPMENT"
+        for name, settings in self.settings.items():
+            conditions = shlex.split(settings.get("SWIFT_ACTIVE_COMPILATION_CONDITIONS", ""))
+            with self.subTest(configuration=name):
+                self.assertEqual(flag in conditions, name == "DevRelease")
+                if flag in conditions:
+                    self.assertEqual(settings["PRODUCT_BUNDLE_IDENTIFIER"], "com.nitrate.app.dev")
+
     def test_schemes_keep_local_archives_out_of_production_release(self):
         self.assertTrue("NitrateDev" in self.schemes, "Missing local development scheme")
         for name, archive_config in (("Nitrate", "Release"), ("NitrateDev", "DevRelease")):

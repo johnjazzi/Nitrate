@@ -35,29 +35,74 @@ struct AppAccessPolicyTests {
             verifiedEntitlements: [])
         #expect(state.canUsePaidFeatures)
         #expect(state.isUnrestricted)
-        #expect(!state.isBetaAccess)
     }
 
-    @Test func testFlightIsBetaAccessAndNeverRequiresCheckout() {
+    @Test func sandboxNotFoundAfterExpiryLocksPaidFeatures() {
+        // Regression: TestFlight and App Review both run in `.sandbox`. It must
+        // behave like production, not like an unrestricted beta.
         let state = AppAccessPolicy.evaluate(
-            distribution: .testFlight,
+            distribution: .sandbox,
             firstLaunch: reference.addingTimeInterval(-30 * day),
             now: reference,
             verifiedEntitlements: [])
-        #expect(state.canUsePaidFeatures)
-        #expect(state.isBetaAccess)
-        #expect(state.isUnrestricted)
+        #expect(!state.canUsePaidFeatures)
+        #expect(!state.isUnrestricted)
         #expect(!state.hasVerifiedPurchase)
     }
 
-    @Test func betaAccessIsConfinedToTestFlightNotProduction() {
-        let product = AppAccessPolicy.evaluate(
-            distribution: .appStore,
-            firstLaunch: reference.addingTimeInterval(-30 * day),
+    @Test func sandboxDoesNotRequireAPurchaseDuringEvaluation() {
+        // The 7-day local evaluation is the same on sandbox as on production, so
+        // App Review can reach the checkout without being granted free access.
+        let state = AppAccessPolicy.evaluate(
+            distribution: .sandbox,
+            firstLaunch: reference.addingTimeInterval(-2 * day),
             now: reference,
             verifiedEntitlements: [])
-        #expect(!product.isBetaAccess)
-        #expect(!product.canUsePaidFeatures)
+        #expect(state.trialActive)
+        #expect(state.canUsePaidFeatures)
+        #expect(!state.isUnrestricted)
+        #expect(!state.hasVerifiedPurchase)
+    }
+
+    @Test func sandboxVerifiedPurchaseUnlocksAfterExpiry() {
+        let lifetime = AppAccessPolicy.evaluate(
+            distribution: .sandbox,
+            firstLaunch: reference.addingTimeInterval(-30 * day),
+            now: reference,
+            verifiedEntitlements: [entitlement(.lifetime)])
+        #expect(lifetime.hasVerifiedPurchase)
+        #expect(lifetime.hasLifetimePurchase)
+        #expect(lifetime.canUsePaidFeatures)
+
+        let subscribed = AppAccessPolicy.evaluate(
+            distribution: .sandbox,
+            firstLaunch: reference.addingTimeInterval(-30 * day),
+            now: reference,
+            verifiedEntitlements: [entitlement(.yearlySubscription, expiresIn: 5 * day)])
+        #expect(subscribed.hasVerifiedPurchase)
+        #expect(!subscribed.hasLifetimePurchase)
+        #expect(subscribed.canUsePaidFeatures)
+    }
+
+    @Test func sandboxExpiredOrRevokedPurchaseStaysLocked() {
+        let expired = AppAccessPolicy.evaluate(
+            distribution: .sandbox,
+            firstLaunch: reference.addingTimeInterval(-30 * day),
+            now: reference,
+            verifiedEntitlements: [entitlement(.yearlySubscription, expiresIn: -day)])
+        #expect(!expired.canUsePaidFeatures)
+
+        let revoked = AppAccessPolicy.evaluate(
+            distribution: .sandbox,
+            firstLaunch: reference.addingTimeInterval(-30 * day),
+            now: reference,
+            verifiedEntitlements: [entitlement(.lifetime, revoked: true)])
+        #expect(!revoked.canUsePaidFeatures)
+    }
+
+    @Test func sandboxIsProductionLikeAndCacheable() {
+        #expect(AppAccessPolicy.isProductionLike(.sandbox))
+        #expect(AccessDistribution.sandbox.isCacheable)
     }
 
     // MARK: - Production trial evaluation (local, 7 days)
@@ -116,7 +161,6 @@ struct AppAccessPolicyTests {
             now: reference,
             verifiedEntitlements: [])
         #expect(!expired.canUsePaidFeatures)
-        #expect(!expired.isBetaAccess)
         #expect(!expired.isUnrestricted)
 
         let subscribed = AppAccessPolicy.evaluate(
@@ -134,8 +178,7 @@ struct AppAccessPolicyTests {
     }
 
     @Test func developmentBuildIsUnrestrictedWithoutASubscription() {
-        // A locally signed build has no App Store receipt; the developer must
-        // never be locked out of their own app.
+        // The explicit local development flag must never lock the developer out.
         let state = AppAccessPolicy.evaluate(
             distribution: .development,
             firstLaunch: reference.addingTimeInterval(-300 * day),
@@ -143,7 +186,6 @@ struct AppAccessPolicyTests {
             verifiedEntitlements: [])
         #expect(state.canUsePaidFeatures)
         #expect(state.isUnrestricted)
-        #expect(!state.isBetaAccess)
         #expect(!state.hasVerifiedPurchase)
     }
 
@@ -153,19 +195,26 @@ struct AppAccessPolicyTests {
     }
 
     @Test func offlineLaunchKeepsTheLastVerifiedChannel() {
-        // A TestFlight tester offline at launch must not be locked out of capture.
-        #expect(AppAccessPolicy.resolvedChannel(current: .unknown, cached: .testFlight) == .testFlight)
+        // A sandbox tester offline at launch must not be locked out of capture.
+        #expect(AppAccessPolicy.resolvedChannel(current: .unknown, cached: .sandbox) == .sandbox)
         #expect(AppAccessPolicy.resolvedChannel(current: .unknown, cached: .appStore) == .appStore)
         // Nothing is invented when no channel was ever verified.
         #expect(AppAccessPolicy.resolvedChannel(current: .unknown, cached: nil) == .unknown)
         // A fresh verified answer always wins over the cache.
-        #expect(AppAccessPolicy.resolvedChannel(current: .appStore, cached: .testFlight) == .appStore)
-        #expect(AppAccessPolicy.resolvedChannel(current: .testFlight, cached: .appStore) == .testFlight)
+        #expect(AppAccessPolicy.resolvedChannel(current: .appStore, cached: .sandbox) == .appStore)
+        #expect(AppAccessPolicy.resolvedChannel(current: .sandbox, cached: .appStore) == .sandbox)
         // Only genuine channels are worth remembering.
-        #expect(AccessDistribution.testFlight.isCacheable)
+        #expect(AccessDistribution.sandbox.isCacheable)
         #expect(AccessDistribution.appStore.isCacheable)
         #expect(!AccessDistribution.unknown.isCacheable)
         #expect(!AccessDistribution.debug.isCacheable)
+    }
+
+    @Test func unknownFallbackNeverAcceptsANonCacheableChannel() {
+        // The fallback is cacheable-only even if a caller passes something else.
+        #expect(AppAccessPolicy.resolvedChannel(current: .unknown, cached: .debug) == .unknown)
+        #expect(AppAccessPolicy.resolvedChannel(current: .unknown, cached: .development) == .unknown)
+        #expect(AppAccessPolicy.resolvedChannel(current: .unknown, cached: .storeKitTesting) == .unknown)
     }
 
     @Test func missingFirstLaunchIsNotATrial() {
@@ -270,7 +319,6 @@ struct AppAccessPolicyTests {
             now: reference,
             verifiedEntitlements: [entitlement(.lifetime)])
         #expect(state.canUsePaidFeatures)
-        #expect(!state.isBetaAccess)
     }
 
     @Test func unknownDistributionWithoutPurchaseOrTrialIsLocked() {
@@ -321,6 +369,79 @@ struct AppAccessPolicyTests {
     }
 }
 
+/// The cached-channel contract: only a verified, cacheable channel is trusted,
+/// and the legacy `testFlight` raw value migrates to `.sandbox`.
+struct CachedDistributionTests {
+    @Test func legacyTestFlightCacheMigratesToSandbox() {
+        #expect(AppAccessPolicy.cachedChannel(fromPersistedRawValue: "testFlight") == .sandbox)
+    }
+
+    @Test func verifiedChannelsDecodeUnchanged() {
+        #expect(AppAccessPolicy.cachedChannel(fromPersistedRawValue: "appStore") == .appStore)
+        #expect(AppAccessPolicy.cachedChannel(fromPersistedRawValue: "sandbox") == .sandbox)
+        #expect(AppAccessPolicy.cachedChannel(fromPersistedRawValue: nil) == nil)
+        #expect(AppAccessPolicy.cachedChannel(fromPersistedRawValue: "") == nil)
+    }
+
+    @Test func cachedDebugAndDevelopmentAreRejected() {
+        #expect(AppAccessPolicy.cachedChannel(fromPersistedRawValue: "debug") == nil)
+        #expect(AppAccessPolicy.cachedChannel(fromPersistedRawValue: "development") == nil)
+        #expect(AppAccessPolicy.cachedChannel(fromPersistedRawValue: "storeKitTesting") == nil)
+        #expect(AppAccessPolicy.cachedChannel(fromPersistedRawValue: "unknown") == nil)
+        #expect(AppAccessPolicy.cachedChannel(fromPersistedRawValue: "garbage") == nil)
+    }
+}
+
+/// The pure channel routing seam `StoreManager.resolveDistribution` uses.
+struct AccessDistributionRoutingTests {
+    @Test func productionEnvironmentIsTheAppStore() {
+        #expect(AppAccessPolicy.distribution(environment: .production,
+                                             debugOverride: nil,
+                                             localDevelopmentEnabled: false) == .appStore)
+    }
+
+    @Test func sandboxEnvironmentIsGatedSandboxNotADevelopmentGrant() {
+        #expect(AppAccessPolicy.distribution(environment: .sandbox,
+                                             debugOverride: nil,
+                                             localDevelopmentEnabled: false) == .sandbox)
+    }
+
+    @Test func xcodeEnvironmentIsTheStoreKitTestFixture() {
+        #expect(AppAccessPolicy.distribution(environment: .xcode,
+                                             debugOverride: nil,
+                                             localDevelopmentEnabled: false) == .storeKitTesting)
+    }
+
+    @Test func missingEnvironmentIsUnknownNeverDevelopment() {
+        // Regression: a receipt-less install used to resolve `.development` and
+        // unlock everything. Without the explicit flag it must stay unknown.
+        #expect(AppAccessPolicy.distribution(environment: nil,
+                                             debugOverride: nil,
+                                             localDevelopmentEnabled: false) == .unknown)
+    }
+
+    @Test func localDevelopmentFlagGrantsDevelopmentOnlyOffProduction() {
+        #expect(AppAccessPolicy.distribution(environment: nil,
+                                             debugOverride: nil,
+                                             localDevelopmentEnabled: true) == .development)
+        #expect(AppAccessPolicy.distribution(environment: .sandbox,
+                                             debugOverride: nil,
+                                             localDevelopmentEnabled: true) == .development)
+        // A production receipt always identifies a real customer.
+        #expect(AppAccessPolicy.distribution(environment: .production,
+                                             debugOverride: nil,
+                                             localDevelopmentEnabled: true) == .appStore)
+    }
+
+    @Test func debugOverrideWinsAndIsNeverProvidedByRelease() {
+        #expect(AppAccessPolicy.distribution(environment: .sandbox,
+                                             debugOverride: .debug,
+                                             localDevelopmentEnabled: false) == .debug)
+        #expect(AppAccessPolicy.debugChannelOverride(isDebugBuild: false,
+                                                     storeKitTestingRequested: true) == nil)
+    }
+}
+
 /// The Debug StoreKit-testing routing contract. The paywall is gated behind
 /// `AppAccessPolicy.debugChannelOverride`, which `StoreManager.resolveDistribution`
 /// consults inside `#if DEBUG`. These tests pin the routing decision and the
@@ -337,10 +458,8 @@ struct StoreKitTestingRoutingTests {
     }
 
     @Test func debugBuildWithTheTestingOptInResolvesTheStoreKitTestingChannel() {
-        // The opt-in must resolve `.storeKitTesting` directly. Falling through
-        // to the receipt guard would return `.development` for a Debug build
-        // with no App Store receipt — a free unlock that leaves the fixture
-        // inert and the paywall invisible.
+        // The opt-in must resolve `.storeKitTesting` directly, so the fixture
+        // drives real purchases and the gated paywall is reachable.
         let override = AppAccessPolicy.debugChannelOverride(
             isDebugBuild: true, storeKitTestingRequested: true)
         #expect(override == .storeKitTesting)
@@ -361,7 +480,7 @@ struct StoreKitTestingRoutingTests {
     }
 
     @Test func releaseBuildNeverHonoursTheDebugUnlock() {
-        // Production and TestFlight must be unaffected by the debug override, no
+        // Production and sandbox must be unaffected by the debug override, no
         // matter what launch arguments are present.
         #expect(AppAccessPolicy.debugChannelOverride(
             isDebugBuild: false, storeKitTestingRequested: true) == nil)
@@ -423,10 +542,10 @@ struct PurchasePriceTextTests {
     }
 }
 
-/// The non-purchasable launch-pricing copy shown on unrestricted channels. The
-/// exact owner-approved US amounts are pinned here, and the preview must appear
-/// for exactly the unrestricted channels — never on a checkout channel, where
-/// the live StoreKit `displayPrice` belongs.
+/// The non-purchasable launch-pricing copy, shown only on a local development
+/// build. The exact owner-approved US amounts are pinned here, and the preview
+/// must never appear on a customer channel — sandbox included, because App
+/// Review runs in sandbox and must reach the live checkout.
 struct LaunchPricingPresentationTests {
     @Test func launchPricingIsTheExactApprovedUSAmounts() {
         #expect(LaunchPricingPresentation.yearlyPrice == "US $4.99")
@@ -434,20 +553,19 @@ struct LaunchPricingPresentationTests {
         #expect(LaunchPricingPresentation.headline == "US launch pricing")
     }
 
-    @Test func previewIsShownOnlyForUnrestrictedChannels() {
-        // Unrestricted: normal Debug, a development install, and the beta.
+    @Test func previewIsShownOnlyForLocalDevelopmentBuilds() {
         #expect(LaunchPricingPresentation.preview(for: .debug) != nil)
         #expect(LaunchPricingPresentation.preview(for: .development) != nil)
-        #expect(LaunchPricingPresentation.preview(for: .testFlight) != nil)
         // Checkout channels show the real StoreKit price instead.
         #expect(LaunchPricingPresentation.preview(for: .appStore) == nil)
+        #expect(LaunchPricingPresentation.preview(for: .sandbox) == nil)
         #expect(LaunchPricingPresentation.preview(for: .storeKitTesting) == nil)
         #expect(LaunchPricingPresentation.preview(for: .unknown) == nil)
     }
 
     @Test func previewVisibilityMatchesTheUnrestrictedPolicy() {
         // The preview channel set must equal the policy's unrestricted set, so
-        // it can never appear on a gated production or testing channel.
+        // it can never appear on a gated production, sandbox or testing channel.
         for channel in AccessDistribution.allCases {
             let state = AppAccessPolicy.evaluate(
                 distribution: channel,
@@ -460,15 +578,7 @@ struct LaunchPricingPresentationTests {
     }
 
     @Test func previewCarriesTheExactPricesAndTheFreeRecordingNote() {
-        let beta = LaunchPricingPresentation.preview(for: .testFlight)
-        #expect(beta?.yearlyPrice == "US $4.99")
-        #expect(beta?.lifetimePrice == "US $9.99")
-        #expect(beta?.footnote.contains("not charged") == true)
-        #expect(beta?.footnote.contains("stays free") == true)
-
-        // The development/DEBUG preview carries the same prices and the
-        // no-charge, recording-stays-free note.
-        let development = LaunchPricingPresentation.preview(for: .debug)
+        let development = LaunchPricingPresentation.preview(for: .development)
         #expect(development?.yearlyPrice == "US $4.99")
         #expect(development?.lifetimePrice == "US $9.99")
         #expect(development?.footnote.contains("not charged") == true)

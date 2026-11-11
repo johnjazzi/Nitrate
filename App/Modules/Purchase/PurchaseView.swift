@@ -96,19 +96,29 @@ struct PurchaseView: View {
 
     private var pricingDisclosure: some View {
         DisclosureGroup("Pricing", isExpanded: $pricingExpanded) {
+#if DEBUG || NITRATE_LOCAL_DEVELOPMENT
             if let preview = viewModel.launchPricingPreview {
                 launchPricingPreview(preview)
-            } else if !viewModel.isPurchased {
-                purchaseOptionsSection
-                // Keep terms and privacy reachable alongside checkout.
-                legalLinksSection
             } else {
-                purchasedBanner
+                customerPricingContent
             }
+#else
+            customerPricingContent
+#endif
         }
         .padding()
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder private var customerPricingContent: some View {
+        if !viewModel.isPurchased {
+            purchaseOptionsSection
+            legalLinksSection
+        } else {
+            purchasedBanner
+            restorePurchasesButton
+        }
     }
 
     private var legalDisclosure: some View {
@@ -122,6 +132,7 @@ struct PurchaseView: View {
 
     private var trialStatusSection: some View {
         VStack(spacing: 8) {
+#if DEBUG || NITRATE_LOCAL_DEVELOPMENT
             if viewModel.isDevelopmentBuild {
                 Image(systemName: "hammer.fill")
                     .font(NitrateTypography.font(.largeTitle))
@@ -132,38 +143,12 @@ struct PurchaseView: View {
                      + "Customers installing from the App Store are unaffected.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-            } else if viewModel.isBetaAccess {
-                Image(systemName: "testtube.2")
-                    .font(NitrateTypography.font(.largeTitle))
-                    .foregroundStyle(.tint)
-                Text("Unrestricted Beta")
-                    .font(NitrateTypography.font(.title2).bold())
-                Text("Film rendering is unlocked during the beta. No purchase or checkout is required.")
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            } else if viewModel.isPurchased {
-                Image(systemName: "checkmark.seal.fill")
-                    .font(NitrateTypography.font(.largeTitle))
-                    .foregroundStyle(.green)
-                Text("Unlocked")
-                    .font(NitrateTypography.font(.title2).bold())
-            } else if viewModel.isTrialActive {
-                Image(systemName: "clock.badge.checkmark")
-                    .font(NitrateTypography.font(.largeTitle))
-                    .foregroundStyle(.tint)
-                Text("Free Trial")
-                    .font(NitrateTypography.font(.title2).bold())
-                Text("\(viewModel.daysRemaining) days remaining")
-                    .foregroundStyle(.secondary)
             } else {
-                Image(systemName: "lock.fill")
-                    .font(NitrateTypography.font(.largeTitle))
-                    .foregroundStyle(.secondary)
-                Text("Trial Expired")
-                    .font(NitrateTypography.font(.title2).bold())
-                Text("Unlock film rendering to continue. Recording stays free.")
-                    .foregroundStyle(.secondary)
+                customerTrialStatusContent
             }
+#else
+            customerTrialStatusContent
+#endif
         }
         .padding()
         .frame(maxWidth: .infinity)
@@ -171,11 +156,39 @@ struct PurchaseView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    /// The non-purchasable price information for an unrestricted channel
-    /// (development/DEBUG and the TestFlight beta). It carries the owner-approved
-    /// US launch amounts and states that recording stays free and the tester is
-    /// not charged; there is deliberately no checkout button here, because this
-    /// copy is not a fallback purchase price.
+    @ViewBuilder private var customerTrialStatusContent: some View {
+        if viewModel.isPurchased {
+            Image(systemName: "checkmark.seal.fill")
+                .font(NitrateTypography.font(.largeTitle))
+                .foregroundStyle(.green)
+            Text("Unlocked")
+                .font(NitrateTypography.font(.title2).bold())
+        } else if viewModel.isTrialActive {
+            Image(systemName: "clock.badge.checkmark")
+                .font(NitrateTypography.font(.largeTitle))
+                .foregroundStyle(.tint)
+            Text("Free Trial")
+                .font(NitrateTypography.font(.title2).bold())
+            Text("\(viewModel.daysRemaining) days remaining")
+                .foregroundStyle(.secondary)
+        } else {
+            Image(systemName: "lock.fill")
+                .font(NitrateTypography.font(.largeTitle))
+                .foregroundStyle(.secondary)
+            Text("Trial Expired")
+                .font(NitrateTypography.font(.title2).bold())
+            Text("Unlock film rendering to continue. Recording stays free.")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+#if DEBUG || NITRATE_LOCAL_DEVELOPMENT
+    /// The non-purchasable price information for a local development build
+    /// (DEBUG or `NITRATE_LOCAL_DEVELOPMENT`). It carries the owner-approved US
+    /// launch amounts and states that recording stays free and the build is not
+    /// charged; there is deliberately no checkout button here, because this copy
+    /// is not a fallback purchase price. Every customer channel — including
+    /// sandbox (TestFlight and App Review) — renders the live checkout instead.
     private func launchPricingPreview(_ preview: LaunchPricingPreview) -> some View {
         VStack(spacing: 10) {
             Text(preview.headline)
@@ -214,6 +227,8 @@ struct PurchaseView: View {
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
+
+#endif
 
     private func priceAmount(_ amount: String, billing: String) -> some View {
         VStack(alignment: .trailing, spacing: 2) {
@@ -276,12 +291,15 @@ struct PurchaseView: View {
             .buttonStyle(.plain)
             .disabled(viewModel.lifetimePrice == nil)
 
-            // Restore purchases
-            Button("Restore Purchases") {
-                viewModel.restorePurchases()
-            }
-            .font(NitrateTypography.font(.caption))
+            restorePurchasesButton
         }
+    }
+
+    private var restorePurchasesButton: some View {
+        Button("Restore Purchases") {
+            viewModel.restorePurchases()
+        }
+        .font(NitrateTypography.font(.caption))
     }
 
     /// L12: a real product-load failure is shown, never masked by a fallback
@@ -549,8 +567,8 @@ struct PurchaseView: View {
     }
 
     /// The published privacy, terms and support pages. Rendered on every channel
-    /// — a free trial, an expired trial, a paid checkout and the beta all show
-    /// the same rows — so the policy is reachable without buying first. Each row
+    /// — a free trial, an expired trial and a paid checkout all show the same
+    /// rows — so the policy is reachable without buying first. Each row
     /// is a real tappable `Link` with a 44pt target, not a caption-sized label.
     private var legalLinksSection: some View {
         VStack(alignment: .leading, spacing: 8) {

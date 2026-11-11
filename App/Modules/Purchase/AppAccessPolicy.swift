@@ -3,32 +3,39 @@ import Foundation
 // MARK: - Distribution channel
 
 /// How this installation was obtained. Resolved once from a verified StoreKit
-/// `AppTransaction.environment` (or the compile-time `#if DEBUG` build) and never
-/// from a user-editable preference — a defaults flag or a blanket Release bypass
-/// would let a production user self-grant paid access.
+/// `AppTransaction.environment` (or an explicit compile-time development
+/// configuration) and never from a user-editable preference — a defaults flag or
+/// a blanket Release bypass would let a production user self-grant paid access.
 ///
 /// Apple's documented mapping (StoreKit `AppStore.Environment`):
 /// - `.production` → `.appStore` (installed from the App Store)
-/// - `.sandbox`    → `.testFlight` (installed through TestFlight)
-/// - `.xcode`      → `.unknown` (a local StoreKit-testing build we do not treat
-///                   as a paid or beta customer)
+/// - `.sandbox`    → `.sandbox` (TestFlight — and App Review's sandbox run)
+/// - `.xcode`      → `.storeKitTesting` (a local StoreKit-testing build)
+///
+/// `.sandbox` is deliberately production-like. App Review exercises the app in
+/// the sandbox environment, so a sandbox bypass replaced the paywall with a
+/// non-purchasable preview and failed review under guideline 2.1(b).
 enum AccessDistribution: String, Sendable, CaseIterable {
+    /// A `#if DEBUG` build: unrestricted so a developer is never blocked.
     case debug
-    /// A locally signed build with no App Store receipt: a development install.
-    /// App Store installs always carry a receipt, so this cannot unlock a real
-    /// customer.
+    /// A local development build, granted only by the
+    /// `NITRATE_LOCAL_DEVELOPMENT` compile-time flag. A missing App Store
+    /// receipt alone never resolves here.
     case development
     /// A local StoreKit configuration file is driving purchases (Xcode's
     /// `.xcode` environment). Treated exactly like the App Store so the real
     /// paywall can be exercised before any product is registered.
     case storeKitTesting
-    case testFlight
+    /// A StoreKit sandbox install: TestFlight and App Review. Gated exactly like
+    /// production — the local evaluation runs, then a verified purchase is
+    /// required.
+    case sandbox
     case appStore
     case unknown
 
     /// Only a genuinely verified install channel is worth remembering. `unknown`
     /// means the App Store could not answer, not that the app is production.
-    var isCacheable: Bool { self == .testFlight || self == .appStore }
+    var isCacheable: Bool { self == .sandbox || self == .appStore }
 }
 
 // MARK: - Debug StoreKit testing mode
@@ -36,7 +43,7 @@ enum AccessDistribution: String, Sendable, CaseIterable {
 /// The explicit opt-in that routes a Debug build to the real StoreKit paywall
 /// instead of the free debug unlock. Only the dedicated `NitrateStoreKitTest`
 /// scheme passes this launch argument; normal Debug runs and every Release build
-/// never do, so development, TestFlight and production are all unaffected.
+/// never do, so development and production are all unaffected.
 /// `StoreManager` resolves it straight to `AccessDistribution.storeKitTesting`.
 enum StoreKitTestingLaunchMode {
     /// Launch argument added by the `NitrateStoreKitTest` scheme's run action.
@@ -47,6 +54,17 @@ enum StoreKitTestingLaunchMode {
     static func isRequested(arguments: [String]) -> Bool {
         arguments.contains(launchArgument)
     }
+}
+
+// MARK: - Environment input
+
+/// StoreKit's `AppStore.Environment`, reduced to a Foundation-only input so the
+/// channel routing is deterministic and testable without StoreKit.
+enum StoreEnvironmentInput: String, Sendable, CaseIterable {
+    case production
+    case sandbox
+    case xcode
+    case unknown
 }
 
 // MARK: - Products
@@ -85,11 +103,9 @@ struct VerifiedEntitlement: Equatable, Sendable {
 // MARK: - Result
 
 /// The evaluated access state. `canUsePaidFeatures` is the single shared gate
-/// the app uses to admit capture/render; `isBetaAccess` drives the beta banner
-/// and hides the live monetization CTA.
+/// the app uses to admit capture/render.
 struct AppAccessState: Equatable, Sendable {
     let canUsePaidFeatures: Bool
-    let isBetaAccess: Bool
     let isUnrestricted: Bool
     let trialActive: Bool
     let trialDaysRemaining: Int
@@ -100,7 +116,6 @@ struct AppAccessState: Equatable, Sendable {
 
     static let locked = AppAccessState(
         canUsePaidFeatures: false,
-        isBetaAccess: false,
         isUnrestricted: false,
         trialActive: false,
         trialDaysRemaining: 0,
@@ -117,19 +132,65 @@ enum AppAccessPolicy {
     static let trialDuration: TimeInterval = 7 * 24 * 60 * 60
     static let trialDayCount = 7
 
+    /// The raw value an earlier build persisted for the sandbox channel. Kept so
+    /// an install that already cached it migrates instead of losing its channel.
+    static let legacySandboxRawValue = "testFlight"
+
+    /// Decode a persisted channel. Only a verified, cacheable channel is ever
+    /// accepted: a cached `.debug` or `.development` must never unlock a later
+    /// install, and the legacy `testFlight` raw value migrates to `.sandbox`.
+    static func cachedChannel(fromPersistedRawValue raw: String?) -> AccessDistribution? {
+        guard let raw else { return nil }
+        let migrated = raw == legacySandboxRawValue ? AccessDistribution.sandbox.rawValue : raw
+        guard let channel = AccessDistribution(rawValue: migrated), channel.isCacheable else {
+            return nil
+        }
+        return channel
+    }
+
     /// A channel that could not be resolved this launch keeps the last verified
-    /// channel. Without this, an offline TestFlight tester is locked out of
-    /// capture because the App Store could not answer; a production user is
-    /// unaffected because `.appStore` still requires trial or a verified buy.
+    /// channel. Without this, an offline sandbox tester is locked out of capture
+    /// while the App Store is unreachable; a production user is unaffected
+    /// because `.appStore` still requires the evaluation or a verified buy.
+    /// The cache is only ever a verified, cacheable channel.
     static func resolvedChannel(current: AccessDistribution,
-                               cached: AccessDistribution?) -> AccessDistribution {
-        current == .unknown ? (cached ?? .unknown) : current
+                                cached: AccessDistribution?) -> AccessDistribution {
+        guard current == .unknown else { return current }
+        guard let cached, cached.isCacheable else { return .unknown }
+        return cached
     }
 
     /// The channel behaves like a real customer: an evaluation, then a verified
-    /// purchase. Used for App Store and for local StoreKit testing.
+    /// purchase. Used for the App Store, StoreKit testing, and sandbox
+    /// (TestFlight and App Review).
     static func isProductionLike(_ distribution: AccessDistribution) -> Bool {
-        distribution == .appStore || distribution == .storeKitTesting
+        distribution == .appStore || distribution == .sandbox || distribution == .storeKitTesting
+    }
+
+    /// Pure channel routing from the resolved StoreKit environment.
+    ///
+    /// `debugOverride` is the compile-time Debug decision (see
+    /// `debugChannelOverride`); it always wins. `localDevelopmentEnabled` is the
+    /// explicit `NITRATE_LOCAL_DEVELOPMENT` compile flag, and it grants
+    /// `.development` only for a build that cannot be an App Store install. A
+    /// missing environment (the App Store could not answer) is `.unknown` — a
+    /// receipt-less install never grants free access on its own.
+    static func distribution(environment: StoreEnvironmentInput?,
+                             debugOverride: AccessDistribution?,
+                             localDevelopmentEnabled: Bool) -> AccessDistribution {
+        if let debugOverride { return debugOverride }
+        if localDevelopmentEnabled, environment != .production { return .development }
+        guard let environment else { return .unknown }
+        switch environment {
+        case .production:
+            return .appStore
+        case .sandbox:
+            return .sandbox
+        case .xcode:
+            return .storeKitTesting
+        case .unknown:
+            return .unknown
+        }
     }
 
     /// The compile-time Debug channel override, made explicit and testable.
@@ -141,11 +202,9 @@ enum AppAccessPolicy {
     /// configuration drives every `Product.purchase` and `Transaction` call and
     /// the gated paywall becomes reachable. It must resolve directly: the
     /// fall-through path cannot reach the fixture, because a Debug build has no
-    /// App Store receipt and would resolve to `.development` — a free unlock that
-    /// leaves the paywall invisible and the fixture inert. A non-Debug build
-    /// never honours the override: Release always reaches StoreKit, so a
-    /// production receipt or an offline grant is decided by the store exactly as
-    /// before.
+    /// App Store receipt. A non-Debug build never honours the override: Release
+    /// always reaches StoreKit, so production and sandbox are decided by the
+    /// store exactly as before.
     static func debugChannelOverride(isDebugBuild: Bool,
                                      storeKitTestingRequested: Bool) -> AccessDistribution? {
         guard isDebugBuild else { return nil }
@@ -156,11 +215,10 @@ enum AppAccessPolicy {
                          firstLaunch: Date?,
                          now: Date,
                          verifiedEntitlements: [VerifiedEntitlement]) -> AppAccessState {
-        let isBeta = distribution == .testFlight
-        // Debug builds, genuine TestFlight betas and local development installs
-        // are unrestricted. Production and unresolved channels must earn access
-        // via trial or a verified buy.
-        let isUnrestricted = distribution == .debug || distribution == .development || isBeta
+        // Only an explicitly compiled-in development build is unrestricted.
+        // Every customer channel — including sandbox — must earn access via the
+        // evaluation or a verified purchase.
+        let isUnrestricted = distribution == .debug || distribution == .development
 
         let hasVerifiedPurchase = verifiedEntitlements.contains { entitlement in
             guard let product = PaidProduct.expected(for: entitlement.productID),
@@ -201,7 +259,6 @@ enum AppAccessPolicy {
 
         return AppAccessState(
             canUsePaidFeatures: isUnrestricted || trialActive || hasVerifiedPurchase,
-            isBetaAccess: isBeta,
             isUnrestricted: isUnrestricted,
             trialActive: trialActive,
             trialDaysRemaining: daysRemaining,

@@ -28,13 +28,13 @@ enum LegalLinks {
     /// "all channels keep the links" contract is testable and a future channel
     /// forces an explicit decision.
     enum Channel: String, CaseIterable, Sendable {
-        /// A Debug run or a locally signed development install (unrestricted).
+        /// A Debug run or a `NITRATE_LOCAL_DEVELOPMENT` install (unrestricted).
         case development
-        /// The TestFlight beta (unrestricted).
-        case beta
-        /// An App Store / StoreKit-testing install inside the free trial.
+        /// An App Store, sandbox, or StoreKit-testing install inside the free
+        /// trial.
         case trialActive
-        /// An App Store / StoreKit-testing install whose trial has lapsed.
+        /// An App Store, sandbox, or StoreKit-testing install whose trial has
+        /// lapsed.
         case trialExpired
         /// A verified paid entitlement (subscription or lifetime).
         case purchased
