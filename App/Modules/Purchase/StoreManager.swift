@@ -1,5 +1,6 @@
 import Foundation
 import StoreKit
+import UIKit
 
 /// CAP-9 / L08: StoreKit 2 purchase and verified-entitlement source.
 ///
@@ -228,6 +229,29 @@ final class StoreManager {
             throw PurchaseError.restoreFailed(error.localizedDescription)
         }
     }
+
+    /// Present Apple's offer-code redemption sheet. StoreKit owns the sheet and
+    /// creates the transaction; the caller refreshes entitlements once it
+    /// returns. The iOS 27 `from:options:` form replaces the deprecated
+    /// `in: UIWindowScene` overload, so this walks to the presented controller.
+    /// A nil host is a real failure rather than a silent no-op.
+    func presentOfferCodeRedeemSheet() async throws {
+        guard let host = Self.offerCodeHostController() else {
+            throw PurchaseError.offerCodeUnavailable
+        }
+        _ = try await AppStore.presentOfferCodeRedeemSheet(from: host)
+    }
+
+    private static func offerCodeHostController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        let window = scene?.windows.first { $0.isKeyWindow } ?? scene?.windows.first
+        var controller = window?.rootViewController
+        while let presented = controller?.presentedViewController {
+            controller = presented
+        }
+        return controller
+    }
 }
 
 /// The outcome of a purchase attempt. `purchased` is the only success.
@@ -241,6 +265,7 @@ enum PurchaseError: LocalizedError {
     case productNotFound
     case verificationFailed
     case restoreFailed(String)
+    case offerCodeUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -250,6 +275,8 @@ enum PurchaseError: LocalizedError {
             return "The App Store could not verify this purchase."
         case .restoreFailed(let message):
             return "Restore failed: \(message)"
+        case .offerCodeUnavailable:
+            return "Offer code redemption is unavailable right now. Try again from Settings."
         }
     }
 }

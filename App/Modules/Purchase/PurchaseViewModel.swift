@@ -122,7 +122,19 @@ final class PurchaseViewModel {
         Task {
             do {
                 try await storeManager.restore()
-                await refreshEntitlements()
+                await refreshEntitlementsAfterGrant()
+            } catch {
+                purchaseError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Show Apple's offer-code sheet, then pick up the entitlement it grants.
+    func redeemOfferCode() {
+        Task {
+            do {
+                try await storeManager.presentOfferCodeRedeemSheet()
+                await refreshEntitlementsAfterGrant()
             } catch {
                 purchaseError = error.localizedDescription
             }
@@ -145,7 +157,7 @@ final class PurchaseViewModel {
             do {
                 switch try await storeManager.purchase(product) {
                 case .purchased:
-                    await refreshEntitlements()
+                    await refreshEntitlementsAfterGrant()
                 case .pending:
                     purchaseError = "Your purchase is pending approval."
                 case .cancelled:
@@ -168,6 +180,23 @@ final class PurchaseViewModel {
         lifetimePrice = PurchasePriceText.resolved(storeManager.displayPrice(for: .lifetime))
     }
 
+    /// Converge on the granted entitlement after checkout, restore or an offer
+    /// code. StoreKit's `currentEntitlements` can keep reporting the previous
+    /// state for a few seconds after Apple's sheet says the purchase succeeded,
+    /// so a single read left the screen still offering checkout until the next
+    /// launch. Poll briefly and stop as soon as the grant appears; a genuinely
+    /// denied or pending purchase simply exhausts the attempts.
+    private func refreshEntitlementsAfterGrant(attempts: Int = 24,
+                                               interval: Duration = .milliseconds(250)) async {
+        await refreshEntitlements()
+        guard !isPurchased else { return }
+        for _ in 0..<attempts {
+            try? await Task.sleep(for: interval)
+            await refreshEntitlements()
+            if isPurchased { return }
+        }
+    }
+
     private func refreshEntitlements() async {
         refreshGeneration &+= 1
         let generation = refreshGeneration
@@ -184,10 +213,17 @@ final class PurchaseViewModel {
             verifiedEntitlements: entitlements)
 
         // Mirror into the existing settings-facing fields.
+        let hadPurchase = isPurchased
         isTrialActive = access.trialActive
         isPurchased = access.hasVerifiedPurchase
         isLifetimePurchased = access.hasLifetimePurchase
         daysRemaining = access.trialDaysRemaining
+
+        // Release any render work withheld while access was missing, without
+        // waiting for the next app activation.
+        if isPurchased && !hadPurchase {
+            NotificationCenter.default.post(name: .nitrateRenderAccessChanged, object: nil)
+        }
 
         // One line per resolution: the app has no log file, so this is how the
         // access decision is diagnosed on a device.

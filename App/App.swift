@@ -89,6 +89,12 @@ struct NitrateApp: App {
                     renderQueueViewModel.renderAccessDidChange()
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .nitrateRenderAccessChanged)) { _ in
+                // A purchase, restore or redeemed code just unlocked rendering;
+                // start anything the queue withheld instead of waiting for the
+                // next activation.
+                renderQueueViewModel.renderAccessDidChange()
+            }
         }
     }
 }

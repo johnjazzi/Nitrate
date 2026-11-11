@@ -67,6 +67,16 @@ enum StoreEnvironmentInput: String, Sendable, CaseIterable {
     case unknown
 }
 
+// MARK: - Access-change notification
+
+extension Notification.Name {
+    /// Posted when render access becomes available (a purchase, restore or
+    /// redeemed offer code). The render queue listens so work it withheld while
+    /// access was missing starts immediately instead of waiting for the next
+    /// app activation.
+    static let nitrateRenderAccessChanged = Notification.Name("nitrate.renderAccessChanged")
+}
+
 // MARK: - Products
 
 /// The two paid products the app can grant. Raw values are the shipped App Store

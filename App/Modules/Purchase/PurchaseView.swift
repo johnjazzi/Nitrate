@@ -117,7 +117,7 @@ struct PurchaseView: View {
             legalLinksSection
         } else {
             purchasedBanner
-            restorePurchasesButton
+            accountActionsRow
         }
     }
 
@@ -291,13 +291,21 @@ struct PurchaseView: View {
             .buttonStyle(.plain)
             .disabled(viewModel.lifetimePrice == nil)
 
-            restorePurchasesButton
+            accountActionsRow
         }
     }
 
-    private var restorePurchasesButton: some View {
-        Button("Restore Purchases") {
-            viewModel.restorePurchases()
+    /// Restore keeps a reinstall or a second device in sync; redemption accepts
+    /// an Apple offer code. Both are always shown on a checkout channel so a
+    /// customer with an existing grant or a code is never stuck at the paywall.
+    private var accountActionsRow: some View {
+        HStack(spacing: 16) {
+            Button("Restore Purchases") {
+                viewModel.restorePurchases()
+            }
+            Button("Redeem Code") {
+                viewModel.redeemOfferCode()
+            }
         }
         .font(NitrateTypography.font(.caption))
     }
