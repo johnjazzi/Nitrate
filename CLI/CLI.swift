@@ -19,8 +19,66 @@ import Foundation
 
     static func main() async {
         let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments.first == "--raw-exposure-probe", arguments.count == 2 {
+            do { try PhotoPipelineProbe.exposureProbe(input: URL(fileURLWithPath: arguments[1])) }
+            catch { print("RAW probe failed: \(error)"); exit(1) }
+            return
+        }
+        if arguments.first == "--photo-noise-probe", arguments.count >= 2 {
+            do { try PhotoPipelineProbe.noiseProbe(inputs: arguments.dropFirst().map { URL(fileURLWithPath: $0) }) }
+            catch { print("Noise probe failed: \(error)"); exit(1) }
+            return
+        }
+        if arguments.first == "--photo-orientation-probe", arguments.count >= 2 {
+            do { try PhotoPipelineProbe.orientationProbe(inputs: arguments.dropFirst().map { URL(fileURLWithPath: $0) }) }
+            catch { print("Orientation probe failed: \(error)"); exit(1) }
+            return
+        }
+        if arguments.first == "--photo-grain-comparison", arguments.count == 4 {
+            do {
+                try PhotoGrainComparison.run(input: URL(fileURLWithPath: arguments[1]), stock: arguments[2],
+                    directory: URL(fileURLWithPath: arguments[3], isDirectory: true))
+            } catch { print("Grain comparison failed: \(error)"); exit(1) }
+            return
+        }
+        if arguments.first == "--raw-headroom", arguments.count >= 2 {
+            do {
+                try PhotoPipelineProbe.headroom(in: arguments.dropFirst().map { URL(fileURLWithPath: $0) })
+            } catch {
+                print("Raw headroom scan failed: \(error)")
+                exit(1)
+            }
+            return
+        }
+        if arguments.first == "--photo-render", arguments.count == 4 {
+            do {
+                let resources = URL(fileURLWithPath: CommandLine.arguments[0])
+                    .deletingLastPathComponent().appendingPathComponent("RenderCLITests.xctest")
+                let directory = URL(fileURLWithPath: arguments[3], isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let result = try DevelopmentPhotoRenderer.render(
+                    originalDNG: URL(fileURLWithPath: arguments[1]), stockID: arguments[2],
+                    gauge: .sixteenMillimetre, seed: 42, bundle: Bundle(url: resources) ?? .main)
+                let output = directory.appendingPathComponent("developed.jpg")
+                try FileManager.default.copyItem(at: result, to: output)
+                print("PHOTO-OUTPUT \(output.path)")
+            } catch {
+                print("Photo render failed: \(error)"); exit(1)
+            }
+            return
+        }
+        if arguments.first == "--photo-probe", arguments.count == 4 {
+            do {
+                try PhotoPipelineProbe.run(input: URL(fileURLWithPath: arguments[1]), stock: arguments[2],
+                    directory: URL(fileURLWithPath: arguments[3], isDirectory: true))
+            } catch {
+                print("Photo probe failed: \(error)")
+                exit(1)
+            }
+            return
+        }
         guard arguments.count >= 2 else {
-            print("Usage: RenderCLI <input.mov> <stockId> [iso] [--bitrate <bps>] [--diagnostics <bundle-directory>]")
+            print("Usage: RenderCLI <input.mov> <stockId> [iso] [--bitrate <bps>] [--diagnostics <bundle-directory>] [--source-profile appleLog2|hlgBT2020]")
             exit(1)
         }
         let inputPath = arguments[0]
@@ -28,15 +86,33 @@ import Foundation
         var iso: Float = 400
         var bitrate: Int = RenderEncodingContract.averageBitRate
         var diagnosticsDirectory: URL?
+        var framing = DeliveryFraming.defaultValue
+        var sourceProfile = CameraSourceProfile.appleLog2
         var index = 2
         while index < arguments.count {
             switch arguments[index] {
+            case "--framing":
+                guard index + 1 < arguments.count,
+                      let value = DeliveryFraming(rawValue: arguments[index + 1]) else {
+                    print("--framing requires 16:9 or 4:3.")
+                    exit(1)
+                }
+                framing = value
+                index += 2
             case "--diagnostics":
                 guard index + 1 < arguments.count else {
                     print("--diagnostics requires a bundle directory.")
                     exit(1)
                 }
                 diagnosticsDirectory = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+                index += 2
+            case "--source-profile":
+                guard index + 1 < arguments.count,
+                      let profile = CameraSourceProfile(rawValue: arguments[index + 1]) else {
+                    print("--source-profile requires appleLog2 or hlgBT2020.")
+                    exit(1)
+                }
+                sourceProfile = profile
                 index += 2
             case "--bitrate":
                 guard index + 1 < arguments.count, let value = Int(arguments[index + 1]) else {
@@ -98,18 +174,35 @@ import Foundation
         var diagnosticRenderStarted = false
         do {
             let renderer = try PipelineRenderer()
+            // The default remains Log 2-only. HLG inspection is explicit and
+            // uses the same snapshotted profile as a native queued take.
+            var capturePolicy: RenderCapturePolicy?
+            if sourceProfile == .hlgBT2020 {
+                let asset = AVURLAsset(url: inputURL)
+                guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+                    throw RenderError.noVideoTrack
+                }
+                let fps = try await track.load(.nominalFrameRate)
+                guard let policy = RenderCapturePolicy(Int(fps.rounded()), sourceProfile: sourceProfile) else {
+                    throw RenderError.stageFailed("capture-policy", "HLG source must use a supported 24 or 60 fps cadence.")
+                }
+                capturePolicy = policy
+            }
             if let diagnosticsDirectory {
                 diagnosticRenderStarted = true
                 let result = try await renderer.render(
                     sourceURL: inputURL,
                     config: config,
                     bitrate: bitrate,
-                    diagnosticsBundleDirectory: diagnosticsDirectory
+                    framing: framing,
+                    diagnosticsBundleDirectory: diagnosticsDirectory,
+                    capturePolicy: capturePolicy
                 )
                 print("Rendered to: \(result.outputURL?.path ?? "unavailable")")
                 print("Diagnostic bundle: \(result.bundleURL.path)")
             } else {
-                let outputURL = try await renderer.render(sourceURL: inputURL, config: config, bitrate: bitrate)
+                let outputURL = try await renderer.render(sourceURL: inputURL, config: config,
+                                                          bitrate: bitrate, capturePolicy: capturePolicy, framing: framing)
                 print("Rendered to: \(outputURL.path)")
             }
         } catch {

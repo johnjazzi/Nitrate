@@ -24,10 +24,10 @@ enum CameraFocalZoomPolicy {
     /// Ruler landmarks shared with the UI, so haptics land on the same values
     /// the policy treats as boundaries. The single shared source the UI may
     /// alias for its own ruler.
-    static let majorTicks: [Double] = [13, 24, 35, 50, 75, 96, 110, 150]
+    static let majorTicks: [Double] = [13, 24, 35, 50, 75, 96, 110, 150, 200, 300, 400]
 
     static let minimumFocalLengthMM: Double = 13
-    static let maximumFocalLengthMM: Double = 150
+    static let maximumFocalLengthMM: Double = 400
 
     /// Below this the target prefers the ultrawide camera.
     static let ultraWideUpperBoundMM: Double = 24
@@ -43,7 +43,7 @@ enum CameraFocalZoomPolicy {
     /// the 24↔96 gap, so a deliberate reversal still switches promptly.
     static let boundaryHysteresisMM: Double = 1.0
 
-    /// Clamp a requested focal length into the valid, finite 13...150 range.
+    /// Clamp a requested focal length into the valid, finite 13...400 range.
     /// Non-finite input is refused rather than coerced.
     static func clampedTarget(_ millimeters: Double) -> Double? {
         guard millimeters.isFinite else { return nil }
@@ -144,6 +144,30 @@ enum CameraFocalZoomPolicy {
         let base = baseFocalLengthMM(for: tier)
         guard base > 0 else { return nil }
         return base * (displayFactor / multiplier)
+    }
+
+    /// The focal-length window a lens can actually render, converted from the
+    /// session's non-round display-factor bounds with the *same* tier/multiplier
+    /// converter the live readout uses (`focalLengthMM(displayFactor:multiplier:
+    /// tier:)`). The ruler and the readout therefore share one conversion and can
+    /// never disagree: a telephoto ceiling of 16x on a 96 mm base reports up to
+    /// 1536 mm, a wide ceiling of 16x on a 24 mm base up to 384 mm, and the
+    /// iOS 17 per-lens multiplier of 1 needs no special case.
+    ///
+    /// Nil when either bound is refused (non-finite, zero or negative factor or
+    /// multiplier) or when the converted bounds are inverted, so the caller
+    /// falls back to the fixed landmarks rather than drawing a bogus rail.
+    static func availableFocalLengthRange(minimumDisplayFactor: Double,
+                                          maximumDisplayFactor: Double,
+                                          multiplier: Double,
+                                          tier: CameraFocalZoomLensTier) -> ClosedRange<Double>? {
+        guard let minimum = focalLengthMM(displayFactor: minimumDisplayFactor,
+                                          multiplier: multiplier, tier: tier),
+              let maximum = focalLengthMM(displayFactor: maximumDisplayFactor,
+                                          multiplier: multiplier, tier: tier),
+              minimum.isFinite, maximum.isFinite,
+              minimum <= maximum else { return nil }
+        return minimum...maximum
     }
 }
 

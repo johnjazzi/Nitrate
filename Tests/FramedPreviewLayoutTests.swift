@@ -2,6 +2,17 @@ import Foundation
 import Testing
 
 struct FramedPreviewLayoutTests {
+    @Test func photoUsesVideoWidthWithoutChangingItsNativeAspect() {
+        for width: CGFloat in [320, 390, 430] {
+            let canvas = CGRect(x: 0, y: 0, width: width, height: 844)
+            let video = FramedPreviewLayout.previewRect(in: canvas, topControlsBottom: 80, bottomControlsTop: 620)
+            let photo = PhotoPreviewLayout.previewRect(in: canvas, topControlsBottom: 80, bottomControlsTop: 620)
+            #expect(photo.width == video.width)
+            #expect(photo.minX == video.minX)
+            #expect(abs(photo.width / photo.height - 3.0 / 4.0) < 0.000001)
+        }
+    }
+
     @Test func frameRectIsInvariantAcrossOrientationAndFloatingChrome() {
         for width: CGFloat in [320, 390, 430] {
             let canvas = CGRect(x: 0, y: 0, width: width, height: 750)

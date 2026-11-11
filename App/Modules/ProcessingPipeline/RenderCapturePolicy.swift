@@ -1,5 +1,19 @@
 import Foundation
 
+/// Source encoding, independent of sensor geometry and film delivery encoding.
+enum CameraSourceProfile: String, Codable, Sendable {
+    case appleLog2
+    case hlgBT2020
+
+    var label: String { self == .appleLog2 ? "Apple Log 2" : "HLG BT.2020" }
+
+    /// A Log-1-only device is deliberately unsupported, not an HLG fallback.
+    static func permitted(supportsAppleLog: Bool, supportsAppleLog2: Bool) -> Self? {
+        if supportsAppleLog2 { return .appleLog2 }
+        return supportsAppleLog ? nil : .hlgBT2020
+    }
+}
+
 /// The per-take capture policy, snapshotted at enqueue and carried in the job
 /// JSON so a queued job renders identically after a relaunch without reading
 /// live UI.
@@ -10,14 +24,15 @@ import Foundation
 /// the fixed 180° shutter together, so an invalid fps/shutter/grain combination
 /// cannot be constructed.
 struct RenderCapturePolicy: Codable, Equatable, Sendable {
-    /// 24 or 60.
+    /// 24, 60 or 120.
     let frameRate: Int
     let grainPairing: GrainPairing
-    /// 180° fixed shutter denominator: 48 or 120.
+    /// 180° fixed shutter denominator: 48, 120 or 240.
     let shutterDenominator: Int
+    var sourceProfile: CameraSourceProfile = .appleLog2
 
     private enum CodingKeys: String, CodingKey {
-        case frameRate, grainPairing, shutterDenominator
+        case frameRate, grainPairing, shutterDenominator, sourceProfile
     }
 
     init(from decoder: any Decoder) throws {
@@ -28,15 +43,21 @@ struct RenderCapturePolicy: Codable, Equatable, Sendable {
               try values.decode(Int.self, forKey: .shutterDenominator) == policy.shutterDenominator else {
             throw DecodingError.dataCorrupted(.init(
                 codingPath: decoder.codingPath,
-                debugDescription: "Capture policy must be 24fps/1⁄48/per-frame or 60fps/1⁄120/paired grain."))
+                debugDescription: "Capture policy must be 24fps/1⁄48/per-frame, or 60fps/1⁄120 or 120fps/1⁄240 with paired grain."))
         }
         self = policy
+        sourceProfile = try values.decodeIfPresent(CameraSourceProfile.self, forKey: .sourceProfile) ?? .appleLog2
     }
 
-    /// Nil unless `frameRate` is 24 or 60. Derives the pairing and shutter from
-    /// the rate so the three values cannot disagree. `nil` in a job means legacy
-    /// behaviour: 24 fps, per-frame grain, `1/48` shutter metadata.
-    init?(_ frameRate: Int) {
+    /// Nil unless `frameRate` is 24, 60 or 120. Derives the pairing and shutter
+    /// from the rate so the three values cannot disagree. `nil` in a job means
+    /// legacy behaviour: 24 fps, per-frame grain, `1/48` shutter metadata.
+    ///
+    /// Above 24 fps the 180° shutter keeps the same half-rate paired grain
+    /// semantics: a 120 fps take gets 60 grain realisations, exactly as a 60 fps
+    /// take gets 30, so grain never becomes per-frame noise at a high rate.
+    init?(_ frameRate: Int, sourceProfile: CameraSourceProfile = .appleLog2) {
+        self.sourceProfile = sourceProfile
         switch frameRate {
         case 24:
             self.frameRate = 24
@@ -46,8 +67,27 @@ struct RenderCapturePolicy: Codable, Equatable, Sendable {
             self.frameRate = 60
             self.grainPairing = .pairedAtHalfRate
             self.shutterDenominator = 120
+        case 120:
+            self.frameRate = 120
+            self.grainPairing = .pairedAtHalfRate
+            self.shutterDenominator = 240
         default:
             return nil
         }
     }
+}
+
+/// The slate a take belongs to: reel, scene and take number.
+///
+/// Nitrate records one take per recording today, so the shipped value is always
+/// 1/1/1. It lives here, with the capture policy, because the movie and still
+/// metadata writers both read it and neither compiles the render queue.
+struct RenderSlate: Codable, Equatable, Sendable {
+    var reel: Int
+    var scene: Int
+    var take: Int
+
+    /// The only slate the app writes: the first take of the first scene on reel
+    /// one. Stated as fact in the delivered file, never inferred by a reader.
+    static let first = RenderSlate(reel: 1, scene: 1, take: 1)
 }

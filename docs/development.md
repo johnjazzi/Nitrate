@@ -11,6 +11,26 @@
 | DevRelease | `com.nitrate.app.dev` | Nitrate Dev | Local release-optimized testing, without DEBUG features |
 | Release | `com.nitrate.app` | Nitrate | Cloud/TestFlight/App Store distribution |
 
+Photo mode and the shared idle camera graph are runtime features in all three
+configurations for the registered production and development bundle identifiers.
+They do not require `DEBUG`. Diagnostic frame tools, smoke-test launch arguments,
+fault injection and camera-range dumps remain Debug-only. Release verification
+must cover both the Photo controls and their capture implementation, not only
+whether the mode selector is visible.
+
+Photo is switched per configuration by `PHOTO_MODE_ENABLED` in `project.yml`,
+copied into Info.plist as `PhotoModeEnabled` and read once by
+`DevelopmentPhotoFeature`. Set it to `NO` and rebuild to ship a configuration
+without the mode — the runtime still compiles in, so the switch decides
+presentation, not whether the code exists. There is no stored preference and no
+remote switch, and a build whose value failed to substitute reads as off.
+
+Photo needs a Bayer RAW format from the active camera. When a lens has none, the
+shared idle graph falls back to its Video profile instead of stopping the camera:
+Video preview and recording keep working, Photo refuses with a clear reason, and
+selecting a lens that has RAW restores Photo without restarting the app. Verify
+this on a front camera and on any non-RAW rear lens.
+
 The local app and production app have separate containers, queues, preferences,
 and permissions. Existing production footage does not migrate into Nitrate Dev.
 Do not uninstall either app to switch between them. A local install can still
@@ -146,9 +166,11 @@ Cloud by `ci_scripts/ci_post_xcodebuild.sh`. Apple runs a test action in two
 phases: it builds test products with `xcodebuild build-for-testing` (source code
 available), then runs them with `xcodebuild test-without-building` (source code
 unavailable). The hook runs only in the `build-for-testing` phase
-(`CI_XCODEBUILD_ACTION`), where it lints and compiles the iOS app without signing
-through `python3 scripts/verify.py check`. The RenderCLI TEST action alone only
-compiles for macOS; the hook keeps the iOS compile in the required check.
+(`CI_XCODEBUILD_ACTION`), where it lints and compiles both Debug and Release iOS
+configurations without signing through `python3 scripts/verify.py check`.
+Local `verify` uses the same two-configuration compile path. The RenderCLI TEST
+action alone only compiles for macOS; a Debug-only iOS check cannot catch
+references to DEBUG-only camera state that break the distribution archive.
 
 The portable Ubuntu policy checks live in `.github/workflows/policy.yml`, the
 release-version gate stays in `.github/workflows/release-version.yml`, and the

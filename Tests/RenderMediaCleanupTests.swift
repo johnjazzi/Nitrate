@@ -3,6 +3,54 @@ import Testing
 
 @Suite("Owned render media cleanup")
 struct RenderMediaCleanupTests {
+    @Test func retainedSourceFlagIsOptionalAndBothMediaTypesRequireNonemptyRegularOriginals() throws {
+        let fixture = try ExportCleanupFixture()
+        defer { fixture.remove() }
+        let source = try fixture.movie("clip_import_original.mov", in: fixture.sources)
+        var video = RenderJob(sourceURL: source, stockId: "test", iso: 400)
+        let legacyData = try JSONEncoder().encode(video)
+        let legacy = try JSONDecoder().decode(RenderJob.self, from: legacyData)
+        #expect(legacy.retainsDevelopmentSource == nil)
+        #expect(legacy.hasRedevelopableSource)
+        #expect(!legacy.hasRedevelopableOriginal, "the old API remains photo-only")
+        video.retainsDevelopmentSource = true
+        video.sourceOriginalFilename = "take.mov"
+        video.sourceCapturedOffsetEV = 1.25
+        #expect(try JSONDecoder().decode(RenderJob.self, from: JSONEncoder().encode(video)) == video)
+        var photo = video
+        photo.isPhoto = true
+        #expect(photo.hasRedevelopableOriginal)
+        try Data().write(to: source)
+        #expect(!video.hasRedevelopableSource)
+        #expect(!photo.hasRedevelopableOriginal)
+        try FileManager.default.removeItem(at: source)
+        #expect(!video.hasRedevelopableSource)
+        var directory = video
+        directory.sourceURL = fixture.sources
+        #expect(!directory.hasRedevelopableSource)
+    }
+
+    @Test func developmentPhotoRemovalNeedsExplicitOptInAndOwnedDirectPath() throws {
+        let fixture = try ExportCleanupFixture()
+        defer { fixture.remove() }
+        let raw = try fixture.movie("photo_import_owned.nef", in: fixture.sources)
+        let jpeg = try fixture.movie("photo_import_owned.jpg", in: fixture.sources)
+        let unrelated = try fixture.movie("holiday.nef", in: fixture.sources)
+        let outside = try fixture.movie("photo_import_outside.dng", in: fixture.root)
+        let link = fixture.sources.appendingPathComponent("photo_import_link.dng")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        #expect(try !fixture.cleaner.removeIfOwned(raw))
+        #expect(try !fixture.cleaner.removeIfOwned(jpeg))
+        #expect(try !fixture.cleaner.removeIfOwned(unrelated, includeDevelopmentPhoto: true))
+        #expect(try !fixture.cleaner.removeIfOwned(outside, includeDevelopmentPhoto: true))
+        #expect(try !fixture.cleaner.removeIfOwned(link, includeDevelopmentPhoto: true))
+        #expect(try fixture.cleaner.removeIfOwned(raw, includeDevelopmentPhoto: true))
+        #expect(try fixture.cleaner.removeIfOwned(jpeg, includeDevelopmentPhoto: true))
+        #expect(try fixture.cleaner.removeIfOwned(raw, includeDevelopmentPhoto: true))
+        #expect(FileManager.default.fileExists(atPath: outside.path))
+        #expect(FileManager.default.fileExists(atPath: unrelated.path))
+    }
+
     @Test func onlyDirectOwnedRegularMoviesAreRemoved() throws {
         let fixture = try ExportCleanupFixture()
         defer { fixture.remove() }

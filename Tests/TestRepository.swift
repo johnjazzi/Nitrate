@@ -63,7 +63,9 @@ enum TestRepository {
         "App/Resources/gauges.json",
         "App/PrivacyInfo.xcprivacy",
         "Tests/Fixtures/colorchecker-babelcolor-2006.json",
-        "App/ContentView.swift"
+        "App/ContentView.swift",
+        "App/Modules/FilmStockLibrary/GaugeControl.swift",
+        "App/Modules/FilmStockLibrary/PushPullControl.swift"
     ]
 
     /// Diagnostic renders must not write into the source checkout or signed bundle.

@@ -12,11 +12,16 @@ constexpr sampler linear_sampler(
 /// Input: Apple Log encoded image
 /// Output: color-graded image
 ///
-/// Halation and glow used to be applied here as per-pixel terms. They are now
-/// spatial (`spatial.metal`, story 1.4), so this pass only grades. The function
-/// name and its binding layout are a versioned contract and are unchanged; the
+/// Halation, glow and the development push/pull used to be applied here as
+/// per-pixel terms. They are all scene-light now: halation and glow are spatial
+/// (`spatial.metal`, story 1.4) and the push/pull runs in front of the emulsion
+/// inside `spatial_expose`, so this pass only grades. The function name and its
+/// binding layout are a versioned contract and are unchanged; the
 /// `halationStrength` / `glowStrength` buffers are still bound for signature
 /// stability but no longer read.
+
+// Apple Log 2 decode/encode lives in `spatial.metal` now: the push/pull moved
+// there, and this pass works purely in encoded code values.
 
 kernel void pass1_lut_halation_glow(
     texture2d<float, access::read>  input  [[texture(0)]],
@@ -32,6 +37,11 @@ kernel void pass1_lut_halation_glow(
     }
 
     float4 color = input.read(gid);
+
+    // The development push/pull is a scene-light curve and runs in FRONT of the
+    // emulsion for BOTH a take and a still now — `SpatialEffectsStage` applies it
+    // inside the halation ladder (`spatial_expose`) so clipping highlights hold
+    // at white and keep halating. This pass only applies the stock's look.
 
     // The Resolve .cube assets are authored directly for normalized Apple Log 2
     // code values. Do not introduce an extra contrast curve before sampling.

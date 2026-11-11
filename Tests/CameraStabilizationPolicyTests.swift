@@ -50,6 +50,29 @@ struct CameraStabilizationPolicyTests {
         #expect(snapshot.statusText == "Requested Extreme · Active Off (unsupported)")
     }
 
+    /// The shared idle lease detaches the recording output, so the live
+    /// connection cannot be asked. Video's own recording format must still make
+    /// the modes selectable before the take, or the field control goes dead in
+    /// exactly the idle state the operator chooses it in.
+    @Test func idleVideoReportsTheRecordingFormatsModes() {
+        let capability = CameraStabilizationPolicy.idleCapability(
+            videoConnectionSupportsStabilization: true,
+            recordingFormatModes: [.standard, .cinematic])
+        #expect(capability.availableModes == [.off, .standard, .cinematic])
+        #expect(capability.effectiveMode(for: .cinematic) == .cinematic)
+        #expect(capability.effectiveMode(for: .extreme) == .off)
+    }
+
+    /// No live connection has ever reported stabilization support, so the idle
+    /// snapshot must not invent modes the hardware was never asked about.
+    @Test func idleVideoWithoutAnObservedConnectionAdvertisesNothing() {
+        let capability = CameraStabilizationPolicy.idleCapability(
+            videoConnectionSupportsStabilization: false,
+            recordingFormatModes: [.standard, .cinematic, .extreme])
+        #expect(capability == .unavailable)
+        #expect(capability.availableModes == [.off])
+    }
+
     @Test func persistenceDefaultsToOff() {
         #expect(CameraStabilizationMode(persistedValue: nil) == .off)
         #expect(CameraStabilizationMode(persistedValue: "invalid") == .off)

@@ -1,4 +1,5 @@
 import SwiftUI
+import AVKit
 
 /// Compact stock/status column, screen-centred REC, and persistent exposure controls.
 ///
@@ -9,7 +10,18 @@ struct CameraControlBar: View {
     @Environment(\.cameraDeviceOrientation) private var orientation
     private let controlFaceSize: CGFloat = 38
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Drives `.sensoryFeedback`; bumped on every REC tap so the press is felt
+    /// The persisted face choice. Resolved through `RecordButtonAppearance` so
+    /// an unknown or missing value keeps the classic plunger; the same key and
+    /// default are used by the Settings picker.
+    @AppStorage(RecordButtonAppearance.preferenceKey)
+    private var recordButtonAppearance = RecordButtonAppearance.classic.rawValue
+    /// True only while the exposure control is being held, whether or not the
+    /// press has reached the long-press threshold. `LongPressGesture` feeds it
+    /// through `.updating`, so the expanding acknowledgement starts during the
+    /// hold rather than at the moment the mode flips, and SwiftUI resets it
+    /// automatically on release or cancellation — no mode change, no haptic.
+    @GestureState private var isExposureHolding = false
+    /// Drives `.sensoryFeedback`; bumped on every capture tap so the press is felt
     /// immediately instead of when capture reports it started.
     @State private var recordFeedbackTrigger = 0
     @State private var recordFeedback: RecordFeedback = .start
@@ -25,15 +37,83 @@ struct CameraControlBar: View {
     let selectedGauge: PrintGauge
     let onShowQueueSheet: () -> Void
     let onShowStockSheet: () -> Void
+    /// One brief outline around the whole stock-selector well, a discoverability
+    /// hint only. It adds no layout or hit target: the ring is a non-hit-testing
+    /// overlay and never repeats.
+    let showsStockHint: Bool
+    /// Horizontal inset around the shooting bar. The alignment pass passes a
+    /// smaller value so the outer controls line up with the viewfinder edges;
+    /// 16 keeps the original spacing when the caller omits it.
+    var horizontalInset: CGFloat = 16
+    /// True while the bar is serving the inline Develop mode. Every Develop
+    /// property below defaults off, so a caller that omits them gets the exact
+    /// Video shooting bar it had before.
+    var isDevelopMode: Bool = false
+    /// The parent reports whether a Develop render can start right now. The
+    /// centre Render action is enabled only when this is true.
+    var developCanRender: Bool = false
+    /// True while a Develop render is in flight. It disables the centre action
+    /// and the left stock/gauge slot until the render reports back.
+    var developIsBusy: Bool = false
+    /// The only thing the Develop centre action does. It never touches capture.
+    var onDevelopRender: () -> Void = {}
+    var isPhotoMode = false
+    var photoStatus: String? = nil
+    var onPhotoCapture: () -> Void = {}
+    var photoExposure: PhotoExposureSnapshot? = nil
+    var onPhotoISO: (Float) -> Void = { _ in }
+    var onPhotoISOLock: () -> Void = {}
+    var onPhotoDuration: (Double) -> Void = { _ in }
+    var hardwareCaptureEnabled = false
+    @State private var hardwarePress = CameraHardwareCapturePress()
+    var onPhotoShutterLock: () -> Void = {}
 
     var body: some View {
-        CameraShootingLayout() {
-            selectorRow
-            storageIndicator
-            recordButton
-            exposureControl.frame(width: CameraControlGeometry.exposureWidth)
+        VStack(spacing: 0) {
+            CameraShootingLayout() {
+                selectorRow
+                    .disabled(isDevelopMode && developIsBusy)
+                    .opacity(isDevelopMode && developIsBusy ? 0.4 : 1)
+                storageIndicator
+                recordButton
+                exposureControl
+                    .frame(width: CameraControlGeometry.exposureWidth)
+                    .disabled(isDevelopMode)
+                    .opacity(isDevelopMode ? 0.4 : 1)
+                    .grayscale(isDevelopMode ? 1 : 0)
+            }
+            .padding(.horizontal, horizontalInset)
+
         }
-        .padding(.horizontal, 16)
+        .onCameraCaptureEvent(isEnabled: hardwareCaptureEnabled) { event in
+#if DEBUG
+            if CommandLine.arguments.contains("--trace-camera-control") {
+                CameraControlDiagnostics.record("event phase=\(event.phase) viewEnabled=\(hardwareCaptureEnabled) "
+                    + "runtimeEnabled=\(cameraViewModel.canAcceptHardwareCapture)")
+            }
+#endif
+            let phase: CameraHardwareCapturePress.Phase
+            switch event.phase {
+            case .began: phase = .began
+            case .ended: phase = .ended
+            case .cancelled: phase = .cancelled
+            @unknown default: phase = .cancelled
+            }
+            // AVKit may retain the initially installed action. Read the model,
+            // not this view value's launch-time enabled flag or shooting mode.
+            guard hardwarePress.receive(phase, isEnabled: cameraViewModel.canAcceptHardwareCapture) else { return }
+#if DEBUG
+            if CommandLine.arguments.contains("--trace-camera-control") {
+                CameraControlDiagnostics.record("accepted photo=\(cameraViewModel.isDevelopmentPhotoMode)")
+            }
+#endif
+            if cameraViewModel.isDevelopmentPhotoMode { performPhotoCapture() }
+            else { performVideoCapture() }
+        }
+        .onChange(of: hardwareCaptureEnabled) { _, enabled in
+            if !enabled { hardwarePress.reset() }
+        }
+        .onChange(of: isPhotoMode) { _, _ in hardwarePress.reset() }
     }
 
     // MARK: - Left selector row
@@ -50,7 +130,12 @@ struct CameraControlBar: View {
                                  rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
             }
         }
-        .cameraControlWell(cornerRadius: 12)
+        .cameraControlWell(horizontalPadding: 4)
+        .overlay {
+            StockSelectorHintOutline(isVisible: showsStockHint)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
@@ -66,7 +151,7 @@ struct CameraControlBar: View {
                 Button {
                     onShowStockSheet()
                 } label: {
-                    Image(systemName: "film").font(.title3)
+                    Image(systemName: "film").font(NitrateTypography.font(.title3))
                     .foregroundStyle(.white)
                     .frame(width: faceSize, height: faceSize)
                     .frame(minWidth: 44, minHeight: 44)
@@ -93,23 +178,74 @@ struct CameraControlBar: View {
 
     // MARK: - Exposure control (dual mode)
 
-    /// The live meter and setting share the existing 92pt column: 28pt meter,
-    /// 56pt ruler, and two 4pt rims. The footprint stays clear of centred REC
+    /// The live meter and setting share the compact 84pt column: 28pt meter,
+    /// 48pt ruler, and two 4pt rims. The footprint stays clear of centred REC
     /// and the left queue/remaining-time column even on a 320pt-wide phone.
     private var exposureControl: some View {
         HStack(alignment: .top, spacing: 0) {
             ExposureIndicatorView(
                 meteredEV: cameraViewModel.liveExposureTargetOffset,
-                targetEV: cameraViewModel.isManualExposure ? 0 : cameraViewModel.liveExposureBias,
+                targetEV: cameraViewModel.liveExposureBias,
                 isManual: cameraViewModel.isManualExposure,
-                isAvailable: cameraViewModel.hasExposureMeter
+                isAvailable: cameraViewModel.hasExposureMeter,
+                trackHeight: 120
             )
             exposureSetting
-                .frame(width: 56)
+                .frame(width: 48)
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 6)
-        .modifier(CameraRaisedSurface(cornerRadius: 14))
+        .modifier(CameraInsetSurface())
+        .contentShape(Rectangle())
+        // Visible hold acknowledgement: a small spring expansion the instant the
+        // finger lands, springing back on release or cancellation. Reduce Motion
+        // gets a steady outline instead of a zoom, so the hold stays visible
+        // without scale movement. Only a small transform and a non-layout
+        // overlay are applied; columns and touch targets are unchanged.
+        .scaleEffect(reduceMotion ? 1 : (isExposureHolding ? 1.07 : 1))
+        .overlay {
+            RoundedRectangle(cornerRadius: CameraControlBorder.cornerRadius, style: .continuous)
+                .stroke(.white.opacity(0.9), lineWidth: 1.5)
+                .opacity(reduceMotion && isExposureHolding ? 1 : 0)
+        }
+        .animation(reduceMotion ? .easeInOut(duration: 0.15)
+                                : .spring(response: 0.28, dampingFraction: 0.62),
+                   value: isExposureHolding)
+        // Simultaneous so the whole control stays hittable: an exclusive
+        // long-press would never fire over the slider track, which is the
+        // widest touch target in this stack.
+        // Cancel a moving press before it reaches the first 6pt detent
+        // midpoint; otherwise a slow adjustment can replace the active ruler.
+        // `.updating` publishes the held state while the press is still being
+        // detected — not only once it reaches the threshold — and SwiftUI clears
+        // it on release or cancellation, so the expansion tracks the finger and
+        // a dragged/cancelled press never changes the mode or fires the haptic.
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.5, maximumDistance: 3)
+                .updating($isExposureHolding) { current, state, _ in
+                    state = current && exposureHoldEnabled
+                }
+                .onEnded { _ in
+                    guard exposureHoldEnabled else { return }
+                    cameraViewModel.toggleManualExposure()
+                }
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(cameraViewModel.isManualExposure ? "Manual ISO" : "Auto exposure bias")
+        .accessibilityHint("Long-press to switch between auto and manual exposure")
+        .accessibilityAction(named: Text(cameraViewModel.isManualExposure
+                                        ? "Switch to auto exposure"
+                                        : "Switch to manual exposure")) {
+            cameraViewModel.toggleManualExposure()
+        }
+        // Keyed to the committed mode, not to the gesture: the long press and
+        // the accessibility action share `toggleManualExposure()`, so one state
+        // change is felt once however it was requested. The periodic exposure
+        // poll never writes this flag, so polling cannot fire it.
+        .sensoryFeedback(trigger: cameraViewModel.isManualExposure) { _, isManual in
+            CameraHaptics.prepareForCaptureFeedback()
+            return ManualExposureLockFeedback.sensory(isManual: isManual)
+        }
         // Measurement anchor only: publishes the exposure column's frame in the
         // shared `cameraCanvas` space so the parent can float the daylight rescue
         // button above it. A background never changes the bar's measured footprint.
@@ -126,10 +262,15 @@ struct CameraControlBar: View {
 
     /// One setting, two modes. Auto drives the scene's auto-exposure target bias
     /// (EV); manual drives the ISO chooser. Long-press toggles between them.
+    private var exposureHoldEnabled: Bool {
+        !cameraViewModel.isStartingRecording && !cameraViewModel.isRecording
+            && !cameraViewModel.isStoppingRecording && !cameraViewModel.isChangingFrameRate
+    }
+
     private var exposureSetting: some View {
         VStack(spacing: 6) {
             Text(exposureReadout)
-                .font(.caption2.monospacedDigit())
+                .font(NitrateTypography.font(.caption2).monospacedDigit())
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
                 .frame(height: 14)
@@ -151,6 +292,12 @@ struct CameraControlBar: View {
                     tint: .yellow,
                     length: 120
                 )
+                // One stable handle for the control, the same way the photo
+                // shutter rail names its ruler: the ISO chooser is the control an
+                // operator drags, so a test (and VoiceOver) has to be able to find
+                // this one and not the EV ruler that shares the column.
+                .accessibilityIdentifier("camera.isoRuler")
+                .accessibilityLabel("ISO")
             } else {
                 // Ruler rather than a 1:1 slider: EV compensation needs
                 // repeatable 0.1 EV detents, with 12pt of travel per tick.
@@ -166,37 +313,11 @@ struct CameraControlBar: View {
                 .opacity(cameraViewModel.isExposureBiasAvailable ? 1 : 0.4)
             }
 
-            Text(cameraViewModel.isManualExposure ? "ISO" : "EV")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.white.opacity(0.7))
-                .cameraUpright()
-        }
-        .contentShape(Rectangle())
-        // Simultaneous so the whole control stays hittable: an exclusive
-        // long-press would never fire over the slider track, which is the
-        // widest touch target in this stack.
-        // Cancel a moving press before it reaches the first 6pt detent
-        // midpoint; otherwise a slow adjustment can replace the active ruler.
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.5, maximumDistance: 3).onEnded { _ in
-                cameraViewModel.toggleManualExposure()
-            }
-        )
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(cameraViewModel.isManualExposure ? "Manual ISO" : "Auto exposure bias")
-        .accessibilityHint("Long-press to switch between auto and manual exposure")
-        .accessibilityAction(named: Text(cameraViewModel.isManualExposure
-                                        ? "Switch to auto exposure"
-                                        : "Switch to manual exposure")) {
-            cameraViewModel.toggleManualExposure()
-        }
-        // Keyed to the committed mode, not to the gesture: the long press and
-        // the accessibility action share `toggleManualExposure()`, so one state
-        // change is felt once however it was requested. The periodic exposure
-        // poll never writes this flag, so polling cannot fire it.
-        .sensoryFeedback(trigger: cameraViewModel.isManualExposure) { _, isManual in
-            CameraHaptics.prepareForCaptureFeedback()
-            return ManualExposureLockFeedback.sensory(isManual: isManual)
+            // Keep the previous footer's exact font height without its words.
+            // This preserves the shooting bar and viewfinder geometry.
+            Text(" ")
+                .font(NitrateTypography.font(size: 9))
+                .accessibilityHidden(true)
         }
     }
 
@@ -214,7 +335,11 @@ struct CameraControlBar: View {
     }
 
     private var isoSliderRange: ClosedRange<Double> {
-        let range = cameraViewModel.session.isoRange
+        // Video reads the recorder's own band (`CameraSession.videoISORange`):
+        // the shared idle format is still-capable and wider than the Apple Log 2
+        // format a take will use, so the active format's range would offer ISO
+        // the take cannot take. Photo keeps the still format's wider range.
+        let range = cameraViewModel.isoBandForCurrentMode()
         return Double(range.lowerBound)...Double(range.upperBound)
     }
 
@@ -253,7 +378,7 @@ struct CameraControlBar: View {
         )
     }
 
-    /// Immediate acknowledgement for a REC tap.
+    /// Immediate acknowledgement for a Photo or Video shutter tap.
     ///
     /// Capture cannot confirm a take started until the session queue, the
     /// custom-exposure settle and the asset writer have all run, so waiting for
@@ -281,6 +406,14 @@ struct CameraControlBar: View {
         }
     }
 
+    /// The shutter's spoken state: the blocking reason while a tap could not
+    /// start a capture, otherwise the delivery status.
+    private var photoShutterAccessibilityValue: String {
+        let readiness = cameraViewModel.photoShutterReadiness
+        if readiness != .capturing, let reason = readiness.blockedReason { return reason }
+        return photoStatus ?? "Ready"
+    }
+
     private var recordPresentation: RecordButtonPresentation {
         RecordButtonPresentationPolicy.presentation(
             isRecording: cameraViewModel.isRecording,
@@ -289,19 +422,57 @@ struct CameraControlBar: View {
         )
     }
 
+    /// The centre slot. Video shows the REC control with the chosen face;
+    /// Develop replaces it with the Render action. The two never overlap.
+    @ViewBuilder
     private var recordButton: some View {
-        let presentation = recordPresentation
-        let action = RecordButtonPresentationPolicy.action(for: presentation)
-        return Button {
-            guard action != .none else { return }
-            recordFeedback = action == .start ? .start : .stop
-            recordFeedbackTrigger &+= 1
-            animateUnclick()
-            if action == .start {
-                cameraViewModel.startRecording()
-            } else {
-                cameraViewModel.stopRecording()
+        if isPhotoMode {
+            Button {
+                performPhotoCapture()
+            } label: {
+                ZStack {
+                    // Donut face inside the unchanged camera ring: light grey with
+                    // concave shading, hole open to the preview.
+                    PhotoShutterFace()
+                    Circle().stroke(.white.opacity(0.8), lineWidth: 2).frame(width: 78, height: 78)
+                }
+                // The face is deliberately not hit-testable (its shading must not
+                // intercept the preview) and its middle is an open hole, so without
+                // this the button's only tappable pixels were the 2pt outer ring:
+                // a tap on the centre — where an operator actually taps — did
+                // nothing at all, with no state to explain it.
+                .contentShape(Circle())
             }
+            .buttonStyle(.plain)
+            // Never disabled, never dimmed: a tap always reaches the camera and
+            // may fail, but a control that looks dead and says nothing is worse
+            // than a refusal the operator can read (see `PhotoShutterReadiness`).
+            .accessibilityLabel("Capture RAW photo")
+            // The delivery status used to sit above the shutter as text. It is
+            // carried here instead, so VoiceOver and the UI tests still see it
+            // without drawing anything over the preview.
+            .accessibilityValue(photoShutterAccessibilityValue)
+            .accessibilityIdentifier("photo.shutter")
+            .sensoryFeedback(trigger: recordFeedbackTrigger) { _, _ in recordFeedback.sensory }
+        } else if isDevelopMode {
+            developRenderButton
+        } else {
+            videoRecordButton
+        }
+    }
+
+    private func performPhotoCapture() {
+        recordFeedback = .start
+        recordFeedbackTrigger &+= 1
+        onPhotoCapture()
+    }
+
+    /// The Video REC control, unchanged: it keeps the classic/modern face
+    /// preference, the immediate haptic and the capture state machine.
+    private var videoRecordButton: some View {
+        let presentation = recordPresentation
+        return Button {
+            performVideoCapture()
         } label: {
             recordFace(presentation)
         }
@@ -312,10 +483,35 @@ struct CameraControlBar: View {
         .accessibilityLabel(RecordButtonPresentationPolicy.accessibilityLabel(for: presentation))
     }
 
-    /// Shared circular plunger: quiet washed red in every state, no bezel slab.
+    private func performVideoCapture() {
+        let presentation = recordPresentation
+        let action = RecordButtonPresentationPolicy.action(for: presentation)
+        guard action != .none,
+              RecordButtonPresentationPolicy.isEnabled(isSpaceCritical: cameraViewModel.isSpaceCritical,
+                                                       presentation: presentation) else { return }
+        recordFeedback = action == .start ? .start : .stop
+        recordFeedbackTrigger &+= 1
+        animateUnclick()
+        if action == .start { cameraViewModel.startRecording() }
+        else { cameraViewModel.stopRecording() }
+    }
+
+    /// The chosen face. Both share the 84pt footprint, the press feedback and
+    /// the state machine owned by `RecordButtonPresentationPolicy`; only the
+    /// drawn appearance differs.
+    @ViewBuilder
     private func recordFace(_ presentation: RecordButtonPresentation) -> some View {
-        RecordPlungerFace(presentation: presentation, isPressed: isUnclicked,
-                          rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
+        switch RecordButtonAppearance.resolved(recordButtonAppearance) {
+        case .classic:
+            // Shipping circular plunger: quiet washed red in every state, no
+            // bezel slab. Its press animation is unchanged.
+            RecordPlungerFace(presentation: presentation, isPressed: isUnclicked,
+                              rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
+        case .modern:
+            ModernRecordButtonFace(presentation: presentation, isPressed: isUnclicked,
+                                   rotationDegrees: CameraGlyphRotation.degrees(for: orientation),
+                                   reduceMotion: reduceMotion)
+        }
     }
 
     /// Immediate 2.5pt depression, released at the established 100ms unclick.
@@ -329,6 +525,31 @@ struct CameraControlBar: View {
             guard generation == pressGeneration else { return }
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { isUnclicked = false }
         }
+    }
+
+    // MARK: - Develop render action
+
+    /// The centre slot's action in Develop mode. It is a Render action and
+    /// nothing else: a tap calls the parent's render closure, and no path from
+    /// here reaches the capture session, the REC presentations or the REC
+    /// haptics. It is enabled only when the parent says a render can start and
+    /// none is already running.
+    private var developRenderEnabled: Bool {
+        developCanRender && !developIsBusy
+    }
+
+    private var developRenderButton: some View {
+        let enabled = developRenderEnabled
+        return Button {
+            guard enabled else { return }
+            onDevelopRender()
+        } label: {
+            DevelopShutterFace(isEnabled: enabled)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityIdentifier("develop.render")
+        .accessibilityLabel("Render video")
     }
 
     private var queueStatus: CameraStatusPresentation {
@@ -355,19 +576,34 @@ struct CameraControlBar: View {
                     estimatedSeconds: estimatedRemainingSeconds,
                     isStorageLow: isStorageLow,
                     queueStatus: queueStatus,
-                    isRecording: recordPresentation == .recording,
-                    isStopping: cameraViewModel.isStoppingRecording
+                    isRecording: recordPresentation.showsLiveChrome,
+                    isStopping: cameraViewModel.isStoppingRecording,
+                    photoFreeBytes: isPhotoMode && cameraViewModel.hasStorageSnapshot ? cameraViewModel.freeSpaceBytes : nil,
+                    isPhotoMode: isPhotoMode,
+                    isRenderingPhoto: renderQueueViewModel.currentJob?.isPhoto == true,
+                    isSavingPhoto: activePhotoRenderIsSaving
                 )
             }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Storage, render queue, and estimated recording time remaining")
-        .accessibilityValue("\(recordPresentation == .recording ? "Recording. " : "")"
+        .accessibilityValue("\(recordPresentation.showsLiveChrome ? "Recording. " : "")"
                             + "\(estimatedTimeText). \(freeSpaceText) free. "
-                            + "\(isStorageLow ? "Low storage. " : "")\(queueStatus.accessibilityDescription)")
-        .accessibilityHint("Tap for storage and render queue details, video playback, sharing, and retry controls.")
+                            + "\(isStorageLow ? "Low storage. " : "")\(photoRenderAccessibilityStatus)\(queueStatus.accessibilityDescription)")
+        .accessibilityIdentifier("camera.queueLCD")
+        .accessibilityHint("Tap for storage and render queue details, photo and video previews, sharing, and retry controls.")
         }
+    }
+
+    private var activePhotoRenderIsSaving: Bool {
+        guard let current = renderQueueViewModel.currentJob, current.isPhoto == true else { return false }
+        return renderQueueViewModel.progress(for: current.id)?.phase == .saving
+    }
+
+    private var photoRenderAccessibilityStatus: String {
+        guard renderQueueViewModel.currentJob?.isPhoto == true else { return "" }
+        return activePhotoRenderIsSaving ? "Saving photo. " : "Rendering photo. "
     }
 
     private var estimatedTimeText: String {

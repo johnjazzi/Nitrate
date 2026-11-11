@@ -32,6 +32,52 @@ struct CameraZoomPolicyTests {
         #expect(bounds.target(16) == 5)
     }
 
+    @Test func mainWideDisplayCeilingReaches150MillimetersUsingRealMultiplier() throws {
+        // Display factor includes a device-specific multiplier; native crop does not.
+        for multiplier in [0.8, 1.0, 2.0] {
+            let ceiling = CameraZoomPolicy.mainWideDisplayCeiling(multiplier: multiplier)
+            let bounds = try #require(CameraZoomPolicy.bounds(multiplier: multiplier, effectiveMinimum: 1,
+                                                               effectiveMaximum: 12, formatMaximum: 20,
+                                                               displayCeiling: ceiling))
+            #expect(abs(bounds.maximumDisplay - ceiling) < 0.0001)
+            #expect(abs(bounds.maximumDevice - 6.25) < 0.0001)
+            #expect(abs(bounds.maximumDevice * 24 - 150) < 0.0001)
+            #expect(bounds.target(ceiling) == 6.25)
+            #expect(bounds.target(100) == 6.25)
+        }
+    }
+
+    @Test func mainWideCeilingIntersectsLowerHardwareAndFormatLimits() throws {
+        let hardware = try #require(CameraZoomPolicy.bounds(multiplier: 2, effectiveMinimum: 1,
+                                                              effectiveMaximum: 2.5, formatMaximum: 20,
+                                                              displayCeiling: 12.5))
+        #expect(hardware.maximumDisplay == 5)
+        #expect(hardware.maximumDevice * 24 == 60)
+        let format = try #require(CameraZoomPolicy.bounds(multiplier: 2, effectiveMinimum: 1,
+                                                            effectiveMaximum: 20, formatMaximum: 2.75,
+                                                            displayCeiling: 12.5))
+        #expect(format.maximumDisplay == 5.5)
+        #expect(format.maximumDevice * 24 == 66)
+    }
+
+    @Test func mainWideCeilingIsUnavailableWhenHardwareCannotReachItsMinimum() {
+        #expect(CameraZoomPolicy.bounds(multiplier: 2, effectiveMinimum: 7,
+                                        effectiveMaximum: 12, formatMaximum: 20,
+                                        displayCeiling: 12.5) == nil)
+    }
+
+    @Test func mainWideCeilingIsSelectedOnlyForRearWideDevice() throws {
+        let session = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraSession.swift"),
+                                 encoding: .utf8)
+        let start = try #require(session.range(of: "private func zoomBounds(for device:"))
+        let end = try #require(session.range(of: "func observeZoom", range: start.upperBound..<session.endIndex))
+        let bounds = String(session[start.lowerBound..<end.lowerBound])
+        #expect(bounds.contains("device.position == .back && device.deviceType == .builtInWideAngleCamera"))
+        #expect(bounds.contains("CameraZoomPolicy.mainWideDisplayCeiling(multiplier: multiplier)"))
+        #expect(bounds.contains("CameraZoomPolicy.telephotoDisplayCeiling"))
+        #expect(bounds.contains("CameraZoomPolicy.defaultDisplayCeiling"))
+    }
+
     @Test func telephotoCeilingIntersectsDeviceAndFormatMaximums() throws {
         let effectiveLimit = try #require(CameraZoomPolicy.bounds(multiplier: 4, effectiveMinimum: 1,
                                                                    effectiveMaximum: 2.5, formatMaximum: 10,

@@ -4,6 +4,7 @@ import Observation
 import SwiftUI
 import CoreVideo
 import CoreGraphics
+import CoreImage
 
 /// A readback copy of one debug frame, safe to hand across actor boundaries.
 struct DebugFrameBitmap: Sendable {
@@ -29,19 +30,16 @@ struct DebugFrameBitmap: Sendable {
                                                 count: bytesPerRow * height))
     }
 
-    /// The BGRA8 buffer the renderer produces is directly drawable.
+    /// Pass2 emits gamma-2.4 code values, not directly drawable sRGB bytes.
     func makeCGImage() -> CGImage? {
         if let orientedImage { return orientedImage }
-        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
-        let bitmapInfo = CGBitmapInfo(
-            rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-        )
-        return CGImage(
-            width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
-            bytesPerRow: bytesPerRow, space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: bitmapInfo, provider: provider, decode: nil,
-            shouldInterpolate: false, intent: .defaultIntent
-        )
+        guard let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else { return nil }
+        // The linear tag deliberately preserves the encoded numeric channels
+        // until the shared output helper performs the one intended gamma decode.
+        let encoded = CIImage(bitmapData: Data(pixels), bytesPerRow: bytesPerRow,
+                              size: CGSize(width: width, height: height), format: .BGRA8,
+                              colorSpace: space)
+        return try? FilmOutputDisplayConverter.makeSRGBImage(fromGamma24: encoded)
     }
 }
 
@@ -69,6 +67,9 @@ final class DebugFrameViewModel: Identifiable {
     private(set) var message: String?
 
     private let frame: CVPixelBuffer
+    /// Source width, so the sheet can report the diffusion preset's realized
+    /// radius at THIS frame's size instead of the authored 1080p number.
+    let sourceWidth: Int
     private let renderer: PipelineRenderer?
     private let quarterTurns: Int
     private var renderTask: Task<Void, Never>?
@@ -76,6 +77,7 @@ final class DebugFrameViewModel: Identifiable {
     init(frame: CVPixelBuffer, config: FilmStockConfig, stocks: [FilmStockConfig] = []) {
         self.frame = frame
         self.quarterTurns = CameraFrozenFrameOrientationPolicy.quarterTurns(in: frame)
+        self.sourceWidth = CVPixelBufferGetWidth(frame)
         self.config = config
         self.stocks = stocks.isEmpty ? [config] : stocks
         self.parameters = PipelineRenderer.DebugFrameParameters(config: config)
@@ -84,8 +86,9 @@ final class DebugFrameViewModel: Identifiable {
         scheduleRender()
     }
 
-    /// Grade the frozen frame with a different stock. Every dial is re-seeded
-    /// from the new stock so the sheet lands on that stock's shipping look.
+    /// Grade the processed snapshot with a different stock's video defaults.
+    /// Acquisition white balance/ISP processing remain frozen; this is not a
+    /// RAW redevelopment or a promise of that stock's delivered Photo appearance.
     func selectStock(_ stock: FilmStockConfig) {
         guard stock.stockId != config.stockId else { return }
         config = stock
@@ -140,6 +143,13 @@ final class DebugFrameViewModel: Identifiable {
 struct DebugFrameSheet: View {
     @State private var viewModel: DebugFrameViewModel
     @Environment(\.dismiss) private var dismiss
+    /// Called when the DEBUG "Preview stock outline" button is tapped: the screen
+    /// records the request and this sheet dismisses, then the screen fires the
+    /// one-shot outline once dismissal completes — never behind this sheet.
+    let onPreviewStockOutline: () -> Void
+    let onPreviewFault: () -> Void
+    /// Frozen hint decision snapshot, captured when the sheet opened.
+    let hintDiagnostics: StockSelectorHintDiagnostics?
     /// Switches for the on-screen debug affordances. Mirrored in Settings, because
     /// this sheet is reachable only from the DEBUG button it can hide.
     @AppStorage(DebugControlPreferences.showsDebugButtonKey) private var showsDebugButton = true
@@ -162,14 +172,24 @@ struct DebugFrameSheet: View {
     /// a sensible height instead of collapsing.
     private static let fallbackAspect: CGFloat = 4.0 / 3.0
 
-    /// Each debug section is collapsible; all start expanded so the sheet reads
-    /// exactly as before until the user taps a header.
-    @State private var grainExpanded = true
-    @State private var halationExpanded = true
-    @State private var glowExpanded = true
+    /// Keep the image visible and reveal only the controls being adjusted.
+    @State private var stockExpanded = false
+    @State private var hintExpanded = false
+    @State private var grainExpanded = false
+    @State private var halationExpanded = false
+    @State private var diffusionExpanded = false
+    @State private var glowExpanded = false
+    @State private var realizedExpanded = false
+    @State private var debugControlsExpanded = false
 
-    init(viewModel: DebugFrameViewModel) {
+    init(viewModel: DebugFrameViewModel,
+         onPreviewStockOutline: @escaping () -> Void = {},
+         onPreviewFault: @escaping () -> Void = {},
+         hintDiagnostics: StockSelectorHintDiagnostics? = nil) {
         _viewModel = State(initialValue: viewModel)
+        self.onPreviewStockOutline = onPreviewStockOutline
+        self.onPreviewFault = onPreviewFault
+        self.hintDiagnostics = hintDiagnostics
     }
 
     var body: some View {
@@ -184,20 +204,31 @@ struct DebugFrameSheet: View {
                         .padding(.top, 8)
                         .padding(.bottom, 12)
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 20) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Frozen processed-camera frame · video diagnostics, not a delivered RAW Photo replay.")
+                                .font(NitrateTypography.font(.caption2))
+                                .foregroundStyle(.secondary)
+                            Text("White balance and ISP processing are frozen. Stock changes use video defaults; display is sRGB.")
+                                .font(NitrateTypography.font(.caption2))
+                                .foregroundStyle(.secondary)
                             stockSection
-                            realizedValues
                             grainSection
                             halationSection
+                            diffusionSection
                             glowSection
+                            realizedValues
                             debugControlsSection
+                            hintPreviewSection
                         }
-                        .padding()
+                        .font(NitrateTypography.font(.caption))
+                        .controlSize(.small)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 4)
                     }
                 }
             }
             .onChange(of: previewAspect) { _, _ in resetZoom() }
-            .navigationTitle("Debug · Single Frame")
+            .navigationTitle("Debug · Processed Frame")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
@@ -268,7 +299,7 @@ struct DebugFrameSheet: View {
     private var zoomBadge: some View {
         if zoom > 1.001 {
             Text(String(format: "%.1fx", zoom))
-                .font(.caption2.monospacedDigit().bold())
+                .font(NitrateTypography.font(.caption2).monospacedDigit().bold())
                 .foregroundStyle(.white)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
@@ -282,7 +313,7 @@ struct DebugFrameSheet: View {
     private var zoomHint: some View {
         if zoom <= 1.001 {
             Text("Pinch to zoom")
-                .font(.caption2)
+                .font(NitrateTypography.font(.caption2))
                 .foregroundStyle(.secondary)
                 .padding(8)
         }
@@ -298,8 +329,7 @@ struct DebugFrameSheet: View {
     }
 
     private var stockSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Stock").font(.headline)
+        DebugCollapsibleSection(title: "Stock", isExpanded: $stockExpanded) {
             Picker("Stock", selection: Binding(
                 get: { viewModel.config.stockId },
                 set: { id in
@@ -316,27 +346,65 @@ struct DebugFrameSheet: View {
     }
 
     private var realizedValues: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Realized").font(.caption.bold())
+        DebugCollapsibleSection(title: "Realized", isExpanded: $realizedExpanded) {
             Text(String(format: "footprint %.3f · amount %.3f · gauge amp %.2f",
                         viewModel.parameters.realizedFootprint,
                         viewModel.parameters.realizedAmount,
                         viewModel.parameters.gaugeAmplitude))
-                .font(.caption.monospacedDigit())
+                .font(NitrateTypography.font(.caption).monospacedDigit())
             Text(String(format: "halation radius %.4f of width · glow %.3f",
                         viewModel.parameters.halationRadiusFraction,
                         viewModel.parameters.glowStrength))
-                .font(.caption.monospacedDigit())
+                .font(NitrateTypography.font(.caption).monospacedDigit())
             // Truthful statement of the render order this sheet drives: halation
             // is added to the scene-linear source and re-encoded to Apple Log 2
             // BEFORE the stock LUT; glow is a post-LUT graded-luminance bloom.
-            Text("Order: halation (scene-linear, pre-LUT) → LUT + contrast → glow → grain")
-                .font(.caption2).foregroundStyle(.secondary)
+            Text("Order: diffusion → halation (scene-linear, pre-LUT) → LUT + contrast → glow → grain")
+                .font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
             if let message = viewModel.message {
-                Text(message).font(.caption).foregroundStyle(.red)
+                Text(message).font(NitrateTypography.font(.caption)).foregroundStyle(.red)
             } else {
                 Text(String(format: "render %.0f ms", viewModel.lastRenderMilliseconds))
-                    .font(.caption2).foregroundStyle(.secondary)
+                    .font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// DEBUG-only affordances that reach past this frozen frame: a one-shot
+    /// preview of the stock-selector outline, and the hint's decision snapshot.
+    private var hintPreviewSection: some View {
+        DebugCollapsibleSection(title: "Tests", isExpanded: $hintExpanded) {
+            Button {
+                // Dismiss first; the screen fires the outline once the sheet is
+                // gone, so it is never painted behind this sheet.
+                onPreviewStockOutline()
+                dismiss()
+            } label: {
+                Label("Preview stock outline", systemImage: "rectangle.dashed")
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.bordered)
+            Button {
+                onPreviewFault()
+                dismiss()
+            } label: {
+                Label("Show fault", systemImage: "exclamationmark.triangle")
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.bordered)
+            if let hintDiagnostics {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Hint status at open")
+                        .font(NitrateTypography.font(.caption).bold())
+                    ForEach(hintDiagnostics.lines, id: \.self) { line in
+                        Text(line)
+                            .font(NitrateTypography.font(.caption).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text("Scene estimates can be inaccurate for colored subjects.")
+                    .font(NitrateTypography.font(.caption2))
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -344,21 +412,19 @@ struct DebugFrameSheet: View {
     /// Switches for the on-screen debug affordances. Mirrored in Settings, so
     /// hiding the DEBUG button cannot strand this sheet.
     private var debugControlsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Debug controls")
-                .font(.headline)
+        DebugCollapsibleSection(title: "Debug controls", isExpanded: $debugControlsExpanded) {
             Toggle("Show DEBUG button", isOn: $showsDebugButton)
             Toggle("Show FAULT test button", isOn: $showsFaultButton)
             Text("FAULT previews the recording-failure overlay. "
                  + "The same switches are in Settings.")
-                .font(.caption)
+                .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
         }
     }
 
     private var grainSection: some View {
         DebugCollapsibleSection(title: "Grain", isExpanded: $grainExpanded) {
-            labelled("Print gauge — re-seeds size and presence") {
+            labelled("Print gauge — re-seeds grain and halation") {
                 Picker("Gauge", selection: gaugeBinding) {
                     ForEach(PrintGauge.allCases, id: \.self) { Text($0.displayName).tag($0) }
                 }
@@ -414,6 +480,61 @@ struct DebugFrameSheet: View {
         }
     }
 
+    /// Lens diffusion node: the radius ladder plus the blend amount, with the
+    /// resolved blur reported at THIS frame's width so the pixel figures mean
+    /// something on a 4K capture as well as on a 1080p one.
+    private var diffusionSection: some View {
+        DebugCollapsibleSection(title: "Diffusion", isExpanded: $diffusionExpanded) {
+            labelled("Radius preset — 75 is bypassed for speed") {
+                Picker("Radius", selection: presetBinding) {
+                    ForEach(DiffusionPreset.allCases) { preset in
+                        Text(preset.title).tag(preset)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            labelled(String(format: "Amount %.2f", viewModel.parameters.diffusion.amount)) {
+                Slider(value: float({ viewModel.parameters.diffusion.amount },
+                                    { viewModel.parameters.diffusion.amount = $0 }),
+                       in: 0...1, step: 0.01)
+            }
+            Text(diffusionReadout)
+                .font(NitrateTypography.font(.caption).monospacedDigit())
+            Text("Each print gauge owns its radius and amount; this section re-seeds from the gauge.")
+            Text("Amount = share of scene light taken from the diffused copy (linear mix, so "
+                 + "0.50 halves contrast). Radius = how far it spreads, σ = radius / 2.")
+            Text("Scene-linear, pre-LUT: softens the light before halation and the stock LUT.")
+                .font(NitrateTypography.font(.caption2))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var presetBinding: Binding<DiffusionPreset> {
+        Binding(
+            get: { viewModel.parameters.diffusion.preset },
+            set: { preset in
+                viewModel.parameters.diffusion.preset = preset
+                viewModel.scheduleRender()
+            }
+        )
+    }
+
+    /// What the preset resolves to on this frame. Computed, not measured — the
+    /// sheet's total render time already reports the measured cost.
+    private var diffusionReadout: String {
+        let settings = viewModel.parameters.diffusion
+        guard settings.preset.radiusPixels != nil else {
+            return settings.preset == .radius75 ? "75 · bypassed, nothing rendered" : "off"
+        }
+        guard let plan = settings.plan(sourceWidth: viewModel.sourceWidth) else {
+            return "amount 0 · node disabled"
+        }
+        let sigma = plan.sigmaPixels(atSourceWidth: viewModel.sourceWidth)
+        let radius = plan.radiusPixels(atSourceWidth: viewModel.sourceWidth)
+        return String(format: "%.0f px radius · σ %.2f px · %d level%@ · %d taps/axis",
+                      radius, sigma, plan.levels, plan.levels == 1 ? "" : "s", plan.taps)
+    }
+
     private var glowSection: some View {
         DebugCollapsibleSection(title: "Glow", isExpanded: $glowExpanded) {
             labelled(String(format: "Strength %.2f", viewModel.parameters.glowStrength)) {
@@ -451,17 +572,13 @@ struct DebugFrameSheet: View {
 
     private func labelled<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            content()
+            Text(title).font(NitrateTypography.font(.caption)).foregroundStyle(.secondary)
+            content().frame(minHeight: 44)
         }
     }
 }
 
-/// One collapsible debug section: a tappable header with a chevron that rotates
-/// to show its expanded state. All sections start expanded so the sheet reads
-/// exactly as before until the user taps a header to collapse it — which lets
-/// Grain be tucked away while the Halation controls and the preview stay on
-/// screen together.
+/// Compact disclosure headers retain a full-height touch target.
 private struct DebugCollapsibleSection<Content: View>: View {
     let title: String
     @Binding var isExpanded: Bool
@@ -479,16 +596,18 @@ private struct DebugCollapsibleSection<Content: View>: View {
                 withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
-                    Text(title).font(.headline).foregroundStyle(.primary)
+                    Text(title).font(NitrateTypography.font(.subheadline).weight(.medium)).foregroundStyle(.primary)
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
+                        .font(NitrateTypography.font(.footnote).weight(.semibold))
                         .foregroundStyle(.secondary)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 }
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
 
             if isExpanded {
                 content

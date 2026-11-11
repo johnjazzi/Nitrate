@@ -45,21 +45,43 @@ struct StockCarousel: View {
 
     /// Tracks the snap-aligned card; the single source of scroll truth.
     @State private var scrollPosition: String?
+    @State private var stockInfo = StockInfoPresentation()
 
-    private let cardWidth: CGFloat = 104
-    private let cardHeight: CGFloat = 132
     private let cardSpacing: CGFloat = 16
 
     var body: some View {
-        VStack(spacing: 12) {
-            GeometryReader { geometry in
-                let sideInset = max(16, (geometry.size.width - cardWidth) / 2)
+        GeometryReader { geometry in
+            // The card follows the quarter the sheet gives the carousel, so a
+            // short sheet keeps the card and its page dot inside the row instead
+            // of letting a fixed 132pt card overflow the controls below.
+            let cardHeight = StockCarouselMetrics.cardHeight(forAvailableHeight: geometry.size.height)
+            let cardWidth = StockCarouselMetrics.cardWidth(forCardHeight: cardHeight)
+            let sideInset = max(16, (geometry.size.width - cardWidth) / 2)
+
+            VStack(spacing: 12) {
                 ScrollView(.horizontal) {
                     LazyHStack(spacing: cardSpacing) {
                         ForEach(stocks, id: \.stockId) { stock in
                             StockCarouselCard(stock: stock, isSelected: stock.stockId == selectedStockId)
                                 .frame(width: cardWidth, height: cardHeight)
-                                .onTapGesture { tap(stock.stockId) }
+                                .contentShape(Rectangle())
+                                .gesture(
+                                    LongPressGesture(minimumDuration: 0.5)
+                                        .exclusively(before: TapGesture())
+                                        .onEnded { value in
+                                            switch value {
+                                            case .first(true): showInfo(stock)
+                                            case .second: tap(stock.stockId)
+                                            default: break
+                                            }
+                                        }
+                                )
+                                .accessibilityElement(children: .ignore)
+                                .accessibilityLabel("\(stock.displayName), \(stock.stockInfoMetadata)")
+                                .accessibilityAddTraits(.isButton)
+                                .accessibilityHint("Double-tap to select. Use Stock info for details, or touch and hold.")
+                                .accessibilityAction { tap(stock.stockId) }
+                                .accessibilityAction(named: Text("Stock info")) { showInfo(stock) }
                         }
                     }
                     .scrollTargetLayout()
@@ -70,12 +92,22 @@ struct StockCarousel: View {
                 .scrollIndicators(.hidden)
                 .background(well)
                 .clipShape(RoundedRectangle(cornerRadius: 20))
-            }
-            .frame(height: cardHeight)
+                .frame(height: cardHeight)
 
-            pageDots
+                pageDots
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
         }
         .sensoryFeedback(.selection, trigger: selectedStockId)
+        .sensoryFeedback(.success, trigger: stockInfo.feedbackTrigger)
+        .sheet(isPresented: Binding(
+            get: { stockInfo.stock != nil },
+            set: { if !$0 { stockInfo.dismiss() } }
+        )) {
+            if let stock = stockInfo.stock {
+                StockInfoView(stock: stock)
+            }
+        }
         .onAppear { center(onOpen: selectedStockId) }
         .onChange(of: stocks.map(\.stockId)) { _, _ in center(onOpen: selectedStockId) }
         .onChange(of: scrollPosition) { _, newValue in trip(newValue) }
@@ -83,6 +115,11 @@ struct StockCarousel: View {
     }
 
     // MARK: - Sequencing
+
+    private func showInfo(_ stock: FilmStockConfig) {
+        prepareSelectionFeedback()
+        stockInfo.present(stock)
+    }
 
     /// Centre the carousel on the stock the sheet opened with. Compared against
     /// the current binding so a nil-then-populated catalogue still converges on
@@ -181,14 +218,14 @@ struct StockCarouselCard: View {
 
             HStack(spacing: 4) {
                 Text(stock.lightType)
-                    .font(.system(size: 9, weight: .bold))
+                    .font(NitrateTypography.font(size: 9))
                     .foregroundStyle(.black)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 1)
                     .background(stock.primaryColor)
                     .clipShape(RoundedRectangle(cornerRadius: 3))
                 Text(stock.displayName)
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(NitrateTypography.font(size: 10))
                     .foregroundStyle(isSelected ? .white : .secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)

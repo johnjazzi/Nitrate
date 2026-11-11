@@ -29,10 +29,11 @@ struct RenderInputColorProvenance: Codable, Equatable, Sendable {
 
     var sourceSummary: String { formatDescriptions.map(\.summary).joined(separator: "; ") }
 
-    static func inspect(_ descriptions: [CMFormatDescription], captureColorSpace: String? = nil) throws -> Self {
+    static func inspect(_ descriptions: [CMFormatDescription], captureColorSpace: String? = nil,
+                        expectedProfile: CameraSourceProfile = .appleLog2) throws -> Self {
         let evidence = descriptions.map(evidence(for:))
-        try validate(evidence)
-        return .init(expected: "Apple Log 2", validationStatus: "accepted-stream-tags",
+        try validate(evidence, expectedProfile: expectedProfile)
+        return .init(expected: expectedProfile.label, validationStatus: "accepted-stream-tags",
                      formatDescriptions: evidence, captureColorSpace: captureColorSpace,
                      syntheticTestBypass: false)
     }
@@ -43,11 +44,21 @@ struct RenderInputColorProvenance: Codable, Equatable, Sendable {
               syntheticTestBypass: true)
     }
 
-    static func validate(_ evidence: [FormatEvidence]) throws {
+    static func validate(_ evidence: [FormatEvidence], expectedProfile: CameraSourceProfile = .appleLog2) throws {
         guard !evidence.isEmpty else {
-            throw RenderInputColorContractError(expected: "Apple Log 2", observed: "no video format descriptions")
+            throw RenderInputColorContractError(expected: expectedProfile.label, observed: "no video format descriptions")
         }
         for item in evidence {
+            if expectedProfile == .hlgBT2020 {
+                guard item.logTransferFunction == nil,
+                      item.bitDepth == "10",
+                      item.colorPrimaries == (kCVImageBufferColorPrimaries_ITU_R_2020 as String),
+                      item.transferFunction == (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String),
+                      item.yCbCrMatrix == (kCVImageBufferYCbCrMatrix_ITU_R_2020 as String) else {
+                    throw RenderInputColorContractError(expected: expectedProfile.label, observed: item.summary)
+                }
+                continue
+            }
             guard isAppleLog2(item.logTransferFunction) else {
                 throw RenderInputColorContractError(expected: "Apple Log 2", observed: item.summary)
             }
@@ -59,7 +70,7 @@ struct RenderInputColorProvenance: Codable, Equatable, Sendable {
         }
     }
 
-    private static func evidence(for description: CMFormatDescription) -> FormatEvidence {
+    static func evidence(for description: CMFormatDescription) -> FormatEvidence {
         var values: [String: String] = [:]
         var logTransferFunction: String?
         if #available(iOS 17.2, macOS 14.2, tvOS 17.2, *) {
@@ -93,6 +104,24 @@ struct RenderInputColorProvenance: Codable, Equatable, Sendable {
             fullRangeVideo: values[kCMFormatDescriptionExtension_FullRangeVideo as String],
             codec: CMFormatDescriptionGetMediaSubType(description).fourCharCodeString
         )
+    }
+
+    /// Missing or contradictory buffer tags must not select a color transform.
+    static func profile(of buffer: CVPixelBuffer) -> CameraSourceProfile? {
+        guard #available(iOS 17.2, macOS 14.2, *) else { return nil }
+        func tag(_ key: CFString) -> String? {
+            let value = CVBufferCopyAttachment(buffer, key, nil) as? String
+            return value == "Unspecified" ? nil : value
+        }
+        let item = FormatEvidence(logTransferFunction: tag(kCVImageBufferLogTransferFunctionKey),
+            colorPrimaries: tag(kCVImageBufferColorPrimariesKey),
+            transferFunction: tag(kCVImageBufferTransferFunctionKey),
+            yCbCrMatrix: tag(kCVImageBufferYCbCrMatrixKey),
+            bitDepth: CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ? "10" : nil)
+        for profile in [CameraSourceProfile.appleLog2, .hlgBT2020] {
+            if (try? validate([item], expectedProfile: profile)) != nil { return profile }
+        }
+        return nil
     }
 
     private static func isAppleLog2(_ identifier: String?) -> Bool {

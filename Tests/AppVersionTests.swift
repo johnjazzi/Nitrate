@@ -23,20 +23,18 @@ struct AppVersionTests {
         #expect(text.hasPrefix("\(AppVersion.marketing()) (\(AppVersion.build()))"))
     }
 
-    /// The app is distributed to TestFlight, so the suffix must say BETA. `nil`
-    /// is the released state and is the only other valid value.
-    @Test func currentStageIsBetaBeforeRelease() {
-        #expect(AppVersion.stage == .beta)
+    /// No build shows a stage suffix. A visible BETA marker made the App Store
+    /// submission look like a beta (guideline 2.2), so the shipped value is nil.
+    @Test func noBuildShowsAStageSuffix() {
+        #expect(AppVersion.stage == nil)
+        #expect(!AppVersion.current().uppercased().contains("BETA"))
+        #expect(!AppVersion.current().hasSuffix("· BETA"))
     }
 
     @Test func currentVersionAppliesTheCurrentStage() {
         #expect(AppVersion.current() == AppVersion.display(marketing: AppVersion.marketing(),
                                                           build: AppVersion.build(),
                                                           stage: AppVersion.stage))
-    }
-
-    @Test func currentVersionCarriesTheStageSuffix() {
-        #expect(AppVersion.current().hasSuffix("· BETA"))
     }
 
     @Test func splashAndAboutShareOneVersionString() {

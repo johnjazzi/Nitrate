@@ -7,7 +7,7 @@ import Foundation
 /// undersampled, so the fine end is delivered by the amplitude multiplier.
 ///
 /// The ladder is configuration, not code: `gauges.json` ships one entry per print
-/// gauge and the two multiplier properties below delegate to it. A gauge only
+/// gauge and the multiplier properties below delegate to it. A gauge only
 /// scales the stock's grain size; stock `grainSize` itself is never rewritten.
 ///
 /// Multipliers are documented starting points, not measurements.
@@ -30,9 +30,24 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     /// pushing size into the aliased regime.
     var amplitudeMultiplier: Float { GaugeTunings.tuning(for: self).amplitudeMultiplier }
 
+    /// Scales halation presence independently of grain and diffusion geometry.
+    var halationMultiplier: Float { GaugeTunings.tuning(for: self).halationMultiplier }
+
     /// Short label for the gauge selector; the encoded value is the same short
     /// form, so exported metadata reads "35mm", not "thirtyFiveMillimetre".
     var displayName: String { rawValue }
+
+    /// The lens-diffusion radius this gauge implies, derived from the format
+    /// rather than chosen: see `DiffusionPhysics`, which scales a measured
+    /// emulsion scatter radius by the enlargement each negative needs to fill
+    /// the delivered frame. A smaller negative is enlarged more, so the same
+    /// physical scatter lands wider — 8mm reads softest, 35mm sharpest, and the
+    /// 75mm reference print is bypassed.
+    var diffusionPreset: DiffusionPreset { DiffusionPhysics.preset(for: self) }
+
+    /// This gauge's authored diffusion: its radius plus the amount shipped in
+    /// `gauges.json`. A stock may override it; this is the gauge's own setting.
+    var diffusion: DiffusionSettings { GaugeTunings.tuning(for: self).diffusion }
 
     /// Accept both the current short values ("8mm") and the legacy long case
     /// names ("eightMillimetre") that earlier builds persisted. Without this a
@@ -64,10 +79,23 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
 
 // MARK: - Gauge tuning configuration (gauges.json)
 
-/// One print gauge's two grain axes, as shipped in `gauges.json`.
+/// One print gauge's grain axes and its lens diffusion, as shipped in
+/// `gauges.json`.
+///
+/// Diffusion lives here rather than on the stock because it is a property of the
+/// format: the same stock printed at 16mm and at 75mm does not diffuse alike.
+/// The preset is authored per gauge and validated against `PrintGauge`'s own
+/// ladder, so the radius can never drift away from the format it belongs to.
 struct GaugeTuning: Codable, Equatable, Sendable {
     let sizeMultiplier: Float
     let amplitudeMultiplier: Float
+    let diffusionPreset: DiffusionPreset
+    let diffusionAmount: Float
+    var halationMultiplier: Float = 1
+
+    var diffusion: DiffusionSettings {
+        DiffusionSettings(preset: diffusionPreset, amount: diffusionAmount)
+    }
 }
 
 /// The bundled gauge tuning document: exactly one entry per `PrintGauge`.
@@ -85,6 +113,9 @@ struct GaugeTuningConfig: Codable, Equatable, Sendable {
         let gauge: PrintGauge
         let sizeMultiplier: Float
         let amplitudeMultiplier: Float
+        let diffusionPreset: DiffusionPreset
+        let diffusionAmount: Float
+        var halationMultiplier: Float? = nil
     }
 
     let schemaVersion: Int
@@ -107,8 +138,26 @@ struct GaugeTuningConfig: Codable, Equatable, Sendable {
             }
             try Self.requirePositive(entry.sizeMultiplier, field: "sizeMultiplier", gauge: entry.gauge)
             try Self.requirePositive(entry.amplitudeMultiplier, field: "amplitudeMultiplier", gauge: entry.gauge)
+            let halation = entry.halationMultiplier ?? 1
+            guard halation.isFinite, (0...1).contains(halation) else {
+                throw GaugeConfigError.invalidMultiplier(
+                    gauge: entry.gauge.rawValue, field: "halationMultiplier", value: halation)
+            }
+            // The radius belongs to the format, so an entry whose preset does
+            // not match its gauge is a defect, not a creative choice.
+            guard entry.diffusionPreset == entry.gauge.diffusionPreset else {
+                throw GaugeConfigError.mismatchedDiffusionPreset(
+                    gauge: entry.gauge.rawValue, preset: entry.diffusionPreset.rawValue)
+            }
+            guard entry.diffusionAmount.isFinite, (0...1).contains(entry.diffusionAmount) else {
+                throw GaugeConfigError.invalidDiffusionAmount(gauge: entry.gauge.rawValue,
+                                                              value: entry.diffusionAmount)
+            }
             resolved[entry.gauge] = GaugeTuning(sizeMultiplier: entry.sizeMultiplier,
-                                                amplitudeMultiplier: entry.amplitudeMultiplier)
+                                                amplitudeMultiplier: entry.amplitudeMultiplier,
+                                                diffusionPreset: entry.diffusionPreset,
+                                                diffusionAmount: entry.diffusionAmount,
+                                                halationMultiplier: halation)
         }
         let missing = PrintGauge.allCases.filter { resolved[$0] == nil }
         guard missing.isEmpty else {
@@ -130,6 +179,8 @@ enum GaugeConfigError: LocalizedError, Equatable {
     case duplicateGauge(String)
     case missingGauges([String])
     case invalidMultiplier(gauge: String, field: String, value: Float)
+    case mismatchedDiffusionPreset(gauge: String, preset: String)
+    case invalidDiffusionAmount(gauge: String, value: Float)
 
     var errorDescription: String? {
         switch self {
@@ -142,7 +193,14 @@ enum GaugeConfigError: LocalizedError, Equatable {
         case .missingGauges(let gauges):
             return "gauges.json is missing entries for: \(gauges.joined(separator: ", "))."
         case .invalidMultiplier(let gauge, let field, let value):
+            if field == "halationMultiplier" {
+                return "gauges.json \(gauge).\(field) must be within 0...1, got \(value)."
+            }
             return "gauges.json \(gauge).\(field) must be finite and positive, got \(value)."
+        case .mismatchedDiffusionPreset(let gauge, let preset):
+            return "gauges.json \(gauge) must use its own diffusion radius, got \(preset)."
+        case .invalidDiffusionAmount(let gauge, let value):
+            return "gauges.json \(gauge).diffusionAmount must be within 0...1, got \(value)."
         }
     }
 }
@@ -234,9 +292,27 @@ enum GrainModel {
     /// coarse gauge is not silently clipped back to a small footprint.
     static let footprintCeiling: Float = 16.0
 
+    /// Photo-only presence. A native-crop A/B on a real 1000 ISO DNG at equal
+    /// stock/seed/gauge reduced residual RMS from 0.00957 (gain 2) to 0.00478
+    /// (gain 1.5) with texture still visible; 35 mm read as too rough before.
+    /// Video amplitude is touched by this constant.
+    static let stillPresenceGain: Float = 1.5
+
+    /// Dye-cloud chroma strength as a fraction of the shared luminance grain.
+    ///
+    /// Film grain is overwhelmingly a *density* fluctuation: the three emulsion
+    /// layers move together and the result reads as monochrome. The colour layers
+    /// add only a small decorrelated component. Video can carry the full amount
+    /// because the eye integrates several frames of a re-randomised field, but a
+    /// single still inspected at 1:1 shows the anti-correlated red/blue term as
+    /// coloured specks — red, green and blue pixels — which no real emulsion
+    /// produces. Stills therefore use `stillChromaAmount`.
+    static let videoChromaAmount: Float = 0.12
+    static let stillChromaAmount: Float = 0.02
+
     /// Effective footprint: stock size x gauge size, clamped off the sampling
     /// floor. At 75mm on a 1.3 stock this is 1.3 x 0.5 = 0.65 -> floored to
-    /// 0.95. The remaining graininess at 75mm is removed by the 0.165 amplitude
+    /// 0.95. The remaining graininess at 75mm is reduced by the 0.165 amplitude
     /// multiplier, not by pushing size further into the aliased zone.
     static func effectiveSize(stockGrainSize: Float, gauge: PrintGauge) -> Float {
         effectiveSize(stockGrainSize: stockGrainSize, sizeMultiplier: gauge.sizeMultiplier)

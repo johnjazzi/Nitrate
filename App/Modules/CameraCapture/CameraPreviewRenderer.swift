@@ -30,6 +30,7 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         var quarterTurns: UInt32
         var mirrored: UInt32
         var fullRange: UInt32
+        var hlg: UInt32
     }
 
     private let layer: CAMetalLayer
@@ -314,12 +315,9 @@ final class CameraPreviewRenderer: @unchecked Sendable {
             return
         }
         guard #available(iOS 26.0, *),
-              CameraSampleValidationPolicy.isAppleLog2(
-                CVBufferCopyAttachment(buffer, kCVImageBufferLogTransferFunctionKey, nil) as? String),
-              CVBufferCopyAttachment(buffer, kCVImageBufferYCbCrMatrixKey, nil) as? String == "ITU_R_2020",
-              Self.unspecifiedAttachment(buffer, key: kCVImageBufferColorPrimariesKey),
-              Self.unspecifiedAttachment(buffer, key: kCVImageBufferTransferFunctionKey),
+              let sourceProfile = RenderInputColorProvenance.profile(of: buffer),
               let format = CameraPreviewPolicy.format(CVPixelBufferGetPixelFormatType(buffer)),
+              (sourceProfile != .hlgBT2020 || CVPixelBufferGetPixelFormatType(buffer) == 0x78343230),
               CVPixelBufferGetPlaneCount(buffer) == 2 else {
             // A non-conforming frame is never graded. During an expected handoff
             // it may be a superseded transitional frame, so it is held silently;
@@ -354,7 +352,8 @@ final class CameraPreviewRenderer: @unchecked Sendable {
             return
         }
         var uniforms = Uniforms(imageScale: scale, quarterTurns: UInt32(turns),
-                                mirrored: geometry.mirrored != frame.mirrored ? 1 : 0, fullRange: format.fullRange ? 1 : 0)
+                                mirrored: geometry.mirrored != frame.mirrored ? 1 : 0, fullRange: format.fullRange ? 1 : 0,
+                                hlg: sourceProfile == .hlgBT2020 ? 1 : 0)
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
@@ -436,22 +435,10 @@ final class CameraPreviewRenderer: @unchecked Sendable {
         return bundleFiles?[filename]
     }
 
-    /// Same direct RGB/red-fastest RGBA32Float upload as PipelineRenderer.
+    /// Same direct RGB/red-fastest, filterable upload as PipelineRenderer.
     private static func makeLUT(_ cube: CameraPreviewCube, device: any MTLDevice) throws -> any MTLTexture {
-        let size = cube.size
-        let values = cube.rgba
-        let descriptor = MTLTextureDescriptor()
-        descriptor.textureType = .type3D
-        descriptor.pixelFormat = .rgba32Float
-        descriptor.width = size
-        descriptor.height = size
-        descriptor.depth = size
-        descriptor.usage = .shaderRead
-        guard let texture = device.makeTexture(descriptor: descriptor) else { throw PreviewError.unavailable }
-        values.withUnsafeBytes {
-            texture.replace(region: MTLRegionMake3D(0, 0, 0, size, size, size), mipmapLevel: 0, slice: 0,
-                withBytes: $0.baseAddress!, bytesPerRow: size * 4 * MemoryLayout<Float>.size,
-                bytesPerImage: size * size * 4 * MemoryLayout<Float>.size)
+        guard let texture = FilterableLUTTexture.make(device: device, size: cube.size, rgba: cube.rgba) else {
+            throw PreviewError.unavailable
         }
         return texture
     }

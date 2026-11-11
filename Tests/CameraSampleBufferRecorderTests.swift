@@ -161,12 +161,17 @@ struct CameraSampleBufferRecorderTests {
         #expect(await sparseRig.events.nextFinished() == nil)
         try? FileManager.default.removeItem(at: sparseURL)
 
+        // A burst only counts once a frame has actually been accepted; drops
+        // before the first append are the encoder's priming window.
         let burstRig = makeRig(FakeWriterBehavior())
         let burstURL = try begin(burstRig.recorder, events: burstRig.events)
-        burstRig.recorder.submitDropForTesting(at: 200)
-        burstRig.recorder.submitDropForTesting(at: 201)
-        burstRig.recorder.submitDropForTesting(at: 201.5)
-        #expect(await burstRig.events.nextStarted()?.contains("dropped 3 frames") == true)
+        burstRig.recorder.submitVideoSampleForTesting(try Self.log2Sample())
+        let burstStart = ProcessInfo.processInfo.systemUptime + 2
+        burstRig.recorder.submitDropForTesting(at: burstStart)
+        burstRig.recorder.submitDropForTesting(at: burstStart + 0.1)
+        burstRig.recorder.submitDropForTesting(at: burstStart + 0.2)
+        // The writer already started, so the abort is reported to the finish
+        // callback rather than to start.
         #expect(await burstRig.events.nextFinished()?.contains("dropped 3 frames") == true)
         #expect(!FileManager.default.fileExists(atPath: burstURL.path))
     }
@@ -871,10 +876,18 @@ struct CameraSampleBufferRecorderTests {
 
     @available(macOS 14.2, iOS 17.2, *)
     @Test func configuredMicrophoneWithNoAudioIsNotReportedAsCleanSuccess() async throws {
-        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let clock = RecorderClockBox(10)
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true), uptime: clock.now)
         let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"],
                             requiresAudioEvidence: true)
         defer { try? FileManager.default.removeItem(at: url) }
+        // A configured microphone holds the origin until it is heard; a deaf
+        // stream must still start at the ceiling rather than hang the take.
+        clock.advance(to: 10)
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 9.9))
+        await rig.drainSubmittedWork()
+        #expect(rig.control.current == nil, "A silent configured microphone must hold the origin")
+        clock.advance(to: 10 + CameraAudioWarmUpPolicy.maximumWait)
         rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
         await rig.drainSubmittedWork()
         let writer = try #require(rig.control.current)
@@ -1267,7 +1280,98 @@ struct CameraSampleBufferRecorderTests {
         #expect(FileManager.default.fileExists(atPath: url.path))
     }
 
-    private func makeRig(_ behavior: FakeWriterBehavior, deadlines: RecorderDrainDeadlines? = nil) -> RecorderRig {
+    // MARK: - Warm-audio origin gate
+
+    /// The reported defect: the origin was anchored on the first video frame
+    /// while the microphone pipeline had stalled, so the clip opened with a
+    /// silent head. The origin must wait for a live stream and then anchor
+    /// where the preroll can cover the start.
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func originWaitsForAStalledMicrophoneAndKeepsTheFlushedPreroll() async throws {
+        let clock = RecorderClockBox(1_000)
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true), uptime: clock.now)
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"],
+                            requiresAudioEvidence: true)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // The stream delivered once, then went silent for longer than the window.
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 9.9))
+        await rig.drainSubmittedWork()
+        clock.advance(to: 1_000.3)
+
+        // The first eligible frames arrive while the microphone is stalled. No
+        // origin may be anchored on them: their samples were never delivered.
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10.04))
+        await rig.drainSubmittedWork()
+        #expect(rig.control.current == nil, "A stalled microphone must not anchor the origin")
+        #expect(rig.events.startedCount == 0)
+
+        // The stream resumes; the next frame anchors and the preroll packet that
+        // covers the start is written, not dropped.
+        clock.advance(to: 1_000.32)
+        rig.recorder.receiveCapturedAudio(try Self.pcmSample(pts: 10.1))
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10.08))
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+        #expect(writer.sessionStart == CMTime(seconds: 10.08, preferredTimescale: 600))
+        #expect(writer.videoTimings.map(\.presentationTime) == [CMTime(seconds: 10.08, preferredTimescale: 600)])
+        #expect(writer.audioTimings.map(\.presentationTime) == [CMTime(seconds: 10.1, preferredTimescale: 48_000)])
+        #expect(rig.events.startedCount == 1)
+        rig.recorder.cancel()
+        await rig.drainSubmittedWork()
+    }
+
+    /// A live microphone never delays the start.
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func liveMicrophoneDoesNotHoldTheOrigin() async throws {
+        let clock = RecorderClockBox(2_000)
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true), uptime: clock.now)
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"],
+                            requiresAudioEvidence: true)
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.receiveCapturedAudio(try Self.pcmSample(pts: 10))
+        clock.advance(to: 2_000.02)
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        await rig.drainSubmittedWork()
+        #expect(rig.control.current?.sessionStart == CMTime(seconds: 10, preferredTimescale: 600))
+        rig.recorder.cancel()
+        await rig.drainSubmittedWork()
+    }
+
+    /// A take with no microphone configured is untouched by the gate.
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func videoOnlyTakeIsNotHeldForAudio() async throws {
+        let clock = RecorderClockBox(3_000)
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true), uptime: clock.now)
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: nil)
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        await rig.drainSubmittedWork()
+        #expect(rig.control.current?.sessionStart == CMTime(seconds: 10, preferredTimescale: 600))
+        rig.recorder.cancel()
+        await rig.drainSubmittedWork()
+    }
+
+    /// The gate is a bounded wait, not a requirement that audio exists.
+    @Test func warmUpPolicyHoldsOnlyInsideTheWindowAndCeiling() {
+        #expect(!CameraAudioWarmUpPolicy.isLive(lastArrival: nil, now: 100))
+        #expect(CameraAudioWarmUpPolicy.isLive(lastArrival: 100, now: 100.1))
+        #expect(!CameraAudioWarmUpPolicy.isLive(lastArrival: 100, now: 100.2))
+        // Not required at all, or already live: never hold.
+        #expect(!CameraAudioWarmUpPolicy.holdsStart(requiresAudio: false, lastArrival: nil,
+                                                    now: 100, heldSince: 100))
+        #expect(!CameraAudioWarmUpPolicy.holdsStart(requiresAudio: true, lastArrival: 100,
+                                                    now: 100.01, heldSince: 100))
+        // Stalled: hold until the ceiling, then start anyway.
+        #expect(CameraAudioWarmUpPolicy.holdsStart(requiresAudio: true, lastArrival: 100,
+                                                   now: 100.3, heldSince: 100.3))
+        #expect(!CameraAudioWarmUpPolicy.holdsStart(requiresAudio: true, lastArrival: 100,
+                                                    now: 100.4, heldSince: 100))
+    }
+
+    private func makeRig(_ behavior: FakeWriterBehavior, deadlines: RecorderDrainDeadlines? = nil,
+                         uptime: (() -> TimeInterval)? = nil) -> RecorderRig {
         let events = RecorderEventQueue()
         let control = FakeWriterControl()
         let queue = DispatchQueue(label: "test.sample-buffer-recorder")
@@ -1276,7 +1380,9 @@ struct CameraSampleBufferRecorderTests {
                 let writer = FakeCameraSampleBufferWriter(url: url, behavior: behavior)
                 control.install(writer, settings: settings, transform: transform)
                 return writer
-            }, outputValidator: { _, _, _, _ in }, scheduleDrainTimeout: deadlines.map { deadlines in
+            }, outputValidator: { _, _, _, _ in },
+            uptime: uptime ?? { ProcessInfo.processInfo.systemUptime },
+            scheduleDrainTimeout: deadlines.map { deadlines in
                 { delay, action in deadlines.schedule(after: delay, action: action) }
             })
         return RecorderRig(recorder: recorder, events: events, control: control, queue: queue)
@@ -1307,6 +1413,15 @@ private final class RecorderDrainDeadlines: @unchecked Sendable {
         lock.unlock()
         pending.forEach { $0() }
     }
+}
+
+/// Controllable monotonic uptime for the capture warm-up gate.
+private final class RecorderClockBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: TimeInterval
+    init(_ value: TimeInterval) { self.value = value }
+    func now() -> TimeInterval { lock.lock(); defer { lock.unlock() }; return value }
+    func advance(to next: TimeInterval) { lock.lock(); defer { lock.unlock() }; value = next }
 }
 
 private final class RecorderIntBox: @unchecked Sendable {
@@ -1598,6 +1713,56 @@ struct CameraCaptureRuntimeSourceContractTests {
         #expect(source.contains("videoFrameDuration: frameRate.fallbackVideoSampleDuration"))
     }
 
+    private func viewModelSource() throws -> String {
+        try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraViewModel.swift"),
+                   encoding: .utf8)
+    }
+
+    @Test func capabilityReadsEveryRateAtomicallyForTheLensItNames() throws {
+        let source = try sessionSource()
+        #expect(source.contains("struct FrameRateCapability: Equatable, Sendable"))
+        #expect(source.contains("func frameRateCapability("))
+        #expect(source.contains("func supportsFrameRate(_ mode: CameraFrameRate,"))
+        // One read: the lens and the eligible modes are produced together, so a
+        // result can never mix a stale lens's formats with a new lens's answer.
+        #expect(source.contains("CameraFrameRatePolicy.availableModes { mode in"))
+        #expect(source.contains("desired.contains(mode)"))
+        #expect(source.contains("let capability = FrameRateCapability(lens: lens, modes: modes)"))
+        // Each rate must match the geometry in force and the permitted native
+        // source profile (Apple Log 2 or non-Log HLG), never the UHD default.
+        #expect(source.contains("Self.captureFormats(for: device, mode: mode, captureFormat: captureFormat).first != nil"),
+                "the menu asks the shared native-format selector for the capture format in force")
+        // The 60-era seam survives as a wrapper, not a second policy.
+        let support = try #require(source.range(of: "func supportsDaylight60(completion:"))
+        let after = String(source[support.lowerBound...].prefix(400))
+        #expect(after.contains("frameRateCapability(desired: [.daylight60])"))
+    }
+
+    @Test func viewModelPublishesEligibleModesAndOneCanonicalSetter() throws {
+        let model = try viewModelSource()
+        #expect(model.contains("private(set) var availableSessionFrameRates: [CameraFrameRate] = [.standard24]"))
+        #expect(model.contains("var supportsDaylight60: Bool { availableSessionFrameRates.contains(.daylight60) }"))
+        #expect(model.contains("var supportsHigh120: Bool { availableSessionFrameRates.contains(.high120) }"))
+        #expect(model.contains("func setSessionFrameRate(_ target: CameraFrameRate)"))
+        // The arm/disarm wrapper keeps its API but owns no transition of its own.
+        let wrapper = try #require(model.range(of: "func setDaylight60Enabled(_ enabled: Bool)"))
+        let wrapperBody = String(model[wrapper.lowerBound...].prefix(200))
+        #expect(wrapperBody.contains("setSessionFrameRate(enabled ? .daylight60 : .standard24)"))
+        #expect(!wrapperBody.contains("isChangingFrameRate"))
+        // An eligible-but-not-this-lens rate is refused, never downgraded.
+        #expect(model.contains("guard target.isStandard || availableSessionFrameRates.contains(target) else { return }"))
+        // The capability answer is applied only for the read's generation, a live
+        // lifecycle, and the lens the session actually read.
+        #expect(model.contains("capability.lens == lens,"))
+        #expect(model.contains("capability.lens == self.activeLens else { return }"))
+        #expect(model.contains("self.frameRateGeneration == generation,"))
+        // A session boundary resets the offered modes to the conservative set.
+        let reset = try #require(model.range(of: "private func resetFrameRateForSessionBoundary()"))
+        let resetBody = String(model[reset.lowerBound...].prefix(600))
+        #expect(resetBody.contains("availableSessionFrameRates = [.standard24]"))
+        #expect(resetBody.contains("session.resetFrameRateForNextSession()"))
+    }
+
     @Test func captureAngleUsesTheActiveFrameRate() throws {
         let source = try sessionSource()
         #expect(source.contains("let angle = Int((shutterSeconds * Double(frameRate.fps) * 360.0).rounded())"))
@@ -1607,12 +1772,18 @@ struct CameraCaptureRuntimeSourceContractTests {
         #expect(!source.contains("Self.filmShutterDuration"))
     }
 
-    @Test func daylight60FailureIsDistinctAndNeverDowngrades() throws {
+    @Test func highFrameRateFailureIsDistinctAndNeverDowngrades() throws {
         let source = try sessionSource()
         #expect(source.contains("case daylight60Unsupported(String)"))
-        #expect(source.contains("CameraError.daylight60Unsupported(CameraError.daylight60Reason)"))
-        // A 24-eligible format must not be selected when 60 was requested.
-        #expect(source.contains("CameraCaptureFormatPolicy.appleLog2SixtyCandidateIndexes"))
+        // One seam decides the refusal for every non-standard rate, so a refused
+        // 120 cannot be reported with a 60-only explanation or fall back to 24.
+        #expect(source.contains("static func unsupportedFrameRateError(for mode: CameraFrameRate) -> CameraError"))
+        #expect(source.contains("mode.isStandard\n            ? .appleLog2NotSupported"))
+        #expect(source.contains("no 4K Apple Log 2 10-bit format supports \\(mode.fps) fps on this device"))
+        // A 24/60-eligible format must not be selected when another rate was
+        // requested: the selector is rate-aware and never the 24 baseline.
+        #expect(source.contains("CameraCaptureFormatPolicy.eligibleCandidateIndexes(\n            in: candidates, format: captureFormat, fps: mode.fps)"))
+        #expect(!source.contains("appleLog2SixtyCandidateIndexes"))
     }
 
     @Test func modeChangeRestoresThePreviousStateAtomically() throws {
@@ -1621,6 +1792,20 @@ struct CameraCaptureRuntimeSourceContractTests {
         #expect(source.contains("if let rejection = configureDataOutputForActiveFormat(activeFormat: format)"))
         // Lens rollback restores the mode's target, not the stale device values.
         #expect(!source.contains("activeVideoMinFrameDuration = previousMinFrameDuration"))
+    }
+
+    /// A finished take is delivered on the delivery window; the strict 0.12 s
+    /// measurement stays the smoke's number, so the two are wired separately.
+    @Test func finishedTakeUsesTheDeliveryWindowWhileTheSmokeKeepsTheStrictBound() throws {
+        let recorder = try String(contentsOf: TestRepository.url(
+            for: "App/Modules/CameraCapture/CameraSampleBufferRecorder.swift"), encoding: .utf8)
+        #expect(recorder.contains(
+            "CameraCapturePreservationProbe.isDeliverable(skew: skew, endDifference: endDifference)"))
+        #expect(recorder.contains("CameraCapturePreservationProbe.deliveryTolerance"))
+        // The smoke's strict measurement is asserted behaviourally in
+        // CameraCapturePreservationProbeTests rather than by reading the probe's
+        // source, which is not part of the bundled test repository.
+        #expect(!recorder.contains("validateSynchronization(skew: skew"))
     }
 
     @Test func recorderFallbackIsParameterisedNotHardcoded() throws {

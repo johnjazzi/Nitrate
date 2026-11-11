@@ -14,7 +14,7 @@ final class PurchaseViewModel {
     private let storeManager = StoreManager()
     private var didStart = false
     /// Seeded from the last verified channel so a cold, offline launch does not
-    /// briefly lock a beta tester out of capture while StoreKit answers.
+    /// briefly lock a sandbox tester out of capture while StoreKit answers.
     private var distribution: AccessDistribution
     private var firstLaunch: Date?
     private var verifiedPurchases: [VerifiedEntitlement] = []
@@ -57,14 +57,10 @@ final class PurchaseViewModel {
         Task { await refreshEntitlements() }
     }
 
-    /// True only for a genuine TestFlight/sandbox beta install. Drives the
-    /// "unrestricted beta" banner and hides the live monetization CTA.
-    var isBetaAccess: Bool { access.isBetaAccess }
-
     var trialDaysRemaining: Int { access.trialDaysRemaining }
 
     /// A build that did not come from the App Store: a normal Debug run
-    /// (`.debug`) or a locally signed development install (`.development`).
+    /// (`.debug`) or a `NITRATE_LOCAL_DEVELOPMENT` install (`.development`).
     /// Both are unrestricted, so Settings labels them "Development Build"
     /// instead of a trial that never existed.
     var isDevelopmentBuild: Bool { distribution == .debug || distribution == .development }
@@ -74,15 +70,14 @@ final class PurchaseViewModel {
     /// labels which state the screen is in; it never gates the links.
     var settingsChannel: LegalLinks.Channel {
         if isDevelopmentBuild { return .development }
-        if isBetaAccess { return .beta }
         if isPurchased { return .purchased }
         if isTrialActive { return .trialActive }
         return .trialExpired
     }
 
-    /// The non-purchasable US launch-pricing block, or `nil` on a checkout
-    /// channel (production or the local StoreKit-testing harness) where the live
-    /// StoreKit `displayPrice` belongs.
+    /// The non-purchasable US launch-pricing block for a local development build,
+    /// or `nil` on a checkout channel (production, sandbox or the local
+    /// StoreKit-testing harness) where the live StoreKit `displayPrice` belongs.
     var launchPricingPreview: LaunchPricingPreview? {
         LaunchPricingPresentation.preview(for: distribution)
     }
@@ -127,7 +122,19 @@ final class PurchaseViewModel {
         Task {
             do {
                 try await storeManager.restore()
-                await refreshEntitlements()
+                await refreshEntitlementsAfterGrant()
+            } catch {
+                purchaseError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Show Apple's offer-code sheet, then pick up the entitlement it grants.
+    func redeemOfferCode() {
+        Task {
+            do {
+                try await storeManager.presentOfferCodeRedeemSheet()
+                await refreshEntitlementsAfterGrant()
             } catch {
                 purchaseError = error.localizedDescription
             }
@@ -150,7 +157,7 @@ final class PurchaseViewModel {
             do {
                 switch try await storeManager.purchase(product) {
                 case .purchased:
-                    await refreshEntitlements()
+                    await refreshEntitlementsAfterGrant()
                 case .pending:
                     purchaseError = "Your purchase is pending approval."
                 case .cancelled:
@@ -163,14 +170,30 @@ final class PurchaseViewModel {
     }
 
     private func loadState() async {
-        // Resolve beta access before product loading. Unconfigured products or
-        // a product-server failure must not put a TestFlight tester at checkout.
         await refreshEntitlements()
-        if !isBetaAccess {
-            await storeManager.loadProducts()
-            productLoadError = storeManager.productLoadError
-            subscriptionPrice = PurchasePriceText.resolved(storeManager.displayPrice(for: .yearlySubscription))
-            lifetimePrice = PurchasePriceText.resolved(storeManager.displayPrice(for: .lifetime))
+        // Every channel loads the real products. App Review runs in the sandbox
+        // environment, so skipping the checkout there left the reviewer with a
+        // non-purchasable preview and no way to test the purchase (2.1(b)).
+        await storeManager.loadProducts()
+        productLoadError = storeManager.productLoadError
+        subscriptionPrice = PurchasePriceText.resolved(storeManager.displayPrice(for: .yearlySubscription))
+        lifetimePrice = PurchasePriceText.resolved(storeManager.displayPrice(for: .lifetime))
+    }
+
+    /// Converge on the granted entitlement after checkout, restore or an offer
+    /// code. StoreKit's `currentEntitlements` can keep reporting the previous
+    /// state for a few seconds after Apple's sheet says the purchase succeeded,
+    /// so a single read left the screen still offering checkout until the next
+    /// launch. Poll briefly and stop as soon as the grant appears; a genuinely
+    /// denied or pending purchase simply exhausts the attempts.
+    private func refreshEntitlementsAfterGrant(attempts: Int = 24,
+                                               interval: Duration = .milliseconds(250)) async {
+        await refreshEntitlements()
+        guard !isPurchased else { return }
+        for _ in 0..<attempts {
+            try? await Task.sleep(for: interval)
+            await refreshEntitlements()
+            if isPurchased { return }
         }
     }
 
@@ -178,8 +201,7 @@ final class PurchaseViewModel {
         refreshGeneration &+= 1
         let generation = refreshGeneration
         let resolved = await storeManager.resolveDistribution()
-        let entitlements = resolved == .testFlight || resolved == .debug
-            ? [] : await storeManager.verifiedEntitlements()
+        let entitlements = await storeManager.verifiedEntitlements()
         guard generation == refreshGeneration else { return }
         distribution = resolved
         firstLaunch = storeManager.firstLaunchDate
@@ -191,10 +213,17 @@ final class PurchaseViewModel {
             verifiedEntitlements: entitlements)
 
         // Mirror into the existing settings-facing fields.
+        let hadPurchase = isPurchased
         isTrialActive = access.trialActive
         isPurchased = access.hasVerifiedPurchase
         isLifetimePurchased = access.hasLifetimePurchase
         daysRemaining = access.trialDaysRemaining
+
+        // Release any render work withheld while access was missing, without
+        // waiting for the next app activation.
+        if isPurchased && !hadPurchase {
+            NotificationCenter.default.post(name: .nitrateRenderAccessChanged, object: nil)
+        }
 
         // One line per resolution: the app has no log file, so this is how the
         // access decision is diagnosed on a device.

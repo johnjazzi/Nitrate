@@ -16,6 +16,7 @@ DerivedData/
 *.xcodeproj
 
 # Build
+/build
 build/
 *.o
 *.LinkFileList

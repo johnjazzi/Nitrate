@@ -14,6 +14,70 @@ struct CameraMoodControlsTests {
     private let screenWidths: [CGFloat] = [320, 375, 430]
     private let barHeights: [CGFloat] = [168, 180, 200]
 
+    @Test func exposureControlKeepsNumbersWithoutRepeatedVisibleCaptions() throws {
+        let root = TestRepository.root
+        let bar = try String(contentsOf: root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraControlBar.swift"), encoding: .utf8)
+        let meter = try String(contentsOf: root.appendingPathComponent(
+            "App/Modules/CameraCapture/ExposureOverlay.swift"), encoding: .utf8)
+        #expect(!bar.contains("Text(cameraViewModel.isManualExposure ? \"ISO\" : \"EV\")"))
+        #expect(bar.contains("return \"ISO \\(Int(cameraViewModel.liveISO))\""),
+                "Keep the existing ISO readout above its ruler")
+        #expect(!meter.contains("directionLabel(\"OVER\")"))
+        #expect(!meter.contains("directionLabel(\"UNDER\")"))
+        #expect(!meter.contains("Text(statusText)"))
+        #expect(meter.contains(".accessibilityLabel("), "Retain nonvisual meter information")
+    }
+
+    @Test func exposureLongPressHasVisibleProgressAsWellAsCommittedHaptics() throws {
+        let bar = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraControlBar.swift"), encoding: .utf8)
+        #expect(bar.contains("@GestureState private var isExposureHolding = false"))
+        #expect(bar.contains(".updating($isExposureHolding)"),
+                "Release or cancellation must reset the visual hold state")
+        #expect(bar.contains(".scaleEffect("))
+        #expect(bar.contains("value: isExposureHolding"))
+        #expect(bar.contains(".sensoryFeedback(trigger: cameraViewModel.isManualExposure)"))
+        #expect(bar.contains("LongPressGesture(minimumDuration: 0.5, maximumDistance: 3)"))
+    }
+
+    @Test func removingCaptionsPreservesTheShootingBarHeight() throws {
+        let bar = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraControlBar.swift"), encoding: .utf8)
+        #expect(bar.contains("Text(\" \")"),
+                "Reserve the old footer's font metrics without visible words so the preview does not resize")
+        #expect(bar.contains(".accessibilityHidden(true)"))
+    }
+
+    @Test func aBusyCaptureDoesNotAcknowledgeAnExposureHold() throws {
+        let bar = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraControlBar.swift"), encoding: .utf8)
+        #expect(bar.contains("state = current && exposureHoldEnabled"))
+        #expect(bar.contains("guard exposureHoldEnabled else { return }"))
+    }
+
+    @Test func exposureHoldBelongsToTheWholeWellRatherThanTheRuler() throws {
+        let bar = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraControlBar.swift"), encoding: .utf8)
+        let wellStart = try #require(bar.range(of: "private var exposureControl: some View"))
+        let enabledStart = try #require(bar.range(of: "private var exposureHoldEnabled: Bool"))
+        let settingStart = try #require(bar.range(of: "private var exposureSetting: some View"))
+        let readoutStart = try #require(bar.range(of: "private var exposureReadout: String"))
+        let well = String(bar[wellStart.lowerBound..<enabledStart.lowerBound])
+        let setting = String(bar[settingStart.lowerBound..<readoutStart.lowerBound])
+        #expect(well.contains(".contentShape(Rectangle())"))
+        #expect(well.contains(".simultaneousGesture("))
+        #expect(well.contains(".scaleEffect("))
+        #expect(well.contains(".sensoryFeedback(trigger: cameraViewModel.isManualExposure)"))
+        #expect(!setting.contains(".simultaneousGesture("))
+        #expect(!setting.contains(".scaleEffect("))
+        let scale = try #require(well.range(of: ".scaleEffect("))
+        let measured = try #require(well.range(of: ".background {"))
+        #expect(scale.lowerBound < measured.lowerBound,
+                "Measure the unscaled well so the rescue anchor does not move during a hold")
+        #expect(bar.components(separatedBy: "LongPressGesture(minimumDuration:").count == 2)
+    }
+
     @Test func lcdSlotSitsAboveTheStockWellAndClearOfRecord() {
         for screenWidth in screenWidths {
             for height in barHeights {
@@ -94,6 +158,42 @@ struct CameraMoodControlsTests {
                 "A finalising take falls back to the plain face, never the recording headline.")
     }
 
+    @MainActor @Test func photoLCDShowsFreeCapacityInsteadOfVideoDuration() throws {
+        let idle = CameraStatusPresentation(outstandingCount: 0, pendingCount: 0, isProcessing: false,
+            failedCount: 0, errorMessage: nil, latestResultCompleted: false, latestResultSavedToPhotos: nil)
+        let slot = CameraControlGeometry(width: 288, height: 168).lcd.size
+        let low = RecordingTimeLCD(estimatedSeconds: 754, isStorageLow: false, queueStatus: idle,
+            photoFreeBytes: 12_500_000_000)
+        let high = RecordingTimeLCD(estimatedSeconds: 754, isStorageLow: false, queueStatus: idle,
+            photoFreeBytes: 97_300_000_000)
+        #expect(low.capacityText == "12.5 GB")
+        #expect(high.capacityText == "97.3 GB")
+        #expect(pixelsDigest(try render(lcdFrame(low, slot: slot), name: "photo-lcd-low")) !=
+                pixelsDigest(try render(lcdFrame(high, slot: slot), name: "photo-lcd-high")),
+                "Visible capacity must change with free bytes, not stay on Video remaining time.")
+    }
+
+    @MainActor @Test func photoRenderingOwnsTheLCDEvenWhenCapacityIsAvailable() {
+        let rendering = CameraStatusPresentation(outstandingCount: 1, pendingCount: 0, isProcessing: true,
+            failedCount: 0, errorMessage: nil, latestResultCompleted: false, latestResultSavedToPhotos: nil)
+        let lcd = RecordingTimeLCD(estimatedSeconds: 754, isStorageLow: false, queueStatus: rendering,
+            photoFreeBytes: 12_500_000_000, isPhotoMode: true)
+        #expect(lcd.showsRenderingActivity,
+                "Active Photo rendering must replace idle free-space digits with the render activity, not hide behind them.")
+    }
+
+    @Test func photoLensMenuIsNotBlanketDisabled() throws {
+        let screen = try String(contentsOf: TestRepository.url(for: "App/ContentView.swift"), encoding: .utf8)
+        #expect(!screen.contains(".disabled(isPhotoMode || cameraViewModel.isPhotoCaptureBusy)"),
+            "Photo must allow the actual top lens menu, not only direct session calls.")
+    }
+
+    @Test func photoModeKeepsStorageVisible() throws {
+        let bar = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraControlBar.swift"), encoding: .utf8)
+        #expect(!bar.contains(".opacity(isPhotoMode ? 0 : 1)"), "Photo must not hide free capacity.")
+        #expect(!bar.contains(".accessibilityHidden(isPhotoMode)"))
+    }
+
     @Test func barOwnsTheWellRecordingStateAndTheLockHapticOnce() throws {
         let bar = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraControlBar.swift"),
                              encoding: .utf8)
@@ -102,8 +202,8 @@ struct CameraMoodControlsTests {
         #expect(bar.contains(".cameraControlWell("))
         #expect(bar.contains("CameraGaugeLabel(gauge: selectedGauge,"))
         #expect(bar.components(separatedBy: "length: 120").count == 3, "The exposure rulers are untouched.")
-        // The LCD learns about a take from the committed presentation only.
-        #expect(bar.contains("isRecording: recordPresentation == .recording"))
+        // The LCD acknowledges the accepted take before the writer confirms it.
+        #expect(bar.contains("isRecording: recordPresentation.showsLiveChrome"))
         #expect(bar.contains("isStopping: cameraViewModel.isStoppingRecording"))
         // Queue/storage access survives an active take.
         #expect(bar.contains("onShowQueueSheet"))

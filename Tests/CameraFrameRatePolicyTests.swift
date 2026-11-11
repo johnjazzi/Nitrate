@@ -63,7 +63,36 @@ struct CameraFrameRatePolicyTests {
     @Test func wholeNumberFpsMapsToAModeOrNil() {
         #expect(CameraFrameRate.from(fps: 24) == .standard24)
         #expect(CameraFrameRate.from(fps: 60) == .daylight60)
+        #expect(CameraFrameRate.from(fps: 120) == .high120)
         #expect(CameraFrameRate.from(fps: 30) == nil)
+    }
+
+    @Test func highRateIsARealCaptureRateNotAShutter() {
+        // 120 is the capture rate; the 180° shutter for it is 1/240.
+        #expect(CameraFrameRate.high120.fps == 120)
+        #expect(CameraFrameRate.high120.shutterDenominator == 240)
+        #expect(CameraFrameRate.high120.frameDuration == CMTime(value: 1, timescale: 120))
+        #expect(CameraFrameRate.high120.filmShutterDuration == CMTime(value: 1, timescale: 240))
+        #expect(CameraFrameRate.high120.fallbackVideoSampleDuration == CMTime(value: 1, timescale: 120))
+        #expect(CameraFrameRate.allCases == [.standard24, .daylight60, .high120])
+        #expect(CameraFrameRate.standard24.isStandard)
+        #expect(!CameraFrameRate.high120.isStandard)
+    }
+
+    @Test func availabilityNeverAdvertisesARateTheDeviceCannotDeliver() {
+        #expect(CameraFrameRatePolicy.availableModes({ _ in false }, highFrameRateEnabled: true)
+                == [.standard24])
+        #expect(CameraFrameRatePolicy.availableModes({ $0 != .high120 }, highFrameRateEnabled: true)
+                == [.standard24, .daylight60])
+        #expect(CameraFrameRatePolicy.availableModes({ _ in true }, highFrameRateEnabled: true)
+                == [.standard24, .daylight60, .high120])
+    }
+
+    /// The 120 fps switch is build configuration, not device capability: with it
+    /// off the menu never offers the rate even on a device that could deliver it.
+    @Test func theSwitchWithdrawsOneHundredTwentyEvenWhenTheDeviceCouldDeliverIt() {
+        #expect(CameraFrameRatePolicy.availableModes({ _ in true }, highFrameRateEnabled: false)
+                == [.standard24, .daylight60])
     }
 
     @Test func rawValuesAreTheFps() {
@@ -123,11 +152,44 @@ struct DaylightCapturePolicyLedgerTests {
         #expect(ledger.policy(for: url("take-0")) == nil)
     }
 
+    @Test func highRateTakeKeepsItsOwnPolicyThroughTheLedger() {
+        var ledger = DaylightCapturePolicyLedger()
+        ledger.record(sourceURL: url("h"), mode: .high120)
+        #expect(ledger.policy(for: url("h")) == RenderCapturePolicy(120))
+        // A 120 take is never relabelled as its 60 or 24 sibling.
+        #expect(ledger.policy(for: url("h"))?.frameRate == 120)
+        #expect(ledger.policy(for: url("h"))?.shutterDenominator == 240)
+        #expect(ledger.policy(for: url("h"))?.grainPairing == .pairedAtHalfRate)
+    }
+
     @Test func clearDropsEveryMemory() {
         var ledger = DaylightCapturePolicyLedger()
         ledger.record(sourceURL: url("a"), mode: .daylight60)
         ledger.clear()
         #expect(ledger.policy(for: url("a")) == nil)
         #expect(ledger.policies.isEmpty)
+    }
+
+    @Test func sharedIdlePreservesOnlyExplicitExposureHolds() {
+        let isoHolds: [Float?] = [nil, 800]
+        let shutterHolds: [Double?] = [nil, 1.0 / 250.0]
+        for rate in CameraFrameRate.allCases {
+            for iso in isoHolds {
+                for duration in shutterHolds {
+                    let idle = VideoExposureContract.idle(frameRate: rate, isManualExposure: iso != nil,
+                        manualISO: iso ?? 400, bias: -1.2, heldDuration: duration)
+                    #expect(idle.durationSeconds == duration)
+                    #expect(idle.lockedISO == iso)
+                    #expect(idle.exposureBias == -1.2)
+                }
+            }
+        }
+    }
+
+    @Test func heldISODoesNotAlsoAcquireARecordingShutter() {
+        let manual = VideoExposureContract.idle(frameRate: .standard24, isManualExposure: true,
+                                                manualISO: 800, bias: 0)
+        #expect(manual.lockedISO == 800)
+        #expect(manual.durationSeconds == nil)
     }
 }

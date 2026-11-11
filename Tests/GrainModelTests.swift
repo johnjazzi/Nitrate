@@ -8,15 +8,29 @@ import Testing
 struct GrainModelTests {
     private let tolerance: Float = 0.0001
 
-    /// Tuning shipped in `gauges.json`: the previous ladder (4.0 / 2.7 / 1.8 /
-    /// 1.0) halved on the size axis, and 10% above the previous presence.
+    /// Tuning shipped in `gauges.json`. Size relative to the previous ladder
+    /// (4.0 / 2.7 / 1.8 / 1.0): 8mm keeps its old size, 16mm sits three quarters
+    /// of the way there, 35mm halves it and 75mm asks for half and is floored.
     private static let shippedSizes: [PrintGauge: Float] = [
-        .eightMillimetre: 2.0, .sixteenMillimetre: 1.35,
+        .eightMillimetre: 4.0, .sixteenMillimetre: 2.025,
         .thirtyFiveMillimetre: 0.9, .seventyFiveMillimetre: 0.5
+    ]
+    /// Shipped size as a fraction of the previous ladder's size.
+    private static let sizeFractionOfPrevious: [PrintGauge: Float] = [
+        .eightMillimetre: 1.0, .sixteenMillimetre: 0.75,
+        .thirtyFiveMillimetre: 0.5, .seventyFiveMillimetre: 0.5
     ]
     private static let shippedAmplitudes: [PrintGauge: Float] = [
         .eightMillimetre: 0.55, .sixteenMillimetre: 0.396,
-        .thirtyFiveMillimetre: 0.297, .seventyFiveMillimetre: 0.165
+        .thirtyFiveMillimetre: 0.36, .seventyFiveMillimetre: 0.165
+    ]
+    /// Presence lift over the previous ladder, per gauge. 35mm carries more than
+    /// the 10% the other gauges ship: at half its previous footprint, card-size
+    /// grain measured 0.003386 against one 8-bit display step of 0.003922, and
+    /// 0.36 is the presence that clears that floor (measured 0.004033).
+    private static let presenceLift: [PrintGauge: Float] = [
+        .eightMillimetre: 1.1, .sixteenMillimetre: 1.1,
+        .thirtyFiveMillimetre: 4.0 / 3.0, .seventyFiveMillimetre: 1.1
     ]
     /// The ladder this tuning replaced, used to state the half-size contract.
     private static let previousSizes: [PrintGauge: Float] = [
@@ -34,6 +48,34 @@ struct GrainModelTests {
 
     /// The shipped JSON is the single source of the ladder, both copies are
     /// byte-identical, and it loads from the bundle without a source checkout.
+    @Test func gaugeHalationConfigIsValidatedAndLegacyDocumentsStayNeutral() throws {
+        let data = try Data(contentsOf: TestRepository.url(for: "Resources/gauges.json"))
+        let document = try JSONDecoder().decode(GaugeTuningConfig.self, from: data)
+        let expected: [PrintGauge: Float] = [.eightMillimetre: 1, .sixteenMillimetre: 1,
+                                            .thirtyFiveMillimetre: 0.45, .seventyFiveMillimetre: 0.20]
+        let resolved = try document.validated()
+        for gauge in PrintGauge.allCases {
+            #expect(resolved[gauge]?.halationMultiplier == expected[gauge])
+            #expect(gauge.halationMultiplier == expected[gauge])
+        }
+        for value: Float in [-1, 1.01, .nan, .infinity] {
+            var entries = document.gauges
+            entries[0].halationMultiplier = value
+            #expect(throws: (any Error).self) {
+                _ = try GaugeTuningConfig(schemaVersion: document.schemaVersion, gauges: entries).validated()
+            }
+        }
+        var legacy = document.gauges
+        for index in legacy.indices { legacy[index].halationMultiplier = nil }
+        let bytes = try JSONEncoder().encode(GaugeTuningConfig(schemaVersion: 1, gauges: legacy))
+        let decoded = try GaugeConfigLoader.decode(bytes)
+        #expect(decoded.values.allSatisfy { $0.halationMultiplier == 1 })
+        var disabled = document.gauges
+        disabled[0].halationMultiplier = 0
+        #expect(try GaugeTuningConfig(schemaVersion: 1, gauges: disabled).validated()[.eightMillimetre]?
+            .halationMultiplier == 0)
+    }
+
     @Test func bundledGaugeConfigIsTheTuningSourceOfTruth() throws {
         let cli = try Data(contentsOf: TestRepository.url(for: "Resources/gauges.json"))
         let app = try Data(contentsOf: TestRepository.url(for: "App/Resources/gauges.json"))
@@ -78,10 +120,10 @@ struct GrainModelTests {
 
         // A gauge listed twice — the same id, and its legacy long spelling.
         #expect(throws: GaugeConfigError.duplicateGauge("8mm")) {
-            _ = try decode(Self.document(shipped + [("8mm", "2.0", "0.55")]))
+            _ = try decode(Self.document(shipped + [("8mm", "2.0", "0.55", "radius35", "0.5")]))
         }
         #expect(throws: GaugeConfigError.duplicateGauge("8mm")) {
-            _ = try decode(Self.document(shipped + [("eightMillimetre", "2.0", "0.55")]))
+            _ = try decode(Self.document(shipped + [("eightMillimetre", "2.0", "0.55", "radius35", "0.5")]))
         }
         // A gauge with no entry at all.
         #expect(throws: GaugeConfigError.missingGauges(["75mm"])) {
@@ -104,7 +146,7 @@ struct GrainModelTests {
         // Unknown gauge identifiers, a non-finite number and a missing field all
         // fail to decode rather than falling back to a default entry.
         #expect(throws: (any Error).self) {
-            _ = try decode(Self.document(shipped + [("9mm", "1.0", "0.2")]))
+            _ = try decode(Self.document(shipped + [("9mm", "1.0", "0.2", "radius35", "0")]))
         }
         #expect(throws: (any Error).self) {
             _ = try decode(Self.document(Self.replacing(shipped, gauge: "8mm", size: "1e400")))
@@ -112,6 +154,25 @@ struct GrainModelTests {
         #expect(throws: (any Error).self) {
             _ = try decode("""
             {"schemaVersion": 1, "gauges": [{"gauge": "8mm", "sizeMultiplier": 2.0}]}
+            """)
+        }
+        // The diffusion setting is part of the gauge document: the radius must
+        // belong to the format it is listed under, and the amount must be usable.
+        #expect(throws: GaugeConfigError.mismatchedDiffusionPreset(gauge: "16mm", preset: "radius35")) {
+            _ = try decode(Self.document(Self.replacing(shipped, gauge: "16mm", preset: "radius35")))
+        }
+        #expect(throws: GaugeConfigError.invalidDiffusionAmount(gauge: "8mm", value: 1.5)) {
+            _ = try decode(Self.document(Self.replacing(shipped, gauge: "8mm", amount: "1.5")))
+        }
+        #expect(throws: GaugeConfigError.invalidDiffusionAmount(gauge: "8mm", value: -0.2)) {
+            _ = try decode(Self.document(Self.replacing(shipped, gauge: "8mm", amount: "-0.2")))
+        }
+        // A gauge entry missing its diffusion keys fails to decode rather than
+        // silently rendering no diffusion.
+        #expect(throws: (any Error).self) {
+            _ = try decode("""
+            {"schemaVersion": 1, "gauges": [{"gauge": "8mm", "sizeMultiplier": 4.0,
+              "amplitudeMultiplier": 0.55, "diffusionAmount": 0}]}
             """)
         }
     }
@@ -122,7 +183,7 @@ struct GrainModelTests {
         // Nominal multipliers are strictly monotonic across the ladder.
         let multipliers = PrintGauge.allCases.sorted { $0.sizeMultiplier < $1.sizeMultiplier }
             .map(\.sizeMultiplier)
-        #expect(multipliers == [0.5, 0.9, 1.35, 2.0], "unexpected ladder: \(multipliers)")
+        #expect(multipliers == [0.5, 0.9, 2.025, 4.0], "unexpected ladder: \(multipliers)")
         // 35mm is the middle of the ladder and the render default.
         #expect(PrintGauge.neutral == .thirtyFiveMillimetre)
         // Effective footprints are ordered across the whole ladder.
@@ -139,19 +200,23 @@ struct GrainModelTests {
     /// 8mm, 16mm and 35mm land on exactly half their previous footprint on both
     /// shipped stocks; the safety bounds are the pre-tuning ones and do not clip
     /// those rungs.
-    @Test func coarseThroughNeutralGaugesHalveThePreviousFootprintOnEveryShippedStock() {
+    /// 8mm keeps the footprint it had before this tuning, 16mm keeps three
+    /// quarters of it, 35mm halves it. Only 35mm changes how fine the grain is;
+    /// the coarse gauge stays where it was so the ladder's top does not move.
+    @Test func coarseThroughNeutralGaugesShipTheDeclaredSizeFractionOnEveryShippedStock() {
         #expect(GrainModel.footprintFloor == 0.95, "the safety floor must stay at its origin/dev value")
         #expect(GrainModel.footprintCeiling == 16.0, "the safety ceiling must stay at its origin/dev value")
         let unclamped: [PrintGauge] = [.eightMillimetre, .sixteenMillimetre, .thirtyFiveMillimetre]
         for stockSize in Self.shippedStockSizes {
             for gauge in unclamped {
                 let previousSize = Self.previousSizes[gauge] ?? 0
+                let fraction = Self.sizeFractionOfPrevious[gauge] ?? 1
                 let previousFootprint = previousSize * stockSize
                 let footprint = GrainModel.effectiveSize(stockGrainSize: stockSize, gauge: gauge)
                 #expect(footprint > GrainModel.footprintFloor,
                         "\(gauge.rawValue) on \(stockSize) must not reach the floor: \(footprint)")
-                #expect(abs(footprint - previousFootprint / 2) < tolerance,
-                        "\(gauge.rawValue) on \(stockSize): \(footprint) vs half of \(previousFootprint)")
+                #expect(abs(footprint - previousFootprint * fraction) < tolerance,
+                        "\(gauge.rawValue) on \(stockSize): \(footprint) vs \(fraction) of \(previousFootprint)")
             }
         }
     }
@@ -193,16 +258,20 @@ struct GrainModelTests {
         }
     }
 
-    /// Presence is 10% above the previous ladder for every gauge at every edge
-    /// boost, and the single loudness scale stays at 0.55.
-    @Test func presenceIsTenPercentAboveThePreviousLadder() {
+    /// Presence follows the shipped lift over the previous ladder at every edge
+    /// boost, and the single loudness scale stays at 0.55. 8mm, 16mm and 75mm
+    /// ship 10% louder; 35mm ships the larger lift that keeps its card-size
+    /// grain above the 8-bit floor at half its previous footprint.
+    @Test func presenceFollowsTheShippedLiftOverThePreviousLadder() {
         #expect(GrainModel.baseAmount == 0.55)
         for gauge in PrintGauge.allCases {
             let previousAmplitude = Self.previousAmplitudes[gauge] ?? 0
-            #expect(abs(gauge.amplitudeMultiplier - previousAmplitude * 1.1) < tolerance)
+            let lift = Self.presenceLift[gauge] ?? 1
+            #expect(abs(gauge.amplitudeMultiplier - previousAmplitude * lift) < tolerance,
+                    "gauge \(gauge): amplitude \(gauge.amplitudeMultiplier) must be \(previousAmplitude * lift)")
             for edgeFactor: Float in [1, 3, 4] {
                 let previous = GrainModel.baseAmount * previousAmplitude * edgeFactor
-                #expect(abs(GrainModel.amount(gauge: gauge, edgeFactor: edgeFactor) - previous * 1.1) < tolerance)
+                #expect(abs(GrainModel.amount(gauge: gauge, edgeFactor: edgeFactor) - previous * lift) < tolerance)
             }
         }
     }
@@ -219,18 +288,20 @@ struct GrainModelTests {
 
     // MARK: - Document builders
 
-    private typealias Entry = (gauge: String, size: String, amplitude: String)
+    /// One gauge entry: the two grain axes plus the gauge's own diffusion.
+    private typealias Entry = (gauge: String, size: String, amplitude: String,
+                               preset: String, amount: String)
 
     private static let shippedEntries: [Entry] = [
-        ("8mm", "2.0", "0.55"),
-        ("16mm", "1.35", "0.396"),
-        ("35mm", "0.9", "0.297"),
-        ("75mm", "0.5", "0.165")
+        ("8mm", "4.0", "0.55", "radius35", "0.5"),
+        ("16mm", "2.025", "0.396", "radius16", "0.4"),
+        ("35mm", "0.9", "0.36", "radius4", "0.2"),
+        ("75mm", "0.5", "0.165", "radius75", "0")
     ]
 
     private static func document(_ entries: [Entry], schemaVersion: Int = 1) -> String {
         let body = entries.map {
-            #"{"gauge": "\#($0.gauge)", "sizeMultiplier": \#($0.size), "amplitudeMultiplier": \#($0.amplitude)}"#
+            #"{"gauge": "\#($0.gauge)", "sizeMultiplier": \#($0.size), "amplitudeMultiplier": \#($0.amplitude), "diffusionPreset": "\#($0.preset)", "diffusionAmount": \#($0.amount)}"#
         }.joined(separator: ",\n    ")
         return """
         {
@@ -244,10 +315,13 @@ struct GrainModelTests {
 
     private static func replacing(_ entries: [Entry], gauge: String,
                                  size: String? = nil,
-                                 amplitude: String? = nil) -> [Entry] {
+                                 amplitude: String? = nil,
+                                 preset: String? = nil,
+                                 amount: String? = nil) -> [Entry] {
         entries.map {
             guard $0.gauge == gauge else { return $0 }
-            return ($0.gauge, size ?? $0.size, amplitude ?? $0.amplitude)
+            return ($0.gauge, size ?? $0.size, amplitude ?? $0.amplitude,
+                    preset ?? $0.preset, amount ?? $0.amount)
         }
     }
 }

@@ -20,12 +20,92 @@ struct CameraPolicyTests {
         #expect(CameraAperturePolicy.recommendedStops([1, 2], minimum: 3, maximum: 2).isEmpty)
     }
 
+    /// From 0.4.3 the shared idle still profile stays installed while Video is
+    /// the intent, so a Video aperture is an intent for the take's graph and never
+    /// a device write. Reporting the device's Auto value made the 0.5 s exposure
+    /// poll overwrite every choice, which is an aperture control that refuses to
+    /// take a value.
+    @Test func videoApertureIntentIsTheReportedSelectionUnderTheSharedIdleLease() {
+        #expect(CameraAperturePolicy.reportedSelection(
+            videoIntent: true, sharedIdleLeaseActive: true,
+            videoAperture: 2.8, deviceSelection: nil) == 2.8)
+        // Auto is a real choice: an explicit nil intent must stay nil rather than
+        // fall back to whatever the device happens to hold.
+        #expect(CameraAperturePolicy.reportedSelection(
+            videoIntent: true, sharedIdleLeaseActive: true,
+            videoAperture: nil, deviceSelection: 1.8) == nil)
+        // Photo, and any graph the shared idle does not own, read the device.
+        #expect(CameraAperturePolicy.reportedSelection(
+            videoIntent: false, sharedIdleLeaseActive: true,
+            videoAperture: 2.8, deviceSelection: 1.8) == 1.8)
+        #expect(CameraAperturePolicy.reportedSelection(
+            videoIntent: true, sharedIdleLeaseActive: false,
+            videoAperture: 2.8, deviceSelection: 1.8) == 1.8)
+    }
+
+    /// A Video aperture choice lands with the take, not on the idle device, so the
+    /// EV indicator has to predict the stops it costs.
+    @Test func deferredVideoAperturePredictsTheExposureItCosts() {
+        // f/1.48 -> f/2.8 is 1.84 stops darker.
+        let predicted = CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: 0, deviceAperture: 1.48, selectedAperture: 2.8, isDeferred: true)
+        #expect(abs(predicted - (-1.839)) < 0.01, "got \(predicted)")
+        // A wider iris adds light in the positive direction.
+        let brighter = CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: 0, deviceAperture: 2.8, selectedAperture: 1.48, isDeferred: true)
+        #expect(abs(brighter - 1.839) < 0.01, "got \(brighter)")
+        // The measured offset is the base, not discarded.
+        let based = CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: 0.5, deviceAperture: 1.48, selectedAperture: 2.8, isDeferred: true)
+        #expect(abs(based - (0.5 - 1.839)) < 0.01, "got \(based)")
+        // Already applied, nothing selected, or Auto: the meter is the truth.
+        #expect(CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: 0.2, deviceAperture: 1.48, selectedAperture: 2.8, isDeferred: false) == 0.2)
+        #expect(CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: 0.2, deviceAperture: 1.48, selectedAperture: nil, isDeferred: true) == 0.2)
+        #expect(CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: 0.2, deviceAperture: 1.48, selectedAperture: 1.48, isDeferred: true) == 0.2)
+        #expect(CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: 0.2, deviceAperture: nil, selectedAperture: 2.8, isDeferred: true) == 0.2)
+    }
+
+    /// The in-frame control must print the chosen stop even when the idle device
+    /// keeps its own iris, or the control reads as broken while the take honours it.
+    @Test func displayedApertureIsTheChoiceThenTheMeasuredIris() {
+        #expect(CameraAperturePolicy.displayAperture(selected: 4.0, measured: 1.48) == 4.0)
+        #expect(CameraAperturePolicy.displayAperture(selected: nil, measured: 1.48) == 1.48)
+        #expect(CameraAperturePolicy.displayAperture(selected: nil, measured: nil) == nil)
+        #expect(CameraAperturePolicy.displayAperture(selected: 2.8, measured: nil) == 2.8)
+    }
+
     @Test func apertureSelectionReconcilesToNearestSupportedStopAfterLensChange() {
         let variable: CameraAperturePolicy.Capability = .variable([1.4, 2, 2.8, 4])
         #expect(CameraAperturePolicy.reconcile(2.5, with: variable) == 2.8)
         #expect(CameraAperturePolicy.reconcile(1.2, with: .fixed(2)) == 2)
         #expect(CameraAperturePolicy.reconcile(nil, with: variable) == nil)
         #expect(CameraAperturePolicy.reconcile(2, with: .unavailable) == nil)
+    }
+
+    /// The reported failure: f/4.0 chosen on one lens, then a lens switch. The
+    /// new lens does not report that stop, so the restored intent asked for it,
+    /// the write threw `unsupportedMode`, and the take showed a recording error
+    /// banner. A carried-over stop is held at the nearest stop the lens has.
+    @Test func carriedOverApertureIsHeldAtTheNearestStopTheNewLensReports() {
+        let telephoto: CameraAperturePolicy.Capability = .variable([2.8, 4, 5.6])
+        #expect(CameraAperturePolicy.heldAperture(4.0, capability: telephoto) == 4.0)
+        let wide: CameraAperturePolicy.Capability = .variable([1.8, 2.2])
+        #expect(CameraAperturePolicy.heldAperture(4.0, capability: wide) == 2.2)
+        // Auto stays Auto.
+        #expect(CameraAperturePolicy.heldAperture(nil, capability: telephoto) == nil)
+    }
+
+    /// A lens whose iris cannot vary has nothing to hold, so the intent falls back
+    /// to the device's own auto exposure instead of pinning custom exposure at a
+    /// stop the operator never chose. Same rule the session already applied.
+    @Test func aFixedOrAbsentIrisHoldsNothing() {
+        #expect(CameraAperturePolicy.heldAperture(4.0, capability: .fixed(2.2)) == nil)
+        #expect(CameraAperturePolicy.heldAperture(4.0, capability: .unavailable) == nil)
+        #expect(CameraAperturePolicy.heldAperture(nil, capability: .fixed(2.2)) == nil)
     }
 
     @Test func apertureExposureCompositionPreservesManualISOAndAutomaticISO() {
@@ -260,7 +340,7 @@ struct CameraPolicyTests {
             matrix: nil, primaries: "ITU_R_2020", transfer: "ITU_R_2020"
         )
         #expect(reasons == [
-            "format dimensions are 1920x1080, expected 3840x2160 or 2160x3840",
+            "format dimensions are 1920x1080, expected 3840x2160, 2160x3840, 1920x1440 or 1440x1920",
             "pixel format BGRA was not negotiated",
             "Log transfer is AppleLog2, expected Apple Log 2",
             "YCbCr matrix is missing, expected ITU_R_2020",
@@ -279,6 +359,18 @@ struct CameraPolicyTests {
         #expect(!CameraSampleValidationPolicy.shouldFailForFrameDrops(recentDropCount: 2))
         #expect(CameraSampleValidationPolicy.shouldFailForFrameDrops(recentDropCount: 3))
         #expect(CameraSampleValidationPolicy.dropTimesWithinWindow([0, 1.9], now: 3.8) == [1.9, 3.8])
+    }
+
+    /// The encoder's first append blocks long enough that a 60 fps source spills
+    /// frames into the capture pool. Those are start-up cost; a burst after the
+    /// window is still a failing take.
+    @Test func encoderPrimingWindowExcusesOnlyTheStartUpBurst() {
+        #expect(CameraSampleValidationPolicy.isEncoderPrimingDrop(firstAppended: nil, dropTime: 10))
+        #expect(CameraSampleValidationPolicy.isEncoderPrimingDrop(firstAppended: 10, dropTime: 10.01))
+        #expect(CameraSampleValidationPolicy.isEncoderPrimingDrop(firstAppended: 10, dropTime: 10.49))
+        #expect(!CameraSampleValidationPolicy.isEncoderPrimingDrop(firstAppended: 10, dropTime: 10.5))
+        #expect(!CameraSampleValidationPolicy.isEncoderPrimingDrop(firstAppended: 10, dropTime: 14))
+        #expect(!CameraSampleValidationPolicy.isEncoderPrimingDrop(firstAppended: 10, dropTime: .infinity))
     }
 
     @Test func cancelledStartRetainsRecorderEpochUntilItsTerminalCallback() throws {

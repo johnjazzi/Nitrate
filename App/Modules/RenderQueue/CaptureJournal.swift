@@ -27,10 +27,14 @@ struct CaptureJournal {
     }
 
     /// Record that a capture has started. Safe to call repeatedly.
-    func markPending(_ capture: URL, at date: Date = Date()) {
+    func markPending(_ capture: URL, at date: Date = Date(), capturePolicy: RenderCapturePolicy? = nil) {
         try? fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        let payload: [String: Any] = ["source": capture.path,
+        var payload: [String: Any] = ["source": capture.path,
                                       "createdAt": date.timeIntervalSince1970]
+        if let capturePolicy, let data = try? JSONEncoder().encode(capturePolicy),
+           let policy = try? JSONSerialization.jsonObject(with: data) {
+            payload["capturePolicy"] = policy
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
         try? data.write(to: markerURL(for: capture), options: .atomic)
     }
@@ -38,6 +42,14 @@ struct CaptureJournal {
     /// The queue has durably accepted this capture; the marker is no longer needed.
     func acknowledge(_ capture: URL) {
         try? fileManager.removeItem(at: markerURL(for: capture))
+    }
+
+    func capturePolicy(for capture: URL) -> RenderCapturePolicy? {
+        guard let data = try? Data(contentsOf: markerURL(for: capture)),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let policy = object["capturePolicy"],
+              let encoded = try? JSONSerialization.data(withJSONObject: policy) else { return nil }
+        return try? JSONDecoder().decode(RenderCapturePolicy.self, from: encoded)
     }
 
     /// Captures still marked whose file exists, oldest first. A marker whose file

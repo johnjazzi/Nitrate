@@ -4,7 +4,7 @@ import Metal
 
 /// Verifies the Swift `GrainUniforms` struct matches the Metal `GrainUniforms`
 /// layout in `Resources/Shaders/grain.metal`
-/// (uint/float/float/float/float, 20 bytes).
+/// (uint/float/float/float/float/float, 24 bytes).
 ///
 /// The field offset, stride, and actual GPU read-back checks here are what the
 /// grain ABI defect was about: the Swift `frameIndex` was a `UInt` (8 bytes),
@@ -12,14 +12,15 @@ import Metal
 /// struct to five floats for the print-gauge amplitude multiplier (m00581).
 struct GrainABITests {
     @Test func layoutMatchesMetalABI() {
-        #expect(MemoryLayout<GrainUniforms>.size == 20)
-        #expect(MemoryLayout<GrainUniforms>.stride == 20)
+        #expect(MemoryLayout<GrainUniforms>.size == 24)
+        #expect(MemoryLayout<GrainUniforms>.stride == 24)
         #expect(MemoryLayout<GrainUniforms>.alignment == 4)
         #expect(MemoryLayout<GrainUniforms>.offset(of: \.frameIndex) == 0)
         #expect(MemoryLayout<GrainUniforms>.offset(of: \.iso) == 4)
         #expect(MemoryLayout<GrainUniforms>.offset(of: \.grainSize) == 8)
         #expect(MemoryLayout<GrainUniforms>.offset(of: \.edgeBoostMultiplier) == 12)
         #expect(MemoryLayout<GrainUniforms>.offset(of: \.gaugeAmplitude) == 16)
+        #expect(MemoryLayout<GrainUniforms>.offset(of: \.chromaAmount) == 20)
     }
 
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
@@ -38,6 +39,7 @@ struct GrainABITests {
             float grainSize;
             float edgeBoostMultiplier;
             float gaugeAmplitude;
+            float chromaAmount;
         };
 
         kernel void echo_grain_uniforms(
@@ -49,6 +51,7 @@ struct GrainABITests {
             out[2] = as_type<uint>(u.grainSize);
             out[3] = as_type<uint>(u.edgeBoostMultiplier);
             out[4] = as_type<uint>(u.gaugeAmplitude);
+            out[5] = as_type<uint>(u.chromaAmount);
         }
         """
 
@@ -61,14 +64,16 @@ struct GrainABITests {
         let expectedGrainSize = Float(7.89)
         let expectedEdgeBoost = Float(2.75)
         let expectedGaugeAmplitude = Float(0.15)
+        let expectedChromaAmount = Float(0.02)
         var uniforms = GrainUniforms(
             frameIndex: 0xDEAD_BEEF,
             iso: expectedISO,
             grainSize: expectedGrainSize,
             edgeBoostMultiplier: expectedEdgeBoost,
-            gaugeAmplitude: expectedGaugeAmplitude
+            gaugeAmplitude: expectedGaugeAmplitude,
+            chromaAmount: expectedChromaAmount
         )
-        let outBuffer = try #require(device.makeBuffer(length: MemoryLayout<UInt32>.size * 5, options: .storageModeShared))
+        let outBuffer = try #require(device.makeBuffer(length: MemoryLayout<UInt32>.size * 6, options: .storageModeShared))
 
         let commandBuffer = try #require(queue.makeCommandBuffer())
         let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
@@ -89,5 +94,6 @@ struct GrainABITests {
         #expect(Float(bitPattern: out[2]) == expectedGrainSize)
         #expect(Float(bitPattern: out[3]) == expectedEdgeBoost)
         #expect(Float(bitPattern: out[4]) == expectedGaugeAmplitude)
+        #expect(Float(bitPattern: out[5]) == expectedChromaAmount)
     }
 }

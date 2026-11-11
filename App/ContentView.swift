@@ -8,14 +8,39 @@ struct ContentView: View {
     let library: FilmStockLibrary
     let renderQueueViewModel: RenderQueueViewModel
     let purchaseViewModel: PurchaseViewModel
+    /// App-owned, so the launch counter and cue state live once per process.
+    let stockSelectorHint: StockSelectorHintModel
 
     @State private var showStockSheet = false
     @State private var showQueueSheet = false
+    @State private var cameraMode = CameraModeSelection()
+    /// A mode refusal the row's own gate cannot express (an unavailable shared idle
+    /// camera, a failed profile switch). Shown with the row and cleared shortly after.
+    @State private var modeRefusalNotice: String?
+    @State private var modeRefusalTask: Task<Void, Never>?
+    /// Photo is available on the registered production and development
+    /// identities in every configuration. The policy reads the bundle identity,
+    /// not `#if DEBUG`, so the TestFlight build offers the same mode.
+    private var photoModeAvailable: Bool {
+        DevelopmentPhotoFeature.isAvailableForCurrentBundle()
+    }
+    @State private var developModel: DevelopVideoModel
     @State private var showSettings = false
+    /// Whether the corner notice is showing its full message. Reset whenever a
+    /// new notice replaces the old one.
+    @State private var noticeExpanded = false
     @State private var showDaylightRescue = false
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("showFramedPreview") private var showFramedPreview = false
+    /// The same persisted key the Settings row writes; read here so the live
+    /// preview can show the crop that a render will apply.
+    @AppStorage(DeliveryFraming.preferenceKey) private var deliveryFramingRaw = DeliveryFraming.defaultValue.rawValue
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
+    @AppStorage(CameraControlAdjustment.preferenceKey) private var cameraControlAdjustment = CameraControlAdjustment.defaultValue.rawValue
+    /// The persisted Camera Tips switch, shared with the Settings row. ON by
+    /// default, so an install that never opens Settings behaves as before.
+    @AppStorage(CameraHintPreferences.showsAdvisoryTipsKey)
+    private var showsAdvisoryTips = CameraHintPreferences.defaultShowsAdvisoryTips
     @State private var controlBounds: [String: CGRect] = [:]
     @State private var currentSourceURL: URL?
     /// The durable awaiting-stock entry created for the current take, if any.
@@ -24,19 +49,27 @@ struct ContentView: View {
     @State private var showsRecordingFailure = false
     @State private var failureFlashGeneration = 0
     @State private var failureDetail: String?
+    /// Latched on the first time the stock selector is shown this launch, so the
+    /// discovery cue is skipped for the rest of the launch.
+    @State private var stockSelectorOpenedThisLaunch = false
 
     /// Persisted stock selection — survives across recordings.
     @State private var selectedStock: FilmStockConfig?
     @State private var currentISO: Float = 400
 
     init(cameraViewModel: CameraViewModel, library: FilmStockLibrary,
-         renderQueueViewModel: RenderQueueViewModel, purchaseViewModel: PurchaseViewModel) {
+         renderQueueViewModel: RenderQueueViewModel, purchaseViewModel: PurchaseViewModel,
+         stockSelectorHint: StockSelectorHintModel) {
         self.cameraViewModel = cameraViewModel
         self.library = library
         self.renderQueueViewModel = renderQueueViewModel
+        _developModel = State(initialValue: DevelopVideoModel(queue: renderQueueViewModel))
         self.purchaseViewModel = purchaseViewModel
+        self.stockSelectorHint = stockSelectorHint
         let stock = library.lastSelectedStockId.flatMap { id in
-            library.videoStocks().first { $0.stockId == id }
+            library.stocks.contains(where: { $0.stockId == id })
+                ? library.preferredVisibleStock(for: id)
+                    .map { $0.overridingISO(library.lastISO(for: $0.stockId)) } : nil
         }
         _selectedStock = State(initialValue: stock)
         _currentISO = State(initialValue: stock?.defaultISO ?? 400)
@@ -50,6 +83,12 @@ struct ContentView: View {
     /// Pinch-zoom baseline (ISO/EV controls live in `CameraControlBar`).
     @State private var pinchIsActive = false
     @State private var pinchFocalLength = 24.0
+    /// Develop's own gauge and push/pull. The panel presents those controls and
+    /// the render reads exactly this state, so what is on screen is what is
+    /// applied. Seeded from the stock's remembered preference when Develop opens.
+    @State private var developGauge: PrintGauge = .neutral
+    @State private var developPushPullAutomatic = true
+    @State private var developPushPullStops: PushPullStops = .none
 
     /// Physical orientation source for the `.cameraUpright()` chrome modifier.
     /// Every icon/text glyph in the camera UI rotates to stay readable in
@@ -62,10 +101,40 @@ struct ContentView: View {
     @State private var manualFocusPosition: Double = 0.5
     @State private var isManualFocus = false
     @State private var focusReadGeneration: UInt64 = 0
+    /// Live manual-focus stops surfaced on the in-frame ruler. Session-local:
+    /// never persisted across a launch, and owned by the focus gesture code.
+    @State private var focusStops: [ManualFocusStop] = []
+    /// Session-local Settings switches; both default off and never persist
+    /// across a launch. Zoom Controls keeps the focal-length ruler and its
+    /// hold arrows on screen; Manual Focus shares `isManualFocus` with the
+    /// panel's AF/MF key.
+    @State private var zoomControlsEnabled = false
+    /// The master switch for the new in-frame manual controls: the toolbar's
+    /// manual key toggles every in-frame control (both rails and the inline
+    /// button stack) together. Off by default and session-local. Hiding them
+    /// stops a live zoom ramp but never resets the hardware manual focus,
+    /// aperture or stabilization, nor the session focus stops.
+    @State private var showInlineManualControls = false
+
+#if DEBUG
+    /// User-owned debug switch that reopens the legacy manual-controls pop-up
+    /// panel instead of the in-frame master controls. Mirrored in Settings so
+    /// the discovery path is never stranded, and always resolved off in a
+    /// Release build.
+    @AppStorage(CameraManualControlsFeatureFlags.legacyManualControlsKey)
+    private var legacyManualControlsStored = CameraManualControlsFeatureFlags.legacyManualControlsDefault
+#endif
 
 #if DEBUG
     /// Frozen frame + live tuning sheet (DEBUG builds only).
     @State private var debugFrameViewModel: DebugFrameViewModel?
+    /// Set by the debug sheet's "Preview stock outline" button; the sheet's
+    /// onDismiss fires the one-shot outline once the sheet is fully gone, so the
+    /// outline is never painted behind the sheet.
+    private enum DebugTest { case stockOutline, fault }
+    @State private var pendingDebugTest: DebugTest?
+    /// Hint decision snapshot frozen when the debug sheet opened, shown there.
+    @State private var debugHintDiagnostics: StockSelectorHintDiagnostics?
     /// Whether the debug affordances are on the screen. Mirrored in the debug
     /// sheet and in Settings, so hiding the DEBUG button cannot strand the menu
     /// that turns it back on.
@@ -91,38 +160,71 @@ struct ContentView: View {
                 Color.black.ignoresSafeArea()
 
                 cameraLayer(in: previewRect(in: geometry))
+                    .opacity(isDevelopMode ? 0 : 1)
+                    .allowsHitTesting(!isDevelopMode)
+
+                if isDevelopMode {
+                    let rect = boundedPreviewRect(in: geometry) ?? .zero
+                    developPanel
+                        .frame(width: rect.width, height: rect.height)
+                        .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
+                        .position(x: rect.midX, y: rect.midY)
+                        // Entering Develop lands on the stock's remembered gauge
+                        // and push/pull, exactly like the stock sheet does.
+                        .onAppear { restoreDevelopControls() }
+                        .onChange(of: selectedStock?.stockId) { _, _ in restoreDevelopControls() }
+                }
 
                 VStack(spacing: 0) {
                     topBar
+                        .disabled(isDevelopMode)
+                        .opacity(isDevelopMode ? 0.3 : 1)
                         .background(controlMeasurement("top"))
 
                     Spacer()
 
-                    controlBar
+                    controlBar(horizontalInset: controlBarHorizontalInset(in: geometry))
                         .padding(.bottom, 8)
                         .background(controlMeasurement("bottom"))
+                }
+
+                if let bottom = controlBounds["bottom"],
+                   let slot = CameraModeStripGeometry.frame(
+                    controls: bottom, canvasWidth: geometry.size.width,
+                    horizontalInset: controlBarHorizontalInset(in: geometry)) {
+                    CameraModeCarousel(selected: cameraMode.selected, enabled: canChangeCameraMode,
+                                       rotationDegrees: statusRotationDegrees, onSelect: selectCameraMode,
+                                       photoAvailable: photoModeAvailable,
+                                       onBlockedSelect: { _ in explainBlockedModeTap() })
+                        .frame(width: slot.width, height: slot.height)
+                        .position(x: slot.midX, y: slot.midY)
+                        // The letters are dimmed rather than disabled, so a tap
+                        // can still explain itself — for a moment, where the
+                        // operator is looking. It is not a standing label: a take
+                        // dims this row for its whole length, and a permanent
+                        // "stop the take to change modes" banner over a running
+                        // take is noise the recording status face already covers.
+                        //
+                        // The capsule sits BELOW the row, not above it: at -30 it
+                        // landed under the sensor housing and was clipped
+                        // mid-sentence. It only ever answers a tap, so it cannot
+                        // become a standing label over a take.
+                        .overlay(alignment: .top) {
+                            if let notice = modeRefusalNotice {
+                                modeStatusCapsule(notice)
+                                    .offset(y: 44)
+                            }
+                        }
+                        .accessibilityValue(cameraViewModel.shootingModeBlockedReason
+                            ?? modeRefusalNotice ?? "")
                 }
 
                 if let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
                     RecordingStatusOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
                                            rotationDegrees: statusRotationDegrees,
-                                           isInteractive: canManageDaylightMode) {
-                        recordingStatus
+                                           isInteractive: canManageDaylightMode && !isPhotoMode) {
+                        if isPhotoMode { EmptyView() } else { recordingStatus }
                     }
-                }
-
-                // A canvas sibling, not a child painted beyond the shooting bar:
-                // visibility never resizes the preview and the whole button is hittable.
-                if shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
-                   let rect = DaylightExposureRescueGeometry.buttonRect(
-                    above: exposure, in: geometry.size, rotationDegrees: statusRotationDegrees) {
-                    ExposureRescueButton(armed: cameraViewModel.sessionFrameRate == .daylight60,
-                                         enabled: cameraViewModel.canChangeSessionFrameRate,
-                                         action: { showDaylightRescue = true })
-                        .frame(width: 92, height: 44)
-                        .rotationEffect(.degrees(statusRotationDegrees))
-                        .frame(width: rect.width, height: rect.height)
-                        .position(x: rect.midX, y: rect.midY)
                 }
 
                 // Below the threshold the rescue trigger is gone, but an armed
@@ -130,7 +232,7 @@ struct ContentView: View {
                 // the same status face in its idle-armed form: no dot, no timer,
                 // and a non-sizing sibling so it reserves no toolbar slot, never
                 // hides the lens key and cannot resize the preview.
-                if !shouldOfferDaylightRescue, recordPresentation == .idle,
+                if !isDevelopMode, !isPhotoMode, !shouldOfferDaylightRescue, recordPresentation == .idle,
                    cameraViewModel.sessionFrameRate == .daylight60,
                    let top = controlBounds["top"], let bottom = controlBounds["bottom"],
                    let badge = DaylightIdleBadgeGeometry.rect(
@@ -140,7 +242,74 @@ struct ContentView: View {
                         .position(x: badge.midX, y: badge.midY)
                 }
 
-                if showManualControls, let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
+                // In-frame rulers, bounded by the live preview intersected with
+                // the space between the toolbar and the shooting bar. They read
+                // no measured size of their own, so they cannot resize the
+                // preview while they appear and disappear. Drawn before the
+                // manual panel, so an open panel sits above the focus ruler.
+                if let bounds = frameRulerBounds(in: geometry) {
+                    if isPhotoMode, showsPhotoShutterRail,
+                       let exposure = cameraViewModel.photoExposureSnapshot {
+                        let rect = FrameRulerPlacementGeometry.photoShutterRect(
+                            inFrame: bounds, orientationDegrees: statusRotationDegrees,
+                            excluding: controlBounds["diagnostic"])
+                        if !rect.isNull {
+                            PhotoShutterControl(snapshot: exposure,
+                                setDuration: cameraViewModel.setPhotoShutterDuration,
+                                setLocked: cameraViewModel.setPhotoShutterLocked, width: rect.width)
+                                .id(cameraViewModel.activeLens)
+                                .disabled(cameraViewModel.isPhotoCaptureBusy || cameraViewModel.isChangingFrameRate)
+                                .frame(width: rect.width, height: rect.height)
+                                .clipped()
+                                .position(x: rect.midX, y: rect.midY)
+                        }
+                    }
+                    if legacyManualControlsEnabled {
+                        // Legacy fallback (debug flag on): the committed
+                        // in-frame rulers, each shown by its own Settings
+                        // switch, are preserved unchanged.
+                        if isManualFocus {
+                            let rect = FrameRulerPlacementGeometry.rect(
+                                inFrame: bounds, edge: .right,
+                                thickness: FrameRulerPlacementGeometry.focusThickness,
+                                orientationDegrees: statusRotationDegrees)
+                            if !rect.isNull {
+                                FrameRulerSlot(rect: rect, rotationDegrees: statusRotationDegrees) {
+                                    ManualFocusRuler(lensPosition: $manualFocusPosition,
+                                                     enabled: canUseManualFocusRuler,
+                                                     stops: $focusStops)
+                                }
+                            }
+                        }
+                        if zoomControlsEnabled {
+                            let rect = FrameRulerPlacementGeometry.rect(
+                                inFrame: bounds, edge: .left,
+                                thickness: FrameRulerPlacementGeometry.zoomThickness,
+                                orientationDegrees: statusRotationDegrees)
+                            if !rect.isNull {
+                                FrameRulerSlot(rect: rect, rotationDegrees: statusRotationDegrees) {
+                                    FrameZoomRuler(
+                                        millimeters: pinchIsActive ? pinchFocalLength
+                                                                   : cameraViewModel.currentFocalLengthMM,
+                                        enabled: canUseZoomControls,
+                                        revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
+                                        begin: { cameraViewModel.beginSlowZoom($0) },
+                                        end: cameraViewModel.endSlowZoom(revision:),
+                                        step: cameraViewModel.stepDisplayZoom,
+                                        availableFocalRange: cameraViewModel.focalLengthRulerRange)
+                                }
+                            }
+                        }
+                    } else if showInlineManualControls {
+                        // Default layout: zoom rail on the physical left, the
+                        // manual-focus rail with its button stack on the
+                        // physical right, revealed together by the master key.
+                        inlineFrameRulers(in: bounds)
+                    }
+                }
+
+                if showManualControls, legacyManualControlsEnabled, !isDevelopMode,
+                   let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
                     ManualControlsOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
                                           excluding: RecordingStatusOverlayGeometry.rect(
                                             viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
@@ -150,9 +319,10 @@ struct ContentView: View {
                         ManualControlsPanel(
                             cameraViewModel: cameraViewModel,
                             manualFocusPosition: $manualFocusPosition,
-                            isManualFocus: $isManualFocus,
+                            isManualFocus: manualFocusBinding,
                             expanded: $manualControlsExpanded,
                             landscape: abs(statusRotationDegrees) == 90,
+                            zoomControlsEnabled: $zoomControlsEnabled,
                             onDismiss: {
                                 cameraViewModel.endSlowZoom()
                                 withAnimation(.easeInOut(duration: 0.2)) { showManualControls = false }
@@ -162,18 +332,43 @@ struct ContentView: View {
                     .transition(.opacity)
                 }
 
-                if pinchIsActive, let bottom = controlBounds["bottom"] {
+                // A canvas sibling, not a child painted beyond the shooting bar:
+                // visibility never resizes the preview and the whole button is hittable.
+                // Photo and Develop keep the rescue hidden: neither has a scene the
+                // daylight control can act on, so it must not take their space.
+                if !isDevelopMode, !isPhotoMode, !daylightRescueSuppressedByHighRate,
+                   shouldOfferDaylightRescue, let exposure = controlBounds["exposure"],
+                   let rect = DaylightExposureRescueGeometry.buttonRect(
+                    above: exposure, in: geometry.size, rotationDegrees: statusRotationDegrees,
+                    excluding: daylightRescueExclusion(in: geometry)) {
+                    ExposureRescueButton(armed: cameraViewModel.sessionFrameRate == .daylight60,
+                                         enabled: cameraViewModel.canChangeSessionFrameRate,
+                                         action: { showDaylightRescue = true })
+                        .frame(width: 92, height: 44)
+                        .rotationEffect(.degrees(statusRotationDegrees))
+                        .frame(width: rect.width, height: rect.height)
+                        .position(x: rect.midX, y: rect.midY)
+                }
+
+                // Preserved pinch behaviour: with Zoom Controls off the ruler
+                // still appears only while a pinch is live, in its original
+                // stationary slot above the shooting bar.
+                if pinchIsActive, !zoomControlsEnabled, let bottom = controlBounds["bottom"] {
                     FocalLengthRuler(millimeters: pinchFocalLength)
                         .frame(width: max(0, geometry.size.width - 32))
                         .position(x: geometry.size.width / 2, y: max(34, bottom.minY - 42))
                 }
 
                 if !showFramedPreview, let top = controlBounds["top"] {
-                    RecordingTallyLight(isRecording: recordPresentation == .recording)
+                    RecordingTallyLight(isRecording: recordPresentation.showsLiveChrome)
                         .position(x: geometry.size.width - 24, y: top.maxY + 20)
                 }
 
                 debugControlsOverlay(in: geometry)
+                    .disabled(isDevelopMode)
+                    .opacity(isDevelopMode ? 0.3 : 1)
+
+                cameraNoticeOverlay(in: geometry)
 
                 errorOverlays
             }
@@ -184,7 +379,7 @@ struct ContentView: View {
         // An in-camera overlay, not a sheet: the preview, toolbar and shooting bar
         // keep their exact geometry and the scene stays visible behind the dim.
         .overlay {
-            if showDaylightRescue {
+            if showDaylightRescue, !daylightRescueSuppressedByHighRate {
                 DaylightExposureRescueOverlay(
                     armed: cameraViewModel.sessionFrameRate == .daylight60,
                     available: cameraViewModel.supportsDaylight60,
@@ -199,8 +394,17 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showStockSheet) { stockSheet }
         .sheet(isPresented: $showQueueSheet) { queueSheet }
-        .sheet(isPresented: $showSettings) {
-            PurchaseView(viewModel: purchaseViewModel, showFramedPreview: $showFramedPreview)
+        .sheet(isPresented: $showSettings, onDismiss: {
+            cameraViewModel.applyCaptureFormatPreference()
+            reconcileStockVisibility()
+        }) {
+            PurchaseView(viewModel: purchaseViewModel, showFramedPreview: $showFramedPreview,
+                         manualFocusEnabled: manualFocusBinding,
+                         zoomControlsEnabled: zoomControlsSetting,
+                         legacyManualControlsEnabled: legacyManualControlsSetting,
+                         cameraControlSupported: cameraViewModel.supportsCameraControl,
+                         availableCaptureFormats: cameraViewModel.availableCaptureFormats,
+                         stockLibrary: library)
         }
         .onChange(of: cameraViewModel.lastRecordedURL) { _, newURL in
             guard let url = newURL else { return }
@@ -233,27 +437,80 @@ struct ContentView: View {
             flashRecordingFailure()
         }
         .onAppear {
+            cameraViewModel.onPhotoCaptured = { source, stock, gauge, seed, crop in
+                renderQueueViewModel.enqueuePhoto(sourceURL: source, stockId: stock,
+                    iso: cameraViewModel.photoExposureSnapshot?.iso ?? cameraViewModel.liveISO,
+                    gauge: gauge, cropZoom: crop, seed: seed)
+            }
             availableLenses = cameraViewModel.session.availableLenses
             if !availableLenses.contains(selectedLens) {
                 selectedLens = availableLenses.first ?? .wide
             }
-            if let selectedStock { applyStockWhiteBalance(selectedStock) }
+            if let selectedStock {
+                cameraViewModel.developmentPhotoStockID = selectedStock.stockId
+                applyStockWhiteBalance(selectedStock)
+            }
+            stockSelectorHint.update(stockHintInputs)
         }
         .onChange(of: selectedStock) { _, newStock in
+            // A new reference moves what the estimate is compared with.
+            stockSelectorHint.resetMismatch()
             if let stock = newStock {
+                cameraViewModel.developmentPhotoStockID = stock.stockId
                 applyStockWhiteBalance(stock)
             }
+        }
+        .onChange(of: stockHintInputs) { _, inputs in
+            stockSelectorHint.update(inputs)
+        }
+        .onChange(of: showStockSheet) { _, shown in
+            // Opening the selector once skips the discovery cue for the launch.
+            if shown { stockSelectorOpenedThisLaunch = true }
         }
         .onChange(of: showManualControls) { _, shown in
             if !shown { cameraViewModel.endSlowZoom() }
         }
+        .onChange(of: manualFocusPosition) { _, value in
+            // The single hardware write for a focus change: the panel track and
+            // the in-frame ruler both mutate `manualFocusPosition`, and only a
+            // live manual focus reaches the lens.
+            guard isManualFocus else { return }
+            cameraViewModel.session.setManualFocusPosition(Float(value))
+        }
+        .onChange(of: zoomControlsEnabled) { _, enabled in
+            // Turning the overlay off cancels any live ramp it started.
+            if !enabled { cameraViewModel.endSlowZoom() }
+        }
+        .onChange(of: captureBusy) { _, busy in
+            // A take or a frame-rate/lens transition owns the device: stop the
+            // arrows' ramp rather than let it race the reconfigure.
+            if busy { cameraViewModel.endSlowZoom() }
+        }
+        .onChange(of: cameraViewModel.canChangeShootingMode) { _, allowed in
+            if allowed { reconcileStockVisibility() }
+        }
+        .onChange(of: showsAdvisoryTips) { _, enabled in
+            // Turning advisory tips off clears whatever cue is on screen and any
+            // half-accrued sustained condition. It never resets the persisted
+            // launch tracker, so the cue can appear again once tips are back on.
+            if !enabled { showDaylightRescue = false }
+            stockSelectorHint.update(stockHintInputs)
+        }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { showDaylightRescue = false }
+            if phase == .active { reconcileStockVisibility() }
+            if phase != .active {
+                focusReadGeneration &+= 1
+                showDaylightRescue = false
+                cameraViewModel.endSlowZoom()
+            }
         }
         .onChange(of: showSettings || showQueueSheet || showStockSheet || showDaylightRescue) { _, shown in
             if shown { cameraViewModel.endSlowZoom() }
         }
         .onChange(of: cameraViewModel.activeLens) { _, lens in
+            // A lens change invalidates any sustained estimate and any ramp.
+            cameraViewModel.endSlowZoom()
+            stockSelectorHint.resetMismatch()
             selectedLens = lens
             focusReadGeneration &+= 1
             let focusRequest = focusReadGeneration
@@ -272,9 +529,44 @@ struct ContentView: View {
     /// Shipping screen plus the debug single-frame sheet, presented only when the
     /// DEBUG button captures a frame.
     private var debugEnabledBody: some View {
-        shippingBody.sheet(item: $debugFrameViewModel) { viewModel in
-            DebugFrameSheet(viewModel: viewModel)
+        shippingBody.sheet(item: $debugFrameViewModel, onDismiss: firePendingDebugTest) { viewModel in
+            DebugFrameSheet(
+                viewModel: viewModel,
+                onPreviewStockOutline: { pendingDebugTest = .stockOutline },
+                onPreviewFault: { pendingDebugTest = .fault },
+                hintDiagnostics: debugHintDiagnostics)
         }
+    }
+
+    /// Fire the requested one-shot preview only after the sheet has fully
+    /// dismissed, so the whole-well outline is never painted behind the sheet.
+    private func firePendingDebugTest() {
+        guard let test = pendingDebugTest else { return }
+        pendingDebugTest = nil
+        guard scenePhase == .active else { return }
+        switch test {
+        case .stockOutline:
+            stockSelectorHint.update(stockHintInputs)
+            stockSelectorHint.beginDebugPreview()
+        case .fault:
+            showDebugFault()
+        }
+    }
+
+    private func showDebugFault() {
+        guard recordPresentation == .idle else { return }
+        failureDetail = "Debug preview — no recording was attempted."
+        flashRecordingFailure()
+    }
+
+    /// Frozen hint snapshot for the debug sheet, captured live at the same moment
+    /// the sheet opens. It never mutates the hint's rules, launch count, white
+    /// balance, exposure or selected stock.
+    private func stockHintDiagnosticsSnapshot() -> StockSelectorHintDiagnostics {
+        stockSelectorHint.debugDiagnostics(
+            estimatedKelvin: cameraViewModel.neutralSceneKelvin,
+            estimateCapturedAt: cameraViewModel.neutralSceneCapturedAt,
+            referenceKelvin: selectedStock?.colorTemperature)
     }
 
     /// Capture one frame from the live camera and open the debug sheet on it.
@@ -283,12 +575,15 @@ struct ContentView: View {
             cameraViewModel.errorMessage = "Select a film stock before opening the debug frame."
             return
         }
+        let gauge = library.lastGauge(for: stock.stockId) ?? .neutral
+        let debugConfig = stock.overridingGauge(gauge)
         cameraViewModel.captureDebugFrame { buffer in
             guard let buffer else {
                 cameraViewModel.errorMessage = "Debug frame capture failed — is the camera running?"
                 return
             }
-            debugFrameViewModel = DebugFrameViewModel(frame: buffer, config: stock,
+            debugHintDiagnostics = stockHintDiagnosticsSnapshot()
+            debugFrameViewModel = DebugFrameViewModel(frame: buffer, config: debugConfig,
                                                       stocks: library.videoStocks())
         }
     }
@@ -296,12 +591,32 @@ struct ContentView: View {
 
     // MARK: - Helpers
 
+    /// Settings may change picker availability, never an in-flight capture or queued job.
+    private func reconcileStockVisibility() {
+        guard !showSettings, scenePhase == .active, cameraViewModel.canChangeShootingMode,
+              !captureBusy, !cameraViewModel.isPhotoCaptureBusy,
+              let current = selectedStock, !library.isStockVisible(current.stockId),
+              let fallback = library.preferredVisibleStock(for: current.stockId) else { return }
+        selectedStock = fallback.overridingISO(library.lastISO(for: fallback.stockId))
+        currentISO = library.lastISO(for: fallback.stockId)
+        library.setSelectedStock(fallback.stockId)
+        restoreDevelopControls()
+    }
+
     private func enqueueRender(sourceURL: URL, stock: FilmStockConfig) {
         renderQueueViewModel.enqueue(
             sourceURL: sourceURL,
             stockId: stock.stockId,
             iso: currentISO,
             gauge: library.lastGauge(for: stock.stockId),
+            // This path renders straight off the camera without passing through
+            // the stock sheet, so it has to resolve the push/pull itself. It used
+            // to omit the argument entirely, which defaulted every clip to
+            // neutral and made push/pull look broken on video while photos — which
+            // do pass a resolved value — worked.
+            pushPull: library.lastPushPull(for: stock.stockId)
+                .resolved(meteredOffsetEV: cameraViewModel.hasExposureMeter
+                    ? cameraViewModel.liveExposureTargetOffset : nil),
             capturePolicy: cameraViewModel.capturePolicy(for: sourceURL)
         )
     }
@@ -320,6 +635,21 @@ struct ContentView: View {
             Color.clear.preference(key: CameraControlBoundsPreference.self,
                                    value: [name: geometry.frame(in: .named("cameraCanvas"))])
         }
+    }
+
+    /// The stored delivery framing, resolved so an absent or unreadable value
+    /// behaves exactly as 16:9.
+    private var deliveryFraming: DeliveryFraming {
+        DeliveryFraming.resolved(deliveryFramingRaw)
+    }
+
+    /// True while the session is recording the native 4:3 open-gate readout.
+    /// Clamped to the hardware: a default of open gate on a phone without the
+    /// format records UHD, and the guide must agree with the session.
+    private var isOpenGateCapture: Bool {
+        CaptureFormat.resolvedForDevice(
+            UserDefaults.standard.string(forKey: CaptureFormat.preferenceKey),
+            openGateSupported: CaptureFormatAvailability.supports(.openGate2K)).isOpenGate
     }
 
     private func previewRect(in geometry: GeometryProxy) -> CGRect {
@@ -344,25 +674,346 @@ struct ContentView: View {
                       height: geometry.size.height + insets.top + insets.bottom)
     }
 
+    // MARK: - Manual Focus & Zoom Rulers
+
+    /// Whether the legacy manual-controls pop-up panel may be mounted. The flag
+    /// is debug-only: a Release build resolves it false even if a device still
+    /// carries the preference from a debug install.
+    private var legacyManualControlsEnabled: Bool {
+        // Photo uses the current manual surface so its Shutter Control toggle
+        // remains reachable even when the legacy Video fallback was selected.
+        if isPhotoMode { return false }
+        #if DEBUG
+        return CameraManualControlsFeatureFlags.resolvedLegacyManualControls(
+            stored: legacyManualControlsStored, isDebugBuild: true)
+        #else
+        return false
+        #endif
+    }
+
+    /// Whether the Photo shutter rail is mounted.
+    ///
+    /// The rail is not only a manual-panel control: pinning the ISO pins the
+    /// shutter with it (the film standard, 1/48s), and the shutter is then the
+    /// operator's only exposure control — so it sticks on its own even when the
+    /// manual panel is collapsed. The other manual controls keep their own
+    /// toggles.
+    private var showsPhotoShutterRail: Bool {
+        guard isPhotoMode else { return false }
+        if showInlineManualControls { return true }
+        return cameraViewModel.photoExposureSnapshot?.isoLocked == true
+    }
+
+    /// The toolbar's manual key reads as active while either presentation is
+    /// showing: the legacy pop-up under the debug flag, otherwise the in-frame
+    /// master block.
+    private var manualControlsActive: Bool {
+        legacyManualControlsEnabled ? showManualControls : showInlineManualControls
+    }
+
+    /// The Settings Zoom Controls row. In the default presentation it drives the
+    /// same visible state as the toolbar key — enabling it reveals the whole
+    /// in-frame block and disabling it hides the block — while under the debug
+    /// flag it keeps its committed, independent switch.
+    private var zoomControlsSetting: Binding<Bool> {
+        Binding(
+            get: { legacyManualControlsEnabled ? zoomControlsEnabled : showInlineManualControls },
+            set: { newValue in
+                if legacyManualControlsEnabled {
+                    zoomControlsEnabled = newValue
+                } else {
+                    setInlineManualControlsShown(newValue)
+                }
+            }
+        )
+    }
+
+    /// The debug-only Settings switch that reopens the legacy panel. It writes
+    /// the user-owned flag the resolver reads; Release builds see a constant.
+    private var legacyManualControlsSetting: Binding<Bool> {
+        #if DEBUG
+        $legacyManualControlsStored
+        #else
+        .constant(false)
+        #endif
+    }
+
+    /// Show or hide the in-frame master controls. Turning them on also lights
+    /// the Settings Zoom Controls switch so the discovery row never disagrees
+    /// with the screen; turning them off stops a live zoom ramp but leaves the
+    /// hardware manual focus, aperture, stabilization and the session focus
+    /// stops exactly as they were chosen.
+    private func setInlineManualControlsShown(_ shown: Bool) {
+        guard shown != showInlineManualControls else { return }
+        showInlineManualControls = shown
+        zoomControlsEnabled = shown
+        if !shown { cameraViewModel.endSlowZoom() }
+    }
+
+    /// The aperture the in-frame control prints: the operator's choice when there
+    /// is one, otherwise the measured iris. Video's choice never reaches the idle
+    /// device, so printing the hardware value alone made a working control look
+    /// dead — the take did shoot at the chosen stop.
+    private var apertureReadout: String {
+        CameraAperturePolicy.displayAperture(selected: cameraViewModel.selectedLensAperture,
+                                             measured: cameraViewModel.liveAperture)
+            .map { String(format: "f/%.1f", $0) } ?? "N/A"
+    }
+
+    /// Aperture can change only on a variable-aperture lens and only while the
+    /// active format is settled, matching the view model's own guard.
+    private var canChangeAperture: Bool {
+        cameraViewModel.canSelectAperture && !cameraViewModel.isChangingFrameRate
+    }
+
+    /// The default in-frame block: the zoom rail on the physical left with the
+    /// actual frame-rate key docked beneath it, and the manual-focus rail with
+    /// the inline button stack on the physical right.
+    ///
+    /// Both rails draw at 80% of their 44pt slot, inset flush to the preview
+    /// edge, while the slot keeps the full 44pt tap footprint. Each slot owns a
+    /// single outer rotation, so the docked key keeps its place at the physical
+    /// bottom of the left column in both landscape holds without any extra
+    /// geometry. The right stack keeps its three 44pt controls reserved even in
+    /// autofocus, where the rail renders grey and disabled instead of forcing
+    /// the lens into manual focus.
+    @ViewBuilder
+    private func inlineFrameRulers(in bounds: CGRect) -> some View {
+        let zoomRect = FrameRulerPlacementGeometry.rect(
+            inFrame: bounds, edge: .left,
+            thickness: FrameRulerPlacementGeometry.zoomThickness,
+            orientationDegrees: statusRotationDegrees)
+        if !zoomRect.isNull {
+            let slotRun = authoredRulerRun(zoomRect)
+            let docksRateKey = InlineFrameRateKeyPlacement.docksKey(
+                isVideoMode: !isPhotoMode && !isDevelopMode, slotRun: slotRun)
+            FrameRulerSlot(rect: zoomRect, rotationDegrees: statusRotationDegrees) {
+                VStack(spacing: InlineFrameRateKeyPlacement.spacing) {
+                    FrameZoomRuler(
+                        millimeters: pinchIsActive ? pinchFocalLength
+                                                   : cameraViewModel.currentFocalLengthMM,
+                        enabled: canUseZoomControls,
+                        revision: cameraViewModel.zoomSnapshot?.cameraRevision ?? 0,
+                        begin: { cameraViewModel.beginSlowZoom($0) },
+                        end: cameraViewModel.endSlowZoom(revision:),
+                        step: cameraViewModel.stepDisplayZoom,
+                        availableFocalRange: cameraViewModel.focalLengthRulerRange,
+                        visualWidth: FrameRulerPlacementGeometry.rulerVisualThickness)
+                        .frame(height: InlineFrameRateKeyPlacement.railHeight(
+                            slotRun: slotRun, docksKey: docksRateKey))
+                    if docksRateKey {
+                        // The existing key, moved not rebuilt: one selector, one
+                        // write path, docked at the bottom of the zoom column.
+                        CameraFrameRateControl(availableFPS: availableInlineFrameRates,
+                                               currentFPS: cameraViewModel.sessionFrameRate.rawValue,
+                                               canChange: cameraViewModel.canChangeSessionFrameRate,
+                                               highFrameRateEnabled: cameraViewModel.isHighFrameRateEnabled,
+                                               select: selectInlineFrameRate)
+                            .frame(height: InlineFrameRateKeyPlacement.keyHeight)
+                    }
+                }
+                .frame(width: FrameRulerPlacementGeometry.zoomThickness)
+            }
+        }
+        let focusRect = FrameRulerPlacementGeometry.rect(
+            inFrame: bounds, edge: .right,
+            thickness: FrameRulerPlacementGeometry.focusThickness,
+            orientationDegrees: statusRotationDegrees)
+        if !focusRect.isNull {
+            FrameRulerSlot(rect: focusRect, rotationDegrees: statusRotationDegrees) {
+                VStack(spacing: 4) {
+                    ManualFocusRuler(lensPosition: $manualFocusPosition,
+                                     enabled: canUseManualFocusRuler && isManualFocus,
+                                     stops: $focusStops,
+                                     visualWidth: FrameRulerPlacementGeometry.rulerVisualThickness)
+                        .frame(maxHeight: .infinity)
+                    InlineManualControls(
+                        manualFocus: manualFocusBinding,
+                        apertureReadout: apertureReadout,
+                        apertureStops: cameraViewModel.apertureStops,
+                        selectedAperture: cameraViewModel.selectedLensAperture,
+                        canChangeAperture: canChangeAperture,
+                        setAperture: { cameraViewModel.setLensAperture($0) },
+                        stabilization: cameraViewModel.recordingStabilization,
+                        canChangeStabilization: cameraViewModel.canSetRecordingStabilization,
+                        selectStabilization: { cameraViewModel.setRecordingStabilization($0) })
+                        // The right stack is the three manual keys at their 44pt
+                        // face in both modes; the frame-rate key is not here.
+                        .frame(width: 44, height: InlineManualControlPresentation.stackHeight)
+                        .background(controlMeasurement("inlineManual"))
+                }
+            }
+        }
+    }
+
+    /// The run a ruler slot offers along its rail, read in the upright authoring
+    /// axis. A ±90° hold swaps the slot's canvas width and height, so the column's
+    /// usable length comes from the edge that is vertical on screen. The test is
+    /// the same `abs == 90` `FrameRulerSlot` applies to its own rotation.
+    private func authoredRulerRun(_ rect: CGRect) -> CGFloat {
+        abs(statusRotationDegrees) == 90 ? rect.width : rect.height
+    }
+
+    /// The rates the session reports, as plain numbers for the in-frame key.
+    /// Nothing is inferred here: a rate the engine does not list stays disabled.
+    private var availableInlineFrameRates: [Int] {
+        cameraViewModel.availableSessionFrameRates.map(\.rawValue)
+    }
+
+    /// One write path: the frame-rate key only offers rates the session listed,
+    /// and the view model's own setter re-checks the recording/transition lock.
+    private func selectInlineFrameRate(_ fps: Int) {
+        guard let mode = CameraFrameRate.from(fps: fps) else { return }
+        cameraViewModel.setSessionFrameRate(mode)
+    }
+
+    /// A manual 120 is not the daylight rescue's 60 fps mode: the too-bright
+    /// rescue must never offer a 60 fps return flow that would silently replace
+    /// the rate the operator chose, so it stays out of the way entirely.
+    private var daylightRescueSuppressedByHighRate: Bool {
+        cameraViewModel.sessionFrameRate == .high120
+    }
+
+    /// Reserve the visible manual surface, not the full camera canvas, so the
+    /// contextual rescue button can stay clear without resizing either surface.
+    private func daylightRescueExclusion(in geometry: GeometryProxy) -> CGRect? {
+        if legacyManualControlsEnabled {
+            guard showManualControls,
+                  let top = controlBounds["top"], let bottom = controlBounds["bottom"] else { return nil }
+            return ManualControlsOverlayGeometry.rect(
+                viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
+                excluding: RecordingStatusOverlayGeometry.rect(
+                    viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
+                    rotationDegrees: statusRotationDegrees),
+                expanded: manualControlsExpanded, rotationDegrees: statusRotationDegrees)
+        }
+        guard showInlineManualControls else { return nil }
+        return controlBounds["inlineManual"]
+    }
+
+    /// The panel's AF/MF key and the Settings switch share one state, and every
+    /// change runs through the same flow so the hardware lock and the readback
+    /// can never disagree.
+    private var manualFocusBinding: Binding<Bool> {
+        Binding(get: { isManualFocus }, set: { setManualFocusEnabled($0) })
+    }
+
+    /// Enable or disable manual focus. Enabling first reads the lens's current
+    /// position on the session queue and only locks it when the device supports
+    /// custom lens positions; the lens never jumps to a stored default. An
+    /// unsupported lens stays on autofocus, honestly reported.
+    private func setManualFocusEnabled(_ enabled: Bool) {
+        focusReadGeneration &+= 1
+        guard enabled != isManualFocus else { return }
+        guard enabled else {
+            isManualFocus = false
+            cameraViewModel.session.resetAutoFocus()
+            return
+        }
+        // Enabling manual focus is also a discovery path for the in-frame
+        // block: reveal the master so the newly locked focus has a rail. It
+        // never forces aperture or stabilization on.
+        if !legacyManualControlsEnabled { setInlineManualControlsShown(true) }
+        guard scenePhase == .active, !cameraViewModel.isSwitchingCameraLens else { return }
+        let request = focusReadGeneration
+        cameraViewModel.session.readManualFocusSnapshot(includeCurrentPosition: true) { snapshot in
+            guard request == focusReadGeneration, scenePhase == .active,
+                  !cameraViewModel.isSwitchingCameraLens else { return }
+            guard snapshot.isSupported, let position = snapshot.lensPosition else { return }
+            // Set the position before the flag: the position observer only
+            // writes while manual focus is on, so the explicit lock below is
+            // the single hardware write for this enable.
+            manualFocusPosition = Double(position)
+            isManualFocus = true
+            cameraViewModel.session.setManualFocusPosition(position, expectedRevision: snapshot.cameraRevision)
+        }
+    }
+
+    private var captureBusy: Bool {
+        cameraViewModel.isStartingRecording || cameraViewModel.isRecording
+            || cameraViewModel.isStoppingRecording || cameraViewModel.isChangingFrameRate
+            || cameraViewModel.isSwitchingCameraLens
+    }
+
+    private var canUseManualFocusRuler: Bool {
+        scenePhase == .active
+    }
+
+    /// Controlled zoom arrows remain usable during recording. Lifecycle,
+    /// transitions, unavailable snapshots and covering sheets still block them;
+    /// pinch zoom retains the stricter captureBusy gate.
+    private var canUseZoomControls: Bool {
+        scenePhase == .active && !cameraViewModel.isPhotoCaptureBusy && !cameraViewModel.isStartingRecording
+            && !cameraViewModel.isStoppingRecording && !cameraViewModel.isChangingFrameRate
+            && !cameraViewModel.isSwitchingCameraLens && cameraViewModel.zoomSnapshot != nil
+            && !showSettings && !showQueueSheet && !showStockSheet && !showDaylightRescue
+    }
+
+    /// The bounded region a ruler may occupy: the live preview rectangle clipped
+    /// to the space between the toolbar and the shooting bar. Pure geometry
+    /// from the measured control bounds, never the ruler's own size, so a ruler
+    /// cannot feed back into the preview frame.
+    private func frameRulerBounds(in geometry: GeometryProxy) -> CGRect? {
+        guard !isDevelopMode else { return nil }
+        return boundedPreviewRect(in: geometry)
+    }
+
+    /// Shared content area clear of the toolbar and shooting controls. Develop's
+    /// import buttons must not inherit the immersive camera's full-bleed extent.
+    private func boundedPreviewRect(in geometry: GeometryProxy) -> CGRect? {
+        guard let top = controlBounds["top"], let bottom = controlBounds["bottom"] else { return nil }
+        let preview = previewRect(in: geometry)
+        guard preview.width > 0, preview.height > 0 else { return nil }
+        let safe = CGRect(x: 0, y: top.maxY, width: geometry.size.width,
+                          height: max(0, bottom.minY - top.maxY))
+        let bounds = preview.intersection(safe)
+        return bounds.isNull || bounds.isEmpty ? nil : bounds
+    }
+
     private func cameraLayer(in rect: CGRect) -> some View {
         // One structural identity in both modes: no camera lifecycle transition.
         CameraView(viewModel: cameraViewModel,
                    videoGravity: .resizeAspectFill,
-                   selectedStockLUTName: selectedStock?.lutName)
+                   selectedStockLUTName: isPhotoMode ? nil : selectedStock?.lutName,
+                   previewEnabled: !isDevelopMode,
+                   developmentPhotoPreview: isPhotoMode)
             .frame(width: rect.width, height: rect.height)
             .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
+            .overlay {
+                // Framing guide for a cropped delivery. It is a non-interactive
+                // overlay drawn inside the existing preview rect: it never
+                // resizes, moves or re-clips the surface, so the framed-preview
+                // layout and the tap-to-focus point mapping keep the same rect
+                // they had without it. Photo delivery is a still, not a crop of
+                // the recording, so the guide is Video/Develop only.
+                // Open gate already records 4:3, so there is no crop to guide:
+                // a scrim here would dim pixels the render never discards.
+                if !isPhotoMode, deliveryFraming == .fourThree, !isOpenGateCapture {
+                    GeometryReader { geometry in
+                        DeliveryFramingScrim(
+                            cropRect: DeliveryFramingGuide.deliveredRect(
+                                in: CGRect(origin: .zero, size: geometry.size),
+                                framing: .fourThree)
+                        )
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                }
+            }
             .overlay {
                 if showFramedPreview {
                     RoundedRectangle(cornerRadius: 16)
                         .strokeBorder(.white.opacity(0.25), lineWidth: 2)
+                        .allowsHitTesting(false)
                 }
             }
             .overlay(alignment: .topTrailing) {
                 if showFramedPreview {
-                    RecordingTallyLight(isRecording: recordPresentation == .recording)
+                    RecordingTallyLight(isRecording: recordPresentation.showsLiveChrome)
                         .padding(12)
                 }
             }
+            .contentShape(Rectangle())
             .modifier(FocalPinchZoom(camera: cameraViewModel, isActive: $pinchIsActive, millimeters: $pinchFocalLength))
             .position(x: rect.midX, y: rect.midY)
     }
@@ -376,6 +1027,9 @@ struct ContentView: View {
             settingsButton
         } manual: {
             manualButton
+        } flash: {
+            LampControl(photoMode: cameraMode.selected == .photo,
+                        appliedShutterSeconds: cameraViewModel.photoExposureSnapshot?.durationSeconds ?? 0)
         } lens: {
             // The lens keeps the rightmost first-row slot except while a take is
             // live: the timer then owns that row in portrait — but centered on
@@ -383,9 +1037,9 @@ struct ContentView: View {
             // landscape the slot stays hidden while the timer floats on the
             // physical edge. Either way the toolbar height never changes.
             lensMenu
-                .opacity(recordPresentation == .recording ? 0 : 1)
-                .allowsHitTesting(recordPresentation != .recording)
-                .accessibilityHidden(recordPresentation == .recording)
+                .opacity(recordPresentation.showsLiveChrome ? 0 : 1)
+                .allowsHitTesting(!recordPresentation.showsLiveChrome)
+                .accessibilityHidden(recordPresentation.showsLiveChrome)
         } status: {
             recordingStatus
         } diagnostics: {
@@ -394,6 +1048,23 @@ struct ContentView: View {
             // It renders in a non-sizing sibling overlay instead (see
             // `debugControlsOverlay`), while this fifth slot stays concrete.
             EmptyView()
+        }
+    }
+
+    /// The notice flag sits below the toolbar and to the right of the DEBUG/FAULT
+    /// rail: out of the way of the viewfinder, reachable with the thumb, and
+    /// never part of the top bar's measured height.
+    @ViewBuilder private func cameraNoticeOverlay(in geometry: GeometryProxy) -> some View {
+        if let notice = cameraViewModel.notice, let top = controlBounds["top"] {
+            CameraNoticeFlag(notice: notice,
+                             isExpanded: $noticeExpanded,
+                             onDismiss: { cameraViewModel.dismissNotice() })
+                .frame(width: 280, alignment: .leading)
+                .padding(.leading, 68)
+                .padding(.top, top.maxY + 8)
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+                .onChange(of: notice.id) { _, _ in noticeExpanded = false }
+                .transition(.opacity)
         }
     }
 
@@ -406,6 +1077,7 @@ struct ContentView: View {
     @ViewBuilder private func debugControlsOverlay(in geometry: GeometryProxy) -> some View {
         if let top = controlBounds["top"] {
             VStack(alignment: .leading, spacing: 4) { diagnosticButtons }
+                .background(controlMeasurement("diagnostic"))
                 .padding(.leading, 16)
                 .padding(.top, top.maxY)
                 .frame(width: geometry.size.width, height: geometry.size.height,
@@ -415,10 +1087,12 @@ struct ContentView: View {
 
     private var settingsButton: some View {
         Button {
+            guard !captureBusy, !cameraViewModel.isPhotoCaptureBusy,
+                  cameraViewModel.canChangeShootingMode else { return }
             showSettings = true
         } label: {
             Image(systemName: "gearshape.fill")
-                .font(.title3)
+                .font(NitrateTypography.font(.title3))
                 .foregroundStyle(.white)
                 .cameraUpright()
                 .frame(width: 44, height: 44)
@@ -428,15 +1102,26 @@ struct ContentView: View {
 
     private var manualButton: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.2)) { showManualControls.toggle() }
+            if legacyManualControlsEnabled {
+                // Legacy debug path: the manual key reopens the old pop-up.
+                withAnimation(.easeInOut(duration: 0.2)) { showManualControls.toggle() }
+            } else {
+                // Default path: the manual key toggles every in-frame control
+                // — both rulers and the inline button stack — together.
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    setInlineManualControlsShown(!showInlineManualControls)
+                }
+            }
         } label: {
             Image(systemName: "slider.vertical.3")
-                .font(.title3)
-                .foregroundStyle(showManualControls ? .black : .white)
+                .font(NitrateTypography.font(.title3))
+                .foregroundStyle(manualControlsActive ? .black : .white)
                 .cameraUpright()
                 .frame(width: 44, height: 44)
         }
-        .buttonStyle(CameraRoundButtonStyle(faceColor: showManualControls ? .yellow : nil))
+        .buttonStyle(CameraRoundButtonStyle(faceColor: manualControlsActive ? SettingsControlChrome.halationOrange : nil))
+        .accessibilityLabel("Manual controls")
+        .accessibilityValue(manualControlsActive ? "Expanded" : "Collapsed")
 
     }
 
@@ -449,7 +1134,7 @@ struct ContentView: View {
                 openDebugFrame()
             } label: {
                 Text("DEBUG")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .font(NitrateTypography.font(size: 10))
                     .foregroundStyle(.black)
                     .fixedSize()
                     .cameraUpright()
@@ -464,11 +1149,10 @@ struct ContentView: View {
         // sheet would cover.
         if showsFaultButton {
             Button {
-                failureDetail = "Debug preview — no recording was attempted."
-                flashRecordingFailure()
+                showDebugFault()
             } label: {
                 Text("FAULT")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .font(NitrateTypography.font(size: 10))
                     .foregroundStyle(.white)
                     .fixedSize()
                     .cameraUpright()
@@ -487,10 +1171,10 @@ struct ContentView: View {
         )
     }
 
-    /// The timer and its tally dot exist only for a confirmed take. Idle,
-    /// starting and finalizing render nothing at all — no placeholder, no dot.
+    /// The timer and tally acknowledge the accepted tap, before capture confirms.
+    /// Idle and finalizing render nothing; cancellation and failure return to idle.
     @ViewBuilder private var recordingStatus: some View {
-        if recordPresentation == .recording {
+        if recordPresentation.showsLiveChrome {
             if let origin = cameraViewModel.recordingTimerOrigin {
                 if let stoppedAt = cameraViewModel.recordingStoppedAt {
                     statusFace(text: RecordingDurationText.format(seconds: stoppedAt.timeIntervalSince(origin)))
@@ -509,12 +1193,30 @@ struct ContentView: View {
         CameraGlyphRotation.degrees(for: orientation.deviceOrientation)
     }
 
-    /// Same target as the live EV indicator: manual ISO targets zero; automatic
-    /// ISO compares against the user's selected EV bias, not an absolute +2 EV.
+    /// Tips are on. Every unsolicited advisory cue consults this.
+    /// Errors, faults, recording failures, storage warnings and the live
+    /// frame-rate badge never read it.
+    private var isAdvisoryCueAllowed: Bool {
+        CameraHintPreferences.allowsAdvisoryCue(showsAdvisoryTips: showsAdvisoryTips)
+    }
+
+    /// The stock-selector nudge additionally needs a usable, idle camera, so it
+    /// can never paint over a take, a transition, a sheet or a fault.
+    private var isStockHintCueAllowed: Bool {
+        CameraHintPreferences.allowsAdvisoryCue(showsAdvisoryTips: showsAdvisoryTips,
+                                                isCameraReady: isStockHintActive)
+    }
+
+    /// Meter readings use neutral scene EV in native AE and custom exposure alike.
+    /// Compare against the requested compensation regardless of which leg is held.
+    ///
+    /// This trigger is advisory only: turning tips off hides the button, which
+    /// leaves the idle armed-session badge below as the way back to 24 fps.
     private var shouldOfferDaylightRescue: Bool {
-        DaylightExposureRescuePolicy.shouldOffer(
+        guard isAdvisoryCueAllowed else { return false }
+        return DaylightExposureRescuePolicy.shouldOffer(
             meteredEV: cameraViewModel.liveExposureTargetOffset,
-            targetEV: cameraViewModel.isManualExposure ? 0 : cameraViewModel.liveExposureBias,
+            targetEV: cameraViewModel.liveExposureBias,
             isAvailable: cameraViewModel.hasExposureMeter)
     }
 
@@ -527,6 +1229,8 @@ struct ContentView: View {
                             style: RecordingIndicatorStyle.resolved(recordingIndicatorStyle),
                             rotationDegrees: CameraGlyphRotation.degrees(for: orientation.deviceOrientation),
                             daylight60Active: cameraViewModel.sessionFrameRate == .daylight60,
+                            frameRateFPS: cameraViewModel.sessionFrameRate == .standard24
+                                ? nil : cameraViewModel.sessionFrameRate.rawValue,
                             onManageDaylight: canManageDaylightMode ? { showDaylightRescue = true } : nil)
     }
 
@@ -536,6 +1240,7 @@ struct ContentView: View {
             selectedLens: selectedLens,
             onSelectLens: selectLens
         )
+        .disabled(cameraViewModel.isPhotoCaptureBusy || cameraViewModel.isSwitchingCameraLens || cameraViewModel.isChangingFrameRate)
     }
 
     private func selectLens(_ lens: CameraLens) {
@@ -562,9 +1267,51 @@ struct ContentView: View {
 
     // MARK: - Control Bar
 
+    /// The screen's live inputs to the hint. The estimate fields are published
+    /// only while the hint can still fire, so once the cue is done (or the launch
+    /// is ineligible) the outline stops recomputing.
+    private var stockHintInputs: StockSelectorHintInputs {
+        let armed = stockSelectorHint.isArmed
+        return StockSelectorHintInputs(
+            // The shared advisory gate: tips off ends the cue and its sustained
+            // clock without spending the once-per-launch hint, so turning tips
+            // back on can still show it later in the same launch.
+            isActive: isStockHintCueAllowed,
+            isSelectorOpened: stockSelectorOpenedThisLaunch,
+            tick: armed ? cameraViewModel.hintTick : 0,
+            estimateKelvin: armed ? cameraViewModel.neutralSceneKelvin : nil,
+            estimateCapturedAt: armed ? cameraViewModel.neutralSceneCapturedAt : nil,
+            referenceKelvin: armed ? selectedStock?.colorTemperature : nil)
+    }
+
+    /// True only while the camera is usable and idle and nothing is covering it.
+    /// Any modal, sheet, fault, warning or in-flight take/transition pauses the
+    /// hint's active clock and clears its sustained condition.
+    private var isStockHintActive: Bool {
+        guard !isDevelopMode else { return false }
+        guard scenePhase == .active else { return false }
+        guard !cameraViewModel.isStartingRecording,
+              !cameraViewModel.isRecording,
+              !cameraViewModel.isStoppingRecording,
+              !cameraViewModel.isChangingFrameRate,
+              !cameraViewModel.isSwitchingCameraLens else { return false }
+        guard cameraViewModel.hasExposureMeter else { return false }
+        guard !showStockSheet, !showQueueSheet, !showSettings,
+              !showDaylightRescue, !showManualControls, !showsRecordingFailure else { return false }
+        guard cameraViewModel.errorMessage == nil, cameraViewModel.recordingWarning == nil else { return false }
+        #if DEBUG
+        if debugFrameViewModel != nil { return false }
+        #endif
+        return true
+    }
+
     /// Two-row bottom stack (selector row + action row). Lives in its own file
     /// (`CameraControlBar.swift`) so this screen stays inside the file limit.
-    private var controlBar: some View {
+    ///
+    /// `horizontalInset` lines the bar's outer LCD/stock and exposure edges up
+    /// with the framed viewfinder's side edges; the immersive preview keeps its
+    /// established 16pt margin.
+    private func controlBar(horizontalInset: CGFloat) -> some View {
         CameraControlBar(
             cameraViewModel: cameraViewModel,
             renderQueueViewModel: renderQueueViewModel,
@@ -576,8 +1323,282 @@ struct ContentView: View {
                 // Opened directly (not from a fresh take): nothing to resume.
                 awaitingStockJobId = nil
                 showStockSheet = true
-            }
+            },
+            showsStockHint: stockSelectorHint.isCueVisible,
+            horizontalInset: horizontalInset,
+            isDevelopMode: isDevelopMode,
+            developCanRender: developModel.canDevelop(stock: selectedStock),
+            developIsBusy: developIsBusy,
+            onDevelopRender: {
+                guard let stock = selectedStock else { return }
+                // The panel's controls ARE the render settings: no second read of
+                // the library at render time, so what is on screen is applied.
+                _ = developModel.develop(stock: stock, iso: currentISO, gauge: developGauge,
+                                         pushPull: developPushPull)
+            },
+            isPhotoMode: isPhotoMode,
+            photoStatus: photoDeliveryStatus,
+            onPhotoCapture: {
+                let gauge = selectedStock.flatMap { library.lastGauge(for: $0.stockId) } ?? .neutral
+                cameraViewModel.takeDevelopmentPhoto(gauge: gauge)
+            },
+            photoExposure: cameraViewModel.photoExposureSnapshot,
+            onPhotoISO: { cameraViewModel.setManualISO($0) },
+            onPhotoISOLock: { cameraViewModel.toggleISOLock(currentISO: cameraViewModel.liveISO) },
+            onPhotoDuration: cameraViewModel.setPhotoShutterDuration,
+            hardwareCaptureEnabled: hardwareCaptureEnabled,
+            onPhotoShutterLock: cameraViewModel.togglePhotoShutterLock
         )
+        .onChange(of: cameraHardwareControlsVisible, initial: true) { _, _ in updateCameraHardwareControls() }
+        .onChange(of: cameraControlAdjustment) { _, _ in updateCameraHardwareControls() }
+        .onDisappear {
+            cameraViewModel.updateCameraHardwareControls(
+                adjustment: CameraControlAdjustment(persistedValue: cameraControlAdjustment), enabled: false)
+        }
+    }
+
+    /// Hardware must not consume capture events behind a sheet or in Develop.
+    private var cameraHardwareControlsVisible: Bool {
+        guard cameraViewModel.supportsCameraControl, scenePhase == .active, !isDevelopMode,
+              !showSettings, !showQueueSheet, !showStockSheet,
+              !showDaylightRescue, !showManualControls else { return false }
+#if DEBUG
+        if debugFrameViewModel != nil || pendingDebugTest != nil { return false }
+#endif
+        return true
+    }
+
+    private var hardwareCaptureEnabled: Bool {
+        guard cameraHardwareControlsVisible else { return false }
+        // A second full press must still stop a take or cancel its startup.
+        if cameraViewModel.isRecording || cameraViewModel.isStartingRecording { return true }
+        // A fault or a full disk is not a capture transition: it still disarms.
+        guard !showsRecordingFailure, cameraViewModel.errorMessage == nil,
+              !cameraViewModel.isSpaceCritical else { return false }
+        // Keep the platform interaction armed while handling a Photo full press.
+        // The live model still refuses a second still through its busy gate.
+        if cameraViewModel.isPhotoCaptureBusy { return true }
+        return cameraViewModel.canChangeShootingMode
+    }
+
+    private func updateCameraHardwareControls() {
+#if DEBUG
+        if CommandLine.arguments.contains("--trace-camera-control") {
+            CameraControlDiagnostics.record("visibility visible=\(cameraHardwareControlsVisible) "
+                + "captureEnabled=\(hardwareCaptureEnabled) scene=\(scenePhase) "
+                + "runtimeEnabled=\(cameraViewModel.canAcceptHardwareCapture) "
+                + "profileChanging=\(cameraViewModel.isChangingCaptureProfile)")
+        }
+#endif
+        cameraViewModel.updateCameraHardwareControls(
+            adjustment: CameraControlAdjustment(persistedValue: cameraControlAdjustment),
+            enabled: cameraHardwareControlsVisible)
+    }
+
+    private var canChangeCameraMode: Bool {
+        scenePhase == .active && cameraViewModel.canChangeShootingMode && !captureBusy && !cameraViewModel.isPhotoCaptureBusy && !cameraViewModel.isChangingFrameRate
+            && !cameraViewModel.isSwitchingCameraLens && !showStockSheet && !showQueueSheet
+            && !showSettings && !showDaylightRescue
+    }
+
+    private var photoDeliveryStatus: String? {
+        if cameraViewModel.isPhotoCaptureBusy { return cameraViewModel.photoCaptureStatus }
+        guard let id = cameraViewModel.photoRenderJobID,
+              let job = renderQueueViewModel.jobs.first(where: { $0.id == id }) else {
+            return cameraViewModel.photoCaptureStatus
+        }
+        switch job.status {
+        case .pending: return "Photo queued for development"
+        case .processing:
+            return renderQueueViewModel.progress(for: id)?.phase == .saving ? "Saving photo to Photos…" : "Developing photo…"
+        case .completed: return job.outputSavedToPhotos == true ? "Photo saved to Photos" : "Photo developed"
+        case .failed: return "Original kept locally · photo development failed"
+        case .awaitingStock: return "Choose a photo stock"
+        }
+    }
+
+    private var isPhotoMode: Bool { cameraMode.selected == .photo }
+    private var isDevelopMode: Bool { cameraMode.selected == .develop }
+
+    /// The exposure the pill shows for a developed import. There is no meter on a
+    /// file, so an automatic choice resolves neutral; a manual rung still applies.
+    private var developPushPull: PushPullExposure {
+        PushPullPreference(isAutomatic: developPushPullAutomatic,
+                           manualStops: developPushPullStops)
+            .resolved(meteredOffsetEV: nil)
+    }
+
+    /// The Develop panel, built in its own property.
+    ///
+    /// It carries three closures and four bindings; left inline, the type checker
+    /// gave up on the surrounding ZStack ("unable to type-check in reasonable
+    /// time").
+    private var developPanel: some View {
+        DevelopPreview(
+            model: developModel,
+            queue: renderQueueViewModel,
+            stock: selectedStock,
+            stockOptions: library.videoStocks(),
+            onSelectStock: { stock in selectedStock = stock },
+            onOpenResults: { showQueueSheet = true },
+            gauge: $developGauge,
+            pushPullAutomatic: $developPushPullAutomatic,
+            pushPullStops: $developPushPullStops,
+            onControlsChanged: persistDevelopControls
+        )
+    }
+
+    /// Return a finished develop to step one: same file, back in the panel with
+    /// the gauge and push/pull controls, so the next render can be a new look.
+    private func redevelop(_ job: RenderJob) {
+        reviewDevelops([job])
+    }
+
+    /// A queue selection is only loaded here. Rendering still requires review
+    /// and an explicit Develop action, identically for photos and videos.
+    private func reviewDevelops(_ jobs: [RenderJob]) {
+        guard let first = jobs.first else { return }
+        guard !developModel.hasActiveRenders else {
+            showModeRefusal("Finish the current develop before choosing another original.")
+            return
+        }
+        showQueueSheet = false
+        Task { @MainActor in
+            // The sheet is dismissing on this runloop, and the mode switch is
+            // refused while the camera is busy — so give it a tick, try once more,
+            // and SAY SO instead of returning silently if it still cannot switch.
+            await Task.yield()
+            if !isDevelopMode { selectCameraMode(.develop) }
+            if !isDevelopMode {
+                try? await Task.sleep(for: .milliseconds(250))
+                selectCameraMode(.develop)
+            }
+            guard isDevelopMode else {
+                showModeRefusal("Close the queue and finish the current capture before re-developing.")
+                return
+            }
+            // The original job stays untouched; normal pickers only receive enabled stocks.
+            guard !captureBusy, !cameraViewModel.isPhotoCaptureBusy else { return }
+            if let stock = library.preferredVisibleStock(for: first.stockId) {
+                selectedStock = stock.overridingISO(library.lastISO(for: stock.stockId))
+                currentISO = library.lastISO(for: stock.stockId)
+            }
+            restoreDevelopControls()
+            await developModel.adoptExistingJobs(jobs)
+            // Restore the actual prior recipe after stock observation settles,
+            // rather than silently replacing it with the camera's last settings.
+            if let gauge = first.printGauge { developGauge = gauge }
+            if let pushPull = first.pushPull {
+                developPushPullAutomatic = false
+                developPushPullStops = pushPull.stops
+            }
+            // The panel's onAppear/stock-change hooks restore this same recipe,
+            // rather than racing a later view update back to stale preferences.
+            persistDevelopControls()
+        }
+    }
+
+    /// Seed Develop's controls from the chosen stock's remembered preference.
+    private func restoreDevelopControls() {
+        guard let stock = selectedStock else { return }
+        developGauge = library.lastGauge(for: stock.stockId) ?? .neutral
+        let remembered = library.lastPushPull(for: stock.stockId)
+        developPushPullAutomatic = remembered.isAutomatic
+        developPushPullStops = remembered.manualStops
+    }
+
+    private func persistDevelopControls() {
+        guard let stock = selectedStock else { return }
+        library.setGauge(developGauge, for: stock.stockId)
+        library.setPushPull(PushPullPreference(isAutomatic: developPushPullAutomatic,
+                                               manualStops: developPushPullStops),
+                            for: stock.stockId)
+    }
+
+    private var developIsBusy: Bool {
+        developModel.hasActiveRenders
+    }
+
+    /// Say why a mode change was refused, where the operator is looking.
+    private func showModeRefusal(_ text: String) {
+        modeRefusalNotice = text
+        modeRefusalTask?.cancel()
+        modeRefusalTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            if modeRefusalNotice == text { modeRefusalNotice = nil }
+        }
+    }
+
+    /// A dimmed row is not a dead one: a tap answers from the same gate that dims
+    /// it, so a refusal is never silent and never has to be a standing label.
+    private func explainBlockedModeTap() {
+        showModeRefusal(cameraViewModel.shootingModeBlockedReason
+            ?? "Finish the current action to change modes")
+    }
+
+    private func selectCameraMode(_ mode: CameraMode) {
+        guard canChangeCameraMode else {
+            explainBlockedModeTap()
+            return
+        }
+        guard CameraMode.visibleModes(photoAvailable: photoModeAvailable).contains(mode),
+              mode != cameraMode.selected else { return }
+        if mode == .photo {
+            cameraViewModel.setDevelopmentPhotoMode(true) { result in
+                guard case .success = result else {
+                    if case .failure(let error) = result,
+                       (error as? CameraError)?.isPhotoCapabilityRefusal == true {
+                        showModeRefusal("Photo isn't available on this camera")
+                    } else {
+                        showModeRefusal("Photo needs the shared camera, which is not ready")
+                    }
+                    return
+                }
+                _ = cameraMode.select(.photo, enabled: true, photoAvailable: photoModeAvailable)
+                developModel.leaveDevelop()
+            }
+            return
+        }
+        if cameraMode.selected == .photo {
+            cameraViewModel.setDevelopmentPhotoMode(false) { result in
+                guard case .success = result else {
+                    showModeRefusal("The camera is still finishing the photo mode change")
+                    return
+                }
+                _ = cameraMode.select(mode, enabled: true, photoAvailable: photoModeAvailable)
+                if mode == .video { developModel.leaveDevelop() }
+            }
+            return
+        }
+        guard cameraMode.select(mode, enabled: true, photoAvailable: photoModeAvailable) else { return }
+        // Develop shares the video graph, so its commits land here; the photo
+        // transitions reset from the camera model once their graph commits.
+        cameraViewModel.resetFocusAreaToCenter()
+        if mode == .video {
+            developModel.leaveDevelop()
+        } else {
+            cameraViewModel.endSlowZoom()
+            pinchIsActive = false
+        }
+    }
+
+    /// The shooting bar's horizontal margin. In Frame Mode it aligns the bar's
+    /// outer LCD/stock and exposure edges with the viewfinder's side edges, read
+    /// from the same preview rectangle the camera layer uses, clamped so the row
+    /// never overlaps. The immersive preview, and the first frame before the
+    /// control bounds exist, keep the established 16pt margin.
+    ///
+    /// Pure geometry only: the value never reads capture state or the
+    /// orientation glyph rotation, and the bar's measured height — the only
+    /// dimension the preview reads — never depends on it, so deriving the inset
+    /// cannot feed back into the preview.
+    private func controlBarHorizontalInset(in geometry: GeometryProxy) -> CGFloat {
+        guard showFramedPreview else { return CameraControlGeometry.defaultHorizontalInset }
+        let preview = previewRect(in: geometry)
+        guard preview.width > 0 else { return CameraControlGeometry.defaultHorizontalInset }
+        return CameraControlGeometry.controlBarHorizontalInset(
+            previewEdgeInset: preview.minX, canvasWidth: geometry.size.width)
     }
 
     // MARK: - Error Overlays
@@ -597,6 +1618,9 @@ struct ContentView: View {
                         .padding(.bottom, 140)
                 }
             }
+            // Photo keeps nothing floating over the shutter. A refusal or a
+            // delayed delivery is reported through `errorMessage`, which the camera
+            // already shows, so the frame above the button stays clear.
             if showsRecordingFailure {
                 RecordingFailureOverlay(detail: failureDetail)
                     .transition(.opacity)
@@ -604,11 +1628,33 @@ struct ContentView: View {
         }
     }
 
+    /// The mode row's own status face, the same capsule the photo strip uses.
+    private func modeStatusCapsule(_ status: String) -> some View {
+        statusCapsule(status, identifier: "camera.modeStatus")
+    }
+
+    private func statusCapsule(_ status: String, identifier: String) -> some View {
+        Text(status)
+            .foregroundStyle(.white)
+            .font(NitrateTypography.font(.caption))
+            .cameraUpright()
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.black.opacity(0.72))
+            .clipShape(Capsule())
+            .accessibilityIdentifier(identifier)
+            .accessibilityLabel(status)
+            .padding(.horizontal, 16)
+            .allowsHitTesting(false)
+    }
+
     private func cameraErrorBanner(_ message: String) -> some View {
         HStack {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
                 .cameraUpright()
-            Text(message).foregroundStyle(.white).font(.caption)
+            Text(message).foregroundStyle(.white).font(NitrateTypography.font(.caption))
                 .cameraUpright()
             Spacer()
             Button(action: cameraViewModel.dismissError) {
@@ -627,7 +1673,7 @@ struct ContentView: View {
         HStack {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 .cameraUpright()
-            Text(message).foregroundStyle(.white).font(.caption)
+            Text(message).foregroundStyle(.white).font(NitrateTypography.font(.caption))
                 .cameraUpright()
             Spacer()
             Button {
@@ -649,12 +1695,19 @@ struct ContentView: View {
         StockSheetView(
             library: library,
             renderQueueViewModel: renderQueueViewModel,
-            sourceURL: currentSourceURL,
-            awaitingStockJobId: awaitingStockJobId,
-            capturePolicy: currentSourceURL.flatMap { cameraViewModel.capturePolicy(for: $0) },
+            sourceURL: isDevelopMode ? nil : currentSourceURL,
+            awaitingStockJobId: isDevelopMode ? nil : awaitingStockJobId,
+            capturePolicy: isDevelopMode ? nil : currentSourceURL.flatMap { cameraViewModel.capturePolicy(for: $0) },
             isPresented: $showStockSheet,
             selectedStock: $selectedStock,
-            currentISO: $currentISO
+            currentISO: $currentISO,
+            meteredOffsetEV: cameraViewModel.hasExposureMeter
+                ? cameraViewModel.liveExposureTargetOffset : nil,
+            selectionOnly: isDevelopMode,
+            photoMode: cameraViewModel.isDevelopmentPhotoMode,
+            appliedShutterSeconds: cameraViewModel.photoExposureSnapshot?.durationSeconds
+                ?? cameraViewModel.liveShutterSeconds,
+            lampAvailable: cameraViewModel.hasLamp
         )
     }
 
@@ -662,7 +1715,11 @@ struct ContentView: View {
         QueueSheetView(
             viewModel: renderQueueViewModel,
             cameraViewModel: cameraViewModel,
-            isPresented: $showQueueSheet
+            isPresented: $showQueueSheet,
+            onRedevelop: redevelop,
+            onBulkRedevelop: { ids in
+                reviewDevelops(renderQueueViewModel.jobs.filter { ids.contains($0.id) })
+            }
         )
     }
 
@@ -699,48 +1756,85 @@ private struct StockSheetView: View {
     @Binding var isPresented: Bool
     @Binding var selectedStock: FilmStockConfig?
     @Binding var currentISO: Float
+    /// Live metered offset from the operator's EV target (EV, positive = over),
+    /// or nil when the device has no meter reading yet. Auto resolves against
+    /// this snapshot when the sheet renders.
+    var meteredOffsetEV: Float?
+    var selectionOnly = false
+    /// Photo mode reads its own lamp controls: intensity and the duration of the
+    /// exposure the lamp covers. Video has one level and no window to shape.
+    var photoMode = false
+    /// The exposure the still will actually be taken at, read back from the
+    /// device. The duration control is honest only against this value.
+    var appliedShutterSeconds: Double = 0
+    /// A camera with no lamp hides the cell entirely: a disabled lamp control
+    /// would imply a hardware fault the operator cannot fix.
+    var lampAvailable = false
 
     @State private var stocks: [FilmStockConfig] = []
     @State private var localSelection: FilmStockConfig?
     @State private var gauge: PrintGauge = .thirtyFiveMillimetre
+    /// Auto is checked by default: a stock renders neutral until the meter says
+    /// the scene sits over target. Turning it off hands the ladder to the user.
+    @State private var pushPullAutomatic = true
+    @State private var pushPullStops: PushPullStops = .none
+    /// The lamp settings, read from and written straight to the one global store
+    /// so the camera records exactly what this sheet shows.
 
     var body: some View {
         NavigationStack {
-            // The example preview is tall, so the sheet scrolls vertically:
-            // a short phone at 320pt can still reach the gauge and Render.
-            GeometryReader { geometry in
-                ScrollView(.vertical) {
-                    VStack(spacing: 20) {
-                        StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge)
+            // Three stacked rows, no vertical scroll. The row heights come from
+            // the height the sheet actually has — half for the preview, a quarter
+            // each for the stock carousel and the gauge + push/pull row — so
+            // every control is on screen on a phone. The preview gives up height
+            // first if the sheet is short; the control rows never scroll away.
+            VStack(spacing: StockSheetLayout.rowSpacing) {
+                GeometryReader { proxy in
+                    let rows = StockSheetLayout.rows(forAvailableHeight: proxy.size.height)
+                    VStack(spacing: StockSheetLayout.rowSpacing) {
+                        StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge,
+                                            pushPullStops: resolvedPushPull.stops.stops)
                             .frame(maxWidth: .infinity)
+                            .frame(height: rows.preview)
+                            .clipped()
 
-                        if !stocks.isEmpty { stockCarousel }
+                        if !stocks.isEmpty {
+                            stockCarousel.frame(height: rows.stocks)
+                        }
 
-                        if localSelection != nil { gaugePicker }
-
-                        if let url = sourceURL {
-                            renderButton(sourceURL: url)
-                        } else {
-                            Text("Record a video to render.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        if localSelection != nil {
+                            controlRow.frame(height: rows.controls)
                         }
                     }
-                    .padding()
+                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
                 }
+
+                sheetFooter
             }
+            .padding()
             .navigationTitle("Film Stock")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { isPresented = false }
                 }
+                if let url = sourceURL, !selectionOnly {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            performRender(sourceURL: url)
+                        } label: {
+                            Label("Render", systemImage: "play.rectangle.fill")
+                        }
+                    }
+                }
             }
             .onAppear {
                 stocks = library.videoStocks()
                 if localSelection == nil {
-                    localSelection = selectedStock ?? stocks.first
+                    localSelection = library.preferredVisibleStock(for: selectedStock?.stockId)
+                        .map { $0.overridingISO(library.lastISO(for: $0.stockId)) }
                     gauge = localSelection.flatMap { library.lastGauge(for: $0.stockId) } ?? .thirtyFiveMillimetre
+                    restorePushPull(for: localSelection)
                 }
                 currentISO = localSelection?.defaultISO ?? 400
                 persistPreferences()
@@ -751,6 +1845,7 @@ private struct StockSheetView: View {
                     currentISO = stock.defaultISO
                     library.setSelectedStock(stock.stockId)
                     library.setGauge(gauge, for: stock.stockId)
+                    library.setPushPull(pushPullPreference, for: stock.stockId)
                 }
             }
             .onChange(of: localSelection) { _, _ in persistPreferences() }
@@ -758,8 +1853,17 @@ private struct StockSheetView: View {
         }
     }
 
+    // MARK: - Rows
+
+    /// The stock carousel, restored: centred stock cards that scroll sideways,
+    /// one tap to pick a stock. It writes through the same selection binding as
+    /// the sheet, so choosing a card still restores that stock's remembered
+    /// gauge and push/pull through `select`.
     private var stockCarousel: some View {
         StockCarousel(stocks: stocks, selectedStockId: selectedStockIdBinding)
+            .accessibilityIdentifier("stock.carousel")
+            .accessibilityLabel("Film stock")
+            .accessibilityValue(localSelection?.displayName ?? "None")
     }
 
     /// The carousel and the sheet share one selection: the carousel writes the
@@ -773,6 +1877,58 @@ private struct StockSheetView: View {
                 select(stock)
             }
         )
+    }
+
+    /// The bottom row: the print gauge on the left and the push/pull pill beside
+    /// it on the right. The gauge takes the larger share — four segments have to
+    /// stay legible — and the pill keeps its fixed fifth.
+    private var controlRow: some View {
+        GeometryReader { proxy in
+            let widths = StockSheetLayout.controlWidths(forAvailableWidth: proxy.size.width,
+                                                        includesFlash: false)
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                // Bottom-aligned: the pill has no caption, so it lines up with
+                // the segmented control rather than with the caption above it.
+                HStack(alignment: .bottom, spacing: StockSheetLayout.controlSpacing) {
+                    gaugeCell.frame(width: widths.gauge)
+                    pushPullPill.frame(width: widths.pushPull)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+    }
+
+    /// Render, or the note that there is nothing to render yet. It keeps its own
+    /// compact row under the three, so the preview/stock/controls split always
+    /// gets the rest of the sheet.
+    @ViewBuilder private var sheetFooter: some View {
+        if sourceURL == nil, !selectionOnly {
+            Text("Record a video to render.")
+                .font(NitrateTypography.font(.caption))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// One cell: a short caption over its control, so the gauge keeps its label
+    /// in the shared bottom row.
+    private func controlCell<Content: View>(_ caption: String,
+                                            @ViewBuilder control: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(caption)
+                .font(NitrateTypography.font(.caption2))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            control()
+        }
+    }
+
+    /// The shared gauge control (caption, info sheet, segmented picker). Develop
+    /// presents the same view, so the two surfaces cannot drift apart.
+    private var gaugeCell: some View {
+        GaugeControl(gauge: $gauge)
     }
 
     /// Adopt a stock as the local selection. ISO follows the stock; the remembered
@@ -789,63 +1945,99 @@ private struct StockSheetView: View {
         ) {
             gauge = restored
         }
+        if previous?.stockId != stock.stockId {
+            restorePushPull(for: stock)
+        }
     }
 
     private func persistPreferences() {
         guard let stock = localSelection else { return }
         library.setSelectedStock(stock.stockId)
         library.setGauge(gauge, for: stock.stockId)
+        library.setPushPull(pushPullPreference, for: stock.stockId)
     }
 
-    private var gaugePicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Print Gauge").font(.headline)
-            Picker("Print Gauge", selection: $gauge) {
-                ForEach(PrintGauge.allCases, id: \.self) { gauge in
-                    Text(gauge.displayName).tag(gauge)
-                }
-            }
-            .pickerStyle(.segmented)
-            Text("Gauge sets grain size and presence (8mm coarse → 75mm near grain-free).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+    // MARK: - Push / Pull
+
+    /// The sheet's live preference: auto, or the manual rung.
+    private var pushPullPreference: PushPullPreference {
+        PushPullPreference(isAutomatic: pushPullAutomatic, manualStops: pushPullStops)
+    }
+
+    /// What the render will actually do, resolved against the meter now.
+    private var resolvedPushPull: PushPullExposure {
+        pushPullPreference.resolved(meteredOffsetEV: meteredOffsetEV)
+    }
+
+    private func restorePushPull(for stock: FilmStockConfig?) {
+        let remembered = stock.map { library.lastPushPull(for: $0.stockId) } ?? .standard
+        pushPullAutomatic = remembered.isAutomatic
+        pushPullStops = remembered.manualStops
+    }
+
+    /// The shared push/pull pill. Develop presents the same view, so the ladder,
+    /// the Auto entry and the accessibility contract exist once.
+    private var pushPullPill: some View {
+        PushPullControl(resolved: resolvedPushPull,
+                        isAutomatic: $pushPullAutomatic,
+                        manualStops: $pushPullStops,
+                        onChange: persistPreferences)
+    }
+
+    /// Commits the selected stock (and its push/pull) to the take. The sheet's
+    /// toolbar calls this; there is no separate full-width Render bar under the
+    /// cards, which read as a second competing commit action.
+    private func performRender(sourceURL: URL) {
+        guard let stock = localSelection else {
+            renderQueueViewModel.reportRenderError("Select a film stock first.")
+            return
         }
+        if let jobId = awaitingStockJobId {
+            // Resume the durable entry created for this take.
+            renderQueueViewModel.assignStock(
+                jobId: jobId,
+                stockId: stock.stockId,
+                iso: stock.defaultISO,
+                gauge: gauge,
+                pushPull: resolvedPushPull
+            )
+        } else {
+            renderQueueViewModel.enqueue(
+                sourceURL: sourceURL,
+                stockId: stock.stockId,
+                iso: stock.defaultISO,
+                gauge: gauge,
+                pushPull: resolvedPushPull,
+                capturePolicy: capturePolicy
+            )
+        }
+        isPresented = false
     }
+}
 
-    private func renderButton(sourceURL: URL) -> some View {
-        Button {
-            guard let stock = localSelection else {
-                renderQueueViewModel.reportRenderError("Select a film stock first.")
-                return
+/// Dims everything in the live preview that the 4:3 delivery will not keep.
+///
+/// Deliberately inert: `Canvas` draws the scrim and the caller disables hit
+/// testing, so the focus/exposure tap still lands on the camera surface and
+/// `captureDevicePointConverted(fromLayerPoint:)` sees the same geometry.
+private struct DeliveryFramingScrim: View {
+    /// The delivered region in this view's own coordinates. Nil means there is
+    /// nothing to guide, and no scrim is drawn.
+    let cropRect: CGRect?
+
+    /// The dimmer over the discarded edges. Strong enough to read as "outside
+    /// the frame" against a bright scene, light enough to keep the scene
+    /// visible for framing.
+    private static let scrim = Color.black.opacity(0.55)
+
+    var body: some View {
+        if let cropRect {
+            Canvas { context, size in
+                var path = Path(CGRect(origin: .zero, size: size))
+                path.addRect(cropRect)
+                // Even-odd fill: everything except the delivered rectangle.
+                context.fill(path, with: .color(Self.scrim), style: FillStyle(eoFill: true))
             }
-            if let jobId = awaitingStockJobId {
-                // Resume the durable entry created for this take.
-                renderQueueViewModel.assignStock(
-                    jobId: jobId,
-                    stockId: stock.stockId,
-                    iso: stock.defaultISO,
-                    gauge: gauge
-                )
-            } else {
-                renderQueueViewModel.enqueue(
-                    sourceURL: sourceURL,
-                    stockId: stock.stockId,
-                    iso: stock.defaultISO,
-                    gauge: gauge,
-                    capturePolicy: capturePolicy
-                )
-            }
-            isPresented = false
-        } label: {
-            HStack {
-                Image(systemName: "play.rectangle.fill")
-                Text("Render with \(localSelection?.displayName ?? "Stock")")
-            }
-            .frame(maxWidth: .infinity)
-            .padding()
-            .background(Color.accentColor)
-            .foregroundStyle(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
 }

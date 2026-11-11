@@ -16,6 +16,13 @@ struct MovieWritingReliabilityTests {
 
     private final class BundleToken {}
 
+    private final class ProgressSamples: @unchecked Sendable {
+        private let lock = NSLock()
+        private var samples: [Double] = []
+        func append(_ value: Double) { lock.withLock { samples.append(value) } }
+        var values: [Double] { lock.withLock { samples } }
+    }
+
     @Test func trimmedRenderRetainsAudioAndStartsAtZero() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -28,7 +35,14 @@ struct MovieWritingReliabilityTests {
 
         let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory, allowsSyntheticInputForTests: true)
         let trim = CMTimeRange(start: CMTime(value: 2, timescale: 10), duration: CMTime(value: 4, timescale: 10))
-        let output = try await renderer.render(sourceURL: source, config: config, trimRange: trim, bitrate: 2_000_000)
+        let progress = ProgressSamples()
+        let output = try await renderer.render(sourceURL: source, config: config, trimRange: trim,
+                                               bitrate: 2_000_000, progress: { progress.append($0) })
+        let samples = progress.values
+        #expect(samples.last == 1)
+        #expect(samples.contains { $0 > 0 && $0 < 1 })
+        #expect(samples == samples.sorted())
+        #expect(samples.count <= 102)
         defer { try? FileManager.default.removeItem(at: output) }
 
         let outputAsset = AVURLAsset(url: output)
@@ -227,6 +241,43 @@ struct MovieWritingReliabilityTests {
         #expect(provenance.formatDescriptions[0].fullRangeVideo == sourceFullRange)
         #expect(provenance.formatDescriptions[0].colorPrimaries == sourcePrimaries)
         #expect(provenance.formatDescriptions[0].transferFunction == sourceTransfer)
+    }
+
+    @available(macOS 27.0, *)
+    @Test func selectedLog2FileRendersWithoutInventedCaptureMetadata() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("selected-apple-log2.mov")
+        try await makeAppleLog2Fixture(at: source, codec: .hevc)
+        let sourceBytes = try Data(contentsOf: source)
+        let owned = try await VideoImportService.copyToOwnedStorage(from: source)
+        defer { try? FileManager.default.removeItem(at: owned) }
+        let imported = try await VideoImportService.inspect(url: owned, originalFilename: source.lastPathComponent)
+        #expect(imported.originalFilename == source.lastPathComponent)
+        #expect(imported.pixelWidth == 256 && imported.pixelHeight == 64)
+        #expect(imported.durationSeconds > 0 && abs(imported.nominalFrameRate - 24) < 0.01)
+
+        let renderer = try PipelineRenderer(resourceBundle: testBundle, outputDirectory: directory)
+        let output = try await renderer.render(sourceURL: imported.url, config: loadConfig(),
+                                                bitrate: 2_000_000, isImportedSource: true)
+        let outputAsset = AVURLAsset(url: output)
+        let outputTrack = try #require(try await outputAsset.loadTracks(withMediaType: .video).first)
+        #expect(try await outputTrack.load(.naturalSize) == CGSize(width: 256, height: 64))
+        #expect(abs(Double(try await outputTrack.load(.nominalFrameRate)) - imported.nominalFrameRate) < 0.01)
+        let sourceDuration = try await AVURLAsset(url: owned).load(.duration)
+        #expect(abs((try await outputAsset.load(.duration)).seconds - sourceDuration.seconds) < 0.01)
+        var metadata: [String: String] = [:]
+        for item in try await outputAsset.load(.metadata) {
+            if let key = item.key as? String, let value = try await item.load(.stringValue) { metadata[key] = value }
+        }
+        #expect(metadata["com.filmemulation.source-origin"] == "photos-import")
+        #expect(metadata["com.filmemulation.shutter-speed"] == "unknown-or-not-recorded")
+        #expect(metadata["com.filmemulation.source-color-validation"] == "accepted-stream-tags")
+        #expect(metadata["com.filmemulation.source-color-test-bypass"] == "false")
+        let sourceUnchanged = try Data(contentsOf: source) == sourceBytes
+        let stagedUnchanged = try Data(contentsOf: owned) == sourceBytes
+        #expect(sourceUnchanged && stagedUnchanged)
     }
 
     @Test func renderFailureAfterEncodedFramesRemovesPartialAndPreservesSource() async throws {

@@ -1,15 +1,17 @@
 # LUT generation
 
-Builds the two shipped film look-up tables from source:
+Builds the three shipped film look-up tables from source:
 
 | Output | Input domain | Output domain |
 |---|---|---|
 | `5207 - Apple Log 2.cube` | Apple Log 2 code values in Apple Wide Gamut | Rec. 709, gamma 2.4 |
 | `5219 - Apple Log 2.cube` | same | same |
+| `Ektachrome 100D - Apple Log 2.cube` | same | same |
 
 Files are named by emulsion number alone: a slash cannot appear in a filename.
 The app labels the two stocks the way the canister does — **250D / 5207** and
-**500T / 5219**. Both print on a fixed Kodak Vision 2383.
+**500T / 5219**. Both print on a fixed Kodak Vision 2383. Ektachrome 100D
+is a positive reversal stock and projects directly, without a print.
 
 33³, `.cube`, red-fastest row order (`row = r + g·33 + b·33²`) — the convention
 the app's parser and sampling kernel expect.
@@ -25,7 +27,8 @@ the record of what was built and why; this file is how to rebuild it.
 . .venv/bin/activate
 cd tools/lut-generation
 
-python generate.py 33 out      # writes out/5207...cube and out/5219...cube
+python generate.py 33 out      # writes all three cubes
+python generate.py 33 out ektachrome100d  # generate only the new reversal stock
 python verify_cubes.py out     # structure, neutral axis, and a diff vs what ships
 python preview.py out          # renders a synthetic chart through the tables (preview/)
 ```
@@ -42,6 +45,7 @@ A regeneration must reproduce the committed tables exactly:
 ```
 f483e2fb151b3b4699b8d5fd1c36df9f583952941d48c0bc99dd311e574d32b5  5207 - Apple Log 2.cube
 d2320ea308730f3aa5186d66691b91d4a94595806970cbb16059c2d067d4924a  5219 - Apple Log 2.cube
+4cd01825536442c37d5d0c8eabb58482c91ddace717aef9cd1b44a3a8e1edbc1  Ektachrome 100D - Apple Log 2.cube
 ```
 
 Confirm with `shasum -a 256 out/*.cube` before copying anything into the app. If
@@ -71,6 +75,9 @@ will fail on a bad one. Run `python3 scripts/verify.py verify`.
 numpy stays on 2.2.x because numba 0.68 does not support 2.3+.
 
 The pins are the point: a floating environment regenerates different tables.
+Use a native Python 3.12 interpreter. On Apple Silicon, an x86_64 Conda Python
+can force llvmlite to build against an absent LLVM SDK. Set `PYTHON_BIN` to a
+native 3.12 executable when bootstrapping a new environment.
 
 ## Method
 
@@ -105,6 +112,18 @@ Two things in that chain are deliberate and worth knowing before changing it:
 `generate.py` prints the confined-knot count and the neutral-axis spread for
 each stock. A large spread on the neutral axis means the illuminant is fighting
 the input again.
+
+## Reversal-stock generation
+
+`ektachrome100d` uses the pinned upstream `KODAK_EKTACHROME_100D` data,
+`FilmSpectral`, and direct projection (`print_film=None`, not negative/2383).
+Only this stock uses upstream **Mallett 2019** spectral reconstruction; the
+negative stocks retain SFL reconstruction. This removes the measured sharp
+saturated-purple knot transitions while retaining the provided reversal curves.
+See the Ektachrome section of `docs/lut-provenance.md` for metrics and limits.
+The numerical verifier rejects the original discontinuous candidate, and checks
+regenerated samples against the shipped cube. Chart previews do not apply a
+second gamma encode to the already encoded LUT output.
 
 ## Attribution
 

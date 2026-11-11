@@ -18,6 +18,30 @@ struct RenderCapturePolicyTests {
         #expect(policy.shutterDenominator == 120)
     }
 
+    @Test func oneTwentyDerivesPairedHalfRateAndTwoForty() throws {
+        let policy = try #require(RenderCapturePolicy(120))
+        #expect(policy.frameRate == 120)
+        #expect(policy.grainPairing == .pairedAtHalfRate)
+        #expect(policy.shutterDenominator == 240)
+    }
+
+    @Test func oneTwentyPolicyRoundTripsThroughJSON() throws {
+        let source = try #require(RenderCapturePolicy(120))
+        let data = try JSONEncoder().encode(source)
+        #expect(try JSONDecoder().decode(RenderCapturePolicy.self, from: data) == source)
+    }
+
+    @Test func decodingRejectsOneTwentyWithTheWrongShutterOrGrain() {
+        for json in [
+            #"{"frameRate":120,"grainPairing":"perFrame","shutterDenominator":240}"#,
+            #"{"frameRate":120,"grainPairing":"pairedAtHalfRate","shutterDenominator":120}"#
+        ] {
+            #expect(throws: (any Error).self) {
+                try JSONDecoder().decode(RenderCapturePolicy.self, from: Data(json.utf8))
+            }
+        }
+    }
+
     @Test func invalidFrameRateIsRejectedRatherThanCoerced() {
         #expect(RenderCapturePolicy(30) == nil)
         #expect(RenderCapturePolicy(0) == nil)
@@ -64,6 +88,13 @@ struct RenderJobCapturePolicyTests {
         let legacy = try legacyJobJSON(job)
         let decoded = try JSONDecoder().decode(RenderJob.self, from: legacy)
         #expect(decoded.capturePolicy == nil)
+    }
+
+    @Test func oneTwentyPolicySurvivesJobRoundTrip() throws {
+        let job = RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/c.mov"), stockId: "s", iso: 400,
+                            capturePolicy: RenderCapturePolicy(120))
+        let decoded = try JSONDecoder().decode(RenderJob.self, from: JSONEncoder().encode(job))
+        #expect(decoded.capturePolicy == RenderCapturePolicy(120))
     }
 
     @Test func policySurvivesJobRoundTrip() throws {

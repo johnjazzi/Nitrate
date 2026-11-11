@@ -32,26 +32,76 @@ enum DaylightExposureRescuePolicy {
 /// 92×44 face (44×92 once held in landscape) and always sits 6pt above the
 /// measured exposure column in the portrait canvas — the same anchor as the EV
 /// meter, so a physical hold never moves it over the top bar or the preview.
+///
+/// When the caller passes the manual controls' reserved rectangle as `excluding`,
+/// the slot must never intersect them. The preference order is: keep the plain
+/// above-the-column anchor if it already clears them; otherwise sit **above-left**
+/// of the manual controls (both edges clear by `gapBesideControls`); otherwise a
+/// **left offset** beside them at the exposure anchor; otherwise rise **above**
+/// them with the offset the canvas allows. It returns nil only when no candidate
+/// stays inside the viewport while clearing the exclusion.
 enum DaylightExposureRescueGeometry {
     static let buttonWidth: CGFloat = 92
     static let buttonHeight: CGFloat = 44
     static let gapAboveExposure: CGFloat = 6
+    /// Clearance kept between the slot and the manual controls it must avoid.
+    static let gapBesideControls: CGFloat = 6
 
     /// Reserved bounds for the button above `exposure` (both in the shared
     /// `cameraCanvas` space), clamped horizontally inside `viewport`, or nil when
     /// the slot would leave the top of the viewport — the caller then hides the
     /// affordance rather than letting it overlap the top toolbar. The face itself
     /// is unchanged; only the reserved frame turns for a quarter-turn hold.
+    ///
+    /// `excluding` is the manual controls' reserved rectangle in the same space.
+    /// It defaults to nil and then the result is exactly the historical single
+    /// anchor: centred above the exposure column, 6pt clear of its top edge.
     static func buttonRect(above exposure: CGRect, in viewport: CGSize,
-                           rotationDegrees: Double = 0) -> CGRect? {
+                           rotationDegrees: Double = 0,
+                           excluding manualControls: CGRect? = nil) -> CGRect? {
         let isQuarterTurn = abs(rotationDegrees.truncatingRemainder(dividingBy: 180)) == 90
         let width = isQuarterTurn ? buttonHeight : buttonWidth
         let height = isQuarterTurn ? buttonWidth : buttonHeight
         guard viewport.width >= width, viewport.height >= height else { return nil }
-        let y = exposure.minY - gapAboveExposure - height
-        guard y >= 0 else { return nil }
-        let x = min(max(exposure.midX - width / 2, 0), viewport.width - width)
-        return CGRect(x: x, y: y, width: width, height: height)
+        let anchorY = exposure.minY - gapAboveExposure - height
+        guard anchorY >= 0 else { return nil }
+        let centeredX = clampedHorizontal(exposure.midX - width / 2, width: width, in: viewport)
+
+        // No exclusion to steer around: the original anchor, unchanged.
+        guard let manual = manualControls,
+              manual.width > 0, manual.height > 0,
+              manual.minX.isFinite, manual.minY.isFinite,
+              manual.maxX.isFinite, manual.maxY.isFinite else {
+            return CGRect(x: centeredX, y: anchorY, width: width, height: height)
+        }
+
+        // A slot at the plain anchor that already clears the controls is kept.
+        let anchored = CGRect(x: centeredX, y: anchorY, width: width, height: height)
+        if !anchored.intersects(manual) { return anchored }
+
+        let gap = gapBesideControls
+        // The top edge and left edge the slot must clear to sit above-left.
+        let aboveY = manual.minY - gap - height
+        let leftX = manual.minX - gap - width
+
+        // Preferred: above-left of the manual controls, still above the column.
+        if leftX >= 0, leftX <= viewport.width - width, aboveY >= 0, aboveY <= anchorY {
+            return CGRect(x: leftX, y: aboveY, width: width, height: height)
+        }
+        // Otherwise a left offset beside them, keeping the exposure anchor.
+        if leftX >= 0, leftX <= viewport.width - width {
+            return CGRect(x: leftX, y: anchorY, width: width, height: height)
+        }
+        // Otherwise rise above them, offset as far left as the canvas allows.
+        if aboveY >= 0, aboveY <= anchorY {
+            return CGRect(x: centeredX, y: aboveY, width: width, height: height)
+        }
+        return nil
+    }
+
+    /// Clamp a horizontal origin so a `width`-wide slot stays inside `viewport`.
+    private static func clampedHorizontal(_ x: CGFloat, width: CGFloat, in viewport: CGSize) -> CGFloat {
+        min(max(x, 0), viewport.width - width)
     }
 }
 
@@ -107,9 +157,9 @@ struct ExposureRescueButton: View {
         Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: armed ? "bolt.fill" : "sun.max.fill")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(NitrateTypography.font(size: 13))
                 Text(armed ? "60 fps" : "Too bright?")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(NitrateTypography.font(size: 11))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }
@@ -166,14 +216,14 @@ struct DaylightExposureRescueModal: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(armed ? "Daylight 60 fps is on" : "24 fps or 60 fps?")
-                .font(.system(size: 19, weight: .semibold))
+                .font(NitrateTypography.font(size: 19))
                 .foregroundStyle(.white)
 
             if !armed {
                 Text("Films are shot at 24 fps (except The Hobbit, but we don't count that). "
                      + "Over 100 years ago we found a perfect balance: 24 fps with a 180° shutter, "
                      + "just enough blur to feel real and present.")
-                    .font(.footnote)
+                    .font(NitrateTypography.font(.footnote))
                     .foregroundStyle(.white.opacity(0.88))
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -182,18 +232,18 @@ struct DaylightExposureRescueModal: View {
                  + "This mode sets 60 fps and drops the shutter to 1/120 — about 1.3 stops less light — "
                  + "giving you the ability to shoot in daylight. An ND filter is the better answer "
                  + "if you can use one.")
-                .font(.footnote)
+                .font(NitrateTypography.font(.footnote))
                 .foregroundStyle(.white.opacity(0.88))
                 .fixedSize(horizontal: false, vertical: true)
 
             Text("Session-only: it reverts to 24 fps when the camera session ends and is never saved.")
-                .font(.caption)
+                .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.white.opacity(0.6))
                 .fixedSize(horizontal: false, vertical: true)
 
             if let blockedReason {
                 Text(blockedReason)
-                    .font(.caption)
+                    .font(NitrateTypography.font(.caption))
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -236,7 +286,7 @@ struct DaylightExposureRescueModal: View {
                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 15, weight: .semibold))
+                .font(NitrateTypography.font(size: 15))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
                 .padding(.horizontal, 18)

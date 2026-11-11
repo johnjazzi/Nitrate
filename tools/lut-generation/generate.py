@@ -1,4 +1,4 @@
-"""Home-built Kodak Vision3 5207 (250D) / 5219 (500T) -> 2383 LUTs.
+"""Home-built Vision3 negative/2383 and Ektachrome 100D reversal LUTs.
 
 Stocks are named by their emulsion number, which is the unambiguous identifier;
 the descriptive names for those emulsions are Kodak Vision3 250D 5207 (daylight)
@@ -7,7 +7,8 @@ recorded in docs/lut-provenance.md.
 
 Grid domain: Apple Log 2 encoded code values in Apple Wide Gamut (i.e. exactly
 what the iPhone records), decoded here to linear Apple Wide Gamut, converted to
-CIE XYZ, then run through the Spectral Film LUT (MIT) negative+print pipeline.
+CIE XYZ, then run through the Spectral Film LUT (MIT) negative+print pipeline
+or, for Ektachrome, direct positive-transparency projection without a print.
 
 Input to the generator is CIE XYZ (input_colorspace=None), so the film stages
 never need an Apple-Log-aware colour library.
@@ -27,6 +28,7 @@ from spectral_film_lut.utils import film_conversion
 from spectral_film_lut.negative_film.kodak_5207 import KODAK_5207
 from spectral_film_lut.negative_film.kodak_5219 import KODAK_5219
 from spectral_film_lut.print_film.kodak_2383 import KODAK_2383
+from spectral_film_lut.reversal_film.kodak_ektachrome_100d import KODAK_EKTACHROME_100D
 
 # Apple Log / Apple Log 2 transfer function constants (OpenColorIO v2.6.0,
 # src/OpenColorIO/transforms/builtins/AppleCameras.cpp). Log 2 shares the curve
@@ -153,11 +155,15 @@ def make_lut(negative_name: str, size: int, out_path: Path, oversample: bool = F
     negative_data, print_data = {
         "5207": (KODAK_5207, KODAK_2383),
         "5219": (KODAK_5219, KODAK_2383),
+        "ektachrome100d": (KODAK_EKTACHROME_100D, None),
     }[negative_name]
     negative = FilmSpectral(negative_data)
     negative.set_color_checker()
-    print_film = FilmSpectral(print_data)
-    print_film.set_color_checker(negative=negative)
+    # Reversal film projects directly: a negative/2383 print would invert and
+    # materially alter Ektachrome rather than model its positive transparency.
+    print_film = FilmSpectral(print_data) if print_data is not None else None
+    if print_film is not None:
+        print_film.set_color_checker(negative=negative)
 
     grid_size = size * 2 - 1 if oversample else size
     grid = build_grid(grid_size)
@@ -180,6 +186,12 @@ def make_lut(negative_name: str, size: int, out_path: Path, oversample: bool = F
         upsampling_method="SFL upsampling",
         reference_negative=negative,
     )
+    if negative_name == "ektachrome100d":
+        # The SFL reconstruction produces abrupt saturated-purple transitions
+        # with this reversal data. Mallett keeps the same sensitivity/density
+        # model while providing a smoother spectral reconstruction. Existing
+        # negative-stock bakes remain unchanged. See the measured provenance.
+        kwargs["upsampling_method"] = "Mallett 2019"
     kwargs.update(overrides)
 
     start = time.time()
@@ -219,10 +231,13 @@ if __name__ == "__main__":
     size = int(sys.argv[1]) if len(sys.argv) > 1 else 33
     out_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("out")
     out_dir.mkdir(parents=True, exist_ok=True)
-    # Tables are named by emulsion number alone. The print stage is a fixed
-    # 2383 for both and does not belong in the identifier the app ships.
-    for stock in ["5207", "5219"]:
-        path = out_dir / f"{stock} - Apple Log 2.cube"
+    # Negative tables keep emulsion-number names; reversal keeps its stock name.
+    # Optional stock arguments can generate only a new stock. Existing resources
+    # are never replaced by this script: all bakes go to the output directory.
+    stocks = sys.argv[3:] or ["5207", "5219", "ektachrome100d"]
+    names = {"ektachrome100d": "Ektachrome 100D"}
+    for stock in stocks:
+        path = out_dir / f"{names.get(stock, stock)} - Apple Log 2.cube"
         result = make_lut(stock, size, path, oversample=OVERSAMPLE)
         table = result["table"]
         print(f"\n=== {stock} === wrote {path} in {result['seconds']:.1f}s")

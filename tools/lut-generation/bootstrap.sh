@@ -26,7 +26,7 @@ git -C "${CLONE}" checkout --detach "${PIN}"
 echo "Spectral Film LUT at $(git -C "${CLONE}" rev-parse HEAD)"
 
 if [ ! -d "${HERE}/.venv" ]; then
-  python3 -m venv "${HERE}/.venv"
+  "${PYTHON_BIN:-python3}" -m venv "${HERE}/.venv"
 fi
 # shellcheck disable=SC1091
 . "${HERE}/.venv/bin/activate"

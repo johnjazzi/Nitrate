@@ -83,13 +83,25 @@ def compare(label: str, mine: np.ndarray, shipped: np.ndarray, size: int):
 if __name__ == "__main__":
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("out")
     app_luts = Path(__file__).resolve().parents[2] / "App" / "Resources" / "LUTs"
-    for stock in ["5207", "5219"]:
-        gen_path = out / f"{stock} - Apple Log 2.cube"
+    for stock in (sys.argv[2:] or ["5207", "5219", "ektachrome100d"]):
+        name = "Ektachrome 100D" if stock == "ektachrome100d" else stock
+        gen_path = out / f"{name} - Apple Log 2.cube"
         size, table = load_app_convention(gen_path)
-        describe(gen_path, table, size)
-        shipped_path = app_luts / f"{stock} - Apple Log 2.cube"
+        assert np.isfinite(table).all(), f"{stock}: non-finite values"
+        assert table.min() >= 0 and table.max() <= 1, f"{stock}: outside [0,1]"
+        axis = describe(gen_path, table, size)
+        assert np.all(np.diff(axis, axis=0) >= -1e-4), f"{stock}: neutral inversion"
+        if stock == "ektachrome100d":
+            steps = np.concatenate([np.max(np.abs(np.diff(table, axis=a)), axis=-1).ravel()
+                                    for a in range(3)])
+            maximum, p999 = float(steps.max()), float(np.percentile(steps, 99.9))
+            print(f"   max adjacent step {maximum:.7f}; p99.9 {p999:.7f}")
+            assert maximum < 0.35 and p999 < 0.29, "Ektachrome spectral discontinuity"
+        shipped_path = app_luts / f"{name} - Apple Log 2.cube"
+        assert shipped_path.is_file(), f"{stock}: shipped comparison cube is missing"
         if shipped_path.exists():
             ssize, shipped = load_app_convention(shipped_path)
             describe(shipped_path, shipped, ssize)
             compare(stock, table, shipped, size)
+            assert size == ssize and np.array_equal(table, shipped), f"{stock}: regeneration differs"
         print()

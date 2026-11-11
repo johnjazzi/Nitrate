@@ -50,12 +50,73 @@ above the unchanged 0.12-second acceptance limit.
   shutdown itself does not cut off the drain. A foreground resume cancels deferred
   session shutdown.
 - Check the first **nonempty audio segment**, not just compressed PTS zero. Keep
-  the 0.12-second start/end tolerance. Apply it to normal completed recordings as
-  well as the preservation smoke.
+  the 0.12-second start/end tolerance as the *measurement*: it is what the device
+  preservation smoke reports and what the interior source-audio continuity gate
+  enforces.
+- Deliver a finished take on the wider 0.2-second **delivery** window. A take
+  whose only defect is a boundary timing difference inside 200 ms is rendered and
+  shown like any other take; the measured value is still logged. Withholding the
+  film look over a fifth of a second is what confuses the operator, and the take
+  is no worse for it.
+- Anchor the origin only on a take whose microphone is actually delivering. A
+  configured microphone that has been silent for longer than the warm-up window
+  holds the first eligible frames (bounded by the warm-up ceiling) instead of
+  opening the clip on samples that were never delivered.
 
 Neither track is retimed. The fix does not generate silence, replace sound, or
 relax the validation threshold. Existing clips cannot recover microphone samples
 that were never recorded.
+
+## Stalled microphone at the origin
+
+The preroll can only flush samples the recorder already holds. When the capture
+audio pipeline stalls across the take boundary, the microphone samples covering
+the start are never delivered, every preroll packet is older than the origin, and
+the clip opens with a silent head — measured by the validation as a positive
+content-start skew and reported as `A/V first-sample skew … exceeds 0.12s`.
+
+A 0.4.6 device capture showed this: audio content started 0.143 s after the first
+video frame, with the track-end difference inside tolerance at 0.023 s. Pulling
+the app's own files off the same phone showed the same signature once in eight
+recorded takes (0.184 s against 0.002–0.013 s for the rest), so it is a stall, not
+a mode or lens rule. Eighteen consecutive cold-start takes through the debug smoke
+afterwards measured 0.002–0.022 s and no failure: the stall is rare enough that it
+will not reproduce on demand.
+
+`CameraAudioWarmUpPolicy` therefore gates the origin, not the tolerance:
+
+- A take whose microphone is configured (`requiresAudioEvidence`) does not anchor
+  its origin while the microphone has been silent for more than
+  `silentWindow` (0.15 s). Frames that arrive during the stall are dropped.
+- The hold ends at `maximumWait` (0.4 s) so a microphone that never delivers still
+  records video instead of hanging the record button.
+- The first frame after the stream resumes anchors the origin, so the preroll
+  flushes across the start and the head is covered.
+
+A video-only take, or one whose microphone is live, starts exactly as before. The
+cost of the gate is the dropped head frames, which is the same material whose
+audio was lost.
+
+## Delivering a take inside 200 ms
+
+The gate above removes the class of failure, but the take that prompted it was
+not lost to the gap — it was lost to the reaction to the gap. The validation
+correctly measured 0.143 s against the strict 0.12 s bound and the take was
+retained as original-only: the Log clip reached Photos, but the film look was
+never rendered.
+
+Two windows now exist, on purpose:
+
+| Window | Value | Owner | Meaning |
+|---|---:|---|---|
+| `synchronizationTolerance` | 0.12 s | preservation smoke, interior continuity gate | the measurement |
+| `deliveryTolerance` | 0.20 s | finished-take validation | whether the take is rendered |
+
+A finished take is delivered when both the head skew and the tail difference are
+inside `deliveryTolerance`; anything wider is still retained as an original-only
+take with the measured values in the message. The smoke keeps reporting the
+strict number, so a device run can still show a tighter figure than the app used
+to accept a take.
 
 ## Device evidence
 

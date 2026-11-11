@@ -1,5 +1,20 @@
 #include <metal_stdlib>
+#include "hlg-input.h"
 using namespace metal;
+
+// Native ten-bit HLG YCbCr -> existing LUT input. No display tone mapping.
+kernel void hlg_prepare(texture2d<float, access::read> yPlane [[texture(0)]],
+                        texture2d<float, access::sample> uvPlane [[texture(1)]],
+                        texture2d<float, access::write> output [[texture(2)]],
+                        uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= output.get_width() || gid.y >= output.get_height()) return;
+    constexpr sampler chromaSampler(coord::normalized, filter::linear, address::clamp_to_edge);
+    float y = (yPlane.read(gid).r * (65535.0f / 64.0f) - 64.0f) / 876.0f;
+    float2 uv = (float2(gid) + .5f) / float2(output.get_width(), output.get_height());
+    float2 c = (uvPlane.sample(chromaSampler, uv).rg * (65535.0f / 64.0f) - 512.0f) / 896.0f;
+    float3 rgb = float3(y + 1.4746f*c.y, y - .164553f*c.x - .571353f*c.y, y + 1.8814f*c.x);
+    output.write(float4(hlg_to_lut_input(rgb), 1), gid);
+}
 
 constexpr sampler spatial_linear_sampler(
     coord::normalized,
@@ -172,38 +187,28 @@ static inline float apple_log_encode(float linear) {
     return AL_C * (linear - AL_R0) * (linear - AL_R0);
 }
 
-/// Per-layer superwhite energy from the ungraded frame, at half resolution.
+/// Decode the (scale x scale) source block under one mask texel into linear
+/// scene light and average it there.
 ///
-/// The channels stay separate because they diffuse to different radii and
-/// because the ratio between them carries the colour ramp — a single luma value
-/// cannot express "red has responded but blue has not".
-kernel void spatial_halation_mask(
-    texture2d<float, access::read>  input  [[texture(0)]],
-    texture2d<float, access::write> mask   [[texture(1)]],
-    constant float& redKnee                [[buffer(0)]],
-    constant float& greenKnee              [[buffer(1)]],
-    constant float& blueKnee               [[buffer(2)]],
-    uint2 gid [[thread_position_in_grid]]
+/// Each sample is decoded BEFORE the average. Apple Log is a nonlinear
+/// encoding, so averaging the code values and decoding once (the previous
+/// behaviour) collapses a subpixel specular into the mean of its surround
+/// instead of preserving its energy — a 9x pixel next to three 18% pixels would
+/// fall below red's knee entirely. Only samples that actually fall inside the
+/// source are counted, so a mask texel on an odd-sized frame averages the
+/// pixels that exist rather than always dividing by four.
+///
+/// Shared by both prepare entry points below so the halation mask, the
+/// diffusion scene, and any future consumer of scene light can never disagree
+/// about the decode.
+static inline float3 spatial_linear_block(
+    texture2d<float, access::read> input,
+    uint2 gid,
+    uint scale,
+    thread uint& valid
 ) {
-    if (gid.x >= mask.get_width() || gid.y >= mask.get_height()) {
-        return;
-    }
-
-    // 2x2 box average of the full-res source into this half-res texel. Each
-    // sample is decoded to linear light FIRST, then the linear energies are
-    // averaged. Apple Log is a nonlinear encoding, so averaging the code values
-    // and decoding once (the previous behaviour) collapses a subpixel specular
-    // into the mean of its surround instead of preserving its energy — a 9x
-    // pixel next to three 18% pixels would fall below red's knee entirely.
-    // Only samples that actually fall inside the source are counted, so a mask
-    // texel on an odd-sized frame averages the pixels that exist rather than
-    // always dividing by four.
     float3 sum = float3(0.0f);
-    uint valid = 0;
-    // Zero diffusion uses a full-resolution mask: avoid even the implicit
-    // spread introduced by half-resolution downsampling and linear upsampling.
-    uint scale = (mask.get_width() == input.get_width()
-                  && mask.get_height() == input.get_height()) ? 1u : 2u;
+    valid = 0;
     for (uint dy = 0; dy < scale; ++dy) {
         for (uint dx = 0; dx < scale; ++dx) {
             uint2 src = gid * scale + uint2(dx, dy);
@@ -216,39 +221,196 @@ kernel void spatial_halation_mask(
             }
         }
     }
-    float3 linear = sum / max(float(valid), 1.0f);
+    return sum / max(float(valid), 1.0f);
+}
 
+/// Per-layer superwhite energy from the ungraded frame, at half resolution.
+///
+/// The channels stay separate because they diffuse to different radii and
+/// because the ratio between them carries the colour ramp — a single luma value
+/// cannot express "red has responded but blue has not".
+///
+/// `scale` is 1 when the mask is full resolution: zero diffusion avoids even
+/// the implicit spread introduced by half-resolution downsampling and linear
+/// upsampling.
+static inline uint spatial_mask_scale(
+    texture2d<float, access::write> mask,
+    texture2d<float, access::read> input
+) {
+    return (mask.get_width() == input.get_width()
+            && mask.get_height() == input.get_height()) ? 1u : 2u;
+}
+
+/// How far below the ceiling, in stops, the PULL gain rolls off. The gain is
+/// applied in full up to `2^holdStops` under the clip and fades to none at the
+/// clip itself. Widen it to protect more of the shoulder, narrow it to leave
+/// only the last fraction of a stop alone. It is the one taste constant of the
+/// curve; every other number here is derived.
+constant float kPushPullHoldStops = 1.0f;
+
+/// Pull gain weight at one scene-light value: 1 where the exposure is applied in
+/// full, 0 at and above the clip ceiling — so a truly clipped highlight does not
+/// move and keeps driving halation at full intensity.
+static inline float spatial_hold_weight(float linear, float ceiling) {
+    if (ceiling <= 0.0f || linear <= 0.0f) {
+        // Below black the direction clamp owns the result; above a missing
+        // ceiling there is nothing to hold.
+        return 1.0f;
+    }
+    float below = log2(ceiling / linear) / kPushPullHoldStops; // stops under the clip
+    below = clamp(below, 0.0f, 1.0f);
+    return below * below * (3.0f - 2.0f * below);              // smoothstep
+}
+
+/// Render-time push/pull as a highlight-preserving exposure CURVE, applied to
+/// scene light BEFORE the emulsion stages.
+///
+/// A video take is locked to its shutter, so a bright day is over-exposed at the
+/// sensor and the operator pulls the exposure down in the render. Applying that
+/// pull AFTER halation meant the emulsion was still measured against the light
+/// the sensor saw: the frame came back two stops darker with two stops too much
+/// halo. Exposing the scene first puts the pull where a real exposure change
+/// would be — in front of the film.
+///
+/// It is a CURVE, not a flat gain. A flat ±EV multiplies the whole scene, so a
+/// pull drags the truly clipped highlights (which carry no scene detail to
+/// recover) down out of white and into midtones — and there they pick up the
+/// base stock's cast instead of reading as film. Film does the opposite: light
+/// past the emulsion's latitude stays fully developed, prints as white, and
+/// halates. So the gain fades to none at the source's clip ceiling: midtones and
+/// the recoverable shoulder pull down, while a clipped highlight holds at white
+/// and keeps its full-intensity halo.
+/// Positive stops instead use a monotone rational shoulder below the ceiling,
+/// with identity at/above it. Blending a positive gain by the pull weight would
+/// overshoot the ceiling and invert gradients as the weight falls to zero.
+///
+/// Apple Log 2 is signed: codes under the black point carry NEGATIVE scene
+/// values, and scaling those toward zero would move them against the requested
+/// direction. Clamp so a pull only ever darkens and a push only ever brightens.
+static inline float3 spatial_expose(float3 linear, float stops, float ceiling) {
+    if (stops == 0.0f) {
+        return linear;
+    }
+    float gain = exp2(stops);
+    if (stops > 0.0f) {
+        float3 exposed = linear * gain;
+        if (isfinite(ceiling) && ceiling > 0.0f) {
+            // Monotone, bounded shoulder; at/above the ceiling is identity.
+            // Negative light uses flat gain before the signed-black clamp.
+            exposed /= 1.0f + (gain - 1.0f) * max(linear, 0.0f) / ceiling;
+            exposed = select(exposed, linear, linear >= ceiling);
+        }
+        return max(exposed, linear);
+    }
+    float3 weight = float3(spatial_hold_weight(linear.x, ceiling),
+                           spatial_hold_weight(linear.y, ceiling),
+                           spatial_hold_weight(linear.z, ceiling));
+    float3 exposed = linear * (1.0f + (gain - 1.0f) * weight);
+    return stops < 0.0f ? min(exposed, linear) : max(exposed, linear);
+}
+
+static inline float3 spatial_energy(float3 linear, float3 knees) {
     // Per-layer response. `max(0, linear - knee)` is continuous and grows with
     // intensity, so a brighter source bleeds further and reaches more layers.
     // The knee ordering is explicit and fixed — red (least scattered light,
     // clears first), then green, then blue — and must never be permuted: it is
     // what makes a faint halo read red and a bright one read white.
-    float3 energy = max(float3(0.0f),
-                        linear - float3(redKnee, greenKnee, blueKnee));
+    return max(float3(0.0f), linear - knees);
+}
+
+kernel void spatial_halation_mask(
+    texture2d<float, access::read>  input  [[texture(0)]],
+    texture2d<float, access::write> mask   [[texture(1)]],
+    constant float& redKnee                [[buffer(0)]],
+    constant float& greenKnee              [[buffer(1)]],
+    constant float& blueKnee               [[buffer(2)]],
+    constant float& exposureStops          [[buffer(3)]],
+    constant float& exposureCeiling        [[buffer(4)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= mask.get_width() || gid.y >= mask.get_height()) {
+        return;
+    }
+
+    uint valid = 0;
+    float3 linear = spatial_expose(
+        spatial_linear_block(input, gid, spatial_mask_scale(mask, input), valid),
+        exposureStops, exposureCeiling);
+    float3 energy = spatial_energy(linear, float3(redKnee, greenKnee, blueKnee));
 
     mask.write(float4(energy, 1.0f), gid);
 }
 
-/// Add the three diffused layers to the scene-linear source, then re-encode.
+/// The same halation mask, plus the scene-linear frame the diffusion node
+/// blurs, from ONE decode.
 ///
-/// The source is decoded per channel, the diffused per-layer energy is added in
-/// linear light, and the sum is re-encoded to Apple Log 2. That re-encoded frame
-/// is what the stock LUT and output contrast grade, so the added light shares the
-/// source's tone curve. No colour tint is applied: the colour is the consequence
-/// of the per-layer physics — red responds to the least light and scatters
-/// furthest, so a faint halo reads red, and where green and blue have also
-/// responded the sum tends to white. The energy is ADDED over the source's own
-/// footprint as well, which is why a very bright source reads as larger rather
-/// than hollowed into a ring.
+/// Diffusion scatters light in linear scene light, so it needs the decoded
+/// frame; halation needs the per-layer excess of that same frame. Decoding
+/// twice would double the half-res read traffic for no benefit, so this entry
+/// point writes both. It is used only when the diffusion node is enabled — the
+/// mask-only kernel above stays the default path so a disabled diffusion node
+/// allocates and writes nothing.
+kernel void spatial_scene_prepare(
+    texture2d<float, access::read>  input  [[texture(0)]],
+    texture2d<float, access::write> mask   [[texture(1)]],
+    texture2d<float, access::write> linear [[texture(2)]],
+    constant float& redKnee                [[buffer(0)]],
+    constant float& greenKnee              [[buffer(1)]],
+    constant float& blueKnee               [[buffer(2)]],
+    constant float& exposureStops          [[buffer(3)]],
+    constant float& exposureCeiling        [[buffer(4)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= mask.get_width() || gid.y >= mask.get_height()) {
+        return;
+    }
+
+    uint valid = 0;
+    float3 scene = spatial_expose(
+        spatial_linear_block(input, gid, spatial_mask_scale(mask, input), valid),
+        exposureStops, exposureCeiling);
+    float3 energy = spatial_energy(scene, float3(redKnee, greenKnee, blueKnee));
+
+    mask.write(float4(energy, 1.0f), gid);
+    linear.write(float4(scene, 1.0f), gid);
+}
+
+/// Add the three diffused layers to the scene-linear source, then re-encode —
+/// and, in the same pass, apply the lens diffusion node.
+///
+/// The source is decoded per channel once, the diffusion blend and then the
+/// diffused per-layer halation energy are applied in linear light, and the sum
+/// is re-encoded to Apple Log 2 exactly once. That re-encoded frame is what the
+/// stock LUT and output contrast grade, so both effects share the source's tone
+/// curve and neither pays for its own decode/encode round trip.
+///
+/// ORDER IS PHYSICAL: a diffusion filter sits in front of the lens, so it
+/// softens the scene light BEFORE the emulsion scatters it. The halation layers
+/// are therefore added to the DIFFUSED scene, not the other way round.
+///
+/// Halation applies no colour tint: the colour is the consequence of the
+/// per-layer physics — red responds to the least light and scatters furthest,
+/// so a faint halo reads red, and where green and blue have also responded the
+/// sum tends to white. The energy is ADDED over the source's own footprint as
+/// well, which is why a very bright source reads as larger rather than hollowed
+/// into a ring.
 kernel void spatial_halation_apply(
     texture2d<float, access::read>  source [[texture(0)]],
     texture2d<float, access::sample> red   [[texture(1)]],
     texture2d<float, access::sample> green [[texture(2)]],
     texture2d<float, access::sample> blue  [[texture(3)]],
     texture2d<float, access::write> output [[texture(4)]],
+    texture2d<float, access::sample> diffusionLevel0 [[texture(5)]],
+    texture2d<float, access::sample> diffusionLevel1 [[texture(6)]],
+    texture2d<float, access::sample> diffusionLevel2 [[texture(7)]],
+    texture2d<float, access::sample> diffusionLevel3 [[texture(8)]],
     constant float& strength               [[buffer(0)]],
     constant float3& layerScale            [[buffer(1)]],
     constant float& referenceSuperwhite    [[buffer(2)]],
+    constant float4& diffusionWeights      [[buffer(3)]],
+    constant float& diffusionAmount        [[buffer(4)]],
+    constant float& exposureStops          [[buffer(5)]],
+    constant float& exposureCeiling        [[buffer(6)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
@@ -282,9 +444,30 @@ kernel void spatial_halation_apply(
     // Decode the source to linear scene light, add the scattered energy there,
     // and re-encode. Adding in the encoded domain instead would apply the log
     // curve twice and detach the halo from the highlight it came from.
-    float3 linear = float3(apple_log_decode(base.r),
-                           apple_log_decode(base.g),
-                           apple_log_decode(base.b));
+    float3 linear = spatial_expose(float3(apple_log_decode(base.r),
+                                          apple_log_decode(base.g),
+                                          apple_log_decode(base.b)),
+                                   exposureStops, exposureCeiling);
+
+    // Lens diffusion: blend the scene light toward the multi-scale blurred
+    // version. The levels are the same blur sampled at three (or four) scales;
+    // their weights carry the Gaussian's variance, and the sum is normalized
+    // on the CPU, so this stays a weighted average and cannot change exposure.
+    // Skipped entirely when the node is off, so a disabled node is not a small
+    // blur but an exact pass-through.
+    if (diffusionAmount > 0.0f) {
+        float3 near = diffusionLevel0.sample(spatial_linear_sampler, uv).rgb;
+        float3 mid  = diffusionLevel1.sample(spatial_linear_sampler, uv).rgb;
+        float3 far  = diffusionLevel2.sample(spatial_linear_sampler, uv).rgb;
+        float3 farthest = diffusionLevel3.sample(spatial_linear_sampler, uv).rgb;
+        float3 blurred = near * diffusionWeights.x + mid * diffusionWeights.y
+                       + far * diffusionWeights.z + farthest * diffusionWeights.w;
+        float weightSum = diffusionWeights.x + diffusionWeights.y
+                        + diffusionWeights.z + diffusionWeights.w;
+        blurred = blurred / max(weightSum, 1e-6f);
+        linear = mix(linear, blurred, clamp(diffusionAmount, 0.0f, 1.0f));
+    }
+
     float3 scattered = max(float3(0.0f), linear + contribution);
 
     output.write(float4(apple_log_encode(scattered.r),

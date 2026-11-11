@@ -24,6 +24,10 @@ struct StockSamplePreview: View {
     let stock: FilmStockConfig?
     /// Print gauge, so the preview shows the grain that gauge produces.
     var gauge: PrintGauge?
+    /// Render push/pull, in stops. The preview fakes its effect with a plain
+    /// brightness lift or drop rather than re-developing the plate: it exists to
+    /// show the direction and rough size of the change, not to predict the file.
+    var pushPullStops: Int = 0
     @State private var sceneID = ""
     /// The optional magnified crop. The card's frame never changes with it, so the sheet keeps
     /// its height; only the sampled window (and the grain/halation scale) does.
@@ -33,10 +37,13 @@ struct StockSamplePreview: View {
     var body: some View {
         switch Self.catalog {
         case .success(let catalog):
-            VStack(spacing: 10) {
+            VStack(spacing: 8) {
                 // A paged TabView has no intrinsic size: without a definite frame it
-                // collapses and no card appears. Give it the plate's 2:3 shape, bounded so
-                // the strip below stays reachable on a short phone.
+                // collapses and no card appears. Give it the plate's 2:3 shape, sized from
+                // the space the sheet actually has so the controls below stay on screen on
+                // a short phone instead of being pushed under the fold. The sheet already
+                // assigns this row a fixed height, so the floor is only a guard against a
+                // zero-height proposal -- it must not fight the row that owns the height.
                 GeometryReader { proxy in
                     let cardWidth = min(proxy.size.width, 250)
                     pages(catalog)
@@ -46,8 +53,10 @@ struct StockSamplePreview: View {
                 .frame(height: 375)
                 sceneDots(catalog)
                 Text(catalog.disclaimer)
-                    .font(.caption2)
+                    .font(NitrateTypography.font(.caption2))
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
             }
             .onAppear {
                 if !catalog.scenes.contains(where: { $0.id == sceneID }), let first = catalog.scenes.first {
@@ -71,6 +80,7 @@ struct StockSamplePreview: View {
                           configuration: PreviewConfiguration(stock: stock, gauge: gauge,
                                                               sceneIlluminantKelvin: scene.sceneIlluminantKelvin),
                           isDetail: isDetail,
+                          pushPullStops: pushPullStops,
                           onToggleDetail: { isDetail.toggle() })
                     .padding(.horizontal, 4)
                     .tag(scene.id)
@@ -123,6 +133,10 @@ struct PreviewConfiguration: Equatable {
     let halationRadiusFraction: Float
     /// Per-layer halation contribution weights (red dominant).
     let halationTint: SIMD3<Float>
+    /// Lens diffusion node. Carried so a preview cannot show a look the render
+    /// will not; the radius is authored at a 1080p frame, so it needs no
+    /// rescaling for the smaller preview drawable.
+    let diffusion: DiffusionSettings
     /// Long edge, in pixels, of the render the preview stands in for. Grain is sized in this
     /// frame's pixels so the card shows the grain a full render would, not a magnified copy.
     let referenceLongEdge: Float
@@ -136,6 +150,7 @@ struct PreviewConfiguration: Equatable {
 
     init(footprint: Float, amplitude: Float, whiteBalance: simd_float3x3,
          halationStrength: Float, halationRadiusFraction: Float, halationTint: SIMD3<Float>,
+         diffusion: DiffusionSettings = .disabled,
          referenceLongEdge: Float = PreviewConfiguration.defaultReferenceLongEdge,
          zoom: Float = 1) {
         self.footprint = footprint
@@ -144,6 +159,7 @@ struct PreviewConfiguration: Equatable {
         self.halationStrength = halationStrength
         self.halationRadiusFraction = halationRadiusFraction
         self.halationTint = halationTint
+        self.diffusion = diffusion
         self.referenceLongEdge = referenceLongEdge
         self.zoom = zoom
     }
@@ -161,9 +177,10 @@ struct PreviewConfiguration: Equatable {
             amplitude: GrainModel.amount(gauge: effectiveGauge),
             whiteBalance: PlateWhiteBalance.adaptation(sceneKelvin: sceneIlluminantKelvin,
                                                        lockedKelvin: stock.colorTemperature),
-            halationStrength: stock.halationStrength,
+            halationStrength: stock.halationStrength(for: effectiveGauge),
             halationRadiusFraction: stock.halationRadiusFraction,
-            halationTint: stock.halationTint)
+            halationTint: stock.halationTint,
+            diffusion: stock.overridingGauge(effectiveGauge).effectiveDiffusion)
     }
 
     /// The same configuration magnified for the detail view. The grain and the halation are
@@ -172,8 +189,8 @@ struct PreviewConfiguration: Equatable {
         PreviewConfiguration(footprint: footprint, amplitude: amplitude, whiteBalance: whiteBalance,
                              halationStrength: halationStrength,
                              halationRadiusFraction: halationRadiusFraction,
-                             halationTint: halationTint, referenceLongEdge: referenceLongEdge,
-                             zoom: zoom)
+                             halationTint: halationTint, diffusion: diffusion,
+                             referenceLongEdge: referenceLongEdge, zoom: zoom)
     }
 
     var isGrainVisible: Bool { footprint > 0 && amplitude > 0 }
@@ -289,6 +306,8 @@ private struct PlatePage: View {
     let configuration: PreviewConfiguration
     /// Whether the card is showing its magnified crop.
     let isDetail: Bool
+    /// Render push/pull in stops; faked as a brightness shift.
+    let pushPullStops: Int
     let onToggleDetail: () -> Void
 
     /// The magnified crop's factor. Large enough that a shipping grain footprint resolves into
@@ -308,11 +327,20 @@ private struct PlatePage: View {
         .clipShape(RoundedRectangle(cornerRadius: 22))
     }
 
+    /// A stop of development reads as roughly this much display brightness on
+    /// the plate. Faked on purpose: the real push/pull is applied in linear
+    /// light before the cube, which is not worth a second render for a sample
+    /// card, but the direction and relative size have to be visible.
+    private var fakedPushPullBrightness: Double {
+        Double(pushPullStops) * 0.10
+    }
+
     private var plate: some View {
         ZStack {
             Color.white.opacity(0.06)
             if let url {
                 PlateSurface(plate: url, lutName: lutName, configuration: effectiveConfiguration)
+                    .brightness(fakedPushPullBrightness)
             } else {
                 ContentUnavailableView("Preview unavailable", systemImage: "photo",
                                        description: Text("No plate for this scene."))
@@ -330,7 +358,7 @@ private struct PlatePage: View {
         Button(action: onToggleDetail) {
             Label(isDetail ? "Full photo" : "Detail",
                   systemImage: isDetail ? "arrow.down.right.and.arrow.up.left" : "plus.magnifyingglass")
-                .font(.callout.weight(.semibold))
+                .font(NitrateTypography.font(.callout).weight(.semibold))
                 .padding(.horizontal, 14)
                 .frame(minHeight: 44)
                 .background(.ultraThinMaterial, in: Capsule())
@@ -346,8 +374,8 @@ private struct PlatePage: View {
 
     private var caption: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.8))
-            Text(stockName).font(.headline).foregroundStyle(.white)
+            Text(title).font(NitrateTypography.font(.caption).weight(.medium)).foregroundStyle(.white.opacity(0.8))
+            Text(stockName).font(NitrateTypography.font(.headline)).foregroundStyle(.white)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -540,13 +568,16 @@ final class PlatePreviewPipeline: @unchecked Sendable {
         guard commandBuffer.status == .completed else { throw PipelineError.unavailable }
 
         // 2. The production halation stage, on the locked frame, with the stock's own
-        //    parameters. Zero strength returns the prepared frame unchanged.
+        //    parameters. Zero strength returns the prepared frame unchanged. The
+        //    diffusion node is the stock's effective setting (its own, else the
+        //    print gauge's), so a preview cannot show a look the render will not.
         guard let halated = spatialStage.applyHalation(
             source: prepared,
             commandQueue: queue,
             strength: configuration.halationStrength,
             radiusFraction: configuration.halationRadiusFraction,
             layerScale: configuration.halationTint,
+            diffusion: configuration.diffusion,
             width: width,
             height: height
         ) else { throw PipelineError.unavailable }
@@ -666,25 +697,10 @@ final class PlatePreviewPipeline: @unchecked Sendable {
         return texture
     }
 
-    /// Same direct RGB / red-fastest RGBA32Float upload as the capture preview.
+    /// Same direct RGB/red-fastest, filterable upload as the capture preview.
     static func makeLUTTexture(_ cube: PlateCube, device: any MTLDevice) throws -> any MTLTexture {
-        let size = cube.size
-        let descriptor = MTLTextureDescriptor()
-        descriptor.textureType = .type3D
-        descriptor.pixelFormat = .rgba32Float
-        descriptor.width = size
-        descriptor.height = size
-        descriptor.depth = size
-        descriptor.usage = .shaderRead
-        descriptor.storageMode = .shared
-        guard let texture = device.makeTexture(descriptor: descriptor) else {
+        guard let texture = FilterableLUTTexture.make(device: device, size: cube.size, rgba: cube.rgba) else {
             throw PipelineError.unavailable
-        }
-        cube.rgba.withUnsafeBytes {
-            texture.replace(region: MTLRegionMake3D(0, 0, 0, size, size, size), mipmapLevel: 0, slice: 0,
-                            withBytes: $0.baseAddress!,
-                            bytesPerRow: size * 4 * MemoryLayout<Float>.size,
-                            bytesPerImage: size * size * 4 * MemoryLayout<Float>.size)
         }
         return texture
     }

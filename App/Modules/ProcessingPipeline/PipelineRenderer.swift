@@ -41,6 +41,7 @@ final class PipelineRenderer: @unchecked Sendable {
     // Cached pipeline states
     private var pass1Pipeline: MTLComputePipelineState?
     private var pass2Pipeline: MTLComputePipelineState?
+    private var hlgPipeline: MTLComputePipelineState?
     private var spatialStage: SpatialEffectsStage?
     private var grainTexture: MTLTexture?
     private var textureCache: CVMetalTextureCache?
@@ -94,15 +95,39 @@ final class PipelineRenderer: @unchecked Sendable {
     /// `capturePolicy` is the job's persisted enqueue-time policy. It selects the
     /// grain temporal cadence and the shutter metadata; `nil` is the legacy path
     /// (per-frame grain, `1/48`). It is never read from live UI.
+    /// `progress`, when supplied, is called with a monotonic, clamped fraction
+    /// (`0...<1`) as frames are appended, then with `1` once the writer has
+    /// finished. The callback is `@Sendable` and is invoked from the render
+    /// task, not the main actor; the caller owns any hop and throttling is
+    /// already applied here.
     func render(
         sourceURL: URL,
         config: FilmStockConfig,
         trimRange: CMTimeRange? = nil,
         bitrate: Int = RenderEncodingContract.averageBitRate,
-        capturePolicy: RenderCapturePolicy? = nil
+        capturePolicy: RenderCapturePolicy? = nil,
+        isImportedSource: Bool = false,
+        framing: DeliveryFraming = .widescreen,
+        progress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> URL {
         (try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange,
-                                    bitrate: bitrate, capturePolicy: capturePolicy)).outputURL
+                                    bitrate: bitrate, capturePolicy: capturePolicy,
+                                    isImportedSource: isImportedSource, framing: framing,
+                                    progress: progress)).outputURL
+    }
+
+    /// The take's lamp record, read from the source movie's own tags. Nil for a
+    /// source recorded before the control existed, which is not the same
+    /// statement as "the lamp was off".
+    private static func flashRecord(from asset: AVAsset) async throws -> FlashRecord? {
+        var values: [String: String] = [:]
+        for item in try await asset.load(.metadata) {
+            guard let key = item.key as? String,
+                  key.hasPrefix("com.filmemulation.flash-"),
+                  let value = try await item.load(.stringValue) else { continue }
+            values[String(key.dropFirst("com.filmemulation.".count))] = value
+        }
+        return FlashRecord.decode(values)
     }
 
     private static func captureColorSpace(from asset: AVAsset) async throws -> String? {
@@ -120,7 +145,10 @@ final class PipelineRenderer: @unchecked Sendable {
         trimRange: CMTimeRange? = nil,
         bitrate: Int = RenderEncodingContract.averageBitRate,
         capturePolicy: RenderCapturePolicy? = nil,
-        collectDecodedBufferEvidence: Bool = false
+        isImportedSource: Bool = false,
+        framing: DeliveryFraming = .widescreen,
+        collectDecodedBufferEvidence: Bool = false,
+        progress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> (outputURL: URL, counters: RenderDiagnosticsManifest.Counters,
                        sourceColorProvenance: RenderInputColorProvenance,
                        firstDecodedBuffer: RenderDiagnosticsManifest.DecodedBufferEvidence?) {
@@ -136,13 +164,17 @@ final class PipelineRenderer: @unchecked Sendable {
 
         let formatDescriptions = try await videoTrack.load(.formatDescriptions)
         let captureColorSpace = try await Self.captureColorSpace(from: asset)
+        // The lamp is a fact about the take, not about the render: read it back
+        // from the source so the delivered movie states the light that made it.
+        let flash = try await Self.flashRecord(from: asset)
         let sourceColorProvenance: RenderInputColorProvenance
         if allowsSyntheticInputForTests {
             sourceColorProvenance = .syntheticTestBypass(formatDescriptions, captureColorSpace: captureColorSpace)
         } else {
             do {
                 sourceColorProvenance = try RenderInputColorProvenance.inspect(
-                    formatDescriptions, captureColorSpace: captureColorSpace
+                    formatDescriptions, captureColorSpace: captureColorSpace,
+                    expectedProfile: capturePolicy?.sourceProfile ?? .appleLog2
                 )
             } catch let error as RenderInputColorContractError {
                 throw RenderError.stageFailed(
@@ -164,11 +196,46 @@ final class PipelineRenderer: @unchecked Sendable {
         let preferredTransform = try await videoTrack.load(.preferredTransform)
         try Task.checkCancellation()
 
-        let renderWidth = naturalSize.width
-        let renderHeight = naturalSize.height
+        // The source range this render actually reads. Frame presentation
+        // times are on the source timeline, so progress maps them onto this
+        // range.
+        let renderRange = trimRange ?? CMTimeRange(start: .zero, duration: duration)
+
+        // Measure once so the highlight hold does not breathe with the framing.
+        // Neutral exposure does not need the extra decode pass.
+        let sourceProfile = capturePolicy?.sourceProfile ?? .appleLog2
+        let peakCodeAdapter: (@Sendable (CVPixelBuffer) -> [Float])?
+        if sourceProfile == .hlgBT2020 {
+            peakCodeAdapter = { [self] buffer in
+                self.renderQueue.sync {
+                    guard let source = self.preparedSource(buffer, expectedProfile: .hlgBT2020) else { return [] }
+                    return self.peakCodes(of: source.texture)
+                }
+            }
+        } else {
+            peakCodeAdapter = nil
+        }
+        let highlightCeiling: Float?
+        if config.effectivePushPull.isNeutral {
+            highlightCeiling = nil
+        } else {
+            highlightCeiling = await Self.measureHighlightCeiling(asset: asset, track: videoTrack, range: renderRange,
+                sourceProfile: sourceProfile, peakCodeAdapter: peakCodeAdapter)
+        }
+
+        let sourceWidth = naturalSize.width
+        let sourceHeight = naturalSize.height
+        // Delivery framing is geometry, not colour: 4:3 writes the crop's own
+        // size and fills it with the centre of the decoded frame. The source
+        // reader stays at the encoded size, so the crop is a real crop and
+        // never a squeeze of the whole frame into fewer columns.
+        let delivery = framing.delivery(forSourceSize: naturalSize)
+        guard delivery.deliveredWidth > 0, delivery.deliveredHeight > 0 else {
+            throw RenderError.stageFailed("delivery-framing", "The source has no usable dimensions.")
+        }
         // What Photos shows for the delivered clip: the encoded size with the
         // delivery transform applied, not the sensor shape.
-        let deliveryOrientation = RenderDeliveryOrientation.from(naturalSize: naturalSize,
+        let deliveryOrientation = RenderDeliveryOrientation.from(naturalSize: delivery.deliveredSize,
                                                                  preferredTransform: preferredTransform)
 
         // Use naturalSize everywhere — encoded dimensions, never swapped.
@@ -177,11 +244,12 @@ final class PipelineRenderer: @unchecked Sendable {
         // The track tags establish Apple Log 2 input. The decoded RGBA values and
         // any AVFoundation conversion behavior remain unverified by this contract.
         let readerOutputSettings: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_64RGBAHalf,
+            kCVPixelBufferPixelFormatTypeKey as String: capturePolicy?.sourceProfile == .hlgBT2020
+                ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_64RGBAHalf,
             AVVideoAllowWideColorKey: true,
             kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferWidthKey as String: renderWidth,
-            kCVPixelBufferHeightKey as String: renderHeight
+            kCVPixelBufferWidthKey as String: sourceWidth,
+            kCVPixelBufferHeightKey as String: sourceHeight
         ]
         let readerOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: readerOutputSettings)
         guard reader.canAdd(readerOutput) else {
@@ -227,26 +295,10 @@ final class PipelineRenderer: @unchecked Sendable {
             }
         }
 
-        let videoCompression: [String: Any] = [
-            AVVideoAverageBitRateKey: bitrate,
-            AVVideoMaxKeyFrameIntervalKey: 48,
-            AVVideoExpectedSourceFrameRateKey: nominalFrameRate,
-            // Offline encoding can use B-frames to spend the fixed bitrate more
-            // efficiently on stochastic detail such as film grain.
-            AVVideoAllowFrameReorderingKey: true
-        ]
-
-        let writerOutputSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType(rawValue: RenderEncodingContract.codec),
-            AVVideoWidthKey: renderWidth,
-            AVVideoHeightKey: renderHeight,
-            AVVideoCompressionPropertiesKey: videoCompression,
-            AVVideoColorPropertiesKey: [
-                AVVideoColorPrimariesKey: RenderEncodingContract.colorPrimaries,
-                AVVideoTransferFunctionKey: RenderEncodingContract.transferFunction,
-                AVVideoYCbCrMatrixKey: RenderEncodingContract.yCbCrMatrix
-            ]
-        ]
+        let writerOutputSettings = RenderVideoSettings.output(
+            width: delivery.deliveredWidth, height: delivery.deliveredHeight,
+            bitrate: bitrate, nominalFrameRate: nominalFrameRate
+        )
 
         let writerInput = AVAssetWriterInput(mediaType: .video, outputSettings: writerOutputSettings)
         writerInput.transform = preferredTransform
@@ -256,7 +308,7 @@ final class PipelineRenderer: @unchecked Sendable {
         // gamma (2.2 vs 2.4) still unverified — BT.709 transfer is the standard SDR tag.
         var sourcePixelBufferAttributes = CVPixelBufferCreationAttributes(
             pixelFormatType: CVPixelFormatType(rawValue: kCVPixelFormatType_32BGRA),
-            size: CVImageSize(width: Int(renderWidth), height: Int(renderHeight)),
+            size: CVImageSize(width: delivery.deliveredWidth, height: delivery.deliveredHeight),
             compatibility: [.metalTexture]
         )
         sourcePixelBufferAttributes.backing = .ioSurface
@@ -272,7 +324,9 @@ final class PipelineRenderer: @unchecked Sendable {
         )
         writer.metadata = try RenderMovieMetadata.make(
             config: config, bitrate: bitrate, sourceColorProvenance: sourceColorProvenance,
-            orientation: deliveryOrientation, capturePolicy: capturePolicy
+            orientation: deliveryOrientation, capturePolicy: capturePolicy,
+            isImportedSource: isImportedSource, sourceNominalFrameRate: Double(nominalFrameRate),
+            flash: flash, framing: framing, deliveredSize: delivery.deliveredSize
         )
 
         // Audio passthrough writer input
@@ -295,7 +349,7 @@ final class PipelineRenderer: @unchecked Sendable {
             }
             // Reader sample timestamps remain on the source timeline. Starting the
             // writer session at the trim origin maps the selected range to output 0.
-            let sessionStart = (trimRange ?? CMTimeRange(start: .zero, duration: duration)).start
+            let sessionStart = renderRange.start
             writer.startSession(atSourceTime: sessionStart)
 
             do {
@@ -315,11 +369,16 @@ final class PipelineRenderer: @unchecked Sendable {
                 videoProvider: videoProvider,
                 videoReceiver: videoReceiver,
                 config: config,
+                delivery: delivery,
+                highlightCeiling: highlightCeiling,
                 audioProvider: audioProvider,
                 audioReceiver: audioReceiver,
                 cancellationHandle: cancellationHandle,
                 grainPairing: capturePolicy?.grainPairing ?? .perFrame,
-                captureFirstBufferEvidence: collectDecodedBufferEvidence
+                captureFirstBufferEvidence: collectDecodedBufferEvidence,
+                progress: progress,
+                progressRange: renderRange,
+                sourceProfile: capturePolicy?.sourceProfile ?? .appleLog2
             )
             try Task.checkCancellation()
             guard frameResult.counters.processed > 0 else {
@@ -341,6 +400,8 @@ final class PipelineRenderer: @unchecked Sendable {
             if audioReader != nil, cancellationHandle.audioReaderStatus != .completed {
                 throw RenderError.readerFailed(cancellationHandle.audioReaderError)
             }
+            // The movie is fully written; only now report completion.
+            progress?(RenderProgressAccumulator.finishFraction)
             renderSucceeded = true
             return (outputURL, frameResult.counters, sourceColorProvenance, frameResult.firstBufferEvidence)
         } catch {
@@ -366,7 +427,9 @@ final class PipelineRenderer: @unchecked Sendable {
         config: FilmStockConfig,
         trimRange: CMTimeRange? = nil,
         bitrate: Int = RenderEncodingContract.averageBitRate,
-        diagnosticsBundleDirectory: URL
+        framing: DeliveryFraming = .widescreen,
+        diagnosticsBundleDirectory: URL,
+        capturePolicy: RenderCapturePolicy? = nil
     ) async throws -> RenderDiagnosticResult {
         let runID = UUID()
         let bundleURL = diagnosticsBundleDirectory.appendingPathComponent("render-\(runID.uuidString)", isDirectory: true)
@@ -393,7 +456,8 @@ final class PipelineRenderer: @unchecked Sendable {
 
         do {
             let renderResult = try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange,
-                                                          bitrate: bitrate, collectDecodedBufferEvidence: true)
+                                                          bitrate: bitrate, capturePolicy: capturePolicy, framing: framing,
+                                                          collectDecodedBufferEvidence: true)
             let outputURL = renderResult.outputURL
             resultOutput = outputURL
             manifest.counters = renderResult.counters
@@ -446,6 +510,7 @@ final class PipelineRenderer: @unchecked Sendable {
     /// is no ISO-driven loudness term: the stock's exposure index is passed
     /// through unchanged and does not scale grain.
     struct DebugFrameParameters: Sendable, Equatable {
+        private let stockConfig: FilmStockConfig
         var gauge: PrintGauge
         var stockGrainSize: Float
         /// Grain size and presence are dialled independently here, so the two
@@ -457,27 +522,36 @@ final class PipelineRenderer: @unchecked Sendable {
         var halationRadiusFraction: Float
         var halationTint: SIMD3<Float>
         var glowStrength: Float
+        /// Lens diffusion node: preset radius ladder plus its blend amount.
+        /// Off by default, so the sheet opens on the stock's shipping look.
+        var diffusion: DiffusionSettings
 
         /// Seed every dial from a stock so the debug sheet opens on the shipping
         /// look for that stock.
         init(config: FilmStockConfig) {
+            self.stockConfig = config
             let gauge = config.effectivePrintGauge
             self.gauge = gauge
             self.stockGrainSize = config.grainSize
             self.sizeMultiplier = gauge.sizeMultiplier
             self.presenceMultiplier = gauge.amplitudeMultiplier
             self.edgeBoostMultiplier = config.effectiveRecipe.edgeBoostMultiplier
-            self.halationStrength = config.halationStrength
+            self.halationStrength = config.effectiveHalationStrength
             self.halationRadiusFraction = config.halationRadiusFraction
             self.halationTint = config.halationTint
             self.glowStrength = config.glowStrength
+            self.diffusion = config.effectiveDiffusion
         }
 
-        /// Re-seed size and presence from a gauge's authored multipliers.
+        /// Re-seed grain, halation and diffusion from a gauge's authored values.
+        /// The gauge owns all of them, so switching format cannot leave a stale
+        /// radius or amount behind from the previous one.
         mutating func applyGauge(_ gauge: PrintGauge) {
             self.gauge = gauge
             sizeMultiplier = gauge.sizeMultiplier
             presenceMultiplier = gauge.amplitudeMultiplier
+            halationStrength = stockConfig.halationStrength(for: gauge)
+            diffusion = gauge.diffusion
         }
 
         var gaugeAmplitude: Float { presenceMultiplier }
@@ -496,8 +570,9 @@ final class PipelineRenderer: @unchecked Sendable {
         }
     }
 
-    /// One rendered debug frame: the graded, grained image as a drawable BGRA8
-    /// texture plus the backing pixel buffer the debug sheet (and tests) read back.
+    /// One rendered debug frame: numeric Rec.709-primary / gamma-2.4 BGRA8
+    /// film output, NOT directly drawable sRGB. The sheet explicitly converts it
+    /// through FilmOutputDisplayConverter; numeric/effect tests read it unchanged.
     struct DebugFrameRender {
         let texture: MTLTexture
         let pixelBuffer: CVPixelBuffer
@@ -510,9 +585,9 @@ final class PipelineRenderer: @unchecked Sendable {
     /// touches `render(...)` or the recorder: the debug sheet calls this once per
     /// (debounced) slider change and draws the result.
     ///
-    /// `pixelBuffer` must be the RGBA-half layout the offline decoder produces;
-    /// the debug capture converts the live camera frame into that layout. Returns
-    /// nil if the LUT or any GPU stage fails.
+    /// `pixelBuffer` must contain Apple Wide Gamut / Apple Log 2 CODE values in
+    /// RGBA-half storage. The debug source adapter decodes SDR idle into that
+    /// domain; storage alone does not establish it. Returns nil on stage failure.
     func renderDebugFrame(
         pixelBuffer: CVPixelBuffer,
         config: FilmStockConfig,
@@ -531,8 +606,12 @@ final class PipelineRenderer: @unchecked Sendable {
             let width = CVPixelBufferGetWidth(pixelBuffer)
             let height = CVPixelBufferGetHeight(pixelBuffer)
             guard width > 0, height > 0 else { return nil }
+            guard let profile = RenderInputColorProvenance.profile(of: pixelBuffer) ?? (allowsSyntheticInputForTests ? .appleLog2 : nil) else {
+                return nil
+            }
             guard let spatialStage,
-                  let sourceTexture = makeTexture(from: pixelBuffer, format: .rgba16Float) else {
+                  let sourceTexture = preparedSource(pixelBuffer,
+                      expectedProfile: profile) else {
                 return nil
             }
 
@@ -540,6 +619,15 @@ final class PipelineRenderer: @unchecked Sendable {
             // source BEFORE the LUT, then the LUT + output contrast, then glow,
             // then grain. Keep the source's CVMetalTexture alive across the
             // halation and LUT passes, both of which read it.
+            // The debug sheet must show the same curve the render applies, so the
+            // ceiling comes from the frame on screen, not the authored 12x
+            // fallback. A single frame IS the whole picture here, so measuring it
+            // per frame is the right granularity (the take path measures once).
+            let highlightCeiling: Float? = config.effectivePushPull.isNeutral
+                ? nil
+                : PushPullTransfer.measuredHighlightCeiling(peakCodes: profile == .hlgBT2020
+                    ? peakCodes(of: sourceTexture.texture) : Self.peakCodes(of: pixelBuffer))
+
             return withExtendedLifetime(sourceTexture.cvTexture) { () -> DebugFrameRender? in
                 guard let halated = spatialStage.applyHalation(
                     source: sourceTexture.texture,
@@ -547,6 +635,12 @@ final class PipelineRenderer: @unchecked Sendable {
                     strength: parameters.halationStrength,
                     radiusFraction: parameters.halationRadiusFraction,
                     layerScale: parameters.halationTint,
+                    diffusion: parameters.diffusion,
+                    // The pull is applied HERE, in front of the emulsion, so the
+                    // halo is measured against the light the film receives. The
+                    // LUT pass below therefore grades with no exposure of its own.
+                    highlightCeiling: highlightCeiling,
+                    exposureStops: Float(config.effectivePushPull.stops.stops),
                     width: width,
                     height: height
                 ) else { return nil }
@@ -629,76 +723,16 @@ final class PipelineRenderer: @unchecked Sendable {
 
     /// Parse .cube format. Returns (size, rgbaValues).
     private func parseCubeLUT(_ content: String) throws -> (Int, [Float]) {
-        var size = 0
-        var values: [Float] = []
-        var headerParsed = false
-
-        let lines = content.components(separatedBy: .newlines)
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
-
-            if trimmed.uppercased().hasPrefix("LUT_3D_SIZE") {
-                let parts = trimmed.components(separatedBy: .whitespaces)
-                guard parts.count >= 2, let parsedSize = Int(parts[1]) else {
-                    throw RenderError.invalidLUTData
-                }
-                size = parsedSize
-                headerParsed = true
-                continue
-            }
-
-            if headerParsed, trimmed.uppercased() == "DOMAIN_MIN" || trimmed.uppercased() == "DOMAIN_MAX" {
-                continue
-            }
-
-            if headerParsed {
-                // Parse RGB triplet
-                let parts = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-                let numericParts = parts.compactMap { Float($0) }
-                if numericParts.count == 3 {
-                    values.append(contentsOf: numericParts + [1.0]) // Add alpha = 1.0
-                }
-            }
-        }
-
-        guard size > 0, values.count == size * size * size * 4 else {
-            throw RenderError.invalidLUTData
-        }
-
-        return (size, values)
+        try PhotoCubeLUT.parse(content)
     }
 
     /// Upload Resolve .cube RGB triplets to a 3D Metal texture (RGBA).
     private func createLUTTexture(size: Int, values: [Float]) throws {
         lutTexture = nil
 
-        let desc = MTLTextureDescriptor()
-        desc.textureType = .type3D
-        desc.pixelFormat = .rgba32Float
-        desc.width = size
-        desc.height = size
-        desc.depth = size
-        desc.mipmapLevelCount = 1
-        desc.usage = .shaderRead
-
-        guard let texture = device.makeTexture(descriptor: desc) else {
+        guard let texture = FilterableLUTTexture.make(device: device, size: size, rgba: values) else {
             throw RenderError.textureCreationFailed
         }
-
-        // Resolve writes 3D cubes as RGB triplets with red varying fastest.
-        // Metal's x/y/z texture axes map directly to r/g/b, respectively.
-        values.withUnsafeBytes { ptr in
-            texture.replace(
-                region: MTLRegionMake3D(0, 0, 0, size, size, size),
-                mipmapLevel: 0,
-                slice: 0,
-                withBytes: ptr.baseAddress!,
-                bytesPerRow: size * 4 * MemoryLayout<Float>.size,
-                bytesPerImage: size * size * 4 * MemoryLayout<Float>.size
-            )
-        }
-
         lutTexture = texture
     }
 
@@ -708,6 +742,9 @@ final class PipelineRenderer: @unchecked Sendable {
         videoProvider: ReadySampleProvider,
         videoReceiver: AVAssetWriterInput.PixelBufferReceiver,
         config: FilmStockConfig,
+        delivery: DeliveryFraming.Delivery,
+        /// The take's measured highlight ceiling, applied as the push/pull hold.
+        highlightCeiling: Float?,
         // The audio lane is handed to a concurrent child task, so this call
         // takes ownership of it: `sending` is what lets the child task carry
         // these non-`Sendable` AVFoundation objects across the isolation
@@ -716,7 +753,10 @@ final class PipelineRenderer: @unchecked Sendable {
         audioReceiver: sending AVAssetWriterInput.SampleBufferReceiver?,
         cancellationHandle: RenderCancellationHandle,
         grainPairing: GrainPairing,
-        captureFirstBufferEvidence: Bool
+        captureFirstBufferEvidence: Bool,
+        progress: (@Sendable (Double) -> Void)?,
+        progressRange: CMTimeRange,
+        sourceProfile: CameraSourceProfile
     ) async throws -> (counters: RenderDiagnosticsManifest.Counters,
                        firstBufferEvidence: RenderDiagnosticsManifest.DecodedBufferEvidence?) {
         guard let lut = renderQueue.sync(execute: { lutTexture }) else {
@@ -754,6 +794,12 @@ final class PipelineRenderer: @unchecked Sendable {
             // read task without requiring an unsafe transfer of the provider
             // itself. The provider is only read by one task at a time.
             let videoProviderBox = ReadProviderBox(videoProvider)
+
+            // Progress is derived from frame presentation times mapped onto the
+            // selected range. The accumulator clamps, keeps the fraction
+            // monotonic and throttles to whole percent steps, so the callback
+            // never fires once per frame.
+            var progressAccumulator = progress.map { _ in RenderProgressAccumulator(range: progressRange) }
 
             while true {
                 if let audioFailure = audioResult.getFailure {
@@ -816,8 +862,11 @@ final class PipelineRenderer: @unchecked Sendable {
                         context: FrameRenderContext(
                             receiver: videoReceiver,
                             config: config,
+                            delivery: delivery,
                             lut: lut,
-                            cancellationHandle: cancellationHandle
+                            cancellationHandle: cancellationHandle,
+                            highlightCeiling: highlightCeiling,
+                            sourceProfile: sourceProfile
                         ),
                         frameIndex: frameIndex,
                         grainIndex: grainIndex,
@@ -831,6 +880,10 @@ final class PipelineRenderer: @unchecked Sendable {
 
                 counters.processed += 1
                 counters.appended += 1
+                if let progress,
+                   let fraction = progressAccumulator?.fraction(forAppendedSeconds: sample.presentationTimeStamp.seconds) {
+                    progress(fraction)
+                }
                 frameIndex += 1
             }
 
@@ -914,6 +967,126 @@ final class PipelineRenderer: @unchecked Sendable {
                      width: width, height: height, colorAttachments: attachments, samplePoints: samples)
     }
 
+    /// The take's own highlight ceiling, in scene-light units.
+    ///
+    /// Sampled from the SAME decode contract as the render — Apple Log 2 codes
+    /// at 64RGBAHalf, no AVFoundation colour conversion — so the numbers are the
+    /// ones the push/pull curve will see. A handful of frames spread over the
+    /// render range, every pixel's peak channel, then one pooled percentile
+    /// (`PushPullTransfer.measuredHighlightCeiling`).
+    ///
+    /// Returns nil on ANY failure. An unreadable sample is not a reason to fail a
+    /// render: the caller falls back to the authored 12x ceiling, and a take that
+    /// cannot be sampled keeps the behaviour it had before this measurement
+    /// existed.
+    /// Internal so the sampling itself can be exercised against a real movie
+    /// (`TakeHighlightCeilingTests`); nothing outside this file calls it.
+    static func measureHighlightCeiling(asset: AVURLAsset,
+                                        track: AVAssetTrack,
+                                        range: CMTimeRange,
+                                        sourceProfile: CameraSourceProfile = .appleLog2,
+                                        peakCodeAdapter: (@Sendable (CVPixelBuffer) -> [Float])? = nil) async -> Float? {
+        let seconds = range.duration.seconds
+        guard seconds.isFinite, seconds > 0 else { return nil }
+        let sampleCount = 8
+        // Ask for a small frame; the stride in `peakCodes` bounds the work even
+        // if the reader hands back the native one.
+        let settings: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: sourceProfile == .hlgBT2020
+                ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_64RGBAHalf,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferWidthKey as String: 256,
+            kCVPixelBufferHeightKey as String: 256
+        ]
+        var peaks: [Float] = []
+        peaks.reserveCapacity(sampleCount * 65_536)
+        for index in 0..<sampleCount {
+            // Mid-frame offsets: the first and last frames of a take are the most
+            // likely to be a slate, a black leader or a ramp.
+            let offset = (Double(index) + 0.5) / Double(sampleCount) * seconds
+            let start = CMTimeAdd(range.start, CMTime(seconds: offset, preferredTimescale: 600))
+            guard let reader = try? AVAssetReader(asset: asset) else { return nil }
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
+            guard reader.canAdd(output) else { return nil }
+            let provider = reader.outputProvider(for: output)
+            reader.timeRange = CMTimeRange(start: start,
+                                           duration: CMTime(seconds: 0.5, preferredTimescale: 600))
+            guard reader.startReading() else { return nil }
+            defer { reader.cancelReading() }
+            guard let sample = try? await provider.next() else { return nil }
+            sample.withUnsafeSampleBuffer { sampleBuffer in
+                guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+                peaks.append(contentsOf: peakCodeAdapter?(pixelBuffer) ?? Self.peakCodes(of: pixelBuffer))
+            }
+        }
+        return PushPullTransfer.measuredHighlightCeiling(peakCodes: peaks)
+    }
+
+    /// Measure HLG only AFTER the production scene/gamut/Log2 adapter, so
+    /// push/pull's measured highlight hold sees the same domain as the emulsion.
+    private func peakCodes(of texture: MTLTexture) -> [Float] {
+        let bytesPerRow = ((texture.width * 8 + 255) / 256) * 256
+        guard texture.pixelFormat == .rgba16Float,
+              let readback = device.makeBuffer(length: bytesPerRow * texture.height, options: .storageModeShared),
+              let command = commandQueue.makeCommandBuffer(),
+              let blit = command.makeBlitCommandEncoder() else { return [] }
+        blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0,
+                  sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                  sourceSize: MTLSize(width: texture.width, height: texture.height, depth: 1),
+                  to: readback, destinationOffset: 0, destinationBytesPerRow: bytesPerRow,
+                  destinationBytesPerImage: bytesPerRow * texture.height)
+        blit.endEncoding()
+        command.commit()
+        command.waitUntilCompleted()
+        guard command.status == .completed else { return [] }
+        let words = readback.contents().assumingMemoryBound(to: UInt16.self)
+        let step = max(1, Int((Double(texture.width) * Double(texture.height) / 65_536).squareRoot().rounded(.up)))
+        var peaks: [Float] = []
+        for y in stride(from: 0, to: texture.height, by: step) {
+            for x in stride(from: 0, to: texture.width, by: step) {
+                let index = y * bytesPerRow / 2 + x * 4
+                peaks.append(max(Float(Float16(bitPattern: words[index])),
+                                 max(Float(Float16(bitPattern: words[index + 1])),
+                                     Float(Float16(bitPattern: words[index + 2])))))
+            }
+        }
+        return peaks
+    }
+
+    /// Every sampled pixel's peak channel, in Apple Log 2 code units.
+    ///
+    /// Strides the frame to a bounded pixel budget: a percentile does not need
+    /// every pixel of a 12 MP frame, and the decoded buffer's size is the
+    /// reader's to choose.
+    private static func peakCodes(of pixelBuffer: CVPixelBuffer) -> [Float] {
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_64RGBAHalf,
+              CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess,
+              let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return [] }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let halfWordsPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer) / MemoryLayout<UInt16>.size
+        let components = base.assumingMemoryBound(to: UInt16.self)
+        let budget = 65_536
+        let step = max(1, Int((Double(width) * Double(height) / Double(budget)).squareRoot().rounded(.up)))
+        var peaks: [Float] = []
+        peaks.reserveCapacity(budget + 1)
+        var y = 0
+        while y < height {
+            var x = 0
+            while x < width {
+                let index = y * halfWordsPerRow + x * 4
+                let red = Float(Float16(bitPattern: components[index]))
+                let green = Float(Float16(bitPattern: components[index + 1]))
+                let blue = Float(Float16(bitPattern: components[index + 2]))
+                peaks.append(max(red, max(green, blue)))
+                x += step
+            }
+            y += step
+        }
+        return peaks
+    }
+
     /// Grade and encode a single frame: LUT pass, spatial halation/glow,
     /// grain pass, then append. Throws the stage failure to report, if any.
     ///
@@ -966,9 +1139,21 @@ final class PipelineRenderer: @unchecked Sendable {
                 if captureEvidence {
                     evidence = Self.snapshotDecodedBuffer(sourcePixelBuffer)
                 }
+                // The crop was resolved from the track's naturalSize; a decoded
+                // frame of a different size would be written at the wrong
+                // geometry, so refuse rather than crop the wrong rectangle.
+                let delivery = context.delivery
+                guard width == delivery.sourceWidth, height == delivery.sourceHeight else {
+                    return .failure(RenderError.stageFailed(
+                        "delivery-framing",
+                        "Decoded frame is \(width)x\(height) but the delivery was resolved for "
+                            + "\(delivery.sourceWidth)x\(delivery.sourceHeight)."))
+                }
+                let outputWidth = delivery.deliveredWidth
+                let outputHeight = delivery.deliveredHeight
                 return outputBuffer.withUnsafeBuffer { destination in
                     guard let spatialStage = self.spatialStage,
-                          let sourceTexture = self.makeTexture(from: sourcePixelBuffer, format: .rgba16Float) else {
+                          let sourceTexture = self.preparedSource(sourcePixelBuffer, expectedProfile: context.sourceProfile) else {
                         return .failure(RenderError.stageFailed("gpu-halation", "Could not wrap the decoded frame for halation."))
                     }
                     // Halation is added to the scene-linear source and re-encoded
@@ -977,14 +1162,35 @@ final class PipelineRenderer: @unchecked Sendable {
                     // source's CVMetalTexture alive across the halation and LUT
                     // passes, both of which read it.
                     return withExtendedLifetime(sourceTexture.cvTexture) { () -> Result<Void, Error> in
+                        // Delivery framing is a geometry change only: the crop
+                        // is taken once, here, from the decoded frame, and every
+                        // pass downstream (halation, LUT, glow, grain) then runs
+                        // at the delivered size on the cropped pixels. 16:9 has
+                        // no crop, so this returns the decoded frame itself and
+                        // the pass chain is unchanged.
+                        guard let delivered = self.makeDeliverySource(sourceTexture.texture, delivery: delivery) else {
+                            return .failure(RenderError.stageFailed(
+                                "delivery-crop", "The delivery crop pass did not complete."))
+                        }
                         guard let halated = spatialStage.applyHalation(
-                            source: sourceTexture.texture,
+                            source: delivered,
                             commandQueue: self.commandQueue,
-                            strength: config.halationStrength,
+                            strength: config.effectiveHalationStrength,
                             radiusFraction: config.halationRadiusFraction,
                             layerScale: config.halationTint,
-                            width: width,
-                            height: height
+                            diffusion: config.effectiveDiffusion,
+                            // A video take is locked to its shutter, so a bright
+                            // day is over-exposed at the sensor and pulled down in
+                            // the render. Applying that pull in front of the
+                            // emulsion is the whole point: after halation, the
+                            // frame came back darker with the halo of the light
+                            // the sensor saw.
+                            highlightCeiling: context.highlightCeiling,
+                            exposureStops: Float(config.effectivePushPull.stops.stops),
+                            // The delivered texture is already the crop, so the
+                            // stage works in delivery pixels, not source pixels.
+                            width: outputWidth,
+                            height: outputHeight
                         ) else {
                             return .failure(RenderError.stageFailed("gpu-halation", "The halation stage did not complete."))
                         }
@@ -993,8 +1199,8 @@ final class PipelineRenderer: @unchecked Sendable {
                             input: halated,
                             lut: context.lut,
                             outputContrast: config.outputContrast,
-                            width: width,
-                            height: height
+                            width: outputWidth,
+                            height: outputHeight
                         ) else {
                             return .failure(RenderError.stageFailed("gpu-pass-1", "The LUT GPU pass did not complete."))
                         }
@@ -1003,8 +1209,8 @@ final class PipelineRenderer: @unchecked Sendable {
                             graded: graded,
                             commandQueue: self.commandQueue,
                             strength: config.glowStrength,
-                            width: width,
-                            height: height
+                            width: outputWidth,
+                            height: outputHeight
                         ) else {
                             return .failure(RenderError.stageFailed("gpu-spatial", "The glow stage did not complete."))
                         }
@@ -1018,8 +1224,8 @@ final class PipelineRenderer: @unchecked Sendable {
                             grainSize: GrainModel.effectiveSize(stockGrainSize: config.grainSize, gauge: gauge),
                             edgeBoostMultiplier: config.effectiveRecipe.edgeBoostMultiplier,
                             gaugeAmplitude: gauge.amplitudeMultiplier,
-                            width: width,
-                            height: height
+                            width: outputWidth,
+                            height: outputHeight
                         ) else {
                             return .failure(RenderError.stageFailed("gpu-pass-2", "The grain GPU pass did not complete."))
                         }
@@ -1163,6 +1369,12 @@ final class PipelineRenderer: @unchecked Sendable {
     /// source BEFORE this pass, not to its output: a 2x and a 100x specular both
     /// land near 1.0 after the LUT, and the superwhite separation halation needs
     /// would be gone.
+    ///
+    /// The development push/pull is NOT applied here. It is a scene-light curve
+    /// that belongs in FRONT of the emulsion, so `SpatialEffectsStage.applyHalation`
+    /// runs it inside the halation ladder (`spatial_expose`) for both a take and a
+    /// still: a truly clipped highlight then holds at white and keeps halating
+    /// instead of being pulled into the stock's cast. This pass only grades.
     private func runLUTPass(
         input: MTLTexture,
         lut: MTLTexture,
@@ -1263,6 +1475,46 @@ final class PipelineRenderer: @unchecked Sendable {
         let texture: MTLTexture
     }
 
+    /// Native HLG is adapted before halation and stock processing; the original
+    /// remains HLG. An unknown/mismatched decoded source fails closed.
+    private func preparedSource(_ buffer: CVPixelBuffer, expectedProfile: CameraSourceProfile) -> PixelBufferTexture? {
+        if expectedProfile == .appleLog2 {
+            let observed = RenderInputColorProvenance.profile(of: buffer)
+            guard observed == .appleLog2 || (observed == nil && allowsSyntheticInputForTests),
+                  CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_64RGBAHalf else { return nil }
+            return makeTexture(from: buffer, format: .rgba16Float)
+        }
+        guard RenderInputColorProvenance.profile(of: buffer) == .hlgBT2020,
+              CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+              CVPixelBufferGetPlaneCount(buffer) == 2, let hlgPipeline, let textureCache,
+              let output = makeIntermediateTexture(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer)),
+              let command = commandQueue.makeCommandBuffer(),
+              let encoder = command.makeComputeCommandEncoder() else { return nil }
+        var yRef: CVMetalTexture?
+        var cRef: CVMetalTexture?
+        let yStatus = CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, buffer, nil, .r16Unorm,
+            CVPixelBufferGetWidthOfPlane(buffer, 0), CVPixelBufferGetHeightOfPlane(buffer, 0), 0, &yRef)
+        let cStatus = CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, buffer, nil, .rg16Unorm,
+            CVPixelBufferGetWidthOfPlane(buffer, 1), CVPixelBufferGetHeightOfPlane(buffer, 1), 1, &cRef)
+        guard yStatus == kCVReturnSuccess, cStatus == kCVReturnSuccess,
+              let yRef, let cRef, let y = CVMetalTextureGetTexture(yRef), let c = CVMetalTextureGetTexture(cRef) else {
+            encoder.endEncoding()
+            return nil
+        }
+        encoder.setComputePipelineState(hlgPipeline)
+        encoder.setTexture(y, index: 0)
+        encoder.setTexture(c, index: 1)
+        encoder.setTexture(output, index: 2)
+        encoder.dispatchThreads(MTLSize(width: output.width, height: output.height, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
+        encoder.endEncoding()
+        command.commit()
+        command.waitUntilCompleted()
+        withExtendedLifetime((yRef, cRef)) {}
+        guard command.status == .completed else { return nil }
+        return PixelBufferTexture(cvTexture: yRef, texture: output)
+    }
+
     private func makeTexture(from pixelBuffer: CVPixelBuffer, format: MTLPixelFormat) -> PixelBufferTexture? {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
@@ -1297,6 +1549,34 @@ final class PipelineRenderer: @unchecked Sendable {
         return device.makeTexture(descriptor: desc)
     }
 
+    /// The pixels the grade operates on: the decoded frame for a widescreen
+    /// delivery, or the centred crop rectangle for a 4:3 delivery.
+    ///
+    /// The crop is a single GPU blit of the source region into a
+    /// delivery-sized texture. Doing it once, before the first pass, means the
+    /// colour chain is untouched: halation, the LUT, glow and grain all run at
+    /// the delivered size over real pixels of the original, so the delivered
+    /// file is a crop rather than a scaled copy of the whole frame.
+    private func makeDeliverySource(_ source: MTLTexture,
+                                    delivery: DeliveryFraming.Delivery) -> MTLTexture? {
+        guard delivery.isCropped else { return source }
+        guard let cropped = makeIntermediateTexture(width: delivery.deliveredWidth,
+                                                    height: delivery.deliveredHeight),
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let blit = commandBuffer.makeBlitCommandEncoder() else {
+            return nil
+        }
+        blit.copy(from: source, sourceSlice: 0, sourceLevel: 0,
+                  sourceOrigin: MTLOrigin(x: delivery.cropX, y: delivery.cropY, z: 0),
+                  sourceSize: MTLSize(width: delivery.deliveredWidth,
+                                      height: delivery.deliveredHeight, depth: 1),
+                  to: cropped, destinationSlice: 0, destinationLevel: 0,
+                  destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+        blit.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        return commandBuffer.status == .completed ? cropped : nil
+    }
 
     // MARK: - Shader & Grain Loading
 
@@ -1328,6 +1608,7 @@ final class PipelineRenderer: @unchecked Sendable {
         }
         pass1Pipeline = try pipeline("pass1_lut_halation_glow")
         pass2Pipeline = try pipeline("pass2_grain")
+        hlgPipeline = try pipeline("hlg_prepare")
         spatialStage = try SpatialEffectsStage(device: device, library: library)
     }
 
@@ -1442,12 +1723,57 @@ final class PipelineRenderer: @unchecked Sendable {
 
 // MARK: - Supporting Types
 
+/// Pure, timestamp-driven fraction for a single render.
+///
+/// The fraction is derived from the presentation time of frames actually
+/// appended to the writer, mapped onto the selected source/trim range — never
+/// from a timer. It is clamped to `0...<1` and never decreases. Emissions are
+/// throttled to whole percent steps so the progress callback is not driven once
+/// per frame. The terminal `1` is reported separately by `finishFraction` only
+/// once the writer has finished, so a short final frame time cannot look
+/// complete before the file is written.
+struct RenderProgressAccumulator: Sendable {
+    /// Minimum change between reported fractions (one percent).
+    static let step = 0.01
+    /// The fraction reported once the writer has finished writing.
+    static let finishFraction = 1.0
+
+    private let startSeconds: Double
+    private let durationSeconds: Double
+    private var lastReported: Double = 0
+
+    init(startSeconds: Double, durationSeconds: Double) {
+        self.startSeconds = startSeconds.isFinite ? startSeconds : 0
+        self.durationSeconds = durationSeconds.isFinite && durationSeconds > 0 ? durationSeconds : 0
+    }
+
+    init(range: CMTimeRange) {
+        self.init(startSeconds: range.start.seconds, durationSeconds: range.duration.seconds)
+    }
+
+    /// The fraction to report for a frame appended at `seconds` on the source
+    /// timeline, or `nil` when the frame does not advance a whole percent step.
+    mutating func fraction(forAppendedSeconds seconds: Double) -> Double? {
+        guard durationSeconds > 0, seconds.isFinite else { return nil }
+        let raw = (seconds - startSeconds) / durationSeconds
+        // Keep frame-derived fractions strictly below 1: completion is
+        // signalled only by `finishFraction`, once the writer has finished.
+        let bounded = min(max(raw, 0), 1 - Self.step)
+        guard bounded >= lastReported + Self.step - 1e-9 else { return nil }
+        lastReported = bounded
+        return bounded
+    }
+}
+
 struct GrainUniforms {
     var frameIndex: UInt32
     var iso: Float
     var grainSize: Float
     var edgeBoostMultiplier: Float = 0
     var gaugeAmplitude: Float = 1.0
+    /// Dye-cloud chroma strength; see `GrainModel.videoChromaAmount`. The video
+    /// path takes the default, the still path overrides it.
+    var chromaAmount: Float = GrainModel.videoChromaAmount
 }
 
 /// Everything one frame needs to be graded and appended, bundled so the frame
@@ -1455,8 +1781,15 @@ struct GrainUniforms {
 private struct FrameRenderContext {
     let receiver: AVAssetWriterInput.PixelBufferReceiver
     let config: FilmStockConfig
+    /// The delivered geometry this frame is written at. A cropped delivery is
+    /// resolved once per render, so every frame crops the same rectangle.
+    let delivery: DeliveryFraming.Delivery
     let lut: MTLTexture
     let cancellationHandle: RenderCancellationHandle
+    /// The take's own highlight ceiling, measured once for the whole render.
+    /// Nil when the render is neutral (nothing to hold) or the sample failed.
+    let highlightCeiling: Float?
+    let sourceProfile: CameraSourceProfile
 }
 
 /// Captures the result from the dedicated audio-copy worker for the render queue.

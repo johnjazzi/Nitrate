@@ -1,4 +1,5 @@
 import AVFoundation
+import Foundation
 
 /// AD-7: Codable job model for the render queue.
 /// Persisted to disk to survive app backgrounding.
@@ -14,8 +15,75 @@ struct RenderJob: Codable, Identifiable, Equatable {
     /// Print gauge for this render. Optional so older queue JSON stays readable;
     /// nil means the stock's own gauge (or the neutral 35mm reference).
     var printGauge: PrintGauge?
+    /// Render-time push/pull chosen for this take, with how it was chosen.
+    /// Optional so older queue JSON stays readable; nil renders neutral. The
+    /// value lives here, not in the stock config, so a re-render reads whatever
+    /// is stored now — changing it before Retry changes the next render.
+    var pushPull: PushPullExposure? = nil
     /// Immutable enqueue-time preferences; nil preserves legacy delivery behavior.
     var deliveryPreferences: RenderDeliveryPreferences?
+    /// True for a raw the operator chose in Develop instead of one this app
+    /// captured. It already exists in Photos — that is where it came from — so
+    /// there is no original to deliver back, and trying could only duplicate it
+    /// or fail. Optional so every queue written before Develop stays readable.
+    var isImportedPhoto: Bool? = nil
+    /// Nil preserves legacy camera jobs. Imported assets never expose playback
+    /// or export another copy of their original into Photos.
+    var isImportedVideo: Bool? = nil
+    /// Scoped opt-in for the shared Develop workflow. Nil/false preserves legacy
+    /// movie cleanup and imported-video thumbnail privacy on old queue records.
+    var retainsDevelopmentSource: Bool? = nil
+    /// File identity and original capture reading survive changes to the recipe.
+    var sourceOriginalFilename: String? = nil
+    var sourceCapturedOffsetEV: Float? = nil
+    /// Actual source metadata, never the stock's fallback render-recipe ISO.
+    /// Nil preserves unknown capture ISO across re-development and old queues.
+    var sourceCaptureISO: Float? = nil
+    /// Photo jobs share queue persistence/retry but retain their DNG and JPEG.
+    /// Optional fields keep every pre-Photo queue readable as a Video queue.
+    var isPhoto: Bool? = nil
+    var photoCropZoom: Double? = nil
+    var photoGrainSeed: UInt32? = nil
+    var retainedOutputURL: URL? {
+        guard let outputURL, outputURL.isFileURL,
+              let values = try? outputURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+              values.isRegularFile == true, (values.fileSize ?? 0) > 0 else { return nil }
+        return outputURL
+    }
+    /// The retained DNG is still on disk, so a Photo job can be developed again.
+    var hasRedevelopableOriginal: Bool { isPhoto == true && hasRedevelopableSource }
+
+    /// Both media types can return to review, but only an actual retained file
+    /// qualifies. A receipt/poster or a zero-byte placeholder is not an original.
+    var hasRedevelopableSource: Bool {
+        guard sourceURL.isFileURL,
+              let values = try? FileManager.default.attributesOfItem(atPath: sourceURL.path),
+              values[.type] as? FileAttributeType == .typeRegular,
+              let size = values[.size] as? NSNumber else { return false }
+        // NSURL resource values can remain cached after truncation/removal.
+        // Re-development requires the file that exists now, not an old stat.
+        return size.uint64Value > 0
+    }
+
+    /// Durable removal intent. Recovery and Retry clean files without rendering.
+    var discardImportedMedia: Bool? = nil
+    var isDiscardingImport: Bool {
+        (isImportedVideo == true || retainsDevelopmentSource == true) && discardImportedMedia == true
+    }
+    var permitsLocalMedia: Bool { isImportedVideo != true }
+    /// Media-aware original delivery: a Photo job honours the independent RAW
+    /// switch, a video honours `saveOriginalLog`.
+    ///
+    /// An IMPORTED asset never exports: a develop is made from a file the
+    /// operator already has, so "save the original" would either duplicate
+    /// something already in the library or, for a maker's raw the library will
+    /// not store, fail a render that succeeded. The flag is what makes that a
+    /// property of the job rather than a rule the UI has to remember.
+    var shouldSaveOriginal: Bool {
+        guard isImportedVideo != true, isImportedPhoto != true else { return false }
+        if isPhoto == true { return deliveryPreferences?.saveOriginalRAWToPhotos == true }
+        return deliveryPreferences?.saveOriginalLog == true
+    }
     let trimStartSeconds: Double?
     let trimEndSeconds: Double?
     let createdAt: Date
@@ -45,6 +113,7 @@ struct RenderJob: Codable, Identifiable, Equatable {
     var capturePolicy: RenderCapturePolicy? = nil
 
     init(sourceURL: URL, stockId: String, iso: Float, printGauge: PrintGauge? = nil,
+         pushPull: PushPullExposure? = nil,
          trimStart: CMTime? = nil, trimEnd: CMTime? = nil,
          sessionId: String? = nil, createdAt: Date = Date(),
          deliveryPreferences: RenderDeliveryPreferences? = nil,
@@ -54,6 +123,7 @@ struct RenderJob: Codable, Identifiable, Equatable {
         self.stockId = stockId
         self.iso = iso
         self.printGauge = printGauge
+        self.pushPull = pushPull
         self.deliveryPreferences = deliveryPreferences
         self.capturePolicy = capturePolicy
         self.trimStartSeconds = trimStart.map { $0.seconds }

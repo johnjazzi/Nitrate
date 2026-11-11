@@ -79,6 +79,42 @@ struct QueueReceiptPresentationTests {
         }
     }
 
+    @Test func historyCardsUseIconsWhilePreservingDetails() throws {
+        let folder = TestRepository.root.appendingPathComponent("App/Modules/RenderQueue")
+        let views = try String(contentsOf: folder.appendingPathComponent("QueueReceiptViews.swift"), encoding: .utf8)
+        let sheet = try String(contentsOf: folder.appendingPathComponent("QueueSheetView.swift"), encoding: .utf8)
+        let start = try #require(views.range(of: "struct QueueReceiptCard: View"))
+        let end = try #require(views.range(of: "struct QueueReceiptMetadataView: View"))
+        let card = String(views[start.lowerBound..<end.lowerBound])
+        #expect(card.contains("Text(\"No preview\")"))
+        #expect(!card.contains("Text(job.receiptTitle)"), "Keep per-card actions compact")
+        #expect(card.contains(".labelStyle(.iconOnly)"))
+        #expect(card.contains("HStack(spacing: 0)"))
+        #expect(!card.contains("ViewThatFits"), "Primary actions stay in one horizontal icon row")
+        #expect(card.contains("HStack(spacing: 12)"))
+        #expect(card.contains("maxWidth: 136, minHeight: 104, maxHeight: 104"))
+        #expect(!card.contains("prominent ?"), "Latest and earlier receipts use the same compact row")
+        #expect(card.contains("Menu { localActions }"))
+        #expect(card.contains("Color(uiColor: .tertiarySystemFill)"), "Poster margins must not inherit link blue")
+        #expect(card.contains(".tint(.primary)"))
+        let surface = try #require(sheet.range(of: ".sheet(item: $shareTarget)"))
+        let main = String(sheet[..<surface.lowerBound])
+        #expect(main.contains(".labelStyle(.iconOnly)"))
+        #expect(main.contains(".navigationTitle(\"History\")"))
+        #expect(main.contains("Text(\"Latest\")"))
+        #expect(main.contains("Text(\"Earlier\")"))
+        #expect(!main.contains(#"systemImage: "star""#))
+        #expect(!main.contains(#"systemImage: "xmark""#))
+        #expect(sheet.contains(".presentationDragIndicator(.visible)"))
+        #expect(main.contains(".listStyle(.plain)"))
+        #expect(main.contains("queue.options"))
+        #expect(!main.contains("CameraStorageSummary("), "Storage belongs behind its icon")
+        #expect(sheet.contains(".sheet(isPresented: $showsStorage)"))
+        #expect(views.contains("details.append((\"Kept original\", reason))"))
+        #expect(views.contains("details.append((\"Error\", error))"))
+        #expect(views.contains("details.append((\"Cleanup warning\", warning))"))
+    }
+
     @Test func actionsHaveDistinctStableTargetsAndMinimumTouchHeight() {
         #expect(QueueReceiptPresentation.photosActionID != QueueReceiptPresentation.metadataActionID)
         #expect(QueueReceiptPresentation.minimumActionHeight >= 44)

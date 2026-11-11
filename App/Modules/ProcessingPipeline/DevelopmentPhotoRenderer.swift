@@ -1,0 +1,96 @@
+import CoreImage
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
+import Foundation
+
+/// Development-only still renderer. Exposure gain is intentionally uncalibrated (1.0).
+enum DevelopmentPhotoRenderer {
+    static func render(originalDNG: URL, stockID: String, resourcesURL: URL? = nil,
+                       gauge: PrintGauge = .neutral, seed: UInt32 = 0, cropZoom: Double = 1,
+                       pushPull: PushPullExposure = .neutral,
+                       bundle: Bundle = .main) throws -> URL {
+        let normalizedStock: String
+        switch stockID.lowercased() {
+        // Preserve historical short identifiers; all canonical catalogue IDs
+        // are resolved by the shared resource loader, not a two-stock whitelist.
+        case "5207": normalizedStock = "kodak5207"
+        case "5219": normalizedStock = "kodak5219"
+        default: normalizedStock = stockID.lowercased()
+        }
+        let film = try StillFilmRenderResources(stockID: normalizedStock, gauge: gauge, seed: seed,
+                                                bundle: bundle, pushPull: pushPull)
+        let decoder = try RAWPhotoDecoder(device: film.device, queue: film.queue)
+        let decodedRAW = try decoder.decode(url: originalDNG, temperature: film.config.colorTemperature)
+        guard let decoded = CIImage(mtlTexture: decodedRAW.texture,
+            options: [.colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!]) else {
+            throw RenderError.decode("RAW texture unavailable")
+        }
+        // CIRAWFilter already applies the capture's EXIF orientation: measured on a
+        // real DNG tagged orientation 6, `outputImage` came back 3024x4032 (upright)
+        // while the sensor raster is 4032x3024 (`RenderCLI --photo-orientation-probe`).
+        // Rotating again here applied the same quarter turn twice and delivered every
+        // frame 90 degrees out.
+        guard let crop = PhotoZoomGeometry.centeredCrop(in: decoded.extent, zoom: cropZoom) else {
+            throw RenderError.decode("Invalid Photo zoom or RAW extent")
+        }
+        let oriented = decoded.cropped(to: crop).transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
+        let inputSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+        // The decode keeps the capture's BaselineExposure so the still matches
+        // the brightness of the Log 2 take from the same shot. Halation has to
+        // know about that lift, or every lit surface in the frame reads as
+        // superwhite and the whole photo blooms (measured: +2.99 EV on ProRAW).
+        let finished = try develop(linearImage: oriented, film: film,
+                                   sceneLiftStops: decodedRAW.sceneLiftStops,
+                                   halationHeadroom: decodedRAW.halationHeadroom,
+                                   resourcesURL: resourcesURL)
+        // LUT output is Rec.709 gamma 2.4. Decode it before the final sRGB encoding.
+        let linear709 = try FilmOutputDisplayConverter.linearImage(fromGamma24: finished)
+        guard let srgb = CGColorSpace(name: CGColorSpace.sRGB) else { throw RenderError.decode("sRGB unavailable") }
+        let context = CIContext(options: [.workingColorSpace: inputSpace, .outputColorSpace: srgb, .cacheIntermediates: false])
+        let rendered = linear709
+        let destination = originalDNG.deletingPathExtension().appendingPathExtension("jpg")
+        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).jpg")
+        guard let cg = context.createCGImage(rendered, from: rendered.extent, format: .RGBA8, colorSpace: srgb),
+              let sink = CGImageDestinationCreateWithURL(temporary as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
+            throw RenderError.decode("JPEG destination unavailable")
+        }
+        // Deliver the same Nitrate tags a movie carries; the shared payload is
+        // built from the same recipe the movie writer uses.
+        let capture = PhotoDeliveryMetadata.capture(fromDNG: originalDNG)
+        var properties: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.94]
+        for (key, value) in try PhotoDeliveryMetadata.properties(
+            config: film.config, capture: capture,
+            deliveredSize: CGSize(width: cg.width, height: cg.height),
+            raw: decodedRAW.metadata, sceneLiftStops: decodedRAW.sceneLiftStops,
+            halationHeadroom: decodedRAW.halationHeadroom, exposureEV: decodedRAW.exposureEV) {
+            properties[key] = value
+        }
+        CGImageDestinationAddImage(sink, cg, properties as CFDictionary)
+        guard CGImageDestinationFinalize(sink), let source = CGImageSourceCreateWithURL(temporary as CFURL, nil),
+              let check = CGImageSourceCreateImageAtIndex(source, 0, nil), check.width == cg.width, check.height == cg.height,
+              let profile = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              profile[kCGImagePropertyColorModel] != nil else {
+            try? FileManager.default.removeItem(at: temporary)
+            throw RenderError.decode("JPEG verification failed")
+        }
+        if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
+        try FileManager.default.moveItem(at: temporary, to: destination)
+        return destination
+    }
+
+    /// The same stages used by DNG delivery, exposed to actual GPU regressions.
+    /// `halationHeadroom` is the decode's measured highlight ceiling, so halation
+    /// is anchored to what this file carries rather than to Apple Log 2's 8x.
+    static func develop(linearImage: CIImage, film: StillFilmRenderResources,
+                        sceneLiftStops: Float = 0, halationHeadroom: Float? = nil,
+                        resourcesURL: URL? = nil) throws -> CIImage {
+        let prepared = try RAWToLog2Stage.apply(linearImage)
+        let halated = try film.halation(prepared, sceneLiftStops: sceneLiftStops,
+                                        halationHeadroom: halationHeadroom)
+        let graded = try film.grade(halated, resourcesURL: resourcesURL)
+        return try film.glowAndGrain(graded)
+    }
+
+    enum RenderError: Error { case unsupportedStock(String), missingCube(String), decode(String) }
+}

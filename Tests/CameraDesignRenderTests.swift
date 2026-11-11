@@ -38,9 +38,11 @@ struct CameraDesignRenderTests {
     @MainActor @Test func rescueButtonRendersInsideItsReservedBoundsInEveryHold() throws {
         let size = CGSize(width: 390, height: 750)
         let exposure = CGRect(x: 282, y: 560, width: 92, height: 168)
+        let manualControls = CGRect(x: 330, y: 450, width: 44, height: 140)
         for degrees in [0.0, 90.0, -90.0] {
             let rect = try #require(DaylightExposureRescueGeometry.buttonRect(
-                above: exposure, in: size, rotationDegrees: degrees))
+                above: exposure, in: size, rotationDegrees: degrees, excluding: manualControls))
+            #expect(!rect.intersects(manualControls), "The rescue face must clear the manual controls.")
             let view = ZStack(alignment: .topLeading) {
                 Color.black
                 ExposureRescueButton(armed: false, enabled: true, action: {})
@@ -50,17 +52,20 @@ struct CameraDesignRenderTests {
                     .position(x: rect.midX, y: rect.midY)
             }
             .frame(width: size.width, height: size.height)
-            let image = try render(view, name: "rescue-button-\(degrees)")
+            // Capture the native layer tree, including rotated material-backed faces.
+            let image = try render(view, name: "rescue-button-\(degrees)", hostedSize: size)
             let data = try pixels(image)
             let scale = CGFloat(image.width) / size.width
             let bright = stride(from: 0, to: data.count, by: 4).filter {
                 data[$0] > 180 && data[$0 + 1] > 180 && data[$0 + 2] > 180
             }
             #expect(bright.count > 80, "The real rescue label must be visible in all holds.")
-            #expect(bright.allSatisfy { index in
-                rect.contains(CGPoint(x: CGFloat((index / 4) % image.width) / scale,
-                                      y: CGFloat((index / 4) / image.width) / scale))
-            }, "The complete rotated label must stay inside the reserved button slot.")
+            let outside = bright.filter { index in
+                !rect.contains(CGPoint(x: CGFloat((index / 4) % image.width) / scale,
+                                       y: CGFloat((index / 4) / image.width) / scale))
+            }
+            #expect(outside.isEmpty,
+                    "The complete rotated label must stay inside the reserved slot at \(degrees)°: \(outside.count) of \(bright.count) bright pixels fall outside \(rect).")
         }
     }
 
@@ -83,38 +88,52 @@ struct CameraDesignRenderTests {
     /// The confirmation must dim the live canvas rather than replace the page:
     /// the preview stays recognisable behind the card, and the scrim still pulls
     /// its brightness down.
-    @MainActor @Test func rescueOverlayDimsTheCanvasWithoutHidingIt() throws {
+    @MainActor @Test(arguments: [ColorScheme.light, .dark])
+    func rescueOverlayDimsTheCanvasWithoutHidingIt(_ scheme: ColorScheme) throws {
         let size = CGSize(width: 390, height: 750)
-        let preview = Color(red: 0.10, green: 0.85, blue: 0.20)
-
-        let plain = try pixels(try render(ZStack { preview }.frame(width: size.width, height: size.height),
-                                          name: "rescue-overlay-open"))
-        let dimmed = try pixels(try render(
-            ZStack {
-                preview
-                DaylightExposureRescueOverlay(armed: false, available: true, canChange: true,
-                                              onSelect: { _ in }, onCancel: {})
-            }
-            .frame(width: size.width, height: size.height), name: "rescue-overlay-dimmed"))
-
-        func greenPeak(_ data: [UInt8]) -> Int {
-            stride(from: 0, to: data.count, by: 4)
-                .filter { Int(data[$0 + 1]) > Int(data[$0]) + 30 }
-                .map { Int(data[$0 + 1]) }.max() ?? 0
-        }
-
-        #expect(greenPeak(dimmed) > 60, "The dimmed preview must stay visible behind the card.")
-        #expect(greenPeak(dimmed) < greenPeak(plain), "The canvas behind the card must actually be dimmed.")
-
-        // The card sits in the middle of the canvas, not pinned to an edge.
+        let preview = Color(.sRGB, red: 0.10, green: 0.85, blue: 0.20, opacity: 1)
+        let appearance = scheme == .dark ? "dark" : "light"
+        let plainImage = try render(
+            ZStack { preview }.frame(width: size.width, height: size.height)
+                .environment(\.colorScheme, scheme), name: "rescue-overlay-open-\(appearance)", appearance: scheme)
+        let plain = try pixels(plainImage)
         let image = try render(
             ZStack {
                 preview
                 DaylightExposureRescueOverlay(armed: false, available: true, canChange: true,
                                               onSelect: { _ in }, onCancel: {})
             }
-            .frame(width: size.width, height: size.height), name: "rescue-overlay-geometry")
-        let data = try pixels(image)
+            .frame(width: size.width, height: size.height)
+            .environment(\.colorScheme, scheme), name: "rescue-overlay-dimmed-\(appearance)", appearance: scheme)
+        let dimmed = try pixels(image)
+        #expect(image.width == plainImage.width && image.height == plainImage.height)
+
+        // Measure only the preview above and below the centred card. A peak
+        // over the whole image also samples the material, labels and buttons;
+        // those pixels do not measure the scrim's attenuation of the preview.
+        for band in [8..<(image.height / 10), (image.height * 9 / 10)..<(image.height - 8)] {
+            var baseline = [Int]()
+            var actual = [Int]()
+            for y in band {
+                for x in 8..<(image.width - 8) {
+                    let index = (y * image.width + x) * 4
+                    #expect(plain[index + 3] == 255 && dimmed[index + 3] == 255,
+                            "Both preview samples must be opaque RGBA pixels.")
+                    baseline.append(Int(plain[index + 1]))
+                    actual.append(Int(dimmed[index + 1]))
+                }
+            }
+            let plainMean = Double(baseline.reduce(0, +)) / Double(baseline.count)
+            let dimmedMean = Double(actual.reduce(0, +)) / Double(actual.count)
+            #expect(try #require(actual.min()) > 60, "The dimmed preview must stay visible.")
+            #expect(Double(try #require(actual.max())) < plainMean * 0.6,
+                    "The scrim must dim every sampled preview pixel in both appearances.")
+            #expect(abs(dimmedMean - plainMean * 0.45) < 3,
+                    "The preview must retain the declared 45% brightness behind the 55% scrim.")
+        }
+
+        // The card sits in the middle of the canvas, not pinned to an edge.
+        let data = dimmed
         let rows = stride(from: 0, to: data.count, by: 4).filter {
             data[$0] > 200 && data[$0 + 1] > 200 && data[$0 + 2] > 200
         }.map { CGFloat(($0 / 4) / image.width) / (CGFloat(image.width) / size.width) }
@@ -341,7 +360,7 @@ struct CameraDesignRenderTests {
                 } manual: {
                     Image(systemName: "slider.vertical.3").frame(width: 44, height: 44)
                 } lens: {
-                    CameraLensFace(title: "120 mm", focalLength: "120", rotationDegrees: degrees)
+                    CameraLensFace(label: "120", rotationDegrees: degrees)
                         .frame(width: 44, height: 44)
                         .opacity(0) // The production lens switch is hidden during a live take.
                 } status: {
@@ -435,13 +454,54 @@ struct CameraDesignRenderTests {
         }
     }
 
+    /// The classic plunger is optimistic too: it swaps the idle REC mark for the
+    /// recording mark on the tap, while capture is still spinning up, exactly as
+    /// on a confirmed take. Both faces therefore answer immediately, and only
+    /// finalizing dims the mark.
+    @MainActor @Test func plungerShowsTheRecordingMarkFromTheTap() throws {
+        func mark(_ state: RecordButtonPresentation) throws -> (bounds: CGRect, area: Double) {
+            let image = try render(RecordPlungerFace(presentation: state).padding(8),
+                                   name: "plunger-mark-\(state)")
+            let data = try pixels(image)
+            let scale = CGFloat(image.width) / 100
+            // Inspect only the central glyph, excluding the bevel and shadow.
+            var points = [CGPoint]()
+            for y in (image.height * 35 / 100)..<(image.height * 65 / 100) {
+                for x in (image.width * 35 / 100)..<(image.width * 65 / 100) {
+                    let offset = (y * image.width + x) * 4
+                    if data[offset] > 210, data[offset + 1] > 210,
+                       data[offset + 2] > 210, data[offset + 3] > 210 {
+                        points.append(CGPoint(x: CGFloat(x) / scale, y: CGFloat(y) / scale))
+                    }
+                }
+            }
+            guard let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
+                  let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() else {
+                return (.zero, 0)
+            }
+            return (CGRect(x: minX, y: minY, width: maxX - minX + 1 / scale,
+                           height: maxY - minY + 1 / scale), Double(points.count) / Double(scale * scale))
+        }
+        let idle = try mark(.idle)
+        let starting = try mark(.starting)
+        let recording = try mark(.recording)
+        for face in [starting, recording] {
+            #expect((14...16).contains(face.bounds.width) && (14...16).contains(face.bounds.height),
+                    "Both pending and confirmed takes must show the 15pt square stop mark.")
+            #expect(face.area > 190, "The stop mark must be filled and visible.")
+            #expect(face.area > idle.area * 2, "Pending capture must replace the idle REC lettering immediately.")
+        }
+        #expect(abs(starting.bounds.midX - recording.bounds.midX) <= 0.5
+                && abs(starting.bounds.midY - recording.bounds.midY) <= 0.5,
+                "Confirmation must not move the stop mark.")
+    }
+
     @MainActor @Test func lensFacesRetainNaturalInkInBothLandscapeHolds() throws {
         for degrees in [0.0, 90.0, -90.0] {
             for focal in ["13", "24", "48", "77", "120", "Front"] {
                 for selected in [false, true] {
                     let width: CGFloat = selected ? 104 : 84
-                    let face = CameraLensFace(title: focal == "Front" ? focal : "\(focal) mm",
-                                              focalLength: focal == "Front" ? nil : focal,
+                    let face = CameraLensFace(label: focal,
                                               rotationDegrees: degrees, isSelected: selected)
                         .foregroundStyle(.white)
                         .frame(width: width, height: 44)
@@ -450,7 +510,7 @@ struct CameraDesignRenderTests {
                     let ink = stride(from: 0, to: data.count, by: 4).filter {
                         data[$0] > 220 && data[$0 + 1] > 220 && data[$0 + 2] > 220 && data[$0 + 3] > 220
                     }
-                    #expect(ink.count > 140, "Actual label and aperture must not shrink into a blank or tiny glyph.")
+                    #expect(ink.count > 40, "The number (or Front) must not shrink into a blank or tiny glyph.")
                     let columns = ink.map { ($0 / 4) % image.width }
                     let rows = ink.map { ($0 / 4) / image.width }
                     #expect(try #require(columns.min()) >= 8)
@@ -500,18 +560,22 @@ struct CameraDesignRenderTests {
     }
 
     @MainActor
-    private func render(_ view: some View, name: String, hostedSize: CGSize? = nil) throws -> CGImage {
+    private func render(_ view: some View, name: String, hostedSize: CGSize? = nil,
+                        appearance: ColorScheme = .dark) throws -> CGImage {
+        // Match NitrateApp's forced dark appearance instead of inheriting the
+        // test runner's settings. Callers can explicitly test either scheme.
+        let content = view.environment(\.colorScheme, appearance)
         let image: CGImage
         if let hostedSize {
             // ImageRenderer omits native ScrollView content; host that fixture.
-            let host = NSHostingView(rootView: view)
+            let host = NSHostingView(rootView: content)
             host.frame = CGRect(origin: .zero, size: hostedSize)
             host.layoutSubtreeIfNeeded()
             let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
             host.cacheDisplay(in: host.bounds, to: bitmap)
             image = try #require(bitmap.cgImage)
         } else {
-            let renderer = ImageRenderer(content: view)
+            let renderer = ImageRenderer(content: content)
             renderer.scale = 2
             image = try #require(renderer.cgImage)
         }
@@ -528,11 +592,13 @@ struct CameraDesignRenderTests {
 
     private func pixels(_ image: CGImage) throws -> [UInt8] {
         var data = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
         try data.withUnsafeMutableBytes { buffer in
             let context = try #require(CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
                                                bitsPerComponent: 8, bytesPerRow: image.width * 4,
-                                               space: CGColorSpaceCreateDeviceRGB(),
-                                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                                               space: colorSpace,
+                                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                                                   | CGBitmapInfo.byteOrder32Big.rawValue))
             context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         }
         return data

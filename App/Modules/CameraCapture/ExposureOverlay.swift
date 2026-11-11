@@ -1,32 +1,5 @@
 import SwiftUI
 
-/// Thin outline marking where exposure is metered on the preview: the frame
-/// centre by default, the tapped point after a tap-to-focus. Dashed while auto
-/// exposure drives the scene, solid while manual ISO does. Hidden during a take
-/// so it never draws over the recording.
-struct MeteringBoxView: View {
-    /// Normalised (0–1) centre of the box in the preview's coordinate space.
-    let point: CGPoint
-    let isManual: Bool
-
-    private let boxSize = CGSize(width: 78, height: 62)
-
-    var body: some View {
-        GeometryReader { geometry in
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(
-                    isManual ? Color.yellow.opacity(0.95) : Color.white.opacity(0.8),
-                    style: StrokeStyle(lineWidth: 1.5, dash: isManual ? [] : [6, 4])
-                )
-                .frame(width: boxSize.width, height: boxSize.height)
-                .position(x: point.x * geometry.size.width,
-                          y: point.y * geometry.size.height)
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-}
-
 /// Compact live meter beside the exposure ruler. Higher EV is above centre,
 /// matching the ruler's direction; the target band and live dot retain the
 /// same absolute EV scale and match tolerance as the original horizontal meter.
@@ -35,6 +8,7 @@ struct ExposureIndicatorView: View {
     let targetEV: Float
     let isManual: Bool
     let isAvailable: Bool
+    var trackHeight: CGFloat = 120
 
     private var hasReading: Bool {
         isAvailable && meteredEV.isFinite && targetEV.isFinite
@@ -58,22 +32,16 @@ struct ExposureIndicatorView: View {
     var body: some View {
         VStack(spacing: 6) {
             Text(hasReading ? String(format: "%+.1f", meteredEV) : "—")
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .font(NitrateTypography.font(size: 10))
                 .foregroundStyle(accent)
                 .cameraUpright()
                 .frame(height: 14)
-            VStack(spacing: 2) {
-                directionLabel("OVER")
-                track
-                directionLabel("UNDER")
-            }
-            .frame(height: 120)
-            Text(statusText)
-                .font(.system(size: 7, weight: .heavy))
-                .foregroundStyle(accent)
-                .cameraUpright()
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+            // The meter keeps its 120pt scale, centre line, target band and live
+            // dot without the former visible OVER/UNDER captions, so the column
+            // footprint is unchanged and the meter stays aligned with the ruler.
+            // Direction and status survive only in the VoiceOver label below.
+            track
+                .frame(height: trackHeight)
         }
         .frame(width: 28)
         .allowsHitTesting(false)
@@ -82,14 +50,6 @@ struct ExposureIndicatorView: View {
         .accessibilityValue(hasReading
             ? String(format: "metered %+.2f EV, target %+.2f EV", meteredEV, targetEV)
             : "Live exposure meter unavailable")
-    }
-
-    private func directionLabel(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 6, weight: .bold))
-            .foregroundStyle(.white.opacity(0.6))
-            .cameraUpright()
-            .frame(height: 8)
     }
 
     private var track: some View {

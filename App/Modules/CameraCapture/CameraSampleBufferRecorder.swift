@@ -69,6 +69,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     private var videoSettings: [String: Any] = [:]
     private var audioSettings: [String: Any]?
     private var acceptedPixelFormats: Set<UInt32> = []
+    private var sourceProfile: CameraSourceProfile = .appleLog2
     private var metadata: [AVMetadataItem] = []
     private var transform = CGAffineTransform.identity
     /// Physical device orientation held at recording start. Drives the delivery
@@ -110,12 +111,25 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     private var recentDropTimes: [Double] = []
     private var clipGeneration: UInt64 = 0
     private let writerFactory: CameraSampleBufferWriterFactory
-    private let outputValidator: (URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void
+    private let outputValidator: ((URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void)?
     /// Production: true when the microphone was actually configured for this
     /// take, so a zero-audio result must be reported as a failure rather than a
     /// clean success. Not debug-only — a Release build that configured a
     /// microphone owes the user the same audio-integrity evidence.
     private var requiresAudioEvidence = false
+    /// Uptime of the most recently delivered microphone packet, or nil when the
+    /// stream has not been heard since launch. Shared with the audio callback,
+    /// which stamps it on its own queue, so it is read and written under
+    /// `audioHandoffLock`.
+    private var lastAudioArrivalUptime: TimeInterval?
+    /// When the first eligible frame started waiting for a live microphone, or
+    /// nil when no frame is being held.
+    private var audioWarmUpHeldSince: TimeInterval?
+    /// Frames dropped while waiting for the microphone, for the take's log.
+    private var audioWarmUpHeldFrames = 0
+    /// Monotonic uptime source; injectable so the hold can be driven in tests
+    /// without waiting on wall time.
+    private let uptime: () -> TimeInterval
 #if DEBUG
     private var preservationProbeEnabled = false
     private var sourceProbe: CameraYUVProbe?
@@ -126,11 +140,13 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
 
     init(queue: DispatchQueue,
          writerFactory: @escaping CameraSampleBufferWriterFactory = CameraSampleBufferRecorder.defaultWriterFactory,
-         outputValidator: @escaping (URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void = CameraSampleBufferRecorder.validateOutput,
+         outputValidator: ((URL, CameraCaptureCodedDimensions, CGAffineTransform, Int) throws -> Void)? = nil,
+         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          scheduleDrainTimeout: ((TimeInterval, @escaping @Sendable () -> Void) -> Void)? = nil) {
         self.queue = queue
         self.writerFactory = writerFactory
         self.outputValidator = outputValidator
+        self.uptime = uptime
         self.scheduleDrainTimeout = scheduleDrainTimeout ?? { delay, action in
             queue.asyncAfter(deadline: .now() + delay, execute: action)
         }
@@ -141,6 +157,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         videoSettings: [String: Any],
         audioSettings: [String: Any]?,
         acceptedPixelFormats: Set<UInt32>,
+        sourceProfile: CameraSourceProfile = .appleLog2,
         metadata: [AVMetadataItem],
         deliveryOrientation: CameraSampleValidationPolicy.DeliveryOrientation = .unknown,
         captureRotationAngle: CGFloat? = nil,
@@ -175,6 +192,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             self.audioSettings = snapshot.audioSettings
             if snapshot.audioSettings == nil { self.audioPreroll.removeAll() }
             self.acceptedPixelFormats = acceptedPixelFormats
+            self.sourceProfile = sourceProfile
             self.metadata = snapshot.metadata
             self.transform = .identity
             self.deliveryOrientation = deliveryOrientation
@@ -187,6 +205,10 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                                           && videoFrameDuration > .zero)
                 ? videoFrameDuration : CMTime(value: 1, timescale: 24)
             self.requiresAudioEvidence = requiresAudioEvidence
+            // A new take re-arms the warm-up gate; the arrival stamp above is
+            // stream state, not clip state, so it deliberately survives.
+            self.audioWarmUpHeldSince = nil
+            self.audioWarmUpHeldFrames = 0
 #if DEBUG
             self.preservationProbeEnabled = preservationProbeEnabled
             self.sourceProbe = nil
@@ -228,12 +250,29 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         recordVideoDrop(at: ProcessInfo.processInfo.systemUptime)
     }
 
+    /// Uptime of the first accepted video frame, the anchor for the encoder's
+    /// priming window.
+    private var firstAppendedUptime: Double?
+
+    private func isWithinEncoderPrimeWindow(now: Double) -> Bool {
+        CameraSampleValidationPolicy.isEncoderPrimingDrop(firstAppended: firstAppendedUptime,
+                                                          dropTime: now)
+    }
+
     private func recordVideoDrop(at now: Double) {
         // Once stop has been requested the take is finalising rather than running:
         // its frames are already in the writer, so a drop burst here must not abort
         // and discard a recording the user has finished. The drain timeout still
         // bounds a tail that never arrives.
         guard state == .awaitingVideo || state == .recording, stopAudioEndTime == nil else { return }
+        // The first append pays the encoder's one-time initialisation, which can
+        // block the delegate queue for ~125 ms. At 60 fps that burst alone
+        // overflows a capture pool sized for a slower cadence, so those frames
+        // are priming cost, not a failing take. Everything after the window is
+        // still counted, so a genuine stall still aborts.
+        if isWithinEncoderPrimeWindow(now: now) {
+            return
+        }
         recentDropTimes = CameraSampleValidationPolicy.dropTimesWithinWindow(recentDropTimes, now: now)
         if CameraSampleValidationPolicy.shouldFailForFrameDrops(recentDropCount: recentDropTimes.count) {
             fail(CameraSampleBufferRecorderError.sustainedFrameDrops(recentDropTimes.count))
@@ -245,6 +284,9 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     func receiveCapturedAudio(_ sampleBuffer: CMSampleBuffer) {
         audioHandoffLock.lock()
         let generation = audioHandoffEpoch
+        // Stamped on the delegate's own queue: this records when the microphone
+        // pipeline actually delivered, which is what the warm-up gate asks.
+        lastAudioArrivalUptime = uptime()
         guard pendingAudioHandoffs < 64 else {
             let reportOverflow = audioOverflowEpoch != generation
             audioOverflowEpoch = generation
@@ -431,7 +473,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
             width: Int(dimensions.width), height: Int(dimensions.height), pixelFormat: pixelFormat,
             acceptedPixelFormats: acceptedPixelFormats,
             logTransfer: logTransfer as? String, matrix: matrix as? String,
-            primaries: primaries as? String, transfer: transfer as? String
+            primaries: primaries as? String, transfer: transfer as? String,
+            sourceProfile: sourceProfile
         )
         if Int(dimensions.width) != pixelBufferWidth || Int(dimensions.height) != pixelBufferHeight {
             validationRejections.append("format description is \(dimensions.width)x\(dimensions.height), " +
@@ -497,6 +540,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         if startAfter.isValid, startAfter.isNumeric, presentationTime < startAfter {
             return
         }
+        if state == .awaitingVideo, holdsOriginForAudioWarmUp() { return }
         guard CameraSampleValidationPolicy.timestampIsIncreasing(
             current: presentationTime.seconds, previous: lastVideoTime?.seconds
         ), presentationTime.isValid, presentationTime.isNumeric else {
@@ -526,6 +570,9 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
 #endif
         lastVideoTime = presentationTime
         lastVideoEndTime = Self.sampleEnd(sampleBuffer, fallbackDuration: videoFallbackDuration)
+        if firstAppendedUptime == nil {
+            firstAppendedUptime = ProcessInfo.processInfo.systemUptime
+        }
         appendedVideoFrames += 1
 #if DEBUG
         if sourceProbe == nil { sourceProbe = firstFrameProbe }
@@ -545,6 +592,39 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         if let stopAudioEndTime, let lastVideoEndTime, lastVideoEndTime >= stopAudioEndTime {
             finalizeOnQueue()
         }
+    }
+
+    /// True while the take's origin waits for a live microphone; the caller
+    /// drops the frame instead of anchoring on a stream that is not running.
+    private func holdsOriginForAudioWarmUp() -> Bool {
+        audioHandoffLock.lock()
+        let lastArrival = lastAudioArrivalUptime
+        audioHandoffLock.unlock()
+        let now = uptime()
+        let heldSince = audioWarmUpHeldSince ?? now
+        guard CameraAudioWarmUpPolicy.holdsStart(requiresAudio: requiresAudioEvidence,
+                                                 lastArrival: lastArrival,
+                                                 now: now, heldSince: heldSince) else {
+            if audioWarmUpHeldSince != nil {
+#if DEBUG
+                print("Capture audio warm-up: origin held \(Int(audioWarmUpHeldFrames)) frames " +
+                      "(\(Int((now - heldSince) * 1000))ms) for a live microphone")
+#endif
+                audioWarmUpHeldSince = nil
+                audioWarmUpHeldFrames = 0
+            }
+            return false
+        }
+        audioWarmUpHeldSince = heldSince
+        audioWarmUpHeldFrames += 1
+#if DEBUG
+        if audioWarmUpHeldFrames == 1 {
+            let silence = lastArrival.map { Int((now - $0) * 1000) }
+            print("Capture audio warm-up: microphone silent " +
+                  "\(silence.map { "\($0)ms" } ?? "since launch"); holding the origin")
+        }
+#endif
+        return true
     }
 
     private func startWriter(at time: CMTime) -> Bool {
@@ -675,7 +755,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
               "audioPTS=\(lastAudioTime?.seconds ?? -1), audioEnd=\(lastAudioEndTime?.seconds ?? -1), " +
               "target=\(stopAudioEndTime?.seconds ?? -1), frames=\(appendedVideoFrames), " +
               "audio-first=\(firstAudioTimeForDiagnostics?.seconds ?? -1), audioDuration=\(audioDurationForDiagnostics), " +
-              "maxAudioGap=\(maximumAudioGapForDiagnostics), audioPackets=\(appendedAudioSamples)")
+              "maxAudioGap=\(maximumAudioGapForDiagnostics), audioPackets=\(appendedAudioSamples), " +
+              "audioWarmUpHeldFrames=\(audioWarmUpHeldFrames)")
 #endif
         guard move(to: .stop) else { return }
         recentDropTimes.removeAll()
@@ -722,7 +803,13 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                     guard let dimensions = self.codedDimensions else {
                         throw CameraSampleBufferRecorderError.invalidFinalMovie("missing latched coded dimensions")
                     }
-                    try self.outputValidator(destination, dimensions, self.transform, self.appendedAudioSamples)
+                    if let validator = self.outputValidator {
+                        try validator(destination, dimensions, self.transform, self.appendedAudioSamples)
+                    } else {
+                        try Self.validateOutput(destination, expectedDimensions: dimensions, transform: self.transform,
+                                                appendedAudioSamples: self.appendedAudioSamples,
+                                                sourceProfile: self.sourceProfile)
+                    }
                 } catch {
                     // The original finalized readably; a validation failure
                     // must retain it rather than delete the take.
@@ -866,9 +953,12 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         audioHandoffLock.unlock()
         latchedQualityError = nil
         appendedVideoFrames = 0
+        firstAppendedUptime = nil
         appendedAudioSamples = 0
         recentDropTimes = []
         requiresAudioEvidence = false
+        audioWarmUpHeldSince = nil
+        audioWarmUpHeldFrames = 0
 #if DEBUG
         preservationProbeEnabled = false
         sourceProbe = nil
@@ -889,14 +979,15 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     /// to completion here instead of re-ordering the finalization path around a
     /// task hop.
     private static func validateOutput(_ url: URL, expectedDimensions: CameraCaptureCodedDimensions,
-                                       transform: CGAffineTransform, appendedAudioSamples: Int) throws {
+                                       transform: CGAffineTransform, appendedAudioSamples: Int,
+                                       sourceProfile: CameraSourceProfile) throws {
         let outcome = CameraSampleValidationOutcome()
         let finished = DispatchSemaphore(value: 0)
         Task {
             do {
                 try await validateLoadedOutput(url, expectedDimensions: expectedDimensions,
                                                transform: transform,
-                                               appendedAudioSamples: appendedAudioSamples)
+                                               appendedAudioSamples: appendedAudioSamples, sourceProfile: sourceProfile)
                 outcome.succeed()
             } catch {
                 outcome.fail(error)
@@ -913,7 +1004,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     /// below still reports the same error it reported before.
     private static func validateLoadedOutput(_ url: URL, expectedDimensions: CameraCaptureCodedDimensions,
                                              transform: CGAffineTransform,
-                                             appendedAudioSamples: Int) async throws {
+                                             appendedAudioSamples: Int, sourceProfile: CameraSourceProfile) async throws {
         let asset = AVURLAsset(url: url)
         let videoTracks = (try? await asset.loadTracks(withMediaType: .video)) ?? []
         guard let track = videoTracks.first else {
@@ -948,6 +1039,8 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         let matrix = extensionValue(kCMFormatDescriptionExtension_YCbCrMatrix) as? String
         let primaries = extensionValue(kCMFormatDescriptionExtension_ColorPrimaries) as? String
         let transfer = extensionValue(kCMFormatDescriptionExtension_TransferFunction) as? String
+        try RenderInputColorProvenance.validate(videoFormats.map(RenderInputColorProvenance.evidence(for:)),
+                                                expectedProfile: sourceProfile)
         // Loaded once: the finalized asset is immutable, so this is the same
         // value the property read used to return at every use below.
         let preferredTransform = (try? await track.load(.preferredTransform)) ?? .identity
@@ -955,8 +1048,6 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         guard codec == 0x68766331,
               dimensions.width == expectedDimensions.width, dimensions.height == expectedDimensions.height,
               bitDepth == 10, isMain10_420,
-              CameraSampleValidationPolicy.isAppleLog2(logTransfer), matrix == "ITU_R_2020",
-              primaries == nil, transfer == nil,
               preferredTransform == transform,
               timeRange.duration.isValid, timeRange.duration.seconds > 0 else {
             let codecText = String(codec, radix: 16)
@@ -996,11 +1087,18 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                 segments: audioSegments)
             let endDifference = abs(CMTimeSubtract(CMTimeRangeGetEnd(timeRange),
                                                    CMTimeRangeGetEnd(audioTimeRange)).seconds)
-            do {
-                try CameraCapturePreservationProbe.validateSynchronization(skew: skew, endDifference: endDifference)
-            } catch {
-                throw CameraSampleBufferRecorderError.invalidFinalMovie(error.localizedDescription)
+            // A boundary timing difference inside the delivery window is
+            // logged and rendered, not turned into an original-only take.
+            guard CameraCapturePreservationProbe.isDeliverable(skew: skew, endDifference: endDifference) else {
+                throw CameraSampleBufferRecorderError.invalidFinalMovie(String(
+                    format: "Preservation check failed: A/V first-sample skew %.3fs or end-duration "
+                          + "difference %.3fs exceeds %.2fs.",
+                    skew, endDifference, CameraCapturePreservationProbe.deliveryTolerance))
             }
+#if DEBUG
+            print(String(format: "Capture A/V delivery: skew=%.3fs, end-delta=%.3fs (delivery limit %.2fs)",
+                         skew, endDifference, CameraCapturePreservationProbe.deliveryTolerance))
+#endif
         }
         #if DEBUG
         print("HEVC Log2 output validation: codec=hvc1, size=\(expectedDimensions.width)x\(expectedDimensions.height), bits=10, log=\(String(describing: logTransfer)), matrix=\(String(describing: matrix)), display=\(expectedDisplay.0)x\(expectedDisplay.1), audioSamples=\(appendedAudioSamples), transform=\(preferredTransform)")
@@ -1229,7 +1327,7 @@ enum CameraSampleBufferRecorderError: LocalizedError {
         case .log2WriterUnavailable: return "Apple Log 2 HEVC writing requires iOS 27 or later."
         case .unsupportedWriterSettings(let detail): return "The writer rejected \(detail) settings."
         case .writerStartFailed: return "The HEVC writer could not start."
-        case .invalidVideoSample(let detail): return "The camera returned an invalid Apple Log 2 frame: \(detail)."
+        case .invalidVideoSample(let detail): return "The camera returned an invalid source frame: \(detail)."
         case .invalidAudioSample(let detail): return "The camera returned invalid PCM audio: \(detail)."
         case .nonMonotonicTimestamp(let track): return "The \(track) capture timestamps are not increasing."
         case .appendFailed(let track): return "The \(track) sample could not be encoded."
@@ -1243,7 +1341,7 @@ enum CameraSampleBufferRecorderError: LocalizedError {
         case .discontinuousSourceAudio(let seconds):
             return "Capture audio has a \(String(format: "%.3f", seconds))-second discontinuity inside the take."
         case .finalizationFailed: return "The HEVC recording could not be finalized."
-        case .invalidFinalMovie(let detail): return "The finalized movie failed Apple Log 2 validation: \(detail)."
+        case .invalidFinalMovie(let detail): return "The finalized movie failed source validation: \(detail)."
         }
     }
 }
@@ -1266,6 +1364,42 @@ enum CameraAudioEvidencePolicy {
                                        hasAudioSettings: Bool,
                                        appendedAudioSamples: Int) -> Bool {
         requiresAudioEvidence && hasAudioSettings && appendedAudioSamples == 0
+    }
+}
+
+/// A take that contracted for audio may not anchor its origin on a microphone
+/// that is not delivering yet.
+///
+/// The origin is the first eligible video frame's presentation time, and audio
+/// older than the origin is discarded rather than retimed. If the microphone
+/// pipeline has stalled when that frame arrives, the samples covering the first
+/// part of the take were never delivered and the clip opens with a silent head —
+/// the failure the final validation then reports. Holding the origin until the
+/// microphone has been heard recently lets the preroll flush across the start
+/// instead. Only recent silence is held, and only for a configured microphone: a
+/// dead stream must still record video.
+enum CameraAudioWarmUpPolicy {
+    /// The capture audio pipeline delivers a packet roughly every 21 ms at
+    /// 48 kHz, so this is several packets of silence — a live stream is never
+    /// mistaken for a stalled one by a single missed callback.
+    static let silentWindow: TimeInterval = 0.15
+    /// Ceiling on the hold. A microphone that never delivers must not hang the
+    /// record button or turn a short take into "no video frames".
+    static let maximumWait: TimeInterval = 0.4
+
+    /// The microphone stream is live: its most recent packet arrived inside the
+    /// silence window.
+    static func isLive(lastArrival: TimeInterval?, now: TimeInterval) -> Bool {
+        guard let lastArrival else { return false }
+        return now - lastArrival <= silentWindow
+    }
+
+    /// Hold the origin: audio is required, the stream is silent, and the wait
+    /// has not yet reached its ceiling.
+    static func holdsStart(requiresAudio: Bool, lastArrival: TimeInterval?,
+                           now: TimeInterval, heldSince: TimeInterval) -> Bool {
+        guard requiresAudio, !isLive(lastArrival: lastArrival, now: now) else { return false }
+        return now - heldSince < maximumWait
     }
 }
 

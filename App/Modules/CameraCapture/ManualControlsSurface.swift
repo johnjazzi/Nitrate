@@ -41,6 +41,9 @@ struct ManualControlsSurface<Aperture: View>: View {
     @Binding var manualFocus: Bool
     @Binding var expanded: Bool
     let landscape: Bool
+    /// Live Zoom toggle shared with Settings: on shows the in-frame zoom ruler.
+    /// Defaults off so a surface hosted on its own never writes a preference.
+    var zoomControlsEnabled: Binding<Bool> = .constant(false)
     let zoomRange: ClosedRange<Double>
     var zoomIsPerLens = false
     var zoomAvailable = true
@@ -69,11 +72,11 @@ struct ManualControlsSurface<Aperture: View>: View {
             HStack(spacing: 4) {
                 if expandedLayout {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("MANUAL").font(.caption.weight(.bold))
-                        Text(exposure).font(.caption2.monospacedDigit()).lineLimit(1)
+                        Text("MANUAL").font(NitrateTypography.font(.caption).weight(.bold))
+                        Text(exposure).font(NitrateTypography.font(.caption2).monospacedDigit()).lineLimit(1)
                     }
                 } else {
-                    Text("MANUAL").font(.system(size: 10, weight: .bold)).lineLimit(1)
+                    Text("MANUAL").font(NitrateTypography.font(size: 10)).lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 if !expandedLayout {
@@ -93,10 +96,29 @@ struct ManualControlsSurface<Aperture: View>: View {
                 .accessibilityLabel("Close manual controls")
             }
             HStack(alignment: .top, spacing: expandedLayout ? 10 : 4) {
-                column(zoomIsPerLens ? "LENS" : "ZOOM", readout: zoomAvailable ? String(format: "%.1fx", zoom) : "—") {
+                VStack(spacing: 0) {
+                    title(zoomIsPerLens ? "LENS" : "ZOOM")
                     track(value: $zoom, range: zoomRange, step: 0.1, label: "Zoom")
                         .disabled(!zoomAvailable || zoomRange.lowerBound == zoomRange.upperBound)
+                    // The Zoom toggle shares the zoom column's readout row — the
+                    // same 44pt reachable row as the focus column's AF/MF key — so
+                    // the two columns stay the same height and the panel keeps its
+                    // bounded compact/expanded face without scrolling.
+                    Button(action: toggleZoomControls) {
+                        VStack(spacing: 0) {
+                            Text("ZOOM")
+                            Text(zoomAvailable ? String(format: "%.1fx", zoom) : "—")
+                                .font(NitrateTypography.font(size: 9))
+                                .monospacedDigit()
+                        }
+                        .foregroundStyle(zoomControlsEnabled.wrappedValue ? .orange : .white)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .accessibilityLabel("Zoom controls")
+                    .accessibilityValue(zoomControlsEnabled.wrappedValue ? "On" : "Off")
+                    .accessibilityHint("Show or hide the in-frame zoom ruler")
                 }
+                .frame(maxWidth: .infinity)
                 VStack(spacing: 0) {
                     title("FOCUS")
                     track(value: $focus, range: 0...1, step: 0.01, label: "Focus")
@@ -116,7 +138,7 @@ struct ManualControlsSurface<Aperture: View>: View {
             if expandedLayout {
                 HStack(spacing: 8) {
                     Text(zoomIsPerLens ? "LENS ZOOM" : "ZOOM")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(NitrateTypography.font(size: 10))
                     Spacer(minLength: 0)
                     zoomHold(.out, symbol: "minus", label: "Zoom Out")
                     zoomHold(.in, symbol: "plus", label: "Zoom In")
@@ -124,7 +146,7 @@ struct ManualControlsSurface<Aperture: View>: View {
                 .frame(height: 44)
             }
         }
-        .font(.caption2.weight(.semibold))
+        .font(NitrateTypography.font(.caption2).weight(.semibold))
         .foregroundStyle(.white)
         .buttonStyle(CameraRaisedButtonStyle(cornerRadius: 6))
         .padding(contentPadding)
@@ -133,7 +155,7 @@ struct ManualControlsSurface<Aperture: View>: View {
         .popover(isPresented: $showingHelp) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("Recording stabilization").font(.headline)
+                    Text("Recording stabilization").font(NitrateTypography.font(.headline))
                     Spacer()
                     Button("Done") { showingHelp = false }.frame(minHeight: 44)
                 }
@@ -164,7 +186,7 @@ struct ManualControlsSurface<Aperture: View>: View {
     private var contentPadding: CGFloat { expandedLayout ? 8 : 4 }
 
     private func title(_ text: String) -> some View {
-        Text(text).font(.system(size: 10, weight: .bold)).lineLimit(1)
+        Text(text).font(NitrateTypography.font(size: 10)).lineLimit(1)
             .frame(height: rowHeight).frame(maxWidth: .infinity)
     }
 
@@ -189,7 +211,7 @@ struct ManualControlsSurface<Aperture: View>: View {
         VStack(spacing: 0) {
             if expandedLayout {
                 HStack(spacing: 0) {
-                    Text("STAB").font(.system(size: 10, weight: .bold))
+                    Text("STAB").font(NitrateTypography.font(size: 10))
                     stabilizationHelp
                 }
             }
@@ -206,7 +228,7 @@ struct ManualControlsSurface<Aperture: View>: View {
             } label: {
                 VStack(spacing: 2) {
                     Text(stabilization.preferred == .off ? lastEnabledMode.title : stabilization.preferred.title)
-                    Text("Active \(stabilization.active?.title ?? "—")").font(.system(size: 9))
+                    Text("Active \(stabilization.active?.title ?? "—")").font(NitrateTypography.font(size: 9))
                 }.lineLimit(1).frame(maxWidth: .infinity, minHeight: 44)
             }
             .accessibilityLabel("Recording stabilization mode")
@@ -232,6 +254,7 @@ struct ManualControlsSurface<Aperture: View>: View {
     // Named actions are shared by the live controls and focused binding tests.
     func toggleExpanded() { expanded.toggle() }
     func toggleFocus() { manualFocus.toggle() }
+    func toggleZoomControls() { zoomControlsEnabled.wrappedValue.toggle() }
 
     func setStabilizationEnabled(_ enabled: Bool) {
         guard canChangeStabilization,
@@ -253,7 +276,11 @@ struct ManualControlsSurface<Aperture: View>: View {
 
 /// A touch begins one hardware ramp; finger-up or drag-off cancels it.
 /// VoiceOver activation requests one bounded step, never an endless hold.
-private struct ZoomHoldControl: View {
+///
+/// Shared by the manual panel's compact/expanded hold keys and the in-frame
+/// zoom arrows: one implementation of the safe begin/end/revision protocol so
+/// the zoom toggle's arrows cannot invent an uncontrolled repeat loop.
+struct ZoomHoldControl: View {
     let symbol: String
     let label: String
     let enabled: Bool

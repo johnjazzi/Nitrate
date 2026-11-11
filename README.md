@@ -1,10 +1,36 @@
 # Nitrate (iOS)
 
-A film-emulation **camera** for iPhone. It records Apple Log 2 as 10-bit HEVC at
-4K, applies a film-stock look in a render afterwards, and saves the result to
-Photos.
+A film-emulation **camera** for iPhone. It records native 10-bit HEVC in
+Apple Log 2, or HDR HLG BT.2020 on devices without Apple Log support, applies a
+film-stock look afterwards, and saves the SDR Rec.709 result to Photos. Capture
+is native 2K open gate or UHD, depending on the camera's available formats.
 
 You shoot neutral. The film look comes back from the render.
+
+## Highlights
+
+- **2K open gate, on by default.** Nitrate records the sensor's native **4:3**
+  readout — 1920×1440, 10-bit 4:2:2 Apple Log 2 or 4:2:0 HLG, at 24 or 60 fps
+  where supported — instead of
+  cropping to 16:9 and throwing the top and bottom away. Nothing is squeezed: the
+  frame is the full sensor height, so the same take can be reframed vertical or
+  widescreen in post. Switch to UHD 16:9 (3840×2160) in Settings → Capture
+  Format. Open gate is the default where available; otherwise the app uses UHD
+  if supported. Settings lists only formats supported by the current camera,
+  source profile and frame rate, rather than offering an unsupported choice.
+- **Full film emulation, not a preset.** The stock is a negative/print or reversal
+  LUT generated from a spectral model, and it is only part of the look: halation bleeds light from
+  the highlights, glow blooms the graded highlights, and grain is a real
+  volumetric plate. None of it is a filter over a finished image.
+- **Native Photo flash.** The bolt toggles the camera's still flash; Video keeps
+  its adjustable continuous lamp. When capture confirms that native flash fired,
+  RAW development preserves the camera's baseline exposure without the additional
+  +1 EV ambient-still lift. Flash-off and unconfirmed shots keep their existing
+  development exposure. Originals and manual exposure controls are unchanged.
+- **Non-destructive development.** Open gate changes what is recorded, not
+  what is kept — the Apple Log 2 or HDR HLG original stays intact during
+  development and every look is a render of it. Enable saving the original to
+  Photos to retain it after successful delivery and temporary-file cleanup.
 
 ## Why it exists
 
@@ -13,27 +39,56 @@ pick a stock and **don't** preview it: you shoot, and the film comes back to you
 later. That is a deliberate reproduction of shooting film, where you don't know
 what you got until the roll is developed.
 
-Nitrate takes the same position, for video. The monitor shows you a neutral
-image, not the look. You choose the stock and the gauge, shoot, and see the
-emulation when the render finishes. Debug builds add a single-frame render of
-the current settings for checking the look before a shoot; shipping builds give
-you no preview of it at all.
+Nitrate keeps the full film development separate from capture. The monitor can
+show a neutral image, stock colour only, or the ungraded source; it does not run
+the complete halation, glow and grain chain. You choose the stock and gauge,
+shoot, and see the full emulation when the render finishes. Debug builds also
+provide a single-frame render for checking the complete look.
 
 Three commitments follow from that:
 
-- **Camera first, not an editing app.** Everything that decides the image —
-  stock, gauge, exposure, white balance — is set before or during capture. There
-  is no timeline, no clip browser, no grade page. Simple editing (trim,
-  re-render, rearrange) is planned and deliberately not built yet. The render
-  queue and the saved original Log exist so it can be added without
-  re-architecting capture.
-- **The original is never destroyed.** The camera writes a real Apple Log 2
-  recording. The film look is a render of that file, and the Log original can be
-  kept alongside the render. Nothing is baked in at capture time.
+- **A focused workflow.** Choose a film stock, capture a take, and render to
+  Photos. Develop applies the same rendering to an Apple Log 2 video selected
+  through the system picker.
+- **Non-destructive development.** The camera writes an ungraded Apple Log 2 or
+  HDR HLG recording. The film look is a separate render, and the original can be
+  saved alongside it. Nothing is baked in at capture time; owned temporary
+  movies are removed only after required deliveries are confirmed.
 - **Real film behaviour, not a colour wash.** Halation, glow and grain are
   modelled as physical effects with per-stock geometry. Grain comes from a
   coherent multi-scale field; halation is highlight light scattering at a
   per-stock radius. Neither is a texture laid over a look-up table.
+
+## Our scope promise
+
+**Nitrate will never add trimming, timelines, projects, or editing adjustments.**
+
+Choose **D** below the shutter to open Develop. Photo, Video and Re-develop use
+one flow: **select files → load → review a graded still → choose stock, gauge and
+push/pull → Develop → view results**. One file and a batch use the same controls;
+previews show stock colour and push/pull only. Grain, halation, glow and diffusion
+remain in the final render; changing gauge does not restart the preview. Inputs
+and colour resources are cached, and cancelled/stalled loads settle with retry
+instead of waiting indefinitely. Results can be swiped and enlarged,
+with **Develop more**, **Re-develop** and **Open Photos** actions. Queue Re-develop
+also returns originals to review instead of immediately rendering them.
+
+The preview shows an explicitly approximate, center-weighted file exposure estimate
+separately from recorded capture values when present. It is not a calibrated light
+meter, and missing capture metadata is not replaced with the current camera reading.
+See [the shared workflow and acceptance checks](docs/development-workflow.md).
+
+Video import in Develop accepts **Apple Log 2 only**. HLG support applies to
+recordings made by Nitrate; it does not admit HLG or Apple Log 1 imports. Watch
+finished videos in Photos.
+
+Develop accesses only files selected through the system Photos picker, without
+requesting photo-library read permission. Saving uses add-only Photos access.
+Originals remain unchanged; scoped retained Develop originals support re-development.
+Open Photos is a general handoff, not a guarantee that iOS selects specific assets;
+look in Recently Saved for confirmed saves.
+
+This scope applies to future releases as well.
 
 ## Privacy
 
@@ -53,11 +108,13 @@ microphone, and the photo library when you ask it to save.
 
 ### Why iPhone
 
-Apple Log 2 is the reason this is an iPhone app. It is a real log curve in a wide
+Apple Log 2 defines the emulation's input domain. It is a real log curve in a wide
 gamut, shipped by Apple as a capture colour space rather than reverse-engineered,
 and it is supported downstream: Final Cut applies Apple's own Log 2 LUT, and
 OpenColorIO implements the transfer function that this project's LUT generator is
-built on.
+built on. On iPhones without either Apple Log profile, native HLG BT.2020 capture
+is converted into that same input domain before the existing film pipeline.
+The shipped LUT cubes are unchanged.
 
 That matters because the emulation needs an honest starting point. A film model
 of a negative and a print can only be applied to an ungraded signal; against a
@@ -67,14 +124,23 @@ look already baked into the camera it would be guesswork on top of a guess.
 
 | | |
 |---|---|
-| OS | **iOS 27 or later.** The camera's Apple Log 2 HEVC writer requires iOS 27; the install target matches that requirement |
+| OS | **iOS 27 or later.** The install target and capture implementation require it |
 | Aperture | **iOS 27 or later.** The variable-aperture API the app uses is not available before that, and the app reports aperture as unavailable |
-| Hardware | Any device whose camera advertises an **Apple Log 2** capture format. Apple Log 2 arrived with the iPhone 17 Pro; the reference device here is an iPhone 18 Pro |
-| Anything else | No Apple Log 2 format means no recording. The app fails with an explicit unsupported error instead of falling back to a baked-in look |
+| Apple Log 2 | A camera advertising a matching native ten-bit Apple Log 2 format uses the existing Log 2 path |
+| Non-Log HLG | Only devices advertising **neither Apple Log 1 nor Apple Log 2** may use native video-range **10-bit 4:2:0 HLG BT.2020** (`x420`). The measured older device is an iPhone 14 Pro on iOS 27.3; other models require their own capability checks |
+| Apple Log 1 only | **Unsupported.** A device with Log 1 but without Log 2 is not eligible for the HLG path |
+| Open gate | Needs native **1920×1440**, 4:2:2 Apple Log 2 or 4:2:0 HLG, at the requested frame rate. No UHD crop substitutes for open gate |
+| No matching format | The Capture Format row is unavailable. The app does not invent a UHD option or silently record a different live selection |
 
-The app never tests for model names. It asks the hardware which formats it
-declares and requires one that is 4K Apple Log 2 with a 24 fps rate among them,
-so a later Pro iPhone works without a code change.
+The app checks advertised capabilities at runtime, not once during installation
+and not against model names. It inspects both Apple Log profiles to choose the
+permitted source path, then matches native dimensions, ten-bit layout and FPS.
+Settings availability follows the active camera and frame rate. A missing or
+stale preference is clamped to an available default; an explicit live request
+that cannot be applied is refused with a notice rather than silently downgraded.
+
+See [older-device support](docs/older-device-support.md) for the colour contract,
+measured hardware evidence and remaining physical-device validation.
 
 ### Android
 
@@ -93,19 +159,31 @@ than a refusal, but ask before shipping anything derived from it.
 
 | | |
 |---|---|
-| Format | Apple Log 2, 10-bit HEVC Main10 (`hvc1`), 3840×2160 or 2160×3840 |
-| Requirement | Apple Log 2 capture — see [Platform](#platform) for the specific iOS versions and iPhones |
+| Format | **Open gate 2K (default where available):** 1920×1440 native 4:3, or **UHD 16:9:** 3840×2160 — ten-bit HEVC Main10 (`hvc1`), plus their portrait forms |
+| Source | Apple Log 2, or native 4:2:0 HDR HLG BT.2020 on eligible non-Log devices — see [Platform](#platform) |
+| Frame rate | **24FPS** or **60FPS**, only where the selected native format supports it; 120 fps is disabled in the current build configurations |
 | Lenses | Ultrawide, Normal (1×), Tele, Front — the device's real lenses, with the active focal length shown |
 | Aperture | Per-lens, over the stops the device reports (f/1.5–f/4.0 on the reference iPhone 18 Pro) |
 | Exposure | 180° shutter priority by default (shutter locked to 1/48 s, ISO meters), plus manual EV and manual ISO |
-| White balance | Locked per stock — 5600 K daylight, 3200 K tungsten — so the LUT always sees the same white point |
+| White balance | Locked per stock — 5600 K daylight negatives, 5500 K Ektachrome, 3200 K tungsten — so the LUT always sees the same white point |
 | Stabilization | Recording-only: Off, Standard, Cinematic, Extreme (Apple extended cinematic). The preview stays independent, and the UI calls out the crop and latency |
+| Light | Native photo flash (On/Off) and an independent adjustable video torch; still metadata records resolved firing, not assumed power or timing. Hardware and thermal limits apply. |
 
 The capture path is strict on purpose. It negotiates a ten-bit bi-planar format
 the device actually advertises, and validates every sample buffer — dimensions,
-pixel format, plane count, Log transfer function, colour matrix — before the
-buffer reaches the writer. It fails loudly rather than writing a silently wrong
+pixel format, plane count, source-specific transfer/primaries and colour matrix —
+before the buffer reaches the writer. It fails loudly rather than writing a silently wrong
 clip, and re-checks settings against the hardware instead of assuming them.
+
+### Photo
+
+Photo mode is enabled in the current Debug, DevRelease and Release
+configurations. It captures Bayer RAW from a supported lens and develops a
+separate JPEG through the shared film pipeline and queue. Saving the original
+RAW to Photos is optional and independent of saving video originals. A lens
+without Bayer RAW cannot take a Photo; Video remains a separate capability.
+See [development and release builds](docs/development.md) for the configuration
+switch and shared-camera behaviour.
 
 ### Camera interface
 
@@ -118,9 +196,14 @@ clip, and re-checks settings against the hardware instead of assuming them.
   exposure readout gives a manual ISO change something to match.
 - Lens selection is one button at the top right that opens a popout of raised
   keys inset in a well.
-- **Storage & Queue** is a single sheet opened by one tap on the status LCD:
-  space and remaining-time estimate first, queue activity and history below,
-  with playback, sharing, retry and error detail.
+- **History & Queue** opens from the status LCD with a History title, labelled
+  sections and a pull-down handle instead of a close X. Missing thumbnails say
+  No preview. Compact flat rows place larger thumbnails beside horizontal
+  icon-only actions; Preview/Share live in More. Filters, storage and remaining-time
+  estimates live in History options; metadata, retained-source reasons and errors remain
+  available through the info icon. Develop also shows brief import, preview and
+  render errors inline, without requiring a tap for the reason. Retry, selection
+  and queue recovery are preserved.
 - **Frame mode** fits the preview into a bounded viewfinder between the top and
   bottom control bars, with black around it, instead of leaving a thin border
   over full-screen video. Focus taps, metering coordinates and pinch zoom stay
@@ -132,13 +215,14 @@ clip, and re-checks settings against the hardware instead of assuming them.
 
 | Mode | Monitor shows |
 |---|---|
-| **Neutral** (default) | Apple Log 2 converted to a normal-looking Rec.709 image — the framing and exposure view |
+| **Neutral** (default) | The permitted camera source converted to a normal-looking Rec.709 image — the framing and exposure view |
 | **Stock LUT** | The selected stock's look, colour only |
-| **Log** | The ungraded Apple Log 2 signal |
+| **Log** | The ungraded source view: Apple Log 2 on the Log path, HLG on the non-Log path |
 
-All three read the Log 2 signal directly, in one cached GPU look-up pass. They
-are alternatives, never stacked, and the preview never runs grain, halation or
-glow. Recording stays Apple Log 2 whatever the preview is doing.
+Neutral and Stock LUT each use one monitoring LUT, never stacked. Native HLG
+passes through the shared HLG-to-Apple-Wide-Gamut/Log-2 input adapter before
+that LUT. The preview never runs grain, halation or glow. Monitoring does not
+change the source profile recorded to the original.
 
 The preview is a separate, independently gated, unstabilized capture output.
 That keeps the native camera layer correct — the focus and metering geometry
@@ -152,12 +236,22 @@ a wrong image.
 |---|---|---|
 | 250D / 5207 | Daylight | `5207 - Apple Log 2.cube` |
 | 500T / 5219 | Tungsten | `5219 - Apple Log 2.cube` |
+| EC 100D | Daylight, ISO 100, reversal | `Ektachrome 100D - Apple Log 2.cube` |
 
-Stocks are labelled the way the emulsion is printed on the canister: common
-name, then emulsion number. The LUT file carries the emulsion number alone,
-because a slash cannot go in a filename. The print stage is a fixed Kodak
-Vision 2383 for both, so it is not part of the name; it is recorded in the
-provenance below.
+The two negative stocks use a fixed Kodak Vision 2383 print stage. EC 100D
+is a direct positive-reversal model, without a 2383 print, and uses 5500 K
+daylight balance. Its selector card is yellow with a blue stripe. The existing
+negative-stock cubes are unchanged. See [LUT provenance](docs/lut-provenance.md).
+
+Touch and hold any stock card for half a second to open its description; a
+confirmation haptic acknowledges the info action. Viewing information does not
+select that card or change the gauge. Tap still selects; swipe still scrolls.
+VoiceOver exposes a separate **Stock info** action.
+
+**Settings → Film Stocks** lets you show or hide individual stocks in the
+selectors. All stocks are shown by default and choices persist across launches.
+At least one must remain enabled. Hiding a stock does not remove its LUT or
+change existing queued renders, saved settings or render history.
 
 **Print gauge** is a separate axis from stock: 8mm, 16mm, 35mm, 75mm. The gauge
 owns grain, both its size and its presence, and is chosen per stock. 35mm is the
@@ -169,30 +263,43 @@ Rendering is offline, per queued clip, through the same chain as the debug
 single-frame renderer:
 
 ```
-decoded Apple Log 2 → halation: decode → add scattered linear light → re-encode
+Apple Log 2 ───────────────────────┐
+native HLG → shared input adapter ┴→ Apple Wide Gamut / Log 2
+                    → scene-linear push/pull and highlight hold
+                    → halation: decode → add scattered linear light → re-encode
                     → pass 1: stock LUT + output contrast
                     → spatial: glow
                     → pass 2: grain
-                    → HEVC Main10 encode → Photos
+                    → SDR Rec.709 HEVC encode → Photos
 ```
 
-- **Halation** decodes the original Apple Log 2 frame into scene-linear light
+- **HLG input** is range-expanded from native ten-bit YCbCr, decoded with the
+  scene-referred inverse HLG OETF, normalized so nominal 75% HLG white maps to
+  scene-linear 1.0, gamut-converted from BT.2020 to Apple Wide Gamut, then encoded
+  into the existing Log 2 LUT domain. This is a declared exposure convention,
+  not camera calibration or a display tone map. The saved original remains HDR;
+  film delivery remains SDR Rec.709.
+- **Push/pull** applies the chosen fixed-stop development adjustment before
+  halation and the stock LUT, with highlight hold. The render recipe records it.
+- **Halation** decodes the prepared Apple Log 2 frame into scene-linear light
   and extracts per-channel energy above highlight thresholds. Three
   half-resolution Gaussian blurs spread red widest, green less, and blue least.
   Their contributions are added to the **linear source**, including its core,
   then re-encoded to Apple Log 2. The stock LUT grades source and scattered
   light together; halation is not a separate display-space overlay. Base radius,
-  strength and channel weights are **per stock**; print gauge does not change
-  halation. The debug radius slider covers 0.0005–0.0030 in 0.0001 increments.
+  strength and channel weights are **per stock**. Bundled gauge multipliers
+  retain 8mm/16mm strength, use 45% on 35mm and 20% on 75mm. The debug radius
+  slider covers 0.0005–0.0030 in 0.0001 increments.
 - **Glow** keeps its separate graded-luminance mask and wide amber bloom. It
   does not use the scene-linear halation mask.
 - **Grain** is [described below](#how-the-grain-works).
 
 The halation model is **physically informed, not a calibrated film simulation**.
-Its initial channel thresholds are 1×, 2× and 4× decoded diffuse white; radius
+Its channel thresholds are 0.75×, 1.5× and 3× decoded diffuse white; radius
 multipliers are 1.8×, 1× and 0.5× the stock's base radius. Channel energy is divided
-by an 8× reference before stock weights and strength are applied. These are
-starting values for device tuning, not measured emulsion properties. Halation
+by a 10× excess reference before stock weights and strength are applied,
+starting earlier with a gentler ramp. Stills retain their measured-headroom
+anchor, with its share and floor also raised 25%. These are starting values for device tuning, not measured emulsion properties. Halation
 addition is scene-linear and pre-LUT, with no background-dependent shadow gate;
 final colour and highlight rolloff come from the same stock LUT as the source.
 Passing GPU tests establishes the operation order and numerical behaviour, not
@@ -208,8 +315,8 @@ the stock's D/T light tag.
 - Serial render queue with durable state. A job survives backgrounding and
   crashes, and an interrupted job resumes rather than restarting.
 - **Export settings** (`Settings → Export`): optionally save the ungraded
-  original Log recording to Photos alongside the render, and choose **High**
-  (60 Mbps) or **Smaller** (30 Mbps) rendered file size. Each queued job
+  original recording (Apple Log 2 or HDR HLG) to Photos alongside the render,
+  and choose **High** (60 Mbps) or **Smaller** (30 Mbps) rendered file size. Each queued job
   snapshots the preferences it was created with, so changing a setting never
   rewrites work already queued. Resolution, frame rate and the capture format
   are never affected.
@@ -240,9 +347,9 @@ A seven-day evaluation of the render, then a StoreKit-managed yearly
 subscription or a lifetime unlock (`com.nitrate.subscription.yearly`,
 `com.nitrate.lifetime`). Prices come from StoreKit.
 
-Recording is never gated: after the evaluation ends you can keep shooting Apple
-Log, and the takes queue until the render is unlocked. This is an in-app
-evaluation, not an Apple-managed introductory offer — do not describe it as a
+Recording is never gated by purchase: after the evaluation ends you can keep
+shooting on a supported capture path, and takes queue until the render is
+unlocked. This is an in-app evaluation, not an Apple-managed introductory offer — do not describe it as a
 free trial in store copy.
 
 ## How the film LUTs are made
@@ -251,8 +358,8 @@ Both shipped look-up tables are generated by this project. The full record —
 sources, parameters, measurements, hashes — is in
 [`docs/lut-provenance.md`](docs/lut-provenance.md).
 
-The camera records Apple Log 2 in Apple Wide Gamut, and the table is baked over
-that exact domain:
+The table is baked over Apple Log 2 in Apple Wide Gamut. Native HLG recordings
+are adapted into that domain; the same unmodified cubes serve both paths:
 
 ```
 Apple Log 2 code value          the cube's input axis: 33³, red fastest
@@ -336,9 +443,16 @@ out of near-black shadows and out of highlights, peaking in the mid-tones, the
 way a real negative's grain reads in the print.
 
 **The print gauge owns grain.** Presence is `baseAmount × gaugeAmplitude`. The
-stock supplies size; the gauge multiplies both — 8mm ×2.0 size / ×0.55 presence,
-16mm ×1.35 / ×0.396, 35mm ×0.9 / ×0.297, 75mm ×0.5 / ×0.165, with `baseAmount`
-0.55. **ISO does not scale grain**; it is the exposure index only.
+stock supplies size; the gauge multiplies both — 8mm ×4.0 size / ×0.55 presence,
+16mm ×2.025 / ×0.396, 35mm ×0.9 / ×0.36, 75mm ×0.5 / ×0.165, with `baseAmount`
+0.55. On the size axis 8mm keeps the footprint it had before this tuning, 16mm
+keeps three quarters of it, 35mm halves it, and 75mm asks for half and is pinned
+to the 0.95 floor. Presence sits 10% above the previous ladder for 8mm, 16mm and
+75mm; 35mm sits ~33% above it, because halving its footprint put card-size grain
+16% below one 8-bit display step (measured sigma 0.003386 against
+1/255 = 0.003922) and the extra presence is what keeps a 35mm preview card
+visibly grained at the new size. **ISO does not scale grain**; it is the exposure
+index only.
 
 **The ladder is configuration, not code.** Those multipliers ship in
 `gauges.json`: `App/Resources/gauges.json` for the App, the byte-identical
@@ -385,8 +499,10 @@ crush blacks or clip highlights by construction.
 
 XcodeGen is the source of truth: `project.yml` defines the project, targets and
 schemes, and the generated `*.xcodeproj` is gitignored. The Xcode project, app
-target and scheme are named `Nitrate`, and the bundle identifier is
-`com.nitrate.app`, matching the App Store Connect record.
+target and primary scheme are named `Nitrate`. Release uses `com.nitrate.app`,
+matching the App Store Connect record. Local Debug and DevRelease builds use
+`com.nitrate.app.dev` (**Nitrate Dev**) with a separate container, so installing
+a development build does not replace the production app.
 
 One identifier still carries the older `com.filmemulation` namespace on purpose:
 the `com.filmemulation.*` movie metadata keys. They are written into recorded and
@@ -398,8 +514,8 @@ a Mac without a device.
 
 ```sh
 python3 scripts/verify.py lint     # SwiftLint, fast feedback
-python3 scripts/verify.py check    # incremental unsigned generic iOS build
-python3 scripts/verify.py verify   # lint + RenderCLI tests + iOS build + diff check
+python3 scripts/verify.py check    # lint + unsigned Debug/Release iOS builds
+python3 scripts/verify.py verify   # lint + policy/RenderCLI tests + both builds + diff check
 python3 scripts/verify.py device   # signed device build (run last)
 ```
 
@@ -414,8 +530,15 @@ exposure, grain and preview policies, and the film-stock catalogue.
 source of truth. XcodeGen feeds them into the generated Info.plist, and the
 launch splash renders them through `AppVersion` (`App/AppIdentity.swift`).
 
-- Bump `MARKETING_VERSION` for a user-visible release (currently `0.1.3`).
-- Bump `CURRENT_PROJECT_VERSION` for every build.
+- This release candidate is **0.8.0 (35)**, based on **0.7.1 (34)**.
+  It unifies Photo, Video and Re-develop into review-first development, adds
+  colour/push-pull still previews and exposure estimates, improves cancellation
+  and load deadlines, and makes History more compact with larger previews.
+  Preparing the release PR does not mean it has been distributed.
+- Advance `MARKETING_VERSION` for each release PR into `main` (a patch increment
+  by default unless a larger increment is explicitly requested).
+- Increment `CURRENT_PROJECT_VERSION` for each new archive intended for
+  distribution, including rebuilds. Ordinary local Debug builds do not bump it.
 - `AppVersion.stage` (`App/AppIdentity.swift`) is the single source of truth for
   the stage suffix. It is `.beta` while the app is distributed through
   TestFlight; set it to `nil` for an App Store release. The launch splash and
@@ -423,9 +546,18 @@ launch splash renders them through `AppVersion` (`App/AppIdentity.swift`).
 
 ## Status and known limits
 
-- **Not yet built:** any editing surface. Trim, re-render and rearrange is the
-  next planned area. The hardware capture button on supported iPhones, flash
-  control, and realistic gate jitter and weave are also open.
+- **Implemented:** Apple Log 2 video import, Photo on Bayer-RAW-capable lenses,
+  native open-gate capture, 24/60 fps selection, push/pull, flash/lamp controls and
+  hardware capture events. Each remains subject to its hardware requirements.
+- **HLG release verification:** 1,485 automated tests passed for the 0.7.0
+  candidate rebased on 0.6.2, along with Debug, Release and signed device builds.
+  Earlier iPhone 14 Pro captures verified native 24 fps Open Gate and UHD HLG
+  originals and SDR film renders; the older-GPU LUT filtering fix was visually
+  accepted. The 0.6.1 integration and corrected Develop panel were installed on
+  the 14 Pro. Other phones and the remaining lens/FPS/audio matrix still require
+  physical validation; advertised capability is not a completed device test.
+- **Open work:** realistic gate jitter and weave, plus the remaining physical
+  validation listed in [older-device support](docs/older-device-support.md).
 - **Recording timing:** delayed-stabilization startup and stop-boundary defects
   are fixed. All eight preview/stabilization combinations passed the unchanged
   0.12-second device checks. See [the investigation](docs/recording-av-timing.md)

@@ -10,6 +10,8 @@ import SwiftUI
 struct FilmStockConfig: Codable, Equatable, Sendable {
     let stockId: String
     let displayName: String
+    /// Authored catalogue copy; absent in historical queues and stock documents.
+    var stockDescription: String? = nil
     let category: StockCategory
     let lutName: String
     let halationStrength: Float
@@ -33,14 +35,88 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
     /// Print gauge owning grain size and amplitude (m00459/m00581). Optional so
     /// a stocks.json without the key decodes to the neutral 35mm reference.
     var printGauge: PrintGauge? = nil
+    /// Lens diffusion node for this stock. Optional so a stocks.json without the
+    /// key decodes to a disabled node: the node ships off until a stock authors
+    /// a preset and an amount.
+    var diffusion: DiffusionSettings? = nil
+    /// Render-time push/pull in fixed stops, applied to the Apple Log 2 code
+    /// before the stock's cube. Defaults to neutral so stocks.json and every
+    /// queue written before the control existed keep rendering unchanged.
+    var pushPull: PushPullExposure? = nil
+    /// How much of `halationStrength` the STILL render applies.
+    ///
+    /// A developed photo and a recorded take are measured in the same scene
+    /// light, but they do not read alike: a take's halo is masked by motion and
+    /// a 24th-of-a-second of it is spent on each frame, while a still is held in
+    /// front of the viewer with the halo at full size next to unrelated detail.
+    /// Measured on a ProRAW the two are numerically equivalent and the still
+    /// still reads hot, so a still gets a smaller share of the same physical
+    /// model rather than a second, separate model.
+    ///
+    /// Optional, and resolved to 1 when absent: synthesized `Codable` requires a
+    /// key for every non-optional property, and every other optional knob in this
+    /// struct exists for exactly that reason — a stocks.json written before the
+    /// key existed must still decode and still render the take's strength.
+    var stillHalationScale: Float? = nil
+
+    /// The still share actually applied to a photo render.
+    var effectiveStillHalationScale: Float { stillHalationScale ?? 1 }
+
+    /// How much of the diffusion amount a STILL render applies. Same reasoning as
+    /// `stillHalationScale`, and deliberately the same lever: a take spends a
+    /// 24th of a second with the softness next to motion, while a still is held
+    /// in front of the viewer with nothing to compare it to. The RADIUS is left
+    /// alone — it is the physical spread — so the halo keeps its geometry and
+    /// only the mix changes.
+    ///
+    /// Optional and resolved to 1 when absent, for the same reason as above.
+    var stillDiffusionScale: Float? = nil
+
+    var effectiveStillDiffusionScale: Float { stillDiffusionScale ?? 1 }
+
+    /// The diffusion node a still render actually applies.
+    var effectiveStillDiffusion: DiffusionSettings {
+        let authored = effectiveDiffusion
+        let scale = effectiveStillDiffusionScale
+        guard authored.isEnabled, scale < 1 else { return authored }
+        return DiffusionSettings(preset: authored.preset,
+                                 amount: max(0, min(1, authored.amount * scale)))
+    }
+
+    /// Stock halation gain after the selected format's authored presence.
+    func halationStrength(for gauge: PrintGauge) -> Float {
+        halationStrength * gauge.halationMultiplier
+    }
+
+    var effectiveHalationStrength: Float { halationStrength(for: effectivePrintGauge) }
 
     /// The gauge actually applied to the render: the selected gauge or 35mm.
     var effectivePrintGauge: PrintGauge { printGauge ?? .neutral }
+
+    /// The diffusion actually applied to the render.
+    ///
+    /// A stock may author its own settings; otherwise the PRINT GAUGE owns them,
+    /// because diffusion is a property of the format rather than of the emulsion
+    /// — the same stock printed at 16mm and at 75mm does not diffuse alike.
+    var effectiveDiffusion: DiffusionSettings { diffusion ?? effectivePrintGauge.diffusion }
+
+    /// The push/pull actually applied to the render: the chosen setting, or
+    /// neutral when the document/queue predates the control.
+    var effectivePushPull: PushPullExposure { pushPull ?? .neutral }
 
     /// Copy the complete value so per-shot ISO cannot discard recipe or display metadata.
     func overridingISO(_ iso: Float) -> FilmStockConfig {
         var copy = self
         copy.defaultISO = iso
+        return copy
+    }
+
+    /// Copy with an explicit diffusion override, so one render can be compared
+    /// against the same stock and gauge with the node off. Mirrors the other
+    /// `overriding*` copies: it never discards the recipe or display metadata.
+    func overridingDiffusion(_ diffusion: DiffusionSettings?) -> FilmStockConfig {
+        var copy = self
+        copy.diffusion = diffusion
         return copy
     }
 
@@ -52,6 +128,14 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
         return copy
     }
 
+    /// Copy with a per-shot push/pull, so the stop count cannot discard the
+    /// recipe or display metadata (mirrors `overridingISO` / `overridingGauge`).
+    func overridingPushPull(_ pushPull: PushPullExposure) -> FilmStockConfig {
+        var copy = self
+        copy.pushPull = pushPull
+        return copy
+    }
+
     func validate() throws {
         func require(_ condition: Bool, _ field: String) throws {
             if !condition { throw RenderContractError.invalid(stockID: stockId, field: field) }
@@ -60,6 +144,14 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
         try require(halationStrength.isFinite && (0...8).contains(halationStrength), "halationStrength")
         try require(glowStrength.isFinite && (0...1).contains(glowStrength), "glowStrength")
         try require(grainSize.isFinite && grainSize > 0, "grainSize")
+        if let stillHalationScale {
+            try require(stillHalationScale.isFinite && (0...1).contains(stillHalationScale),
+                        "stillHalationScale")
+        }
+        if let stillDiffusionScale {
+            try require(stillDiffusionScale.isFinite && (0...1).contains(stillDiffusionScale),
+                        "stillDiffusionScale")
+        }
         try require(halationRadiusFraction.isFinite && halationRadiusFraction > 0
             && halationRadiusFraction <= 0.5, "halationRadiusFraction")
         // Full-scale red is the documented contract (see the field comment): a
@@ -70,6 +162,12 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
         try require(outputContrast.isFinite && (0.1...2).contains(outputContrast), "outputContrast")
         try require(colorTemperature.isFinite && (2000...10000).contains(colorTemperature), "colorTemperature")
         try require(defaultISO.isFinite && defaultISO > 0 && Double(defaultISO) < Double(Int.max), "ISO")
+        // A bypassed preset is always allowed; a live one must stay in 0...1 so
+        // the scene-linear blend can never invert or over-gain the frame.
+        try require(effectiveDiffusion.amount.isFinite && (0...1).contains(effectiveDiffusion.amount),
+                    "diffusion.amount")
+        try require(effectivePushPull.meteredOffsetEV?.isFinite ?? true, "pushPull.meteredOffsetEV")
+        try require(PushPullStops.allCases.contains(effectivePushPull.stops), "pushPull.stops")
         try effectiveRecipe.validate(stockID: stockId)
     }
 
@@ -272,24 +370,42 @@ enum RenderExportQuality: String, Codable, CaseIterable, Identifiable, Sendable 
 
 /// Value snapshot of export preferences, suitable for persisting with a queued render.
 struct RenderDeliveryPreferences: Codable, Equatable, Sendable {
+    /// Video switch: deliver the ungraded original recording alongside the render.
     var saveOriginalLog: Bool
+    /// Photo switch, independent of `saveOriginalLog`: deliver the captured DNG
+    /// as a second Photos resource next to the developed JPEG.
+    var saveOriginalRAWToPhotos: Bool
     var quality: RenderExportQuality
+    /// Delivery framing chosen when the item was enqueued. Captured in the
+    /// snapshot for the same reason quality is: a render reads the job's own
+    /// record, never live Settings, so changing the row cannot re-crop work
+    /// that is already waiting in the queue.
+    var framing: DeliveryFraming
 
-    init(saveOriginalLog: Bool = false, quality: RenderExportQuality = .high) {
+    init(saveOriginalLog: Bool = false, saveOriginalRAWToPhotos: Bool = false,
+         quality: RenderExportQuality = .high,
+         framing: DeliveryFraming = DeliveryFraming.defaultValue) {
         self.saveOriginalLog = saveOriginalLog
+        self.saveOriginalRAWToPhotos = saveOriginalRAWToPhotos
         self.quality = quality
+        self.framing = framing
     }
 
     private enum CodingKeys: String, CodingKey {
-        case saveOriginalLog, quality
+        case saveOriginalLog, saveOriginalRAWToPhotos, quality, framing
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         saveOriginalLog = try values.decodeIfPresent(Bool.self, forKey: .saveOriginalLog) ?? false
+        // Queues written before the photo switch existed deliver JPEG only.
+        saveOriginalRAWToPhotos = try values.decodeIfPresent(Bool.self, forKey: .saveOriginalRAWToPhotos) ?? false
         // Newer queues may carry a quality this version does not recognize.
         let rawQuality = try? values.decodeIfPresent(String.self, forKey: .quality)
         quality = rawQuality.flatMap(RenderExportQuality.init(rawValue:)) ?? .high
+        // Queues written before framing existed deliver the full 16:9 frame.
+        let rawFraming = try? values.decodeIfPresent(String.self, forKey: .framing)
+        framing = DeliveryFraming.resolved(rawFraming ?? nil)
     }
 }
 
@@ -302,14 +418,20 @@ enum DeliverySettings {
     static let aacAverageBitRate = 192_000
     private static let bitrateKey = "delivery.averageBitRate"
     static let saveOriginalLogKey = "delivery.saveOriginalLog"
+    /// Photo-only switch; independent of the video original switch above.
+    static let saveOriginalRAWToPhotosKey = "delivery.saveOriginalRAWToPhotos"
     static let renderQualityKey = "delivery.renderQuality"
+    /// Shared with the Settings row and the delivered file's metadata value.
+    static let deliveryFramingKey = DeliveryFraming.preferenceKey
 
     static func renderPreferences(defaults: UserDefaults = .standard) -> RenderDeliveryPreferences {
         let quality = defaults.string(forKey: renderQualityKey)
             .flatMap(RenderExportQuality.init(rawValue:)) ?? .high
         return RenderDeliveryPreferences(
             saveOriginalLog: defaults.bool(forKey: saveOriginalLogKey),
-            quality: quality
+            saveOriginalRAWToPhotos: defaults.bool(forKey: saveOriginalRAWToPhotosKey),
+            quality: quality,
+            framing: DeliveryFraming.resolved(defaults.string(forKey: deliveryFramingKey))
         )
     }
 

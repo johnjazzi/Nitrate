@@ -71,6 +71,24 @@ struct RulerScaleTests {
         #expect(scale.nearestDetent(to: (lower + upper) / 2 - 0.01, in: [100, 125]) == 100)
     }
 
+    /// Default sense is unchanged: dragging up (vertical) or left (horizontal)
+    /// raises the value. `reversed` mirrors it for dial-like controls.
+    @Test func dragDirectionKeepsTheExistingSenseUnlessReversed() {
+        let vertical = RulerDragDirection(horizontal: false)
+        let horizontal = RulerDragDirection(horizontal: true)
+        // `travel` is the value `RulerDragState` subtracts from the position.
+        #expect(vertical.travel(width: 0, height: -12) == -12)
+        #expect(vertical.travel(width: 0, height: 12) == 12)
+        #expect(horizontal.travel(width: 12, height: 0) == -12)
+        #expect(horizontal.travel(width: -12, height: 0) == 12)
+
+        let reversedVertical = RulerDragDirection(horizontal: false, reversed: true)
+        let reversedHorizontal = RulerDragDirection(horizontal: true, reversed: true)
+        #expect(reversedVertical.travel(width: 0, height: -12) == 12)
+        #expect(reversedHorizontal.travel(width: 12, height: 0) == 12)
+        #expect(reversedHorizontal.travel(width: -12, height: 0) == -12)
+    }
+
     @Test func snappedBindingDoesNotResetContinuousDragOrigin() {
         var drag = RulerDragState()
         #expect(drag.update(valuePosition: 100, translation: -13, bounds: 0...300) == 113)

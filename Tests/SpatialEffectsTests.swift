@@ -173,13 +173,16 @@ struct SpatialEffectsTests {
         return sum / divisor
     }
 
-    /// Compile `Resources/Shaders/spatial.metal` at runtime so the test exercises
-    /// the shader that actually ships.
+    /// Compile the shipped spatial and diffusion shaders at runtime so the test
+    /// exercises the kernels that actually ship. `SpatialEffectsStage` resolves
+    /// its diffusion pipeline states at init, so the library has to carry both
+    /// files even for a halation-only test.
     private static func shaderLibrary(device: MTLDevice) throws -> MTLLibrary {
-        let shaderURL = TestRepository.root
-            .appendingPathComponent("Resources/Shaders/spatial.metal")
-        let source = try String(contentsOf: shaderURL, encoding: .utf8)
-        return try device.makeLibrary(source: source, options: nil)
+        let source = try ["Resources/Shaders/spatial.metal", "Resources/Shaders/diffusion.metal"]
+            .map { try String(contentsOf: TestRepository.root.appendingPathComponent($0), encoding: .utf8) }
+            .joined(separator: "\n")
+        let header = try String(contentsOf: TestRepository.root.appendingPathComponent("Resources/Shaders/hlg-input.h"), encoding: .utf8)
+        return try device.makeLibrary(source: source.replacingOccurrences(of: "#include \"hlg-input.h\"", with: header), options: nil)
     }
 
     // MARK: - Shared fixtures
@@ -272,7 +275,7 @@ struct SpatialEffectsTests {
                 "added light at the source centre (\\(centreAdded)) must exceed the tail (\\(tailAdded)) — the source grows, it is not a ring")
     }
 
-    /// Zero strength is identity: a stock with halation at 0 is a passthrough.
+    /// Zero strength is identity when diffusion and exposure are also disabled.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
     func zeroStrengthIsIdentityForHalation() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
@@ -291,6 +294,48 @@ struct SpatialEffectsTests {
             #expect(abs(Double(encoded[index]) - Double(source[index])) < 0.002,
                     "zero strength must not change the frame (index \\(index))")
         }
+    }
+
+    /// Exercise the production stage, not just its apply kernel: disabling both
+    /// spatial effects must not bypass a requested push or pull.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func disabledSpatialEffectsStillApplyExposure() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        let width = 9, height = 3
+        let levels = [0.0, 0.02, 0.18, 0.75, 1.5, 2.25, 2.9, 3.0, 3.5]
+        let source = Self.sourcePixels(width: width, height: height) { x, _ in
+            SIMD3(levels[x], levels[(x + 1) % width], levels[(x + 2) % width])
+        }
+        let input = try Self.makeTexture(device: device, width: width, height: height, pixels: source)
+        for stops in PushPullStops.allCases {
+            let output = try #require(stage.applyHalation(
+                source: input, commandQueue: queue, strength: 0, radiusFraction: 0.012,
+                layerScale: Self.tint, diffusion: .disabled, highlightCeiling: 3,
+                exposureStops: Float(stops.stops), width: width, height: height))
+            let encoded = try Self.readBack(output, device: device, queue: queue, width: width, height: height)
+            if stops == .none {
+                #expect(output === input)
+                #expect(encoded == source)
+                continue
+            }
+            #expect(output !== input, "nonzero exposure must run the production stage")
+            for index in encoded.indices where index % 4 != 3 {
+                let expected = PushPullTransfer.gained(code: Double(source[index]), stops: stops, ceiling: 3)
+                // Input is already quantized; allow one half-float output step.
+                #expect(abs(Double(encoded[index]) - expected) < 0.001,
+                        "stage exposure \(stops.displayName), channel index \(index)")
+            }
+            for index in stride(from: 3, to: encoded.count, by: 4) {
+                #expect(encoded[index] == source[index])
+            }
+            let greyIndex = 2 * 4
+            let changed = Double(encoded[greyIndex]) - Double(source[greyIndex])
+            #expect(stops.isPull ? changed < -0.01 : changed > 0.01)
+        }
+        let unchanged = try Self.readBack(input, device: device, queue: queue, width: width, height: height)
+        #expect(unchanged == source, "exposure must not mutate the source")
     }
 
     // MARK: - Per-layer physics
@@ -317,21 +362,47 @@ struct SpatialEffectsTests {
             return band - SIMD3(repeating: Self.surround)
         }
 
-        // 1.5x: clears red's 1.0 knee only.
-        let redOnly = try halo(1.5)
-        // 3.0x: clears red and green, still below blue's 4.0.
-        let redGreen = try halo(3.0)
+        // 1.25x: clears the lowered red knee, but not green.
+        let redOnly = try halo(1.25)
+        // 2.5x: clears red and green, still below blue.
+        let redGreen = try halo(2.5)
         // 8.0x: clears all three.
         let allLayers = try halo(8.0)
 
-        #expect(redOnly.x > 0.002, "red must respond above its 1.0 knee (was \\(redOnly.x))")
-        #expect(redOnly.y < redOnly.x * 0.1, "green must stay dark below its 2.0 knee (was \\(redOnly.y))")
-        #expect(redOnly.z < redOnly.x * 0.1, "blue must stay dark below its 4.0 knee (was \\(redOnly.z))")
+        #expect(redOnly.x > 0.002, "red must respond above its 0.75 knee (was \\(redOnly.x))")
+        #expect(redOnly.y < redOnly.x * 0.1, "green must stay dark below its 1.5 knee (was \\(redOnly.y))")
+        #expect(redOnly.z < redOnly.x * 0.1, "blue must stay dark below its 3.0 knee (was \\(redOnly.z))")
 
-        #expect(redGreen.y > 0.002, "green must respond above its 2.0 knee (was \\(redGreen.y))")
-        #expect(redGreen.z < redGreen.y * 0.1, "blue must stay dark below its 4.0 knee (was \\(redGreen.z))")
+        #expect(redGreen.y > 0.002, "green must respond above its 1.5 knee (was \\(redGreen.y))")
+        #expect(redGreen.z < redGreen.y * 0.1, "blue must stay dark below its 3.0 knee (was \\(redGreen.z))")
 
-        #expect(allLayers.z > 0.002, "blue must respond above its 4.0 knee (was \\(allLayers.z))")
+        #expect(allLayers.z > 0.002, "blue must respond above its 3.0 knee (was \\(allLayers.z))")
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func halationStartsEarlierAndBuildsMoreGradually() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        func redAdded(_ level: Double) throws -> Double {
+            let source = Self.blockSource(width: Self.side, height: Self.side,
+                                          block: SIMD3(repeating: level))
+            let encoded = try Self.runHalation(stage: stage, device: device, queue: queue,
+                width: Self.side, height: Self.side, sourcePixels: source,
+                strength: 1, radiusFraction: 0, layerScale: Self.tint)
+            let linear = Self.decodedLinear(encoded, count: Self.side * Self.side)
+            // Compare against the quantized input, not the pre-encoding authored level.
+            let input = Self.appleLogDecode(Double(source[(128 * Self.side + 128) * 4]))
+            return Self.linearMean(linear, width: Self.side, columns: 120..<136, rows: 120..<136).x - input
+        }
+        #expect(abs(try redAdded(0.5)) < 0.002)
+        let early = try redAdded(0.9)
+        #expect(early > 0.01, "red now responds below the previous 1.0 onset")
+        #expect(abs(early - 0.015) < 0.003)
+        let lower = try redAdded(2)
+        let upper = try redAdded(3)
+        #expect(abs(lower - 0.125) < 0.003)
+        #expect(abs((upper - lower) - 0.1) < 0.004, "ramp slope is 1/10, not the old 1/8")
     }
 
     /// An all-red source exposes only the red layer, so its halo must stay red.
@@ -600,15 +671,25 @@ struct SpatialEffectsTests {
         var strength: Float = 1.0
         var layerScale = SIMD3<Float>(1, 1, 1)
         var referenceSuperwhite: Float = 8
+        // Diffusion disabled: zero amount, zero weights. The level slots still
+        // have to be bound to samplable textures, so the red layer doubles for
+        // them and contributes nothing.
+        var diffusionWeights = SIMD4<Float>(0, 0, 0, 0)
+        var diffusionAmount: Float = 0
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(sourceTexture, index: 0)
         encoder.setTexture(red, index: 1)
         encoder.setTexture(green, index: 2)
         encoder.setTexture(blue, index: 3)
         encoder.setTexture(output, index: 4)
+        for index in 5...8 {
+            encoder.setTexture(red, index: index)
+        }
         encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
         encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
+        encoder.setBytes(&diffusionWeights, length: MemoryLayout<SIMD4<Float>>.size, index: 3)
+        encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 4)
         encoder.dispatchThreadgroups(
             MTLSize(width: 1, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: side, height: side, depth: 1)
@@ -704,7 +785,7 @@ struct SpatialEffectsTests {
         let blue = Double(mask[2])
         #expect(abs(red - 1.385) < 0.02, "red must preserve the subpixel specular (was \\(red))")
         #expect(abs(green - 0.385) < 0.02, "green must preserve the subpixel specular (was \\(green))")
-        #expect(blue < 0.01, "blue is below its 4.0 knee and must stay dark (was \\(blue))")
+        #expect(blue < 0.01, "blue is below its explicit 4.0 knee and must stay dark (was \\(blue))")
     }
 
     /// A mask texel whose 2x2 block runs off an odd-sized frame must average the
@@ -729,7 +810,7 @@ struct SpatialEffectsTests {
         let blue = Double(mask[6])
         #expect(abs(red - 1.5) < 0.02, "partial block must average its valid samples (was \\(red))")
         #expect(abs(green - 0.5) < 0.02, "partial block must average its valid samples (was \\(green))")
-        #expect(blue < 0.01, "blue is below its 4.0 knee (was \\(blue))")
+        #expect(blue < 0.01, "blue is below its explicit 4.0 knee (was \\(blue))")
 
         // Texel (0,0): full block, same uniform source, must agree.
         #expect(abs(Double(mask[0]) - red) < 0.02,
@@ -857,5 +938,62 @@ struct SpatialEffectsTests {
             #expect(abs(Double(values[index]) - Double(pixels[index])) < 0.002,
                     "zero glow strength must not change the frame (index \\(index))")
         }
+    }
+
+    /// A video take is locked to its shutter, so a bright day is pulled down in
+    /// the render. That pull must land BEFORE the emulsion: applied after
+    /// halation, the frame came back darker carrying the halo of the light the
+    /// sensor saw — the opposite of a workable result in unsuitable conditions.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func aPullDarkensTheHaloWithTheFrame() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        let width = 64, height = 64
+        let base: Double = 0.18
+        let source = Self.sourcePixels(width: width, height: height) { x, y in
+            let hot = (20..<24).contains(x) && (20..<24).contains(y)
+            return hot ? SIMD3(12, 12, 12) : SIMD3(base, base, base)
+        }
+
+        func measure(stops: Float) throws -> (mean: Double, halo: Double) {
+            let input = try Self.makeTexture(device: device, width: width, height: height,
+                                             pixels: source)
+            let output = try #require(stage.applyHalation(
+                source: input, commandQueue: queue, strength: 2.52, radiusFraction: 0.02,
+                layerScale: SIMD3(1, 0.32, 0.1), exposureStops: stops,
+                width: width, height: height))
+            let linear = Self.decodedLinear(
+                try Self.readBack(output, device: device, queue: queue, width: width, height: height),
+                count: width * height)
+            var total = 0.0, ring = 0.0
+            var ringCount = 0
+            for y in 0..<height {
+                for x in 0..<width {
+                    let red = linear[(y * width + x) * 3]
+                    total += red
+                    let dx = Double(x) - 21.5, dy = Double(y) - 21.5
+                    let radius = (dx * dx + dy * dy).squareRoot()
+                    if radius > 5, radius < 11 {
+                        ring += red
+                        ringCount += 1
+                    }
+                }
+            }
+            return (total / Double(width * height), ring / Double(max(ringCount, 1)))
+        }
+
+        let none = try measure(stops: 0)
+        let pulled = try measure(stops: -2)
+
+        // The frame itself is two stops darker.
+        #expect(pulled.mean < none.mean * 0.5,
+                "a -2 pull must darken the frame: \(pulled.mean) vs \(none.mean)")
+        // And the halo is pulled with it, rather than staying at the exposure the
+        // sensor saw. The ring carries some of the field, so compare the excess.
+        let excessNone = none.halo - base
+        let excessPulled = pulled.halo - base
+        #expect(excessPulled < excessNone * 0.6,
+                "the halo must follow the pull: \(excessPulled) vs \(excessNone)")
     }
 }

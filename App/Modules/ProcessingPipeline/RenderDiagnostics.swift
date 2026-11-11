@@ -294,10 +294,20 @@ enum RenderDiagnostics {
 
 /// Portable export evidence; selected render ISO is not a measurement of capture ISO.
 enum RenderMovieMetadata {
-    static func make(config: FilmStockConfig, bitrate: Int = RenderEncodingContract.averageBitRate,
-                     sourceColorProvenance: RenderInputColorProvenance? = nil,
-                     orientation: RenderDeliveryOrientation? = nil,
-                     capturePolicy: RenderCapturePolicy? = nil) throws -> [AVMetadataItem] {
+    /// The `com.filmemulation.*` payload for one recipe. Shared by the movie
+    /// writer and the still writer, so a photo and a movie from the same stock
+    /// carry the same tags rather than two drifting copies.
+    static func recipeValues(config: FilmStockConfig, bitrate: Int = RenderEncodingContract.averageBitRate,
+                             sourceColorProvenance: RenderInputColorProvenance? = nil,
+                             capturePolicy: RenderCapturePolicy? = nil,
+                             isImportedSource: Bool = false,
+                             sourceNominalFrameRate: Double? = nil,
+                             slate: RenderSlate = .first,
+                             flash: FlashRecord? = nil,
+                             framing: DeliveryFraming? = nil,
+                             deliveredSize: CGSize? = nil,
+                             overrides: [String: String] = [:],
+                             omitting: Set<String> = []) throws -> [String: String] {
         try config.validate()
         let snapshot = RenderDiagnosticsManifest.RecipeSnapshot(config: config,
             averageBitRate: bitrate, codec: RenderEncodingContract.codec,
@@ -305,11 +315,11 @@ enum RenderMovieMetadata {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let json = String(decoding: try encoder.encode(snapshot), as: UTF8.self)
-        let values: [String: String] = [
+        var metadataValues: [String: String] = [
             "film-stock": config.stockId, "stock-name": config.displayName, "lut": config.lutName,
             "light-type": config.lightType,
             "iso": String(Int(config.defaultISO)), "iso-role": "selected-render-exposure-index",
-            "halation-level": String(config.halationStrength), "glow-level": String(config.glowStrength),
+            "halation-level": String(config.effectiveHalationStrength), "glow-level": String(config.glowStrength),
             "halation-radius-fraction": String(config.halationRadiusFraction),
             "halation-tint": "\(config.halationTint.x),\(config.halationTint.y),\(config.halationTint.z)",
             "grain-size": String(config.grainSize), "recipe-version": config.effectiveRecipe.version,
@@ -319,19 +329,75 @@ enum RenderMovieMetadata {
             "grain-gauge-amplitude": String(config.effectivePrintGauge.amplitudeMultiplier),
             "grain-algorithm": config.effectiveRecipe.grainAlgorithm,
             "grain-edge-boost-multiplier": String(config.effectiveRecipe.edgeBoostMultiplier),
+            // Render-time push/pull. The delivered file states that the take was
+            // pulled or pushed and by how many stops, plus whether the meter or
+            // the operator chose it. A neutral render records "none" so the
+            // absence of a push/pull is evidence, not silence.
+            // Lens diffusion. The radius belongs to the print gauge, so the
+            // file records which preset rendered and how far the scene was
+            // blended toward it. A bypassed node records "off" AND the selected
+            // preset, so "no diffusion" is evidence rather than silence.
+            "diffusion": config.effectiveDiffusion.isEnabled
+                ? "\(config.effectiveDiffusion.preset.title)px" : "off",
+            "diffusion-preset": config.effectiveDiffusion.preset.rawValue,
+            "diffusion-amount": String(config.effectiveDiffusion.amount),
+            "diffusion-radius-px-1080p": String(config.effectiveDiffusion.preset.radiusPixels ?? 0),
+            "push-pull": config.effectivePushPull.stops.effectName,
+            "push-pull-stops": String(config.effectivePushPull.stops.stops),
+            "push-pull-mode": config.effectivePushPull.origin.rawValue,
+            "push-pull-linear-gain": String(PushPullTransfer.linearGain(for: config.effectivePushPull.stops)),
             "shutter-speed": capturePolicy.map { "1/\($0.shutterDenominator)" } ?? "1/48",
             "shutter-angle": "180",
+            // The look the cube was authored for and the white point the camera
+            // was locked to. A still has no frame rate or shutter angle, but it
+            // carries the same colour and balance claims as the take.
+            "color-space": config.effectiveRecipe.input.transfer,
+            "white-balance-kelvin": String(Int(config.colorTemperature)),
+            "wb-tint": "0",
+            // One take today; the slate numbers exist so a delivered file states
+            // them rather than leaving the cards to invent 1/1/1.
+            "reel": String(slate.reel), "scene": String(slate.scene), "take": String(slate.take),
             "encoding-codec": RenderEncodingContract.codec,
             "encoding-bitrate-target": String(bitrate),
             "color-contract-verified": String(config.effectiveRecipe.colorContractVerified),
             "render-settings-schema": "1", "render-settings": json
         ]
-        var metadataValues = values
-        if let capturePolicy {
+        if let offset = config.effectivePushPull.meteredOffsetEV {
+            metadataValues["push-pull-metered-offset-ev"] = String(offset)
+        }
+        // Delivery framing, as a fact about the file that was written: the
+        // shape the operator asked for and the pixel size actually encoded. A
+        // 4:3 delivery is a crop of the original, not a different capture, so
+        // the key says "4:3" while the original beside it stays 3840x2160.
+        if let framing {
+            metadataValues["framing"] = framing.rawValue
+        }
+        if let deliveredSize {
+            metadataValues["delivered-width"] = String(Int(deliveredSize.width.rounded()))
+            metadataValues["delivered-height"] = String(Int(deliveredSize.height.rounded()))
+        }
+        // The lamp, as the capture reported it. Push/pull is a different fact —
+        // what the lab did to the film — so the two never share a key.
+        if let flash {
+            metadataValues.merge(flash.metadataValues) { _, measured in measured }
+        }
+        if isImportedSource {
+            metadataValues["source-origin"] = "photos-import"
+            metadataValues["shutter-speed"] = "unknown-or-not-recorded"
+            metadataValues["shutter-angle"] = "unknown-or-not-recorded"
+            metadataValues["capture-frame-rate"] = "unknown-or-not-recorded"
+            if let sourceNominalFrameRate, sourceNominalFrameRate.isFinite, sourceNominalFrameRate > 0 {
+                metadataValues["source-nominal-frame-rate"] = String(sourceNominalFrameRate)
+            }
+        } else if let capturePolicy {
             // Provenance only: the mode's integer frame rate travels with the
             // render. Legacy jobs (nil policy) emit no such key and stay
             // byte-for-byte as before.
             metadataValues["capture-frame-rate"] = String(capturePolicy.frameRate)
+            metadataValues["capture-source-profile"] = capturePolicy.sourceProfile.rawValue
+            if capturePolicy.sourceProfile == .hlgBT2020 {
+                metadataValues["source-to-lut-transform"] = "HLG inverse OETF; 75%-white=1; BT2020-to-AppleWideGamut; AppleLog2"
+            }
         }
         if let sourceColorProvenance {
             let sourceData = try JSONEncoder().encode(sourceColorProvenance)
@@ -340,6 +406,28 @@ enum RenderMovieMetadata {
             metadataValues["capture-color-space"] = sourceColorProvenance.captureColorSpace ?? "unknown-or-not-recorded"
             metadataValues["source-color-test-bypass"] = String(sourceColorProvenance.syntheticTestBypass)
         }
+
+        // A still is not a movie: the encoder keys and the nominal shutter angle
+        // describe a take, so a JPEG caller omits them and overrides the codec
+        // rather than inheriting movie-only claims.
+        for key in omitting { metadataValues.removeValue(forKey: key) }
+        for (key, value) in overrides { metadataValues[key] = value }
+        return metadataValues
+    }
+
+    static func make(config: FilmStockConfig, bitrate: Int = RenderEncodingContract.averageBitRate,
+                     sourceColorProvenance: RenderInputColorProvenance? = nil,
+                     orientation: RenderDeliveryOrientation? = nil,
+                     capturePolicy: RenderCapturePolicy? = nil,
+                     isImportedSource: Bool = false,
+                     sourceNominalFrameRate: Double? = nil,
+                     flash: FlashRecord? = nil,
+                     framing: DeliveryFraming? = nil,
+                     deliveredSize: CGSize? = nil) throws -> [AVMetadataItem] {
+        let metadataValues = try recipeValues(config: config, bitrate: bitrate,
+            sourceColorProvenance: sourceColorProvenance, capturePolicy: capturePolicy,
+            isImportedSource: isImportedSource, sourceNominalFrameRate: sourceNominalFrameRate,
+            flash: flash, framing: framing, deliveredSize: deliveredSize)
         var items: [AVMutableMetadataItem] = metadataValues.sorted { $0.key < $1.key }.map { key, value in
             let item = AVMutableMetadataItem()
             item.keySpace = .quickTimeMetadata

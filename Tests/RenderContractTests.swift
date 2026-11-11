@@ -103,10 +103,21 @@ struct RenderContractTests {
             // Daylight/tungsten tag travels with the render.
             #expect(values["com.filmemulation.light-type"] == config.lightType)
             #expect(values["com.filmemulation.iso"] == String(Int(config.defaultISO)))
-            #expect(values["com.filmemulation.halation-level"] == String(config.halationStrength))
+            #expect(values["com.filmemulation.halation-level"] == String(config.effectiveHalationStrength))
             #expect(values["com.filmemulation.iso-role"] == "selected-render-exposure-index")
             #expect(values["com.filmemulation.shutter-speed"] == "1/48")
             #expect(values["com.filmemulation.shutter-angle"] == "180")
+            // The lens diffusion node travels with the file: which radius the
+            // gauge rendered, how far the scene was blended toward it, and the
+            // authored 1080p radius the preset stands for.
+            #expect(values["com.filmemulation.diffusion-preset"]
+                    == config.effectiveDiffusion.preset.rawValue)
+            #expect(values["com.filmemulation.diffusion-amount"] == String(config.effectiveDiffusion.amount))
+            #expect(values["com.filmemulation.diffusion-radius-px-1080p"]
+                    == String(config.effectiveDiffusion.preset.radiusPixels ?? 0))
+            #expect(values["com.filmemulation.diffusion"]
+                    == (config.effectiveDiffusion.isEnabled
+                        ? "\(config.effectiveDiffusion.preset.title)px" : "off"))
             #expect(values["com.filmemulation.grain-algorithm"] == config.effectiveRecipe.grainAlgorithm)
             #expect(values["com.filmemulation.grain-edge-boost-multiplier"] == String(config.effectiveRecipe.edgeBoostMultiplier))
             #expect(values["com.filmemulation.render-settings-schema"] == "1")
@@ -172,7 +183,7 @@ struct RenderContractTests {
         #expect(shippedGrainStocks.allSatisfy { $0.effectiveRecipe.edgeBoostMultiplier == 3 })
         let template = try #require(app.first { $0.stockId == "kodak5219" })
         #expect(template.grainSize == 1.3)
-        #expect(template.effectiveRecipe.version == "5219-current-v12")
+        #expect(template.effectiveRecipe.version == "5219-current-v13")
         #expect(template.effectiveRecipe.grainAlgorithm == RenderRecipe.edgeAmplitudeAlgorithm)
         #expect(template.effectiveRecipe.edgeBoostMultiplier == 3)
         let low = template.overridingISO(250)
@@ -198,15 +209,58 @@ struct RenderContractTests {
             #expect(tungsten.grainSize == 1.3)
             #expect(daylight.outputContrast == 0.85)
             #expect(tungsten.outputContrast == 0.85)
-            #expect(daylight.effectiveRecipe.version == "5207-current-v7")
-            #expect(tungsten.effectiveRecipe.version == "5219-current-v12")
+            #expect(daylight.effectiveRecipe.version == "5207-current-v8")
+            #expect(tungsten.effectiveRecipe.version == "5219-current-v13")
         }
+    }
+
+    /// A still gets a smaller share of the same halation model than a take.
+    ///
+    /// Both are measured in the same scene light now that the knees follow the
+    /// RAW decode's lift, and the still still read hot: a take spends a 24th of
+    /// a second with the halo next to motion, while a still is held in front of
+    /// the viewer. The share is catalog data, not a second code path, and the
+    /// take's own strength must be untouched by it.
+    @Test func shippedStocksGiveStillsASmallerShareOfTheSameHalation() throws {
+        for path in ["App/Resources/stocks.json", "Resources/stocks.json"] {
+            for stock in try stocks(path) {
+                #expect(stock.effectiveStillHalationScale == 0.5,
+                        "\(stock.stockId): the still share ships at 0.5")
+                #expect(stock.halationStrength == 2.52,
+                        "\(stock.stockId): the take's strength is not the lever")
+            }
+        }
+        // A document written before the key existed keeps the take's strength:
+        // take a shipped stock, drop the key, and decode it again.
+        let shipped = try Data(contentsOf: TestRepository.root
+            .appendingPathComponent("App/Resources/stocks.json"))
+        var document = try #require(try JSONSerialization.jsonObject(with: shipped) as? [String: Any])
+        var list = try #require(document["stocks"] as? [[String: Any]])
+        list = list.map { stock in
+            var copy = stock
+            copy.removeValue(forKey: "stillHalationScale")
+            return copy
+        }
+        document["stocks"] = list
+        struct Container: Decodable { let stocks: [FilmStockConfig] }
+        let legacy = try #require(try JSONSerialization.data(withJSONObject: document) as Data?)
+        let decoded = try JSONDecoder().decode(Container.self, from: legacy)
+        for stock in decoded.stocks {
+            #expect(stock.stillHalationScale == nil)
+            #expect(stock.effectiveStillHalationScale == 1,
+                    "\(stock.stockId): an absent key means the take's full strength")
+        }
+
+        // Out of range is refused rather than silently clamping a look.
+        var broken = try #require(try stocks("App/Resources/stocks.json").first)
+        broken.stillHalationScale = 1.5
+        #expect(throws: (any Error).self) { try broken.validate() }
     }
 
     /// The requested 30% reduction applies to halation TOTAL AMOUNT only, and only in the
     /// catalogs: the radius (0.001), the layer weights and every glow/grain/contrast setting
     /// are untouched, and no code path reapplies the reduction. The preview and the renderer
-    /// both pass `config.halationStrength` through unchanged, so the amount cannot be halved
+    /// both apply the gauge once through `config.effectiveHalationStrength`, so it is not reduced
     /// twice; the preview-side guard for that lives in `PlatePreviewEffectsTests`.
     @Test func shippedHalationTotalAmountDropsThirtyPercentAndLeavesGeometryAlone() throws {
         let previous: Float = 3.60
@@ -432,6 +486,28 @@ struct RenderContractTests {
             var bad = config
             bad.halationRadiusFraction = radius
             #expect(throws: RenderContractError.self) { try bad.validate() }
+        }
+    }
+
+    @Test func gaugeHalationPresenceMatchesPreviewDebugAndShotConfig() throws {
+        for stock in try stocks("App/Resources/stocks.json") {
+            let factors: [(PrintGauge, Float)] = [(.eightMillimetre, 1), (.sixteenMillimetre, 1),
+                (.thirtyFiveMillimetre, 0.45), (.seventyFiveMillimetre, 0.20)]
+            for (gauge, factor) in factors {
+                let shot = stock.overridingISO(800).overridingGauge(gauge)
+                #expect(abs(shot.effectiveHalationStrength - stock.halationStrength * factor) < 0.00001)
+                #expect(shot.effectiveStillHalationScale == 0.5)
+                #expect(shot.halationRadiusFraction == stock.halationRadiusFraction)
+                #expect(shot.halationTint == stock.halationTint)
+                let restored = try JSONDecoder().decode(FilmStockConfig.self, from: JSONEncoder().encode(shot))
+                #expect(restored.effectiveHalationStrength == shot.effectiveHalationStrength)
+                let preview = PreviewConfiguration(stock: stock, gauge: gauge, sceneIlluminantKelvin: 5600)
+                #expect(preview.halationStrength == shot.effectiveHalationStrength)
+                var debug = PipelineRenderer.DebugFrameParameters(config: stock)
+                debug.applyGauge(gauge)
+                #expect(debug.halationStrength == shot.effectiveHalationStrength)
+            }
+            #expect(stock.effectiveHalationStrength == stock.halationStrength * 0.45)
         }
     }
 

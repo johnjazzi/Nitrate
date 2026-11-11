@@ -87,7 +87,10 @@ struct RenderQueueRecoveryTests {
         #expect(model.isRenderPausedForAccess)
         #expect(renders == 0)
         #expect(model.jobs.first?.status == .pending)
-        #expect(model.rendererErrorMessage?.contains("needs an active subscription") == true)
+        // Holding the job is expected, not a failure: a capture that is waiting
+        // for access must never present as a render error (the take is already
+        // safe), so the queue reports it through the pause state only.
+        #expect(model.rendererErrorMessage == nil)
         #expect(FileManager.default.fileExists(atPath: files.source.path))
 
         // Subscribing releases the held work without losing it.

@@ -15,7 +15,7 @@ enum RecordingTimeLCDFocus: Equatable, Sendable {
     }
 }
 
-/// White information on dark green; the entire face is one queue control.
+/// White information on the neutral control surface; the entire face opens the queue.
 ///
 /// The headline is the highest-priority state on the bar: an active take owns
 /// it as `RECORDING`, but the queue count, the storage warning and the tap
@@ -31,6 +31,23 @@ struct RecordingTimeLCD: View {
     /// Stop acknowledged, recorder still finalising. The take is live but is no
     /// longer an active recording, so the headline must drop back.
     var isStopping = false
+    var photoFreeBytes: Int64? = nil
+    var isPhotoMode = false
+    var isRenderingPhoto = false
+    var isSavingPhoto = false
+
+    var showsRenderingActivity: Bool { focus == .rendering }
+    var renderActivityLabel: String { isSavingPhoto ? "SAVING" : "RENDERING" }
+    var headlineText: String {
+        if focus == .recording { return "RECORDING" }
+        if focus == .rendering, isRenderingPhoto { return "PHOTO" }
+        return isPhotoMode || photoFreeBytes != nil ? "FREE SPACE" : "REC LEFT"
+    }
+
+    var capacityText: String {
+        guard let photoFreeBytes else { return "-- GB" }
+        return String(format: "%.1f GB", Double(max(0, photoFreeBytes)) / 1_000_000_000)
+    }
 
     private var focus: RecordingTimeLCDFocus {
         .resolve(isRecording: isRecording, isStopping: isStopping, isProcessing: queueStatus.isProcessing)
@@ -42,8 +59,13 @@ struct RecordingTimeLCD: View {
             Rectangle()
                 .fill(.white.opacity(0.22))
                 .frame(height: 0.5)
-            if focus == .rendering {
+            if showsRenderingActivity {
                 renderingActivity
+            } else if isPhotoMode || photoFreeBytes != nil {
+                Text(capacityText)
+                    .font(NitrateTypography.font(size: 20)).monospacedDigit()
+                    .foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             } else {
                 remainingTime(fontSize: 20)
                     .frame(maxHeight: .infinity)
@@ -52,21 +74,7 @@ struct RecordingTimeLCD: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 6)
-        .background {
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(Color(red: 0.055, green: 0.14, blue: 0.105))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [.black.opacity(0.8), .white.opacity(0.25)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 1
-                        )
-                }
-        }
+        .modifier(CameraInsetSurface())
     }
 
     /// Recording owns this line. The queue count stays beside it so the queue is
@@ -76,17 +84,17 @@ struct RecordingTimeLCD: View {
             if focus == .recording {
                 Circle().fill(.red).frame(width: 5, height: 5)
             }
-            Text(focus == .recording ? "RECORDING" : "REC LEFT")
+            Text(headlineText)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
             Spacer(minLength: 0)
             Image(systemName: "list.bullet")
             if let count = queueStatus.countText {
                 Text(count)
-                    .font(.system(size: 8, weight: .semibold).monospacedDigit())
+                    .font(NitrateTypography.font(size: 8).monospacedDigit())
             }
         }
-        .font(.system(size: 8, weight: .semibold))
+        .font(NitrateTypography.font(size: 8))
         .foregroundStyle(.white.opacity(focus == .recording ? 0.95 : 0.75))
     }
 
@@ -95,7 +103,9 @@ struct RecordingTimeLCD: View {
     private var statusRow: some View {
         HStack(spacing: 3) {
             if focus == .rendering {
-                remainingTime(fontSize: 11)
+                if isPhotoMode || photoFreeBytes != nil {
+                    Text(capacityText).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
+                } else { remainingTime(fontSize: 11) }
             }
             if queueStatus.hasError {
                 Image(systemName: "exclamationmark.circle.fill")
@@ -114,13 +124,13 @@ struct RecordingTimeLCD: View {
                     .foregroundStyle(.orange)
             }
         }
-        .font(.system(size: 8, weight: .semibold))
+        .font(NitrateTypography.font(size: 8))
         .foregroundStyle(.white.opacity(0.8))
     }
 
     private func remainingTime(fontSize: CGFloat) -> some View {
         Text(CameraStatusPresentation.compactTimeText(for: estimatedSeconds))
-            .font(.system(size: fontSize, weight: .medium))
+            .font(NitrateTypography.font(size: fontSize))
             .monospacedDigit()
             .foregroundStyle(.white)
             .lineLimit(1)
@@ -144,8 +154,8 @@ struct RecordingTimeLCD: View {
                 loadingRing(rotation: 0)
                     .accessibilityHidden(true)
             }
-            Text("RENDERING")
-                .font(.system(size: 12, weight: .semibold))
+            Text(renderActivityLabel)
+                .font(NitrateTypography.font(size: 12))
                 .lineLimit(1)
                 .fixedSize()
         }

@@ -6,6 +6,9 @@ struct NitrateApp: App {
     @State private var renderQueueViewModel: RenderQueueViewModel
     @State private var purchaseViewModel: PurchaseViewModel
     @State private var library: FilmStockLibrary
+    /// Owns the first-three-launch stock-selector hint. Created here so its launch
+    /// counter increments exactly once per process, never on a view appearance.
+    @State private var stockSelectorHint: StockSelectorHintModel
     private let stockLibraryError: String?
     @State private var showsStartupSplash = true
     @Environment(\.scenePhase) private var scenePhase
@@ -19,6 +22,9 @@ struct NitrateApp: App {
     }
 
     init() {
+        // Load the bundled Barlow Semi Condensed Medium face before any view
+        // renders, so every text run — including the first frame — uses it.
+        NitrateTypography.registerBundledFont()
         CameraHaptics.prepareForCaptureFeedback()
         let library = FilmStockLibrary()
         var loadError: String?
@@ -30,6 +36,7 @@ struct NitrateApp: App {
         _cameraViewModel = State(initialValue: cameraViewModel)
         _renderQueueViewModel = State(initialValue: RenderQueueViewModel())
         _purchaseViewModel = State(initialValue: PurchaseViewModel())
+        _stockSelectorHint = State(initialValue: StockSelectorHintModel())
         stockLibraryError = loadError
 
         #if DEBUG
@@ -37,6 +44,10 @@ struct NitrateApp: App {
         // with `-halation-benchmark` and prints to stdout.
         if HalationDeviceBenchmark.isRequested {
             Task.detached { HalationDeviceBenchmark.run() }
+        }
+        // Development-only diffusion cost harness; `-diffusion-benchmark`.
+        if DiffusionDeviceBenchmark.isRequested {
+            Task.detached { DiffusionDeviceBenchmark.run() }
         }
         #endif
     }
@@ -47,8 +58,10 @@ struct NitrateApp: App {
                 cameraViewModel: cameraViewModel,
                 library: library,
                 renderQueueViewModel: renderQueueViewModel,
-                purchaseViewModel: purchaseViewModel
+                purchaseViewModel: purchaseViewModel,
+                stockSelectorHint: stockSelectorHint
             )
+            .font(NitrateTypography.font(.body))
             .preferredColorScheme(.dark)
             .allowsHitTesting(!showsStartupSplash)
             .accessibilityHidden(showsStartupSplash)
@@ -75,6 +88,12 @@ struct NitrateApp: App {
                     purchaseViewModel.onSceneActive()
                     renderQueueViewModel.renderAccessDidChange()
                 }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .nitrateRenderAccessChanged)) { _ in
+                // A purchase, restore or redeemed code just unlocked rendering;
+                // start anything the queue withheld instead of waiting for the
+                // next activation.
+                renderQueueViewModel.renderAccessDidChange()
             }
         }
     }

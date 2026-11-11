@@ -2,6 +2,9 @@ import SwiftUI
 
 enum FocalLengthRulerScale {
     static let majorTicks = CameraFocalZoomPolicy.majorTicks
+    static let minorTicks: [Double] = stride(
+        from: 15.0, through: CameraFocalZoomPolicy.maximumFocalLengthMM, by: 5
+    ).filter { !majorTicks.contains($0) }
 
     static func offset(millimeters: Double, selected: Double) -> Double {
         guard millimeters.isFinite, selected.isFinite, millimeters > 0, selected > 0 else { return 0 }
@@ -24,10 +27,10 @@ struct FocalLengthRuler: View {
     var body: some View {
         VStack(spacing: 3) {
             Text("\(Int(millimeters.rounded())) mm")
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .font(NitrateTypography.font(size: 12))
                 .foregroundStyle(.yellow)
             Canvas { context, size in
-                for value in stride(from: 15.0, through: 150, by: 5) where !FocalLengthRulerScale.majorTicks.contains(value) {
+                for value in FocalLengthRulerScale.minorTicks {
                     let x = size.width / 2 + FocalLengthRulerScale.offset(millimeters: value, selected: millimeters)
                     guard x >= 0, x <= size.width else { continue }
                     var path = Path()
@@ -43,7 +46,7 @@ struct FocalLengthRuler: View {
                     path.addLine(to: CGPoint(x: x, y: 10))
                     context.stroke(path, with: .color(.white), lineWidth: 1)
                     context.draw(Text("\(Int(value))")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .font(NitrateTypography.font(size: 9))
                         .foregroundStyle(.white), at: CGPoint(x: x, y: 20))
                 }
                 var index = Path()

@@ -9,11 +9,39 @@ import UIKit
 final class CameraViewModel {
     let session = CameraSession()
     let exposure = ExposureManager()
+    private var sharedIdleRecoveryAttempted = false
+    private var sessionDelivery = CameraSessionDeliveryOwnership()
+    private var photoResults = CameraPhotoResultOwnership()
 
     init() {
+#if DEBUG
+        CameraControlDiagnostics.record("launch build=\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") ?? "unknown")")
+#endif
         activeLens = session.activeLens
         focalEngine = CameraFocalZoomEngine(activeTier: Self.focalTier(for: session.activeLens))
         availableLensTiers = session.availableLenses.map { Self.focalTier(for: $0) }
+        isVideoCaptureProfileActive = !usesSharedIdlePreview
+        if usesSharedIdlePreview {
+            isChangingCaptureProfile = true
+            session.enableSharedIdlePreview(onUpdate: { [weak self] context, snapshot in
+                guard let self, self.sessionDelivery.accepts(context) else { return }
+                self.trace("snapshot-published iso=\(snapshot.iso)")
+                self.photoExposureSnapshot = snapshot
+                if self.isDevelopmentPhotoMode { self.presentPhotoExposure(snapshot) }
+                self.refreshPhotoAperture()
+            }, onProfile: { [weak self] context, video, busy, configured, photoAvailable in
+                guard let self, self.sessionDelivery.accepts(context) else { return }
+                self.isVideoCaptureProfileActive = video
+                self.isChangingCaptureProfile = busy
+                self.isPhotoCaptureAvailable = photoAvailable
+                if busy { self.armCaptureProfileWatchdog() } else { self.captureProfileWatchdog?.cancel(); self.captureProfileWatchdog = nil }
+                if !busy {
+                    self.cameraConfigured = configured
+                    if configured { self.sharedIdleRecoveryAttempted = false }
+                }
+                if video { self.refreshExposure() }
+            })
+        }
         session.observeZoom { [weak self] snapshot in
             guard let self else { return }
             if let snapshot, let current = self.zoomSnapshot {
@@ -21,12 +49,29 @@ final class CameraViewModel {
             } else {
                 self.zoomSnapshot = snapshot
             }
+            // Pinch, lens picker and profile changes all land here, so this is
+            // where the system slider's value and range follow them.
+            self.pushCameraHardwareControls()
         }
+        session.observeHardwareControlValues { [weak self] adjustment, value, revision in
+            self?.applyCameraHardwareControlValue(adjustment, value, revision: revision)
+        }
+        session.onFlashRefused = { [weak self] reason in
+            self?.presentFlashRefusal(reason)
+        }
+    }
+
+    /// A refused lamp level is a warning, not a failure: the take or the photo
+    /// still happens, and the operator is told why the scene is darker than the
+    /// level they asked for. It is shown where the operator is looking.
+    private func presentFlashRefusal(_ reason: String) {
+        if isDevelopmentPhotoMode { recordPhotoShutterNotice(reason) }
+        else { recordingWarning = reason }
     }
 
     // MARK: - Observable State
 
-    var isRecording = false
+    var isRecording = false { didSet { pushCameraHardwareControls() } }
     var recordingDuration: TimeInterval = 0
     var freeSpaceBytes: Int64 = 0
     var totalSpaceBytes: Int64 = 0
@@ -46,6 +91,31 @@ final class CameraViewModel {
         }
     }
     var recordingWarning: String?
+    /// The transient notice the corner flag shows. One at a time: a new notice
+    /// replaces the old one rather than stacking, and each carries its own
+    /// lifetime so a warning cannot outlive a moment while an error lingers.
+    private(set) var notice: CameraNotice?
+    private var noticeDismissTask: Task<Void, Never>?
+
+    /// Post a notice. The message is the operator's text; severity decides how
+    /// long it stands and what the flag looks like.
+    func showNotice(_ message: String, severity: CameraNotice.Severity) {
+        let notice = CameraNotice(severity: severity, message: message)
+        self.notice = notice
+        noticeDismissTask?.cancel()
+        noticeDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(notice.lifetime * 1_000_000_000))
+            guard !Task.isCancelled, self?.notice?.id == notice.id else { return }
+            self?.notice = nil
+        }
+    }
+
+    /// Clear the notice early — the operator opened it and is done with it.
+    func dismissNotice() {
+        noticeDismissTask?.cancel()
+        noticeDismissTask = nil
+        notice = nil
+    }
     private(set) var lastRecordedURL: URL?
     /// Set when a take finished with a readable original that failed validation.
     /// The screen saves it to Photos unchanged; it is never rendered.
@@ -57,13 +127,24 @@ final class CameraViewModel {
     /// foreground-session boundary (background, disappear, cold launch) and is
     /// never persisted.
     private(set) var sessionFrameRate: CameraFrameRate = .standard24
+    /// The session modes the active lens can really capture, ascending, read
+    /// atomically from its 4K Apple Log 2 10-bit formats. Conservative
+    /// `[.standard24]` until a capability read proves more, and refreshed after
+    /// configuration, a settled lens switch and every session reset. Never claims
+    /// a rate the device cannot deliver, so nothing silently falls back to 24.
+    private(set) var availableSessionFrameRates: [CameraFrameRate] = [.standard24]
     /// Whether the active device/format advertises a 4K Apple Log 2 10-bit 60 fps
-    /// range. Refreshed after configuration and lens switches; drives the
-    /// control's unavailable state. It never silently disarms the mode.
-    private(set) var supportsDaylight60 = false
+    /// range. Compatibility view of `availableSessionFrameRates`; it never
+    /// silently disarms the mode.
+    var supportsDaylight60: Bool { availableSessionFrameRates.contains(.daylight60) }
+    /// Whether this lens can capture a real 120 fps take.
+    var supportsHigh120: Bool { availableSessionFrameRates.contains(.high120) }
+    /// Whether this build and identity ship the manual 120 fps mode. The menu,
+    /// the policy and the session all read this one predicate.
+    var isHighFrameRateEnabled: Bool { HighFrameRateFeature.isAvailableInThisBuild() }
     /// True while an arm/disarm is in flight. Record, lens and exposure actions
     /// are held until the transition settles, mirroring the stabilizer gate.
-    private(set) var isChangingFrameRate = false
+    private(set) var isChangingFrameRate = false { didSet { pushCameraHardwareControls() } }
     /// Guards frame-rate callbacks against lifecycle/generation changes, so a
     /// transition that was in flight when the app backgrounded can never restore
     /// 60 fps on the following foreground session.
@@ -86,9 +167,58 @@ final class CameraViewModel {
         capability: .unavailable, activeRawValue: nil, cameraRevision: 0, changesAllowed: false)
     private(set) var activeLens: CameraLens
     private(set) var zoomSnapshot: CameraZoomSnapshot?
-    private(set) var isSwitchingCameraLens = false
-    var isManualExposure = false
+    private(set) var isSwitchingCameraLens = false { didSet { pushCameraHardwareControls() } }
+    var isManualExposure = false { didSet { pushCameraHardwareControls() } }
     var manualISO: Float = 400
+    /// Capture intent, never a proxy for the device's currently committed graph.
+    private(set) var isDevelopmentPhotoMode = false
+    /// Observable renderer selection (this model uses @Observable, not Combine).
+    private(set) var isVideoCaptureProfileActive = false
+    private(set) var isChangingCaptureProfile = false { didSet { pushCameraHardwareControls() } }
+    /// False when the active camera offers no Bayer RAW for Photo's still
+    /// profile. The shared idle graph keeps running its Video profile instead,
+    /// so Video stays usable and Photo refuses with a clear reason.
+    private(set) var isPhotoCaptureAvailable = true
+    private var captureProfileWatchdog: Task<Void, Never>?
+    /// Photo mode owns the shared idle camera, so this is true wherever the
+    /// policy admits the app — Debug, TestFlight and App Store alike.
+    var usesSharedIdlePreview: Bool {
+        DevelopmentPhotoFeature.isAvailableForCurrentBundle()
+    }
+    var usesNativeIdlePreview: Bool { usesSharedIdlePreview && !isVideoCaptureProfileActive }
+    private(set) var photoExposureSnapshot: PhotoExposureSnapshot? {
+        didSet {
+            // Photo's ISO/shutter holds decide whether its EV control is live, so
+            // a hold change must re-push eligibility without waiting for another
+            // transition to happen first.
+            guard oldValue?.isoLocked != photoExposureSnapshot?.isoLocked
+                || oldValue?.shutterLocked != photoExposureSnapshot?.shutterLocked else { return }
+            pushCameraHardwareControls()
+        }
+    }
+    /// The exposure control's own presentation state while Photo owns the graph:
+    /// the operator's ISO survives the device snapshots that acknowledge it
+    /// asynchronously (see `PhotoExposureIntentPresentation`).
+    private var photoExposureIntent: PhotoExposureIntentPresentation?
+    private(set) var isPhotoCaptureBusy = false { didSet { pushCameraHardwareControls() } }
+    private(set) var photoCaptureStatus: String?
+    /// The banner this mode's shutter raised for a refused tap, so a later
+    /// successful capture clears only its own message. Readable by the photo
+    /// status strip: a refusal the operator cannot see is a dead shutter.
+    private(set) var photoShutterNotice: String?
+    /// Clears the transient notice after it has been read.
+    @ObservationIgnored private var photoShutterNoticeTask: Task<Void, Never>?
+    /// Releases the shutter if a capture never reports back. Nothing may leave the
+    /// control permanently busy with no explanation.
+    @ObservationIgnored private var photoCaptureWatchdog: Task<Void, Never>?
+    var developmentPhotoStockID: String = "kodak5207"
+    var developmentPhotoGauge: PrintGauge = .neutral
+    var photoCropZoom: Double = 1 { didSet { pushCameraHardwareControls() } }
+    private var photoGeneration: UInt64 = 0
+    private var videoExposureBeforePhoto: (Bool, Float, Float)?
+    private var photoPreviousIdleTimerDisabled: Bool?
+    private var idleZoomTimer: Timer?
+
     /// Auto-exposure target bias in EV (live value; polled with the exposure
     /// readout). Only drives the scene while the device meters automatically.
     ///
@@ -97,16 +227,25 @@ final class CameraViewModel {
     /// anyone who has never moved the control) and every user change is saved, so
     /// it survives camera sessions and app launches. It is deliberately NOT reset
     /// at the foreground-session boundary.
-    var liveExposureBias: Float = CameraExposureBiasPreference.load()
+    var liveExposureBias: Float = CameraExposureBiasPreference.load() {
+        didSet { pushCameraHardwareControls() }
+    }
     /// Live metered exposure offset from the device target, in EV (positive =
     /// over). Drives the under/over indicator. `hasExposureMeter` is false until
     /// the device is configured, so the indicator can fall back cleanly.
     var liveExposureTargetOffset: Float = 0
     var hasExposureMeter = false
+    // Stock-selector hint. The scene's Gray-World neutral estimate is refreshed
+    // with the exposure poll and is nil whenever it is unavailable, so a hint can
+    // never ride a stale reading. `hintTick` advances on every poll so the hint's
+    // active-use clock still runs while an estimate happens to be unavailable.
+    private(set) var neutralSceneKelvin: Float?
+    private(set) var neutralSceneCapturedAt: Date?
+    private(set) var hintTick: UInt64 = 0
     /// Normalised (0–1) preview point where exposure is metered: the frame
     /// centre by default, the tapped point after a tap-to-focus. Anchors the
     /// exposure box on the preview.
-    var meteringPoint = CGPoint(x: 0.5, y: 0.5)
+    var meteringPoint = CameraSession.focusPointCenter
 
     // AD-8: Max clip duration
     static let maxClipDuration: TimeInterval = 300 // 5 minutes
@@ -122,10 +261,10 @@ final class CameraViewModel {
     /// True from the record tap until the session reports the take started (or
     /// the start fails). Drives the button's immediate pressed affordance, so
     /// the control does not look dead while capture spins up.
-    private(set) var isStartingRecording = false
+    private(set) var isStartingRecording = false { didSet { pushCameraHardwareControls() } }
     /// True from the stop tap until the recorder finishes finalising. Stopping a
     /// take is not instant, so the control has to acknowledge the press itself.
-    private(set) var isStoppingRecording = false
+    private(set) var isStoppingRecording = false { didSet { pushCameraHardwareControls() } }
     /// When the counter counts from, and when stop was requested. The origin is
     /// set at the tap plus the modelled capture delay, so the display is
     /// continuous from the press and matches the file, instead of appearing only
@@ -141,6 +280,7 @@ final class CameraViewModel {
     private var exposureCommandGeneration: UInt64 = 0
     private var apertureSnapshotRequestGeneration: UInt64 = 0
     private var apertureCameraRevision: UInt64 = 0
+    private var neutralSceneRequestGeneration: UInt64 = 0
     private var stabilizationSnapshotRequestGeneration: UInt64 = 0
     private var cameraLensSwitchGeneration: UInt64 = 0
     private var pendingLensSwitchCount = 0
@@ -155,16 +295,40 @@ final class CameraViewModel {
     private var availableLensTiers: [CameraFocalZoomLensTier] = []
     private var apertureCommandGeneration: UInt64 = 0
     private let originalStorage = CameraOriginalStorage()
+    /// The lamp settings. One app-wide store: the video level is global and is
+    /// not remembered per stock, and it does not travel with push/pull.
+    private let flashStore = FlashSettingsStore()
     /// Marks a take before capture and is acknowledged once the render queue has
     /// durably accepted it. If the app dies in between, the file is reconciled at
     /// next launch as an original-only rescue rather than being lost.
     private let captureJournal = CaptureJournal()
     private var lifecycleGate = CameraLifecycleGate()
     private var configurationInFlight = false
-    private var cameraConfigured = false
+    private var cameraConfigured = false { didSet { pushCameraHardwareControls() } }
 #if DEBUG
     private var didStartDebugSmokeCapture = false
+    private var debugPhotoExperimentInFlight = false
 #endif
+
+    // MARK: - Diagnostics
+
+    /// Opt-in lifecycle trace (`--trace-photo-exposure`). Shares the capture
+    /// trace file so one pull explains a stalled mode or a dead camera.
+    private func trace(_ event: String) {
+        guard CommandLine.arguments.contains("--trace-photo-exposure") else { return }
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        let line = "Photo VM trace: build=\(build) lifecycle=\(lifecycleGate.generation) t=\(ProcessInfo.processInfo.systemUptime) event=\(event) "
+            + "mode=\(isDevelopmentPhotoMode) configured=\(cameraConfigured) gate=\(lifecycleGate.isActive) "
+            + "profile=\(isChangingCaptureProfile) busy=\(isPhotoCaptureBusy) snapshot=\(photoExposureSnapshot != nil)"
+        print(line)
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("photo-exposure-trace.txt")
+        if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+        if let file = try? FileHandle(forWritingTo: url) {
+            defer { try? file.close() }
+            _ = try? file.seekToEnd(); try? file.write(contentsOf: (line + "\n").data(using: .utf8)!)
+        }
+    }
 
     // MARK: - Actions
 
@@ -177,13 +341,30 @@ final class CameraViewModel {
     }
 
     func onSceneActive() {
+        trace("scene-active-enter")
         activateCameraIfNeeded()
+        // A background boundary uninstalls the system slider; restore the
+        // operator's selection as soon as the screen is eligible again.
+        pushCameraHardwareControls()
     }
 
     func onSceneInactive() {
+        trace("scene-inactive-enter")
+        // The screen is going away: the lamp goes out with it.
+        session.endTakeFlash()
         endSlowZoom()
         guard lifecycleGate.isActive else { return }
         lifecycleGate.deactivate()
+        sessionDelivery.deactivate()
+        photoResults.invalidate()
+        photoCaptureWatchdog?.cancel()
+        photoCaptureWatchdog = nil
+        captureProfileWatchdog?.cancel()
+        captureProfileWatchdog = nil
+        photoGeneration &+= 1
+        isPhotoCaptureBusy = false
+        photoExposureSnapshot = nil
+        if usesSharedIdlePreview { isChangingCaptureProfile = true }
         // A foreground-session boundary resets the session-only frame rate to
         // 24 fps (daylight branch) and drops any in-flight focal gesture (mood
         // branch). Both are independent device-config concerns; neither may be
@@ -215,7 +396,14 @@ final class CameraViewModel {
     }
 
     private func activateCameraIfNeeded() {
-        guard let generation = lifecycleGate.activate() else { return }
+        guard let generation = lifecycleGate.activate() else {
+            // A transient inactive/active may leave AVFoundation stopped without
+            // a lifecycle boundary. Reconcile desired state, not a cached bool.
+            if lifecycleGate.isActive { session.reconcileLifecycle() }
+            return
+        }
+        sessionDelivery.activate(generation)
+        session.setLifecycleEpoch(generation)
         requestCameraAccess(generation: generation)
     }
 
@@ -268,12 +456,15 @@ final class CameraViewModel {
     }
 
     private func configureAndStart(generation: UInt64) {
-        guard lifecycleGate.accepts(generation), !configurationInFlight, !cameraConfigured else { return }
+        guard lifecycleGate.accepts(generation), !configurationInFlight else {
+            trace("configure-skipped gate=\(lifecycleGate.accepts(generation)) inflight=\(configurationInFlight) configured=\(cameraConfigured)")
+            return
+        }
         configurationInFlight = true
         // Configure asynchronously: session setup touches camera hardware and
         // used to block the main thread, which froze launch until the run loop
         // was allowed to spin ("app doesn't load until I hit stop").
-        session.configure { [weak self] error in
+        session.configure(captureFormat: Self.captureFormatForThisDevice()) { [weak self] error in
             guard let self else { return }
             self.configurationInFlight = false
             guard self.lifecycleGate.accepts(generation) else {
@@ -287,18 +478,33 @@ final class CameraViewModel {
                 return
             }
             self.cameraConfigured = true
-            self.refreshDaylight60Eligibility()
+            self.refreshFrameRateEligibility()
             self.startSession()
         }
     }
 
     /// Runs on the main queue once the session has been configured.
     private func startSession() {
+        if usesSharedIdlePreview { isChangingCaptureProfile = true }
+#if DEBUG
+        if debugPhotoExperimentInFlight {
+            isChangingFrameRate = true
+            session.start()
+            return
+        }
+#endif
         session.onCameraOperationError { [weak self] error, sourceLens in
             guard let self,
                   !self.isSwitchingCameraLens,
                   sourceLens == self.activeLens else { return }
-            self.errorMessage = error.localizedDescription
+            // A configuration the camera can recover from is advice, not a
+            // screen-owning failure: it goes to the corner flag. A dead camera
+            // still takes the screen.
+            if Self.isRecoverableCameraError(error) {
+                self.showNotice(error.localizedDescription, severity: .error)
+            } else {
+                self.errorMessage = error.localizedDescription
+            }
             self.recoverCaptureConfigurationIfNeeded(after: error)
         }
         session.onFinish { [weak self] result in
@@ -308,6 +514,163 @@ final class CameraViewModel {
         }
         session.start()
 #if DEBUG
+        CameraRangeDump.dumpIfRequested()
+        if !didStartDebugSmokeCapture, CommandLine.arguments.contains("--smoke-photo-transitions") {
+            didStartDebugSmokeCapture = true
+            UIApplication.shared.isIdleTimerDisabled = true
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    try await Task.sleep(for: .seconds(2))
+                    @MainActor func mode(_ enabled: Bool) async throws {
+                        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                            self.setDevelopmentPhotoMode(enabled) { c.resume(with: $0) }
+                        }
+                    }
+                    try await mode(true)
+                    if CommandLine.arguments.contains("--smoke-photo-cadence") {
+                        self.session.setDevelopmentPhotoDuration(0.5)
+                        for index in 0..<60 {
+                            self.session.setDevelopmentPhotoISO(Float(200 + index * 5))
+                        }
+                        try await Task.sleep(for: .seconds(6))
+                        self.session.setDevelopmentPhotoISOLocked(false)
+                        try await Task.sleep(for: .seconds(8))
+                        let dng: URL = try await withCheckedThrowingContinuation { c in
+                            self.session.captureDevelopmentPhoto { c.resume(with: $0) }
+                        }
+                        print("Photo cadence: slow capture passed \(dng.lastPathComponent)")
+                        try await mode(false)
+                        self.session.startDebugSmokeCapture()
+                        return
+                    }
+                    for value: Float in [200, 400, 800, 400] {
+                        self.session.setDevelopmentPhotoISO(value)
+                        self.session.setDevelopmentPhotoISOLocked(false)
+                        self.session.setDevelopmentPhotoISOLocked(true)
+                    }
+                    try await Task.sleep(for: .seconds(3))
+                    for lens in self.session.availableLenses where lens != .front {
+                        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                            self.selectLens(lens) { error in
+                                if let error { c.resume(throwing: error) } else { c.resume() }
+                            }
+                        }
+                        print("Photo transitions: lens=\(lens.rawValue) passed")
+                        self.setFocalLengthZoom(Double(lens.focalLengthMM) * 1.2)
+                        try await Task.sleep(for: .milliseconds(300))
+                        let dng: URL = try await withCheckedThrowingContinuation { c in
+                            self.session.captureDevelopmentPhoto { c.resume(with: $0) }
+                        }
+                        let evidenceURL = dng.deletingLastPathComponent().appendingPathComponent("capture.json")
+                        let evidence = try JSONSerialization.jsonObject(with: Data(contentsOf: evidenceURL)) as? [String: String]
+                        guard evidence?["dngReadable"] == "true", evidence?["status"] == "complete" else {
+                            throw CameraError.writerUnavailable("Selected lens did not capture a validated DNG")
+                        }
+                        print("Photo transitions: RAW lens=\(lens.rawValue) passed")
+                    }
+                    if let maximumISO = self.photoExposureSnapshot?.isoRange.upperBound {
+                        self.session.setDevelopmentPhotoISO(maximumISO)
+                        try await Task.sleep(for: .seconds(1))
+                    }
+                    try await mode(false)
+                    try await mode(true)
+                    self.onSceneInactive()
+                    try await Task.sleep(for: .seconds(2))
+                    self.onSceneActive()
+                    for _ in 0..<150 {
+                        if self.isDevelopmentPhotoMode && !self.isChangingFrameRate && self.photoExposureSnapshot?.canCapture == true { break }
+                        try await Task.sleep(for: .milliseconds(200))
+                    }
+                    guard self.isDevelopmentPhotoMode, self.photoExposureSnapshot?.canCapture == true else {
+                        throw CameraError.writerUnavailable("Photo foreground did not recover")
+                    }
+                    print("Photo transitions: foreground recovered")
+                    try await mode(false)
+                    print("Photo transitions: passed; starting restored Video proof")
+                    self.session.startDebugSmokeCapture()
+                } catch { print("Photo transitions: FAILED \(error)") }
+            }
+            return
+        }
+        if !didStartDebugSmokeCapture, CommandLine.arguments.contains("--smoke-photo-delivery") {
+            didStartDebugSmokeCapture = true
+            UIApplication.shared.isIdleTimerDisabled = true
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if CommandLine.arguments.contains("--photo-stock-5219") { self.developmentPhotoStockID = "kodak5219" }
+                try? await Task.sleep(for: .seconds(2))
+                self.setDevelopmentPhotoMode(true) { [weak self] result in
+                    guard let self else { return }
+                    switch result {
+                    case .success:
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            for _ in 0..<100 {
+                                if self.photoExposureSnapshot?.canCapture == true { break }
+                                try? await Task.sleep(for: .milliseconds(200))
+                            }
+                            self.takeDevelopmentPhoto()
+                        }
+                    case .failure(let error): print("Photo delivery smoke failed: \(error)")
+                    }
+                }
+            }
+            return
+        }
+        if !didStartDebugSmokeCapture, CommandLine.arguments.contains("--smoke-photo-exposure-p0b") {
+            didStartDebugSmokeCapture = true
+            debugPhotoExperimentInFlight = true
+            isChangingFrameRate = true
+            UIApplication.shared.isIdleTimerDisabled = true
+            stopExposurePolling()
+            stopShutterPriorityLoop()
+            session.startDebugPhotoExposureSmoke { [weak self] result in
+                guard let self else { return }
+                self.debugPhotoExperimentInFlight = false
+                self.isChangingFrameRate = false
+                switch result {
+                case .success(let directory):
+                    print("Photo exposure P0b passed: \(directory.path)")
+                    if self.lifecycleGate.isActive {
+                        self.startSession()
+                        if CommandLine.arguments.contains("--keep-hevc-log2-smoke") { self.session.startDebugSmokeCapture() }
+                    }
+                case .failure(let error):
+                    print("Photo exposure P0b failed: \(error)")
+                    self.cameraConfigured = false
+                    self.errorMessage = "Photo exposure check failed: \(error.localizedDescription)"
+                }
+            }
+            return
+        }
+        if !didStartDebugSmokeCapture, CommandLine.arguments.contains("--smoke-photo-raw-p0") {
+            didStartDebugSmokeCapture = true
+            debugPhotoExperimentInFlight = true
+            isChangingFrameRate = true
+            UIApplication.shared.isIdleTimerDisabled = true
+            stopExposurePolling()
+            stopShutterPriorityLoop()
+            session.startDebugPhotoRawCapture { [weak self] result in
+                guard let self else { return }
+                self.debugPhotoExperimentInFlight = false
+                self.isChangingFrameRate = false
+                switch result {
+                case .success:
+                    guard self.lifecycleGate.isActive else { return }
+                    self.startSession()
+                    if CommandLine.arguments.contains("--keep-hevc-log2-smoke") {
+                        self.session.startDebugSmokeCapture()
+                    }
+                case .failure(let error):
+                    self.cameraConfigured = false
+                    if self.lifecycleGate.isActive {
+                        self.errorMessage = "Photo RAW P0 failed: \(error.localizedDescription)"
+                    }
+                }
+            }
+            return
+        }
         if !didStartDebugSmokeCapture,
            CommandLine.arguments.contains("--smoke-hevc-log2-capture") {
             didStartDebugSmokeCapture = true
@@ -330,9 +693,11 @@ final class CameraViewModel {
         // before shutter priority pins, so the first metered frame already
         // carries it. Queued ahead of `enableShutterPriority` on the same serial
         // session queue, so the pin reads the new value.
-        session.setExposureBiasEV(liveExposureBias)
-        if isManualExposure {
-            session.lockManualExposure(iso: manualISO) { [weak self] error in
+        session.setExposureBiasEV(videoExposureBeforePhoto?.2 ?? liveExposureBias)
+        let recordingManual = videoExposureBeforePhoto?.0 ?? isManualExposure
+        let recordingISO = videoExposureBeforePhoto?.1 ?? manualISO
+        if recordingManual {
+            session.lockManualExposure(iso: recordingISO) { [weak self] error in
                 guard let self else { return }
                 if let error { self.errorMessage = "Failed to restore manual ISO: \(error.localizedDescription)" }
             }
@@ -348,20 +713,67 @@ final class CameraViewModel {
     }
 
     func setDisplayZoom(_ factor: Double) {
+#if DEBUG
+        CameraControlDiagnostics.record("set-display-zoom value=\(factor) nativeIdle=\(usesNativeIdlePreview) "
+            + "photoBusy=\(isPhotoCaptureBusy) profile=\(isChangingCaptureProfile) "
+            + "starting=\(isStartingRecording) stopping=\(isStoppingRecording) "
+            + "crop=\(photoCropZoom) revision=\(String(describing: zoomSnapshot?.cameraRevision))")
+#endif
+        guard !isPhotoCaptureBusy, !isChangingCaptureProfile, !isStartingRecording, !isStoppingRecording else { return }
+        if usesNativeIdlePreview {
+            guard factor.isFinite, !isSwitchingCameraLens, !isChangingFrameRate else { return }
+            photoCropZoom = min(max(factor / (zoomSnapshot?.displayMultiplier ?? 1), 1), 4)
+#if DEBUG
+            CameraControlDiagnostics.record("crop-applied value=\(photoCropZoom)")
+#endif
+            return
+        }
         guard lifecycleGate.isActive, let snapshot = zoomSnapshot,
               !isSwitchingCameraLens, !isChangingFrameRate else { return }
         session.setDisplayZoom(factor, revision: snapshot.cameraRevision)
     }
 
     func beginSlowZoom(_ direction: CameraZoomDirection) {
+        if usesNativeIdlePreview {
+            guard !isPhotoCaptureBusy, !isChangingCaptureProfile, !isStartingRecording,
+                  !isRecording, !isStoppingRecording, lifecycleGate.isActive,
+                  !isSwitchingCameraLens, !isChangingFrameRate else { return }
+            idleZoomTimer?.invalidate()
+            idleZoomTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.usesNativeIdlePreview, !self.isChangingCaptureProfile,
+                          !self.isStartingRecording, !self.isPhotoCaptureBusy else { return }
+                    self.photoCropZoom = min(max(self.photoCropZoom + (direction == .in ? 0.01 : -0.01), 1), 4)
+                }
+            }
+            return
+        }
         guard lifecycleGate.isActive, let snapshot = zoomSnapshot,
               !isSwitchingCameraLens, !isChangingFrameRate else { return }
         session.beginSlowZoom(direction, revision: snapshot.cameraRevision)
     }
 
     func endSlowZoom(revision: UInt64? = nil) {
+        idleZoomTimer?.invalidate()
+        idleZoomTimer = nil
         guard let revision = revision ?? zoomSnapshot?.cameraRevision else { return }
         session.endSlowZoom(revision: revision)
+    }
+
+    /// One bounded display-zoom step, clamped to the published window. Shared by
+    /// the manual panel's hold controls and the in-frame zoom arrows so both
+    /// move the zoom by exactly one increment per tap or VoiceOver activation.
+    func stepDisplayZoom(_ direction: CameraZoomDirection) {
+        guard lifecycleGate.isActive, !isPhotoCaptureBusy, !isChangingCaptureProfile,
+              !isStartingRecording, !isStoppingRecording, !isSwitchingCameraLens else { return }
+        if usesNativeIdlePreview {
+            photoCropZoom = min(max(photoCropZoom + (direction == .in ? 0.1 : -0.1), 1), 4)
+            return
+        }
+        guard let snapshot = zoomSnapshot else { return }
+        let delta = direction == .in ? 0.1 : -0.1
+        setDisplayZoom(min(max(snapshot.displayFactor + delta,
+                               snapshot.minimumDisplayFactor), snapshot.maximumDisplayFactor))
     }
 
     // MARK: - Focal-Length Pinch Zoom
@@ -371,6 +783,7 @@ final class CameraViewModel {
     /// device's real display multiplier, anchored on the active lens's native
     /// base focal length.
     var currentFocalLengthMM: Double {
+        if usesNativeIdlePreview { return Double(activeLens.focalLengthMM) * photoCropZoom }
         guard let snapshot = zoomSnapshot,
               let millimeters = CameraFocalZoomPolicy.focalLengthMM(
                   displayFactor: snapshot.displayFactor,
@@ -379,6 +792,25 @@ final class CameraViewModel {
             return Double(activeLens.focalLengthMM)
         }
         return millimeters
+    }
+
+    /// The focal-length window the active lens can actually render, converted
+    /// from the session's published display-factor bounds with the same
+    /// tier/multiplier converter `currentFocalLengthMM` uses, so the ruler and
+    /// the live readout can never disagree. Nil with no snapshot; the in-frame
+    /// ruler then falls back to a bounded neighbourhood of the current value
+    /// rather than the old fixed 13…150 rail.
+    var focalLengthRulerRange: ClosedRange<Double>? {
+        if usesNativeIdlePreview {
+            let base = Double(activeLens.focalLengthMM)
+            return base...(base * 4)
+        }
+        guard let snapshot = zoomSnapshot else { return nil }
+        return CameraFocalZoomPolicy.availableFocalLengthRange(
+            minimumDisplayFactor: snapshot.minimumDisplayFactor,
+            maximumDisplayFactor: snapshot.maximumDisplayFactor,
+            multiplier: snapshot.displayMultiplier,
+            tier: Self.focalTier(for: activeLens))
     }
 
     /// The focal length the UI should show for a raw pinch target — the honest,
@@ -425,6 +857,10 @@ final class CameraViewModel {
     /// Clamp `requested` into the active device's real achievable focal-length
     /// window. Nil when there is no snapshot to convert.
     private func clampToActiveZoomWindow(_ requested: Double, tier: CameraFocalZoomLensTier) -> Double? {
+        if usesNativeIdlePreview {
+            let base = CameraFocalZoomPolicy.baseFocalLengthMM(for: tier)
+            return min(max(requested, base), base * 4)
+        }
         guard let snapshot = zoomSnapshot,
               let minimum = CameraFocalZoomPolicy.focalLengthMM(
                   displayFactor: snapshot.minimumDisplayFactor,
@@ -445,12 +881,12 @@ final class CameraViewModel {
         // recording or stopping, and none once the session is torn down.
         // A frame-rate transition owns the device configuration, so a pinch
         // must not start or continue while the format is being reconfigured.
-        guard lifecycleGate.isActive, cameraConfigured, !isChangingFrameRate,
+        guard lifecycleGate.isActive, cameraConfigured, !isChangingFrameRate, !isChangingCaptureProfile, !isPhotoCaptureBusy,
               !isStartingRecording, !isRecording, !isStoppingRecording,
               let snapshot = zoomSnapshot,
               let target = CameraFocalZoomPolicy.clampedTarget(millimeters) else { return }
         // The engine decides on the RAW gesture intent, only clamped to the
-        // valid 13...150 mm range. It must not be pre-clamped to the active
+        // valid 13...400 mm range. It must not be pre-clamped to the active
         // lens's device window: during an in-flight switch that window still
         // belongs to the *old* lens, so a clamp there would corrupt the
         // coalesced target (e.g. a 96.5 mm dither pinching onto a wide device
@@ -471,7 +907,7 @@ final class CameraViewModel {
     }
 
     /// Drive a decision to the session. `targetMM` is the raw pinch intent from
-    /// the engine (clamped only to 13...150 mm); `multiplier` is the active
+    /// the engine (clamped only to 13...400 mm); `multiplier` is the active
     /// device's real display multiplier, so the display factor is converted on
     /// the tier's own native base and the session clamps it to the device's
     /// achievable window in `setDisplayZoom`.
@@ -483,7 +919,11 @@ final class CameraViewModel {
         case .adjust(let tier, let targetMM):
             guard let factor = CameraFocalZoomPolicy.displayFactor(
                 forFocalLengthMM: targetMM, multiplier: multiplier, tier: tier) else { return }
-            session.setDisplayZoom(factor, revision: revision)
+            if usesNativeIdlePreview {
+                photoCropZoom = min(max(targetMM / Double(activeLens.focalLengthMM), 1), 4)
+            } else {
+                session.setDisplayZoom(factor, revision: revision)
+            }
         case .switchLens(let tier, _):
             beginFocalLensSwitch(to: tier)
         }
@@ -544,11 +984,19 @@ final class CameraViewModel {
         }
     }
 
+    /// Whether the active camera has a lamp. The flash control is hidden
+    /// entirely on a device without one — never shown disabled.
+    var hasLamp: Bool {
+        guard let device = session.activeDevice else { return false }
+        return device.hasTorch && device.isTorchModeSupported(.on)
+    }
+
     func startRecording() {
         // A frame-rate transition owns the device configuration and exposure;
         // do not start a take on a rate that is still changing.
         guard !isStartingRecording, !isRecording, !isStoppingRecording,
-              !isSwitchingCameraLens, !isChangingFrameRate else { return }
+              !isSwitchingCameraLens, !isChangingFrameRate, !isChangingCaptureProfile,
+              !isDevelopmentPhotoMode, !isPhotoCaptureBusy else { return }
         guard lifecycleGate.isActive, cameraConfigured else {
             errorMessage = "Camera is not ready to record."
             return
@@ -569,6 +1017,7 @@ final class CameraViewModel {
         // A take owns the device; drop any pinch gesture so it cannot replay
         // against the hardware afterwards.
         focalEngine.invalidate()
+        endSlowZoom()
         invalidateRecordingTimers()
         exposureCommandGeneration &+= 1
         isStartingRecording = true
@@ -579,13 +1028,19 @@ final class CameraViewModel {
         // writer may not confirm that for another two seconds.
         recordingTimerOrigin = RecordButtonTimingPolicy.timerOrigin(tapAt: Date())
         recordingStoppedAt = nil
+        // The level is read once, here, and handed to the take. Moving the
+        // slider during the take changes nothing: the value that lit the take is
+        // the value its metadata records.
+        session.applyTakeFlash(level: flashStore.settings.videoLevel)
         do {
             let outputURL = try originalStorage.makeDestination()
             // Bind policy to the actual destination before any async work.
             // Cancellation advances captureGeneration, and a foreground reset
             // changes sessionFrameRate; neither can relabel this take's URL.
-            capturePolicies.record(sourceURL: outputURL, mode: sessionFrameRate)
-            captureJournal.markPending(outputURL)
+            let sourceProfile = CameraSession.permittedSourceProfile() ?? .appleLog2
+            capturePolicies.record(sourceURL: outputURL, mode: sessionFrameRate, sourceProfile: sourceProfile)
+            captureJournal.markPending(outputURL, capturePolicy: capturePolicies.policy(for: outputURL))
+            if usesSharedIdlePreview { session.setVideoRecordingZoomIntent(photoCropZoom) }
             session.startRecording(to: outputURL) { [weak self] error in
                 guard let self else { return }
                 // A stale callback must not touch the session: captureGeneration
@@ -600,6 +1055,8 @@ final class CameraViewModel {
                 self.isStartingRecording = false
                 self.refreshRecordingStabilization()
                 if let error {
+                    // A take that never started must not leave the lamp lit.
+                    self.session.endTakeFlash()
                     self.isRecording = false
                     self.invalidateRecordingTimers()
                     self.errorMessage = "Failed to start recording: \(error.localizedDescription)"
@@ -615,12 +1072,16 @@ final class CameraViewModel {
                 self.startSpacePolling()
             }
         } catch {
+            session.endTakeFlash()
             isStartingRecording = false
             errorMessage = "Failed to prepare recording: \(error.localizedDescription)"
         }
     }
 
     func stopRecording() {
+        // The lamp belongs to the take, and the take is over. This is the first
+        // thing the stop does, before any bookkeeping that could return early.
+        session.endTakeFlash()
         // The take owns the device; any queued pinch gesture is now stale.
         focalEngine.invalidate()
         let wasStarting = isStartingRecording
@@ -672,9 +1133,24 @@ final class CameraViewModel {
         meteringPoint = CGPoint(x: min(max(point.x, 0), 1), y: min(max(point.y, 0), 1))
     }
 
+    /// Return the focus area to the frame centre after a committed camera or
+    /// shooting-mode change. The visible box and the device's points of interest
+    /// move together; held exposure, manual focus and white balance are left as
+    /// the operator set them.
+    func resetFocusAreaToCenter() {
+        setMeteringPoint(CameraSession.focusPointCenter)
+        session.recenterFocusAndExposurePoint()
+    }
+
     /// Switch the active lens and refresh tap-to-focus for the new device.
     /// Completion runs on the main queue; `nil` error means the swap succeeded.
     func selectLens(_ lens: CameraLens, preservingFocalZoom: Bool = false, completion: @escaping (Error?) -> Void) {
+        // Photo lens changes span asynchronous graph teardown and restoration.
+        // Do not admit a second chain while the first owns that graph.
+        if usesNativeIdlePreview && isSwitchingCameraLens {
+            completion(CameraError.frameRateTransitionInProgress)
+            return
+        }
         // A manual lens switch supersedes any in-flight pinch gesture; the
         // engine's own switch keeps its queued target instead.
         if !preservingFocalZoom {
@@ -684,7 +1160,10 @@ final class CameraViewModel {
         endSlowZoom()
         // A frame-rate transition owns the device configuration; a lens switch
         // must wait for it to settle rather than race it.
-        guard !isChangingFrameRate else { return }
+        guard !isChangingFrameRate, !isChangingCaptureProfile, !isPhotoCaptureBusy else {
+            completion(CameraError.frameRateTransitionInProgress)
+            return
+        }
         exposureCommandGeneration &+= 1
         cameraLensSwitchGeneration &+= 1
         pendingLensSwitchCount += 1
@@ -693,13 +1172,22 @@ final class CameraViewModel {
         clearStaleApertureError()
         invalidateApertureUIState()
         invalidateStabilizationUIState()
-        session.selectCamera(lens) { [weak self] error in
+        let previousLens = activeLens
+        session.selectCamera(lens, photoIntent: isDevelopmentPhotoMode) { [weak self] error in
             guard let self else { return }
             if error == nil {
                 // Session switches are serialized. Record each successful
                 // commit even when a later request is still pending, so a
                 // subsequent failure leaves the UI on the actual camera.
                 self.activeLens = lens
+                self.photoCropZoom = 1
+                // A committed switch starts metering at the centre of the new
+                // lens, whether it came from the lens picker or a pinch. A
+                // rejected switch keeps the operator's chosen area, and a
+                // same-lens success is not a switch at all.
+                if previousLens != lens {
+                    self.resetFocusAreaToCenter()
+                }
             }
             self.pendingLensSwitchCount = max(0, self.pendingLensSwitchCount - 1)
             self.isSwitchingCameraLens = self.pendingLensSwitchCount > 0
@@ -713,14 +1201,16 @@ final class CameraViewModel {
 
             if self.pendingLensSwitchCount == 0 {
                 if self.lifecycleGate.isActive {
-                    self.restoreExposureAfterLensSwitch()
-                    self.refreshExposure()
+                    if !self.usesNativeIdlePreview {
+                        self.restoreExposureAfterLensSwitch()
+                        self.refreshExposure()
+                    }
                 } else {
                     self.invalidateApertureUIState()
                 }
                 // A lens switch can change 60 fps eligibility. Refresh it, but
                 // never silently disarm an armed mode on a failed switch.
-                self.refreshDaylight60Eligibility()
+                self.refreshFrameRateEligibility()
             }
             // Resolve every caller. ContentView commits each successful lens;
             // failures remain visible while they never replace the committed
@@ -748,6 +1238,11 @@ final class CameraViewModel {
     }
 
     func toggleISOLock(currentISO: Float) {
+        if isDevelopmentPhotoMode {
+            guard !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile, let state = photoExposureSnapshot else { return }
+            session.setDevelopmentPhotoISOLocked(!state.isoLocked)
+            return
+        }
         exposure.toggleISOLock(currentISO: currentISO)
     }
 
@@ -757,6 +1252,11 @@ final class CameraViewModel {
         guard let cameraError = error as? CameraError,
               case .captureRecoveryRequired = cameraError else { return }
         cameraConfigured = false
+        if usesSharedIdlePreview {
+            // A persistent idle-install fault must surface, not reconnect forever.
+            guard !sharedIdleRecoveryAttempted else { return }
+            sharedIdleRecoveryAttempted = true
+        }
         guard lifecycleGate.isActive else { return }
         configureAndStart(generation: lifecycleGate.generation)
     }
@@ -769,19 +1269,26 @@ final class CameraViewModel {
     var canChangeSessionFrameRate: Bool {
         // A focal lens switch owns the device configuration just as a manual
         // lens switch does, so the frame-rate transition cannot race it.
-        lifecycleGate.isActive && cameraConfigured && !isSwitchingCameraLens && !isChangingFrameRate
+        lifecycleGate.isActive && cameraConfigured && !isSwitchingCameraLens && !isChangingFrameRate && !isChangingCaptureProfile
             && !focalSwitchInFlight
             && CameraFrameRatePolicy.canChange(recording: isRecording, starting: isStartingRecording,
                                                finishing: isStoppingRecording)
     }
 
-    /// Arm or disarm the break-glass daylight 60 fps mode. Refused while a take
-    /// is pending/active/draining, during a transition, or when the device is
-    /// ineligible (the control disables itself in that case). Never persisted.
+    /// Arm or disarm the break-glass daylight 60 fps mode. Compatibility wrapper
+    /// over `setSessionFrameRate`, which owns the transition.
     func setDaylight60Enabled(_ enabled: Bool) {
-        let target: CameraFrameRate = enabled ? .daylight60 : .standard24
+        setSessionFrameRate(enabled ? .daylight60 : .standard24)
+    }
+
+    /// The one canonical session frame-rate setter. Refused while a take is
+    /// pending/active/draining, during a transition, or when this lens is not
+    /// eligible for `mode` (the control disables itself in that case). Never
+    /// persisted, and never downgraded silently.
+    func setSessionFrameRate(_ target: CameraFrameRate) {
+        guard !isDevelopmentPhotoMode, !isPhotoCaptureBusy else { return }
         guard target != sessionFrameRate, canChangeSessionFrameRate else { return }
-        guard target == .standard24 || supportsDaylight60 else { return }
+        guard target.isStandard || availableSessionFrameRates.contains(target) else { return }
         // The transition claims the device configuration; any idle pinch
         // accumulation and its queued switch are stale once the format changes.
         focalEngine.invalidate()
@@ -803,25 +1310,82 @@ final class CameraViewModel {
         }
     }
 
+    /// Errors the session can mend by reconnecting the graph. They are worth a
+    /// notice, not a banner: the operator can keep framing while it recovers.
+    private static func isRecoverableCameraError(_ error: Error) -> Bool {
+        guard let cameraError = error as? CameraError else { return false }
+        switch cameraError {
+        case .captureRecoveryRequired, .writerUnavailable, .captureFormatUnavailable:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The preferred capture format for this phone: open gate by default, UHD
+    /// on hardware that does not expose the 2K Apple Log 2 format.
+    static func captureFormatForThisDevice() -> CaptureFormat {
+        CaptureFormat.resolvedForDevice(
+            UserDefaults.standard.string(forKey: CaptureFormat.preferenceKey),
+            openGateSupported: CaptureFormatAvailability.supports(.openGate2K))
+    }
+
+    /// Recomputed when the observed lens/rate changes, including startup and
+    /// session-boundary resets. Never offers a UHD placeholder without evidence.
+    var availableCaptureFormats: [CaptureFormat] {
+        let device = AVCaptureDevice.default(activeLens.deviceType, for: .video, position: activeLens.position)
+        return CaptureFormatAvailability.availableFormats(on: device, fps: Double(sessionFrameRate.fps))
+    }
+
+    /// Re-read the persisted capture format and ask the session for it. Called
+    /// when Settings closes. A refusal is shown on screen: the operator asked for
+    /// a geometry this device cannot deliver, and silently keeping the old one
+    /// would mislabel the file.
+    func applyCaptureFormatPreference() {
+        let available = availableCaptureFormats
+        guard !available.isEmpty else {
+            showNotice("No native capture format is available for this camera and frame rate.", severity: .warning)
+            return
+        }
+        let format = CaptureFormat.clamped(UserDefaults.standard.string(forKey: CaptureFormat.preferenceKey), to: available)
+        session.setCaptureFormat(format) { [weak self] error in
+            guard let self, self.lifecycleGate.isActive else { return }
+            if let error {
+                // A format switch is a settings action, not a broken camera:
+                // warn in the corner and let the operator read or dismiss it.
+                self.showNotice(error.localizedDescription, severity: .warning)
+            } else {
+                self.refreshFrameRateEligibility()
+            }
+        }
+    }
+
     /// The capture policy snapshotted for a completed take. The screen reads this
     /// instead of the live mode, so a session-boundary reset cannot mislabel it.
     func capturePolicy(for sourceURL: URL) -> RenderCapturePolicy? {
-        capturePolicies.policy(for: sourceURL)
+        capturePolicies.policy(for: sourceURL) ?? captureJournal.capturePolicy(for: sourceURL)
     }
 
-    /// Refresh the daylight-60 eligibility from the active device. Called after
-    /// the camera configures and after a lens switch settles. It never silently
-    /// disarms an armed mode.
-    private func refreshDaylight60Eligibility() {
+    /// Refresh the eligible session modes from the active lens. Called after the
+    /// camera configures and after a lens switch settles. The result is applied
+    /// only when the generation, lifecycle, configuration, lens-switch state and
+    /// the lens itself still match the read, so a slow capability answer for a
+    /// lens the operator already left can never advertise its rates. It never
+    /// silently disarms an armed mode.
+    private func refreshFrameRateEligibility() {
         guard lifecycleGate.isActive, cameraConfigured, !isSwitchingCameraLens else {
-            supportsDaylight60 = false
+            availableSessionFrameRates = [.standard24]
             return
         }
         let generation = frameRateGeneration
-        session.supportsDaylight60 { [weak self] supported in
+        let lens = activeLens
+        session.frameRateCapability { [weak self] capability in
             guard let self, self.frameRateGeneration == generation,
-                  self.lifecycleGate.isActive, self.cameraConfigured else { return }
-            self.supportsDaylight60 = supported
+                  self.lifecycleGate.isActive, self.cameraConfigured,
+                  !self.isSwitchingCameraLens,
+                  let capability, capability.lens == lens,
+                  capability.lens == self.activeLens else { return }
+            self.availableSessionFrameRates = capability.modes
         }
     }
 
@@ -835,23 +1399,300 @@ final class CameraViewModel {
         frameRateGeneration &+= 1
         isChangingFrameRate = false
         sessionFrameRate = .standard24
-        supportsDaylight60 = false
+        availableSessionFrameRates = [.standard24]
         // Per-URL take policies survive this reset until the queue snapshots them.
         session.resetFrameRateForNextSession()
+    }
+
+    /// The mode row's single source of truth: whether a change is accepted *and*
+    /// the reason when it is not. Ten independent states dim the same letters, so
+    /// the reason has to come from the same place as the decision.
+    var shootingModeGate: CameraShootingModeGate {
+        CameraShootingModeGate(isLifecycleActive: lifecycleGate.isActive,
+                               isCameraConfigured: cameraConfigured,
+                               isConfigurationInFlight: configurationInFlight,
+                               isChangingFrameRate: isChangingFrameRate,
+                               isChangingCaptureProfile: isChangingCaptureProfile,
+                               isSwitchingCameraLens: isSwitchingCameraLens,
+                               isPhotoCaptureBusy: isPhotoCaptureBusy,
+                               isStartingRecording: isStartingRecording,
+                               isRecording: isRecording,
+                               isStoppingRecording: isStoppingRecording)
+    }
+
+    var canChangeShootingMode: Bool { shootingModeGate.isAllowed }
+
+    /// The reason shown with the greyed row, or nil while it accepts changes.
+    var shootingModeBlockedReason: String? { shootingModeGate.reason }
+
+    func setDevelopmentPhotoMode(_ enabled: Bool,
+        completion: @escaping @MainActor @Sendable (Result<Void, Error>) -> Void) {
+        // A RAW-less lens has already been replaced by the shared Video graph;
+        // say why Photo cannot start rather than reporting a camera that is
+        // merely "not ready".
+        if enabled, usesSharedIdlePreview, !isPhotoCaptureAvailable {
+            completion(.failure(CameraError.photoCapabilityUnavailable(
+                "this camera offers no native Bayer RAW. Choose another lens to shoot Photo")))
+            return
+        }
+        guard usesSharedIdlePreview, canChangeShootingMode, photoExposureSnapshot != nil else {
+            trace("photo-mode-refused enabled=\(enabled) canChange=\(canChangeShootingMode) snapshot=\(photoExposureSnapshot != nil)")
+            completion(.failure(CameraError.writerUnavailable("Shared idle camera is not ready")))
+            return
+        }
+        guard enabled != isDevelopmentPhotoMode else { completion(.success(())); return }
+        if enabled {
+            videoExposureBeforePhoto = (isManualExposure, manualISO, liveExposureBias)
+            photoPreviousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
+            UIApplication.shared.isIdleTimerDisabled = true
+        }
+        isDevelopmentPhotoMode = enabled
+#if DEBUG
+        if enabled, CommandLine.arguments.contains("--ui-slow-photo") {
+            session.setDevelopmentPhotoISO(400)
+            session.setDevelopmentPhotoDuration(1)
+        }
+#endif
+        photoCaptureStatus = enabled ? "Ready" : nil
+        if enabled, let photoExposureSnapshot { presentPhotoExposure(photoExposureSnapshot) }
+        else {
+            restoreVideoExposurePresentation()
+        }
+        // The photo graph and the video graph meter on the same device, so a
+        // committed mode change carries the previous tap's point of interest
+        // across. Start the new mode at the centre.
+        resetFocusAreaToCenter()
+        // A mode change changes which intent may read stabilization capability:
+        // Photo must not keep Video's idle snapshot.
+        invalidateStabilizationUIState()
+        completion(.success(()))
+    }
+
+    private func presentPhotoExposure(_ snapshot: PhotoExposureSnapshot) {
+        if photoExposureIntent == nil {
+            photoExposureIntent = PhotoExposureIntentPresentation(snapshot: snapshot)
+        }
+        photoExposureIntent?.reconcile(snapshot)
+        let presented = photoExposureIntent
+        // The presented ISO is the operator's until the device reports it back.
+        // Writing the snapshot straight into `manualISO` pulled the ruler out from
+        // under the finger on every publish, so each new drag delta was measured
+        // from a position the operator never chose: the slider stuttered and felt
+        // seconds behind the touch.
+        liveISO = presented?.iso ?? snapshot.iso
+        manualISO = presented?.iso ?? snapshot.iso
+        isManualExposure = snapshot.isoLocked
+        liveShutterSeconds = presented?.duration ?? snapshot.durationSeconds
+        liveExposureBias = snapshot.ev
+        liveExposureTargetOffset = snapshot.meteringOffset
+        hasExposureMeter = true
+    }
+
+    private func restoreVideoExposurePresentation() {
+        photoExposureIntent = nil
+        if let saved = videoExposureBeforePhoto {
+            isManualExposure = saved.0
+            manualISO = saved.1
+            liveExposureBias = saved.2
+            videoExposureBeforePhoto = nil
+        }
+        if let previous = photoPreviousIdleTimerDisabled {
+            UIApplication.shared.isIdleTimerDisabled = previous
+            photoPreviousIdleTimerDisabled = nil
+        }
+        guard lifecycleGate.isActive else { return }
+        startExposurePolling()
+        if !isManualExposure && !usesSharedIdlePreview { startShutterPriorityLoop() }
+        refreshExposure()
+    }
+
+    func setPhotoShutterDuration(_ seconds: Double) {
+        guard isDevelopmentPhotoMode, !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile else { return }
+        session.setDevelopmentPhotoDuration(seconds)
+    }
+
+    func togglePhotoShutterLock() {
+        guard let state = photoExposureSnapshot else { return }
+        setPhotoShutterLocked(!state.shutterLocked)
+    }
+
+    /// Accept an explicit selection so rapid taps do not toggle a stale sensor echo.
+    func setPhotoShutterLocked(_ locked: Bool) {
+        guard isDevelopmentPhotoMode, !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile else { return }
+        // The shutter rail lives inside the ISO control group. Locking a shutter
+        // that has no control on screen pins custom exposure with nothing to
+        // release it, which is why unlocking the ISO could leave the camera stuck
+        // in custom mode for the rest of the session.
+        guard !locked || photoExposureSnapshot?.isoLocked == true else { return }
+        session.setDevelopmentPhotoShutterLocked(locked)
+    }
+
+    /// The app root accepts this capture only after the shared queue persists it.
+    @ObservationIgnored var onPhotoCaptured: (@MainActor (URL, String, PrintGauge, UInt32, Double) -> UUID?)?
+    private(set) var photoRenderJobID: UUID?
+
+    /// What a shutter tap would do right now. The button reads this to explain
+    /// itself; it never disables the control.
+    var photoShutterReadiness: PhotoShutterReadiness {
+        PhotoShutterReadinessPolicy.readiness(
+            isPhotoMode: isDevelopmentPhotoMode, isChangingFrameRate: isChangingFrameRate,
+            isChangingCaptureProfile: isChangingCaptureProfile, isCaptureBusy: isPhotoCaptureBusy,
+            canCapture: photoExposureSnapshot?.canCapture == true)
+    }
+
+    /// Always attempt. The shutter is never disabled, so every tap reaches here
+    /// and either starts a capture or says why it could not — an unresponsive
+    /// control with no explanation is the one outcome that is not allowed.
+    func takeDevelopmentPhoto(gauge: PrintGauge? = nil) {
+        trace("photo-tap enter")
+        // The mode toggle can show Photo before the camera has engaged it, and an
+        // enter that failed leaves it unengaged. A tap in either window used to
+        // return here in silence, which is the one outcome the shutter may not
+        // produce: the operator cannot see a reason that was never recorded.
+        guard isDevelopmentPhotoMode else {
+            trace("photo-tap refused not-engaged")
+            let reason = "The photo camera is still starting up. Try again in a moment."
+            recordPhotoShutterNotice(reason)
+            errorMessage = reason
+            return
+        }
+        let readiness = photoShutterReadiness
+        trace("photo-tap readiness=\(readiness)")
+        switch readiness {
+        case .ready:
+            break
+        case .capturing:
+            trace("photo-tap refused capturing")
+            // A second tap must not queue a second capture, but it still has to be
+            // answered.
+            recordPhotoShutterNotice("A photo is already being captured.")
+            return
+        case .changingMode:
+            trace("photo-tap refused changing-mode")
+            let reason = readiness.blockedReason ?? "Wait for the camera to finish changing."
+            recordPhotoShutterNotice(reason)
+            return
+        case .cameraNotReady:
+            trace("photo-tap refused not-ready")
+            let reason = "The photo camera is not ready yet. Try again in a moment."
+            recordPhotoShutterNotice(reason)
+            errorMessage = reason
+            return
+        }
+        // This tap is starting a capture, so the refusal it may have shown before
+        // is stale. Only this mode's own banner is cleared.
+        if errorMessage == photoShutterNotice { errorMessage = nil }
+        photoShutterNotice = nil
+        let generation = photoGeneration
+        let captureToken = photoResults.begin()
+        isPhotoCaptureBusy = true
+        armPhotoCaptureWatchdog(captureToken)
+        let stockID = developmentPhotoStockID
+        let gauge = gauge ?? developmentPhotoGauge
+        let grainSeed = UInt32.random(in: .min ... .max)
+        let cropZoom = photoCropZoom
+
+        photoCaptureStatus = "Capturing RAW…"
+        // Freeze the physical hold at the tap. The capture can queue behind an
+        // exposure write, and a turn during that wait must not re-orient the still.
+        let frozenOrientation = CameraOrientationObserver.shared.deliveryOrientation
+        session.captureDevelopmentPhoto(frozenOrientation: frozenOrientation,
+                                        flash: flashStore.settings) { [weak self] result in
+            guard let self else { return }
+            guard self.photoGeneration == generation, self.photoResults.finish(captureToken) else {
+                self.trace("photo-capture-completion stale token=\(captureToken)")
+                return
+            }
+            self.photoCaptureWatchdog?.cancel()
+            self.photoCaptureWatchdog = nil
+            switch result {
+            case .success(let url):
+                // Camera ownership ends at durable RAW capture, not GPU/Photos delivery.
+                self.isPhotoCaptureBusy = false
+                if let jobID = self.onPhotoCaptured?(url, stockID, gauge, grainSeed, cropZoom) {
+                    self.photoRenderJobID = jobID
+                    self.photoCaptureStatus = "Photo queued for development"
+                } else {
+                    self.photoCaptureStatus = "Original kept locally · queue unavailable"
+                    self.errorMessage = "Photo could not enter the render queue. The original DNG remains in the app."
+                }
+            case .failure(let error):
+                self.isPhotoCaptureBusy = false
+                self.photoCaptureStatus = "RAW capture failed"
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// Refusals and stalls are reported where the operator can read them: the
+    /// notice is transient because it reports a moment, not a state to dismiss.
+    private func recordPhotoShutterNotice(_ text: String) {
+        photoShutterNotice = text
+        photoShutterNoticeTask?.cancel()
+        photoShutterNoticeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, !Task.isCancelled else { return }
+            if self.photoShutterNotice == text { self.photoShutterNotice = nil }
+        }
+    }
+
+    /// A profile transition whose completion never lands must not leave the mode
+    /// row greyed out with nothing said.
+    ///
+    /// Ask the queue owner to reconcile and republish. Never clear a UI flag as
+    /// a substitute for settling the real hardware owner.
+    private func armCaptureProfileWatchdog() {
+        guard captureProfileWatchdog == nil else { return }
+        captureProfileWatchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            guard let self, !Task.isCancelled, self.isChangingCaptureProfile else { return }
+            self.trace("capture-profile-watchdog")
+            self.captureProfileWatchdog = nil
+            self.session.reconcileLifecycle()
+            self.errorMessage = "Camera recovery requested; waiting for the current hardware owner."
+        }
+    }
+
+    /// A capture whose completion never arrives must not leave the shutter busy
+    /// with nothing said. The deadline is the controller's own capture timeout
+    /// plus slack for the round trip through the session queue.
+    private func armPhotoCaptureWatchdog(_ token: UInt64) {
+        photoCaptureWatchdog?.cancel()
+        photoCaptureWatchdog = Task { @MainActor [weak self] in
+            // UI backstop only. The RAW transaction remains owned until its real
+            // framework terminal; this timer cannot release session/graph ownership.
+            try? await Task.sleep(for: .seconds(PhotoExposureCadence.captureTransactionTimeout + 2))
+            guard let self, !Task.isCancelled, self.photoResults.owns(token),
+                  self.isPhotoCaptureBusy else { return }
+            self.trace("photo-capture-watchdog")
+            self.isPhotoCaptureBusy = false
+            self.photoCaptureStatus = "RAW capture did not report back"
+            self.recordPhotoShutterNotice("The camera never reported the photo. Waiting for the camera to finish or reset.")
+        }
     }
 
     // MARK: - Manual Exposure
 
     func setManualISO(_ iso: Float) {
+        if isDevelopmentPhotoMode {
+            guard !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile else { return }
+            let value = clampedISO(iso)
+            photoExposureIntent?.selectISO(value)
+            manualISO = value
+            liveISO = value
+            session.setDevelopmentPhotoISO(value)
+            return
+        }
         // The session refuses exposure changes during a take
         // (`exposureChangeDuringRecording`), so an optimistic write here would
         // display an ISO the hardware never took. Refuse before mutating, matching
         // the silent gating the other transition-limited controls use.
         // A frame-rate transition owns the exposure path; hold ISO changes too.
-        guard !isChangingFrameRate else { return }
+        guard !isChangingFrameRate, !isChangingCaptureProfile else { return }
         guard CameraManualExposureSelectionPolicy.canChangeISO(
             isStartingRecording: isStartingRecording, isRecording: isRecording,
             isStoppingRecording: isStoppingRecording) else { return }
+        let iso = clampedISO(iso)
         let previousISO = manualISO
         manualISO = iso
         exposureCommandGeneration &+= 1
@@ -876,8 +1717,36 @@ final class CameraViewModel {
         }
     }
 
+    /// The ISO band the current shooting mode can honour: Photo keeps the still
+    /// format's range, video the Apple Log 2 format's (see
+    /// `CameraSession.videoISORange` — the tops differ per camera).
+    func isoBandForCurrentMode() -> ClosedRange<Float> {
+        isDevelopmentPhotoMode ? session.isoRange : session.videoISORange
+    }
+
+    /// Clamp a requested ISO to the current mode's band, so the ruler, the
+    /// readout and the intent all agree on a value the take can take.
+    func clampedISO(_ iso: Float) -> Float {
+        let band = isoBandForCurrentMode()
+        return min(max(iso, band.lowerBound), band.upperBound)
+    }
+
+    /// The video band's clamp, for paths that hand the idle graph back to Video
+    /// while Photo's wider still range is still the current mode's.
+    func clampedVideoISO(_ iso: Float) -> Float {
+        let band = session.videoISORange
+        return min(max(iso, band.lowerBound), band.upperBound)
+    }
+
     func setLensAperture(_ aperture: Float?) {
-        guard canSelectAperture, !isChangingFrameRate else { return }
+        traceApertureGate("set \(aperture.map { String(format: "%.2f", $0) } ?? "auto")")
+        guard canSelectAperture, !isChangingFrameRate, !isChangingCaptureProfile,
+              !isPhotoCaptureBusy, !isStartingRecording, !isRecording, !isStoppingRecording else { return }
+        if usesSharedIdlePreview, !isDevelopmentPhotoMode {
+            selectedLensAperture = aperture
+            session.setVideoRecordingApertureIntent(aperture)
+            return
+        }
         apertureCommandGeneration &+= 1
         let commandGeneration = apertureCommandGeneration
         let switchGeneration = cameraLensSwitchGeneration
@@ -906,11 +1775,26 @@ final class CameraViewModel {
         }
     }
 
+    /// Opt-in gate trace (`--trace-aperture`): every input the aperture control
+    /// is decided by, so a dead control names the exact gate that refused.
+    func traceApertureGate(_ event: String) {
+#if DEBUG
+        guard CommandLine.arguments.contains("--trace-aperture") else { return }
+        print("[aperture-gate] \(event) lens=\(activeLens.rawValue)/\(activeLens.position) "
+            + "lifecycle=\(lifecycleGate.isActive) configured=\(cameraConfigured) "
+            + "switching=\(isSwitchingCameraLens) changingProfile=\(isChangingCaptureProfile) "
+            + "variable=\(apertureIsVariable) stops=\(apertureStops.map { String(format: "%.2f", $0) }) "
+            + "selected=\(selectedLensAperture.map { String(format: "%.2f", $0) } ?? "auto") "
+            + "photo=\(isDevelopmentPhotoMode) videoProfile=\(isVideoCaptureProfileActive) "
+            + "canSelect=\(canSelectAperture)")
+#endif
+    }
+
     /// Aperture adjustment is intentionally limited to the physical rear main
     /// camera. The state is also suppressed while its active format is changing.
     var canSelectAperture: Bool {
         activeLens == .wide && activeLens.position == .back
-            && lifecycleGate.isActive && cameraConfigured && !isSwitchingCameraLens
+            && lifecycleGate.isActive && cameraConfigured && !isSwitchingCameraLens && !isChangingCaptureProfile
             && apertureIsVariable && !apertureStops.isEmpty
     }
 
@@ -927,7 +1811,8 @@ final class CameraViewModel {
         stabilizationSnapshotRequestGeneration &+= 1
         let requestGeneration = stabilizationSnapshotRequestGeneration
         let switchGeneration = cameraLensSwitchGeneration
-        session.setRecordingStabilization(mode) { [weak self] snapshot in
+        let videoIntent = !isDevelopmentPhotoMode
+        session.setRecordingStabilization(mode, videoIntent: videoIntent) { [weak self] snapshot in
             guard let self, self.lifecycleGate.isActive, self.cameraConfigured,
                   !self.isSwitchingCameraLens, self.cameraLensSwitchGeneration == switchGeneration,
                   self.stabilizationSnapshotRequestGeneration == requestGeneration,
@@ -941,7 +1826,10 @@ final class CameraViewModel {
         stabilizationSnapshotRequestGeneration &+= 1
         let requestGeneration = stabilizationSnapshotRequestGeneration
         let switchGeneration = cameraLensSwitchGeneration
-        session.readStabilizationSnapshot { [weak self] snapshot in
+        // Photo has no still stabilization: only Video's intent may read the
+        // shared idle graph's recording-format capability.
+        let videoIntent = !isDevelopmentPhotoMode
+        session.readStabilizationSnapshot(videoIntent: videoIntent) { [weak self] snapshot in
             guard let self, self.lifecycleGate.isActive, self.cameraConfigured,
                   !self.isSwitchingCameraLens, self.cameraLensSwitchGeneration == switchGeneration,
                   self.stabilizationSnapshotRequestGeneration == requestGeneration,
@@ -978,7 +1866,15 @@ final class CameraViewModel {
     /// lock uses custom exposure mode, where the device's own bias is always 0,
     /// and the shutter-priority re-meter resets it regardless.
     func setExposureBias(_ bias: Float) {
-        guard !isChangingFrameRate else { return }
+        if isDevelopmentPhotoMode {
+            guard !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile else { return }
+            session.setDevelopmentPhotoEV(bias)
+            // Photo writes the same persisted preference Video does; without this
+            // the value only ever existed for the current launch.
+            CameraExposureBiasPreference.save(bias)
+            return
+        }
+        guard !isChangingFrameRate, !isChangingCaptureProfile else { return }
         let range = session.exposureBiasRange
         let clamped = min(max(bias, range.lowerBound), range.upperBound)
         liveExposureBias = clamped
@@ -988,9 +1884,148 @@ final class CameraViewModel {
         session.setExposureBiasEV(clamped)
     }
 
+    // MARK: - System Camera Control (hardware slider)
+
+    /// Adjustment the operator selected for the Camera Control button's slider.
+    /// Seeded from the persisted settings value so the slider matches Settings
+    /// even before the screen pushes its first eligibility update.
+    private(set) var hardwareControlAdjustment = CameraControlAdjustment(
+        persistedValue: UserDefaults.standard.string(forKey: CameraControlAdjustment.preferenceKey))
+    /// Hardware capability, published so the settings screen shows the Camera
+    /// Control row only on a phone that has the button, and so every gate below
+    /// fails closed on the same value. Passed through from the session, which
+    /// caches `AVCaptureSession.supportsControls` once at construction.
+    var supportsCameraControl: Bool { session.supportsCameraControl }
+
+    /// The screen's own eligibility (foreground, mode, sheet, fault). The view
+    /// model ANDs it with the runtime transitions below; it never writes device
+    /// state on its own.
+    private var areHardwareControlsRequested = false
+#if DEBUG
+    @ObservationIgnored private var lastHardwareDiagnosticState = ""
+#endif
+
+    /// Parent API: called from `ContentView` whenever the Settings preference or
+    /// the screen's eligibility changes. `enabled == false` keeps the selected
+    /// slider installed but non-interactive, so it reappears without a rebuild.
+    func updateCameraHardwareControls(adjustment: CameraControlAdjustment, enabled: Bool) {
+        hardwareControlAdjustment = adjustment
+        areHardwareControlsRequested = enabled
+        pushCameraHardwareControls()
+    }
+
+    /// Native presentation follows session availability, not per-shot busy state.
+    /// Keep it enabled while handling a full press; capture-time writes are still
+    /// rejected by `areHardwareControlsEligible`. Exposure remains unavailable
+    /// during recording, while zoom can use the existing mid-take setter.
+    private var areHardwareControlsPresented: Bool {
+        guard supportsCameraControl,
+              areHardwareControlsRequested, cameraConfigured, lifecycleGate.isActive,
+              !isSwitchingCameraLens, !isChangingFrameRate, !isChangingCaptureProfile,
+              !isStartingRecording, !isStoppingRecording else { return false }
+        switch hardwareControlAdjustment {
+        case .zoom: return true
+        case .exposure: return !isRecording && canAdjustEVThroughCurrentPath && hasUsableExposureBiasRange
+        case .off: return false
+        }
+    }
+
+    /// Write acceptance: the presented control minus the one transient capture
+    /// transition that must never reach the device. A slider value therefore
+    /// keeps its stable presentation while every device write during a capture —
+    /// and every stale revision carried by a retained callback — is dropped.
+    private var areHardwareControlsEligible: Bool {
+        !isPhotoCaptureBusy && areHardwareControlsPresented
+    }
+
+    /// EV is only a live control while the path that owns exposure can take it.
+    /// Shutter priority and full auto both apply a bias change, but a held manual
+    /// ISO owns the device in custom exposure mode, where the device bias is
+    /// inert — offering the slide there was a dead control. Photo's development
+    /// controller applies its own EV on top of a held ISO and only stops taking
+    /// it when ISO *and* shutter are both pinned, so Photo's still policy decides.
+    private var canAdjustEVThroughCurrentPath: Bool {
+        if isDevelopmentPhotoMode {
+            guard let snapshot = photoExposureSnapshot else { return true }
+            return !(snapshot.isoLocked && snapshot.shutterLocked)
+        }
+        return !isManualExposure
+    }
+
+    /// A single-position EV range is not a control. The session's slider policy
+    /// refuses such a range as well; eligibility says the same thing up front so
+    /// the button is not claimed for a slide that can never move.
+    private var hasUsableExposureBiasRange: Bool {
+        let range = session.exposureBiasRange
+        return range.upperBound - range.lowerBound >= CameraHardwareControlPolicy.minimumRangeSpan
+    }
+
+    /// The single runtime gate the screen calls at the instant the Camera
+    /// Control button fires. It mirrors what the hardware path itself needs, so
+    /// no press is consumed for a graph that cannot take it. An active or
+    /// starting take is deliberately *not* excluded: that press is the stop (or
+    /// startup-cancel) request the recording policy resolves.
+    var canAcceptHardwareCapture: Bool {
+        // The full press is part of the same feature: a phone without the button
+        // must not consume a capture event at all.
+        guard supportsCameraControl, cameraConfigured, lifecycleGate.isActive,
+              areHardwareControlsRequested else { return false }
+        if isRecording || isStartingRecording { return true }
+        return !isPhotoCaptureBusy && !isChangingFrameRate && !isChangingCaptureProfile
+            && !isSwitchingCameraLens
+    }
+
+    private func pushCameraHardwareControls() {
+#if DEBUG
+        if CommandLine.arguments.contains("--trace-camera-control") {
+            let state = "requested=\(areHardwareControlsRequested) presented=\(areHardwareControlsPresented) "
+                + "eligible=\(areHardwareControlsEligible) "
+                + "configured=\(cameraConfigured) active=\(lifecycleGate.isActive) mode=\(hardwareControlAdjustment) "
+                + "starting=\(isStartingRecording) recording=\(isRecording) stopping=\(isStoppingRecording) "
+                + "profile=\(isChangingCaptureProfile) lens=\(isSwitchingCameraLens) fps=\(isChangingFrameRate) "
+                + "photoBusy=\(isPhotoCaptureBusy) nativeIdle=\(usesNativeIdlePreview)"
+            if state != lastHardwareDiagnosticState {
+                lastHardwareDiagnosticState = state
+                CameraControlDiagnostics.record("vm-gate \(state)")
+            }
+        }
+#endif
+        session.updateHardwareControls(CameraHardwareControlRequest(
+            adjustment: hardwareControlAdjustment,
+            isEnabled: areHardwareControlsPresented,
+            displayZoom: usesNativeIdlePreview
+                ? photoCropZoom * (zoomSnapshot?.displayMultiplier ?? 1)
+                : zoomSnapshot?.displayFactor ?? 1,
+            exposureBias: liveExposureBias, usesNativeIdlePreview: usesNativeIdlePreview))
+    }
+
+    /// A slider value re-enters the same setters the touch controls use, so
+    /// shutter priority, photo development and persistence keep their single
+    /// owner. Values produced for an older camera revision are dropped: the
+    /// lens they were measured against is gone.
+    private func applyCameraHardwareControlValue(_ adjustment: CameraControlAdjustment,
+                                                _ value: Float, revision: UInt64) {
+#if DEBUG
+        CameraControlDiagnostics.record("vm-slider value=\(value) target=\(adjustment)/\(hardwareControlAdjustment) "
+            + "eligible=\(areHardwareControlsEligible) revision=\(revision)/\(String(describing: zoomSnapshot?.cameraRevision))")
+#endif
+        guard areHardwareControlsEligible, adjustment == hardwareControlAdjustment,
+              let snapshot = zoomSnapshot, snapshot.cameraRevision == revision else { return }
+        switch adjustment {
+        case .zoom: setDisplayZoom(Double(value))
+        case .exposure: setExposureBias(value)
+        case .off: break
+        }
+    }
+
     func toggleManualExposure() {
+        if isDevelopmentPhotoMode {
+            guard !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile, let state = photoExposureSnapshot else { return }
+            session.setDevelopmentPhotoISOLocked(!state.isoLocked)
+            return
+        }
         // A frame-rate transition owns the exposure path; hold the toggle too.
-        guard !isChangingFrameRate else { return }
+        guard !isChangingFrameRate, !isChangingCaptureProfile else { return }
         if isManualExposure {
             exposureCommandGeneration &+= 1
             let generation = exposureCommandGeneration
@@ -1013,14 +2048,41 @@ final class CameraViewModel {
     }
 
     private func refreshExposure() {
+        if usesNativeIdlePreview, isDevelopmentPhotoMode, let photoExposureSnapshot {
+            presentPhotoExposure(photoExposureSnapshot)
+            refreshPhotoAperture()
+            return
+        }
         refreshRecordingStabilization()
         liveISO = session.currentISO
         liveShutterSeconds = session.currentShutterSeconds
-        liveExposureTargetOffset = session.currentExposureTargetOffset
+        // A Video aperture choice waits for the take's graph, so the idle meter
+        // cannot show what it costs. Predict that here, or the EV indicator says
+        // 0 EV for a choice that will shoot nearly two stops darker.
+        liveExposureTargetOffset = CameraAperturePolicy.predictedExposureOffsetEV(
+            measuredOffset: session.currentExposureTargetOffset,
+            deviceAperture: liveAperture,
+            selectedAperture: selectedLensAperture,
+            isDeferred: usesSharedIdlePreview && !isDevelopmentPhotoMode)
         hasExposureMeter = session.hasExposureMeter
+        hintTick &+= 1
+        neutralSceneRequestGeneration &+= 1
+        let neutralGeneration = neutralSceneRequestGeneration
+        let neutralLensGeneration = cameraLensSwitchGeneration
+        let neutralFrameRateGeneration = frameRateGeneration
+        session.readNeutralSceneEstimate { [weak self] estimate in
+            guard let self, self.neutralSceneRequestGeneration == neutralGeneration,
+                  self.cameraLensSwitchGeneration == neutralLensGeneration,
+                  self.frameRateGeneration == neutralFrameRateGeneration else { return }
+            // Reject an older device revision, and preserve the actual read time
+            // so a delayed callback cannot make an old scene estimate fresh again.
+            let current = estimate.flatMap { $0.cameraRevision >= self.apertureCameraRevision ? $0 : nil }
+            self.neutralSceneKelvin = current?.kelvin
+            self.neutralSceneCapturedAt = current?.capturedAt
+        }
         apertureSnapshotRequestGeneration &+= 1
         let requestGeneration = apertureSnapshotRequestGeneration
-        session.readApertureSnapshot { [weak self] snapshot in
+        session.readApertureSnapshot(videoIntent: !isDevelopmentPhotoMode) { [weak self] snapshot in
             guard let self,
                   self.apertureSnapshotRequestGeneration == requestGeneration,
                   snapshot.cameraRevision >= self.apertureCameraRevision else { return }
@@ -1029,13 +2091,37 @@ final class CameraViewModel {
             self.apertureStops = snapshot.capability.stops
             self.apertureIsVariable = snapshot.capability.isVariable
             self.selectedLensAperture = snapshot.selected
+            self.traceApertureGate("snapshot")
         }
         // NOTE: liveExposureBias is intentionally NOT refreshed here. It is our
         // own compensation value, not the device's (which reads 0 in custom
         // exposure mode and is reset by every shutter-priority re-meter).
     }
 
+    private var photoApertureReadPending = false
+
+    private func refreshPhotoAperture() {
+        guard !photoApertureReadPending else { return }
+        photoApertureReadPending = true
+        // This read also runs off the continuous shared-idle snapshot, so it must
+        // use the same intent as the exposure poll: with Video owning the choice,
+        // reading the device's own (Auto) selection here overwrote the choice
+        // between polls and the control flickered f/1.5 <-> f/4.0.
+        session.readApertureSnapshot(videoIntent: !isDevelopmentPhotoMode) { [weak self] snapshot in
+            guard let self else { return }
+            self.photoApertureReadPending = false
+            guard self.usesNativeIdlePreview, !self.isSwitchingCameraLens else { return }
+            self.apertureCameraRevision = snapshot.cameraRevision
+            self.liveAperture = snapshot.measured
+            self.apertureStops = snapshot.capability.stops
+            self.apertureIsVariable = snapshot.capability.isVariable
+            self.selectedLensAperture = snapshot.selected
+            self.traceApertureGate("photo-snapshot")
+        }
+    }
+
     private func invalidateApertureUIState() {
+        traceApertureGate("invalidate")
         apertureSnapshotRequestGeneration &+= 1
         liveAperture = nil
         apertureStops = []
@@ -1057,6 +2143,7 @@ final class CameraViewModel {
 
     private func startShutterPriorityLoop() {
         stopShutterPriorityLoop()
+        guard !usesSharedIdlePreview else { return }
         shutterPriorityTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.session.refreshShutterPriority() }
         }

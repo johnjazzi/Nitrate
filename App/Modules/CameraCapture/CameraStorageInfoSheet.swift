@@ -28,13 +28,13 @@ struct CameraStorageInfoSheet: View {
     private var header: some View {
         HStack {
             Text("Storage")
-                .font(.title3.weight(.semibold))
+                .font(NitrateTypography.font(.title3).weight(.semibold))
             Spacer()
             Button {
                 dismiss()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.caption.weight(.bold))
+                    .font(NitrateTypography.font(.caption).weight(.bold))
                     .foregroundStyle(.white)
                     .padding(9)
             }
@@ -61,7 +61,7 @@ struct CameraStorageSummary: View {
             }
 
             Text("Estimate reserves 500 MB and allows for both the original and rendered copy. Photos copies and variable encoding can reduce actual time.")
-                .font(.footnote)
+                .font(NitrateTypography.font(.footnote))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -78,10 +78,10 @@ struct CameraStorageSummary: View {
                 .foregroundStyle(.secondary)
             Spacer(minLength: 12)
             Text(value)
-                .font(.body.monospacedDigit())
+                .font(NitrateTypography.font(.body).monospacedDigit())
                 .multilineTextAlignment(.trailing)
         }
-        .font(.subheadline)
+        .font(NitrateTypography.font(.subheadline))
     }
 
     private func formattedBytes(_ bytes: Int64?) -> String {

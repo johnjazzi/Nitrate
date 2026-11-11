@@ -18,6 +18,32 @@ struct CameraCapturePreservationProbeTests {
         }
     }
 
+    /// The reported take: a 0.143 s head gap and a 0.023 s tail difference. It
+    /// failed the strict 0.12 s measurement (correctly) and was then withheld
+    /// from rendering, which is what confused the operator. It is inside the
+    /// delivery window and must be rendered.
+    @Test func reportedTakeIsDeliveredDespiteExceedingTheStrictMeasurement() {
+        #expect(!isDeliverableStrict(skew: 0.143, endDifference: 0.023))
+        #expect(CameraCapturePreservationProbe.isDeliverable(skew: 0.143, endDifference: 0.023))
+    }
+
+    @Test func deliveryWindowIsTwoHundredMillisecondsAndInclusive() {
+        #expect(CameraCapturePreservationProbe.deliveryTolerance == 0.2)
+        #expect(CameraCapturePreservationProbe.isDeliverable(skew: 0.2, endDifference: 0.2))
+        #expect(CameraCapturePreservationProbe.isDeliverable(skew: -0.2, endDifference: 0))
+        #expect(!CameraCapturePreservationProbe.isDeliverable(skew: 0.201, endDifference: 0))
+        #expect(!CameraCapturePreservationProbe.isDeliverable(skew: 0, endDifference: 0.201))
+        // Unreadable movies are never deliverable, however the value compares.
+        #expect(!CameraCapturePreservationProbe.isDeliverable(skew: .nan, endDifference: 0))
+        #expect(!CameraCapturePreservationProbe.isDeliverable(skew: 0, endDifference: .infinity))
+    }
+
+    /// The strict measurement the smoke reports is unchanged by the delivery
+    /// window, so a device smoke still shows the tighter number.
+    private func isDeliverableStrict(skew: Double, endDifference: Double) -> Bool {
+        (try? CameraCapturePreservationProbe.validateSynchronization(skew: skew, endDifference: endDifference)) != nil
+    }
+
     @Test func emptyAudioEditCannotMasqueradeAsZeroStartSkew() {
         let delay = CMTime(seconds: 0.65, preferredTimescale: 48_000)
         let duration = CMTime(seconds: 3, preferredTimescale: 48_000)

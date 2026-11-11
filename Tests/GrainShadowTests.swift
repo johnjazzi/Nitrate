@@ -28,12 +28,16 @@ struct GrainShadowTests {
         let height: Int
     }
 
+    /// Mirror of the production layout in `Resources/Shaders/grain.metal`. It has
+    /// to stay byte-identical: the kernel reads the whole struct, so a short
+    /// buffer would leave `chromaAmount` reading past the end.
     private struct GrainUniforms {
         var frameIndex: UInt32
         var iso: Float
         var grainSize: Float
         var edgeBoostMultiplier: Float = 0
         var gaugeAmplitude: Float = 1.0
+        var chromaAmount: Float = GrainModel.videoChromaAmount
     }
 
     private final class BundleToken {}
@@ -209,7 +213,8 @@ struct GrainShadowTests {
         width requestedWidth: Int? = nil,
         height requestedHeight: Int? = nil,
         edgeBoostMultiplier: Float = 0,
-        gaugeAmplitude: Float = 1.0
+        gaugeAmplitude: Float = 1.0,
+        chromaAmount: Float = GrainModel.videoChromaAmount
     ) throws -> PixelStats {
         let width = requestedWidth ?? inputOverride?.width ?? side
         let height = requestedHeight ?? inputOverride?.height ?? side
@@ -217,7 +222,8 @@ struct GrainShadowTests {
         let output = try texture(device: device, format: .bgra8Unorm, usage: [.shaderWrite], width: width, height: height)
         var uniforms = GrainUniforms(
             frameIndex: frame, iso: iso, grainSize: grainSize,
-            edgeBoostMultiplier: edgeBoostMultiplier, gaugeAmplitude: gaugeAmplitude
+            edgeBoostMultiplier: edgeBoostMultiplier, gaugeAmplitude: gaugeAmplitude,
+            chromaAmount: chromaAmount
         )
         guard let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else {
             throw TestFailure("Could not encode production grain kernel")
@@ -478,6 +484,55 @@ struct GrainShadowTests {
                 #expect(stats.blackClipped[channel] == 0, "\(details)")
             }
         }
+    }
+
+    /// The still pipeline runs the same kernel as video with a much smaller dye-cloud
+    /// term. A/B both amounts through the production kernel on one flat probe: the
+    /// video amount has to stay chroma-visible, and the still amount has to be a
+    /// small fraction of it, so a single still cannot read as coloured specks.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func stillGrainChromaIsAFractionOfTheVideoDyeCloudTerm() throws {
+        let (device, queue, pipeline, volume) = try Self.setup()
+        let color = SIMD3<Float>(repeating: 0.5)
+
+        func chromaToLumaRatio(chromaAmount: Float) throws -> (ratio: Double, chroma: Double, luma: Double) {
+            var chromaSamples = [Double]()
+            var lumaSamples = [Double]()
+            for frame in Self.frames {
+                let stats = try Self.run(
+                    device: device, queue: queue, pipeline: pipeline, volume: volume,
+                    color: color, iso: 500, grainSize: 1.3, frame: frame,
+                    chromaAmount: chromaAmount
+                )
+                for pixel in 0..<(stats.width * stats.height) {
+                    let r = Double(stats.channels[0][pixel])
+                    let g = Double(stats.channels[1][pixel])
+                    let b = Double(stats.channels[2][pixel])
+                    chromaSamples.append(r - b)
+                    lumaSamples.append((r + g + b) / 3)
+                }
+            }
+            func sigma(_ values: [Double]) -> Double {
+                let mean = values.reduce(0, +) / Double(values.count)
+                return (values.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(values.count)).squareRoot()
+            }
+            let chroma = sigma(chromaSamples)
+            let luma = sigma(lumaSamples)
+            return (chroma / max(luma, 0.0001), chroma, luma)
+        }
+
+        let video = try chromaToLumaRatio(chromaAmount: GrainModel.videoChromaAmount)
+        let still = try chromaToLumaRatio(chromaAmount: GrainModel.stillChromaAmount)
+        let message = String(
+            format: "video chroma/luma = %.2f (chroma %.2f, luma %.2f) | still chroma/luma = %.2f (chroma %.2f, luma %.2f)",
+            video.ratio, video.chroma, video.luma, still.ratio, still.chroma, still.luma
+        )
+
+        // Measured through the production kernel on this probe: video ~0.31, still ~0.08.
+        // The video term has to stay visible; the still term has to sit near the 8-bit floor.
+        #expect(video.ratio >= 0.25, "Video grain keeps its dye-cloud colour term: \(message)")
+        #expect(still.ratio <= 0.12, "Still grain must read as luminance, not colour: \(message)")
+        #expect(video.ratio >= still.ratio * 3.5, "The still chroma term must be a fraction of the video one: \(message)")
     }
 
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))

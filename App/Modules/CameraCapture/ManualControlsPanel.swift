@@ -8,6 +8,8 @@ struct ManualControlsPanel: View {
     @Binding var isManualFocus: Bool
     @Binding var expanded: Bool
     let landscape: Bool
+    /// Live Zoom toggle shared with Settings: on shows the in-frame zoom ruler.
+    var zoomControlsEnabled: Binding<Bool> = .constant(false)
     let onDismiss: () -> Void
 
     var body: some View {
@@ -16,6 +18,7 @@ struct ManualControlsPanel: View {
                           set: { cameraViewModel.setDisplayZoom($0) }),
             focus: $manualFocusPosition, manualFocus: $isManualFocus,
             expanded: $expanded, landscape: landscape,
+            zoomControlsEnabled: zoomControlsEnabled,
             zoomRange: zoomRange,
             zoomIsPerLens: cameraViewModel.zoomSnapshot?.isPerLens ?? true,
             zoomAvailable: cameraViewModel.zoomSnapshot != nil,
@@ -28,27 +31,11 @@ struct ManualControlsPanel: View {
             dismiss: onDismiss,
             beginZoom: cameraViewModel.beginSlowZoom,
             endZoom: cameraViewModel.endSlowZoom(revision:),
-            stepZoom: { direction in
-                guard let snapshot = cameraViewModel.zoomSnapshot else { return }
-                let delta = direction == .in ? 0.1 : -0.1
-                cameraViewModel.setDisplayZoom(min(max(snapshot.displayFactor + delta,
-                                                        snapshot.minimumDisplayFactor), snapshot.maximumDisplayFactor))
-            }
+            stepZoom: cameraViewModel.stepDisplayZoom
         ) {
             apertureControl
         }
         .onDisappear { cameraViewModel.endSlowZoom() }
-        .onChange(of: manualFocusPosition) { _, value in
-            guard isManualFocus else { return }
-            cameraViewModel.session.setManualFocusPosition(Float(value))
-        }
-        .onChange(of: isManualFocus) { _, manual in
-            if manual {
-                cameraViewModel.session.setManualFocusPosition(Float(manualFocusPosition))
-            } else {
-                cameraViewModel.session.resetAutoFocus()
-            }
-        }
     }
 
     private var zoomRange: ClosedRange<Double> {
@@ -79,7 +66,7 @@ struct ManualControlsPanel: View {
                 Image(systemName: cameraViewModel.liveAperture == nil ? "minus.circle" : "lock.fill")
                 Text(cameraViewModel.liveAperture == nil ? "—" :
                         (cameraViewModel.apertureIsVariable ? "Read only" : "Fixed"))
-                    .font(.system(size: 9))
+                    .font(NitrateTypography.font(size: 9))
             }
             .foregroundStyle(.white.opacity(0.6))
             .accessibilityLabel("Aperture unavailable for adjustment")

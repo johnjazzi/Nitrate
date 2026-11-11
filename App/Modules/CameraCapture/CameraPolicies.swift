@@ -57,19 +57,47 @@ enum CameraCaptureFormatPolicy {
         let supports24FPS: Bool
         /// `videoSupportedFrameRateRanges` contains 60.
         let supports60FPS: Bool
+        /// `videoSupportedFrameRateRanges` contains 120. A 120 fps capture needs a
+        /// format whose ranges include 120; a 60-only range cannot deliver it.
+        let supports120FPS: Bool
         let isTenBitBiPlanar420: Bool
         let isTenBitBiPlanar422: Bool
+        let supportsHLG: Bool
 
         init(width: Int32, height: Int32, supportsAppleLog2: Bool,
              supports24FPS: Bool, isTenBitBiPlanar420: Bool = false,
-             isTenBitBiPlanar422: Bool = false, supports60FPS: Bool = false) {
+             isTenBitBiPlanar422: Bool = false, supports60FPS: Bool = false,
+             supports120FPS: Bool = false, supportsHLG: Bool = false) {
             self.width = width
             self.height = height
             self.supportsAppleLog2 = supportsAppleLog2
             self.supports24FPS = supports24FPS
             self.supports60FPS = supports60FPS
+            self.supports120FPS = supports120FPS
             self.isTenBitBiPlanar420 = isTenBitBiPlanar420
             self.isTenBitBiPlanar422 = isTenBitBiPlanar422
+            self.supportsHLG = supportsHLG
+        }
+        /// Whether this format's frame-rate ranges include `fps`. Rates the
+        /// selector does not know are never treated as supported.
+        func supports(fps: Int) -> Bool {
+            switch fps {
+            case 24: return supports24FPS
+            case 60: return supports60FPS
+            case 120: return supports120FPS
+            default: return false
+            }
+        }
+    }
+
+    static func hlgCandidateIndexes(in candidates: [Candidate], requested: CaptureFormat,
+                                    fps: Int, permittedProfile: CameraSourceProfile?) -> [Int] {
+        guard permittedProfile == .hlgBT2020, fps == 24 || fps == 60 else { return [] }
+        return candidates.indices.filter {
+            let candidate = candidates[$0]
+            return candidate.width == requested.width && candidate.height == requested.height
+                && candidate.supportsHLG && candidate.isTenBitBiPlanar420
+                && candidate.supports(fps: fps)
         }
     }
 
@@ -78,27 +106,62 @@ enum CameraCaptureFormatPolicy {
     }
 
     static func appleLog2CandidateIndexes(in candidates: [Candidate]) -> [Int] {
-        let matches = candidates.indices.filter {
-            let candidate = candidates[$0]
-            return candidate.width == 3840 && candidate.height == 2160
-                && candidate.supportsAppleLog2 && candidate.supports24FPS
-                && (candidate.isTenBitBiPlanar420 || candidate.isTenBitBiPlanar422)
-        }
-        return matches.filter { candidates[$0].isTenBitBiPlanar420 }
-            + matches.filter { candidates[$0].isTenBitBiPlanar422 }
+        appleLog2EligibleCandidateIndexes(in: candidates, fps: 24)
     }
 
     /// Parallel to `appleLog2CandidateIndexes`, but requires a 60 fps range.
     /// `.standard24` selection is unchanged; `.daylight60` uses this.
     static func appleLog2SixtyCandidateIndexes(in candidates: [Candidate]) -> [Int] {
-        let matches = candidates.indices.filter {
+        appleLog2EligibleCandidateIndexes(in: candidates, fps: 60)
+    }
+
+    /// The one rate-aware 4K Apple Log 2 10-bit selector: geometry, color space,
+    /// bit depth and a frame-rate range that actually includes `fps`. `.high120`
+    /// uses this with 120 so a 60-only format can never be chosen for 120.
+    static func appleLog2EligibleCandidateIndexes(in candidates: [Candidate], fps: Int) -> [Int] {
+        eligibleCandidateIndexes(in: candidates, format: .uhd16x9, fps: fps)
+    }
+
+    /// The capture-format-aware selector. Both formats require Apple Log 2,
+    /// ten-bit bi-planar source and a frame-rate range that really includes
+    /// `fps`, so a missing rate is refused rather than downgraded.
+    ///
+    /// * UHD 16:9 keeps the shipping rule exactly: 3840x2160, 4:2:0 preferred
+    ///   over 4:2:2 for compatibility with every device that has shipped.
+    /// * Open Gate 2K requires the native 1920x1440 10-bit **4:2:2** format. A
+    ///   4:2:0 format at the same size is not eligible: the open-gate contract
+    ///   is the 4:2:2 sensor readout, and selecting the 4:2:0 one would change
+    ///   chroma resolution without saying so.
+    static func eligibleCandidateIndexes(in candidates: [Candidate],
+                                         format: CaptureFormat, fps: Int) -> [Int] {
+        let geometryMatches = candidates.indices.filter {
             let candidate = candidates[$0]
-            return candidate.width == 3840 && candidate.height == 2160
-                && candidate.supportsAppleLog2 && candidate.supports60FPS
-                && (candidate.isTenBitBiPlanar420 || candidate.isTenBitBiPlanar422)
+            return candidate.width == format.width && candidate.height == format.height
+                && candidate.supportsAppleLog2 && candidate.supports(fps: fps)
         }
-        return matches.filter { candidates[$0].isTenBitBiPlanar420 }
-            + matches.filter { candidates[$0].isTenBitBiPlanar422 }
+        switch format {
+        case .uhd16x9:
+            let tenBit = geometryMatches.filter {
+                candidates[$0].isTenBitBiPlanar420 || candidates[$0].isTenBitBiPlanar422
+            }
+            return tenBit.filter { candidates[$0].isTenBitBiPlanar420 }
+                + tenBit.filter { candidates[$0].isTenBitBiPlanar422 }
+        case .openGate2K:
+            return geometryMatches.filter { candidates[$0].isTenBitBiPlanar422 }
+        }
+    }
+
+    /// Whether any candidate can deliver `format` at `fps`. Capability gating
+    /// reads this so the UI hides an option the hardware cannot honour.
+    static func supports(_ format: CaptureFormat, in candidates: [Candidate], fps: Int = 24) -> Bool {
+        !eligibleCandidateIndexes(in: candidates, format: format, fps: fps).isEmpty
+    }
+
+    /// Every capture format this hardware exposes, always including the UHD
+    /// baseline. Order follows `CaptureFormat.allCases` so the settings picker
+    /// reads in a stable order.
+    static func availableFormats(in candidates: [Candidate], fps: Int = 24) -> [CaptureFormat] {
+        CaptureFormat.allCases.filter { supports($0, in: candidates, fps: fps) }
     }
 }
 
@@ -208,6 +271,73 @@ enum CameraAperturePolicy {
         }
     }
 
+    /// The aperture the in-frame control prints.
+    ///
+    /// A Video choice is an intent the idle device never takes, so printing only
+    /// the hardware value left the control looking dead while the take really did
+    /// shoot at the chosen stop. The choice wins when there is one; the measured
+    /// iris is the fallback, in Auto and on a fixed-aperture lens.
+    static func displayAperture(selected: Float?, measured: Float?) -> Float? {
+        selected ?? measured
+    }
+
+    /// Exposure the operator will get from a Video aperture choice that has not
+    /// reached the device yet.
+    ///
+    /// While the shared idle still profile owns the device, Video's aperture is
+    /// an intent for the take's own graph: the idle device keeps its iris, so the
+    /// meter's own offset says nothing about the stops the choice costs. Without
+    /// this the EV indicator read 0 EV for a choice that would shoot two stops
+    /// darker. A wider chosen iris (smaller f-number) adds light, so the sign is
+    /// positive in that direction.
+    static func predictedExposureOffsetEV(measuredOffset: Float, deviceAperture: Float?,
+                                          selectedAperture: Float?, isDeferred: Bool) -> Float {
+        guard isDeferred, measuredOffset.isFinite,
+              let deviceAperture, deviceAperture.isFinite, deviceAperture > 0,
+              let selectedAperture, selectedAperture.isFinite, selectedAperture > 0 else {
+            return measuredOffset
+        }
+        guard abs(selectedAperture - deviceAperture) > 0.001 else { return measuredOffset }
+        return measuredOffset + 2 * log2(deviceAperture / selectedAperture)
+    }
+
+    /// Which aperture the UI should show as selected.
+    ///
+    /// While the shared idle still profile owns the device, a Video choice is an
+    /// intent: it is stored for the take's own graph and deliberately not written
+    /// to the idle device, so the device's own selection stays at Auto. Reporting
+    /// the device value here made every 0.5 s exposure poll overwrite the
+    /// operator's choice, which reads as an aperture control that refuses to take
+    /// a value. Photo and every non-shared graph keep reading the device.
+    static func reportedSelection(videoIntent: Bool, sharedIdleLeaseActive: Bool,
+                                  videoAperture: Float?, deviceSelection: Float?) -> Float? {
+        guard sharedIdleLeaseActive, videoIntent else { return deviceSelection }
+        return videoAperture
+    }
+
+#if os(iOS)
+    /// The active format's iris capability, read live from the device. iOS-only:
+    /// the iris properties do not exist on macOS, where this file also builds.
+    @available(iOS 27.0, *)
+    static func capability(for device: AVCaptureDevice) -> Capability {
+        let format = device.activeFormat
+        return capability(recommended: format.recommendedLensApertureStops,
+                          minimum: format.minLensAperture, maximum: format.maxLensAperture)
+    }
+#endif
+
+    /// The aperture a controller can actually hold on a device with `capability`.
+    ///
+    /// A lens whose iris cannot vary has nothing to hold, and a stop chosen on a
+    /// different lens is reconciled to the nearest stop this one reports. Holding
+    /// the carried-over stop regardless is what made a lens switch fail the next
+    /// exposure write with `unsupportedMode` and report a recording error on a
+    /// take that was never in trouble.
+    static func heldAperture(_ requested: Float?, capability: Capability) -> Float? {
+        guard let requested, capability.isVariable else { return nil }
+        return reconcile(requested, with: capability)
+    }
+
     /// `nil` represents Auto. Explicit choices are reconciled to the nearest
     /// stop reported by the new active format.
     static func reconcile(_ selected: Float?, with capability: Capability) -> Float? {
@@ -295,6 +425,9 @@ enum CameraSampleValidationPolicy {
 
         static let landscape4K = CodedDimensions(validatedWidth: 3840, height: 2160)
         static let portrait4K = CodedDimensions(validatedWidth: 2160, height: 3840)
+        /// The 2K open gate readout: native 4:3, full sensor height.
+        static let landscape2K = CodedDimensions(validatedWidth: 1920, height: 1440)
+        static let portrait2K = CodedDimensions(validatedWidth: 1440, height: 1920)
 
         private init(validatedWidth width: Int, height: Int) {
             self.width = width
@@ -302,10 +435,13 @@ enum CameraSampleValidationPolicy {
         }
 
         init?(width: Int, height: Int) {
-            guard (width == 3840 && height == 2160) || (width == 2160 && height == 3840) else {
-                return nil
+            switch (width, height) {
+            case (3840, 2160): self.init(validatedWidth: width, height: height)
+            case (2160, 3840): self.init(validatedWidth: width, height: height)
+            case (1920, 1440): self.init(validatedWidth: width, height: height)
+            case (1440, 1920): self.init(validatedWidth: width, height: height)
+            default: return nil
             }
-            self.init(validatedWidth: width, height: height)
         }
 
         var isPortrait: Bool { height > width }
@@ -360,15 +496,35 @@ enum CameraSampleValidationPolicy {
         return "com.apple.apple-wide-gamut.apple-log"
     }
 
-    static func preferredTenBitPixelFormats(from available: [UInt32]) -> [UInt32] {
+    @available(iOS 27.0, macOS 27.0, *)
+    static func originalColorProperties(for profile: CameraSourceProfile) -> [String: String] {
+        if profile == .hlgBT2020 {
+            return [AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
+                    AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
+                    AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020]
+        }
+        return [AVVideoLogTransferFunctionKey: AVVideoLogTransferFunction_AppleLog2,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020]
+    }
+
+    /// Ten-bit formats in preference order. `preferFourTwoTwo` is set when the
+    /// active capture format is itself 4:2:2: feeding the encoder from the
+    /// richer chroma source avoids one generation of sub-sampling before the
+    /// encode. A device that rejects it still falls back through the list.
+    static func preferredTenBitPixelFormats(from available: [UInt32],
+                                            preferFourTwoTwo: Bool = false) -> [UInt32] {
         let tenBit420: Set<UInt32> = [0x78343230, 0x78663230] // x420, xf20
         let tenBit422: Set<UInt32> = [0x78343232, 0x78663232] // x422, xf22
-        return available.filter { tenBit420.contains($0) } + available.filter { tenBit422.contains($0) }
+        let fourTwoZero = available.filter { tenBit420.contains($0) }
+        let fourTwoTwo = available.filter { tenBit422.contains($0) }
+        return preferFourTwoTwo ? fourTwoTwo + fourTwoZero : fourTwoZero + fourTwoTwo
     }
 
     static func firstUsableTenBitPixelFormat(from available: [UInt32],
+                                             preferFourTwoTwo: Bool = false,
                                              isUsable: (UInt32) -> Bool) -> UInt32? {
-        preferredTenBitPixelFormats(from: available).first(where: isUsable)
+        preferredTenBitPixelFormats(from: available, preferFourTwoTwo: preferFourTwoTwo)
+            .first(where: isUsable)
     }
 
     static func fourCCDescription(_ value: UInt32) -> String {
@@ -397,13 +553,23 @@ enum CameraSampleValidationPolicy {
 
     static func rejectionReasons(width: Int, height: Int, pixelFormat: UInt32,
                                  acceptedPixelFormats: Set<UInt32>, logTransfer: String?,
-                                 matrix: String?, primaries: String?, transfer: String?) -> [String] {
+                                 matrix: String?, primaries: String?, transfer: String?,
+                                 sourceProfile: CameraSourceProfile = .appleLog2) -> [String] {
         var reasons: [String] = []
         if CodedDimensions(width: width, height: height) == nil {
-            reasons.append("format dimensions are \(width)x\(height), expected 3840x2160 or 2160x3840")
+            reasons.append("format dimensions are \(width)x\(height), expected 3840x2160, 2160x3840, 1920x1440 or 1440x1920")
         }
         if !acceptedPixelFormats.contains(pixelFormat) {
             reasons.append("pixel format \(fourCCDescription(pixelFormat)) was not negotiated")
+        }
+        if sourceProfile == .hlgBT2020 {
+            if pixelFormat != 0x78343230 { reasons.append("HLG requires native x420") }
+            if logTransfer != nil || primaries != (kCVImageBufferColorPrimaries_ITU_R_2020 as String)
+                || transfer != (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String) {
+                reasons.append("expected HLG BT.2020 source tags without Log transfer")
+            }
+            if matrix != "ITU_R_2020" { reasons.append("expected BT.2020 YCbCr matrix") }
+            return reasons
         }
         if !isAppleLog2(logTransfer) {
             reasons.append("Log transfer is \(logTransfer ?? "missing"), expected Apple Log 2")
@@ -434,6 +600,18 @@ enum CameraSampleValidationPolicy {
 
     static func shouldFailForFrameDrops(recentDropCount: Int, threshold: Int = 3) -> Bool {
         recentDropCount >= threshold
+    }
+
+    /// Whether a dropped frame belongs to the encoder's start-up rather than a
+    /// failing take. The first append pays a one-time encoder initialisation
+    /// that blocks the delegate queue; a 60 fps source spills several frames into
+    /// the pool during it. Those are priming cost. Nothing before the first
+    /// accepted frame, and nothing after the bounded window, is excused.
+    static func isEncoderPrimingDrop(firstAppended: Double?, dropTime: Double,
+                                     window: Double = 0.5) -> Bool {
+        guard let firstAppended else { return true }
+        guard firstAppended.isFinite, dropTime.isFinite else { return false }
+        return dropTime - firstAppended < window
     }
 
     static func dropTimesWithinWindow(_ times: [Double], now: Double, window: Double = 2) -> [Double] {
@@ -844,6 +1022,21 @@ enum ExposureIndicatorPolicy {
 enum CameraExposureBiasPreference {
     static let preferenceKey = "camera.exposureBiasEV"
 
+    /// UI-test isolation: a runner-driven process must neither read nor write the
+    /// operator's stored compensation.
+    ///
+    /// A test toggles manual exposure by long-pressing the exposure column, and
+    /// that column is a value ruler: the press can land on a detent and the app
+    /// then holds (and saved) that value for real. Automated runs left the app
+    /// opening at whichever end of the range a synthetic finger happened to hit
+    /// — which reads to the operator as "the EV is always wrong by default". The
+    /// tests therefore launch with this argument and see the house default only.
+    static let isolationArgument = "--ui-isolated-defaults"
+
+    static var isIsolated: Bool {
+        CommandLine.arguments.contains(isolationArgument)
+    }
+
     /// A little over a stop under the meter. It holds highlight detail in the
     /// ordinary daylight this camera is usually pointed at, and it sits inside
     /// the ±3 EV span `CameraSession.exposureBiasRange` permits on every device.
@@ -864,12 +1057,13 @@ enum CameraExposureBiasPreference {
     }
 
     static func load(from defaults: UserDefaults = .standard) -> Float {
-        resolved(storedValue(in: defaults))
+        guard !isIsolated else { return defaultValue }
+        return resolved(storedValue(in: defaults))
     }
 
     /// Persist the value the app is actually holding, i.e. after device clamping.
     static func save(_ ev: Float, to defaults: UserDefaults = .standard) {
-        guard ev.isFinite else { return }
+        guard ev.isFinite, !isIsolated else { return }
         defaults.set(ev, forKey: preferenceKey)
     }
 }

@@ -1,4 +1,5 @@
 #include <metal_stdlib>
+#include "hlg-input.h"
 using namespace metal;
 
 struct CameraPreviewUniforms {
@@ -6,6 +7,7 @@ struct CameraPreviewUniforms {
     uint quarterTurns;
     uint mirrored;
     uint fullRange;
+    uint hlg;
 };
 struct CameraPreviewVertex { float4 position [[position]]; float2 uv; };
 
@@ -41,6 +43,7 @@ fragment float4 cameraPreviewFragment(CameraPreviewVertex in [[stage_in]],
     float2 c = (cCode - 512.0) / (u.fullRange ? 1023.0 : 896.0);
     // YCbCr matrix only: these RGB values are still Apple Log 2 encoded.
     float3 logRGB = float3(y + 1.4746*c.y, y - .164553*c.x - .571353*c.y, y + 1.8814*c.x);
+    if (u.hlg) logRGB = hlg_to_lut_input(logRGB);
     float3 size = float3(lut.get_width(), lut.get_height(), lut.get_depth());
     float3 coordinates = (clamp(logRGB, 0.0, 1.0) * (size - 1.0) + .5) / size;
     // Neutral LUT output is Rec.709 encoded. BGRA8Unorm + tagged display layer,
@@ -202,13 +205,16 @@ fragment float4 platePreviewFragment(PlatePreviewVertex in [[stage_in]],
         // Fade to that value so subpixel grain reads as fine texture instead of aliasing.
         float cellDrawable = u.footprint / max(referenceScale, 1e-6f);
         float damping = saturate(cellDrawable);
-        // `pass2_grain` modulates its amount by the graded luma's latitude: grain fades out of
-        // the deepest shadows so it never lifts the black point, and out of the brightest
-        // highlights so it never crusts a specular. The preview applies the same window, so
-        // the card's grain is the renderer's grain rather than a flat overlay.
+        // `pass2_grain` modulates its amount by the graded luma's latitude: the toe
+        // smoothstep starts at zero so a true black keeps an exactly zero excursion,
+        // and the wide 0.56-1.0 shoulder cleans bright tones earlier than the old
+        // 0.78-0.98 window while leaving a faint trace at white. The preview applies
+        // the same window, so the card's grain is the renderer's grain rather than a
+        // flat overlay.
         float luminance = dot(graded, float3(0.2126f, 0.7152f, 0.0722f));
-        float latitude = smoothstep(0.015f, 0.13f, luminance)
-            * (1.0f - smoothstep(0.78f, 0.98f, luminance));
+        float toe = smoothstep(0.06f, 0.24f, luminance);
+        float shoulder = 1.0f - smoothstep(0.56f, 1.0f, luminance);
+        float latitude = toe * shoulder;
         graded = clamp(graded + noise * u.amplitude * damping * latitude, 0.0f, 1.0f);
     }
     return float4(graded, 1);

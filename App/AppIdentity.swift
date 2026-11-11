@@ -20,10 +20,11 @@ enum AppVersion {
     static let fallbackMarketing = "0.0.0"
     static let fallbackBuild = "0"
 
-    /// The stage suffix shown by the splash and Settings → About. TestFlight
-    /// builds are `.beta`; set this to `nil` for an App Store release. Both
-    /// surfaces read this value, so they cannot disagree.
-    static let stage: Stage? = .beta
+    /// No stage suffix is shown on any build. A visible `BETA` marker made a
+    /// shipping submission look like a beta to App Review (guideline 2.2), and
+    /// the build number already identifies each upload. The formatting helpers
+    /// below keep the suffix available for local experiments only.
+    static let stage: Stage? = nil
 
     static func marketing(bundle: Bundle = .main) -> String {
         string(forKey: "CFBundleShortVersionString", in: bundle) ?? fallbackMarketing

@@ -62,6 +62,22 @@ struct RulerDetents {
     }
 }
 
+/// Signed finger travel for one ruler drag, before `RulerDragState` consumes it.
+///
+/// The default sense is the shared one every existing ruler relies on: dragging
+/// up (vertical) or left (horizontal) raises the value. Setting `reversed`
+/// mirrors that sense so the tick strip travels with the finger, the way a
+/// camera dial turns under it — used by the Photo shutter ruler.
+struct RulerDragDirection: Sendable {
+    let horizontal: Bool
+    var reversed: Bool = false
+
+    func travel(width: Double, height: Double) -> Double {
+        let base = horizontal ? -width : height
+        return reversed ? -base : base
+    }
+}
+
 /// Keeps total gesture translation anchored to the original (unsnapped) start.
 /// This continuous candidate must not be used as the rendered selection.
 struct RulerDragState {

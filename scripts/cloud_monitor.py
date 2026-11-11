@@ -162,11 +162,36 @@ class NetworkError(MonitorError):
     exit_code = EXIT_SHAPE
 
 
+class RunStatusUnreadable(MonitorError):
+    """The run was started and identified, but its status could not be read.
+
+    Deliberately distinct from a failed or unknown LAUNCH: the run id is known
+    here, so the operator is told exactly which build may still be running
+    instead of being told the launch outcome is unknown.
+    """
+    exit_code = EXIT_SHAPE
+
+
 class ApiError(MonitorError):
     def __init__(self, message: str, *, status: Optional[int] = None):
         super().__init__(message)
         self.status = status
         self.exit_code = EXIT_AUTH if status in (401, 403) else EXIT_SHAPE
+
+
+# How many times a status read is retried after a transient failure. App Store
+# Connect returns sporadic 5xx responses; one of them while a build is RUNNING
+# says nothing about the launch, so it must not fail the job.
+STATUS_READ_ATTEMPTS = 4
+
+
+def is_transient_failure(error: BaseException) -> bool:
+    """True for failures worth retrying: 5xx, rate limiting, or a lost network."""
+    if isinstance(error, NetworkError):
+        return True
+    if isinstance(error, ApiError):
+        return error.status is None or error.status == 429 or error.status >= 500
+    return False
 
 
 class SourceCommitMismatch(MonitorError):
@@ -1215,6 +1240,35 @@ class CloudMonitor:
                     headline=headline, body=body, annotation=annotation)
         raise SourceCommitMismatch(f"source commit mismatch: {reported} != {self.config.expected_sha}")
 
+    def _read_run(self, run: RunRecord) -> dict:
+        """Read one run status, retrying transient API failures.
+
+        The run is already identified at this point, so a sporadic 5xx is a
+        read failure, never an unknown launch: retrying absorbs it, and if the
+        API stays unavailable the failure names the known run id. Retries stay
+        inside the alert deadline, so a genuinely dead API still fails the job
+        rather than hanging.
+        """
+        attempt = 0
+        while True:
+            try:
+                return self.get_run(run.run_id)
+            except MonitorError as error:
+                transient = is_transient_failure(error)
+                exhausted = attempt >= STATUS_READ_ATTEMPTS - 1
+                remaining = self._remaining_budget()
+                if not transient or exhausted or remaining <= 1.0:
+                    if transient:
+                        raise RunStatusUnreadable(
+                            f"could not read run {run.run_id} after "
+                            f"{attempt + 1} attempt(s): {error}") from error
+                    raise
+                delay = min(2.0 * (2 ** attempt), remaining - 1.0)
+                self.log(f"transient status read failure for run {run.run_id} "
+                         f"({error}); retrying in {delay:.1f}s")
+                self.clock.sleep(delay)
+                attempt += 1
+
     def _poll(self, run: RunRecord) -> int:
         deadline = self.config.alert_deadline_seconds
         verified_sha = False
@@ -1226,7 +1280,7 @@ class CloudMonitor:
             if elapsed >= deadline:
                 return self._deadline_failure(run, elapsed)
 
-            current = self.get_run(run.run_id)
+            current = self._read_run(run)
 
             attributes = current.get("attributes") or {}
             progress = attributes.get("executionProgress")
@@ -1311,6 +1365,33 @@ class CloudMonitor:
         self.log(message)
         print(f"::warning title=Xcode Cloud monitor::{message}")
         self.summary.write(f"## Interrupted\n\n{message}\n")
+
+    def run_status_unreadable_notice(self, error: Exception) -> None:
+        """The run is known, but its status could not be read.
+
+        This is not an unknown launch — the run id is known — so the operator is
+        told which build to check. The API has no cancel endpoint, so the
+        monitor cannot stop it either way.
+        """
+        run = self.run
+        run_id = run.run_id if run is not None else "unknown"
+        number = run.number if run is not None and run.number is not None else "unknown"
+        headline = "CLOUD RUN STATUS UNREADABLE — RUN MAY STILL BE RUNNING"
+        body = (
+            f"The run was started and identified, but its status could not be "
+            f"read: {error}\n\n"
+            f"- Run id: `{run_id}`\n"
+            f"- Run number: `{number}`\n"
+            f"- Target: {self.config.target()}\n\n"
+            "The build was launched, so it may still be running. The App Store "
+            "Connect API exposes **no cancel endpoint**: check Xcode Cloud for "
+            "this build and cancel it manually only if it should not finish. "
+            "Re-running this job would start a second build."
+        )
+        self._alert(marker=f"<!-- cloud-monitor-alert:status-unreadable:{run_id} -->",
+                    headline=headline, body=body,
+                    annotation=f"Xcode Cloud run {run_id} was started but its status "
+                               "could not be read; it may still be running")
 
     def launch_uncertain_notice(self, error: Exception) -> None:
         """Warn that a launch was attempted but its outcome is unknown.
@@ -1460,6 +1541,9 @@ def main(argv: Optional[list[str]] = None, env: Optional[dict] = None,
         if isinstance(error, SourceCommitMismatch):
             # _verify_sha already emitted the dedicated source-mismatch alert.
             log(f"cloud-monitor: {message}")
+        elif isinstance(error, RunStatusUnreadable) and monitor is not None:
+            # The run is identified: report the build, not an unknown launch.
+            monitor.run_status_unreadable_notice(error)
         elif monitor is not None and monitor.launch_attempted and not monitor.completed_confirmed:
             # The POST was sent and the run never reached COMPLETE: the build may
             # exist and still be running, so warn to check/cancel manually.
