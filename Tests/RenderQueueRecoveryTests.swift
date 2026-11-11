@@ -70,35 +70,53 @@ struct RenderQueueRecoveryTests {
 
     // MARK: - Paid render gate
 
-    @Test func expiredEvaluationHoldsRenderingButKeepsTheTake() async throws {
+    @Test func expiredEvaluationStillSavesTheCaptureAsAnOriginal() async throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }
         try Data([4, 5, 6]).write(to: files.output)
         var renders = 0
-        var allowed = false
+        var saves: [URL] = []
         let model = RenderQueueViewModel(persistenceURL: files.persistence,
                                          render: { _ in renders += 1; return files.output },
-                                         save: { _ in }, sessionId: launchSession)
-        model.renderAllowed = { allowed }
+                                         save: { url in saves.append(url) }, sessionId: launchSession)
+        model.renderAllowed = { false }
         model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
                       deliveryPreferences: RenderDeliveryPreferences())
 
-        try await Task.sleep(for: .milliseconds(30))
-        #expect(model.isRenderPausedForAccess)
-        #expect(renders == 0)
-        #expect(model.jobs.first?.status == .pending)
-        // Holding the job is expected, not a failure: a capture that is waiting
-        // for access must never present as a render error (the take is already
-        // safe), so the queue reports it through the pause state only.
-        #expect(model.rendererErrorMessage == nil)
-        #expect(FileManager.default.fileExists(atPath: files.source.path))
-
-        // Subscribing releases the held work without losing it.
-        allowed = true
-        model.renderAccessDidChange()
+        // Saving never waits for a purchase: the capture is delivered as its
+        // original and the film look is skipped.
         try await waitUntil { model.jobs.first?.status == .completed }
-        #expect(renders == 1)
+        #expect(renders == 0)
+        #expect(saves == [files.source])
+        #expect(model.jobs.first?.sourceSavedToPhotos == true)
+        #expect(model.jobs.first?.originalOnly == true)
+        #expect(model.rendererErrorMessage == nil)
         #expect(!model.isRenderPausedForAccess)
+    }
+
+    @Test func expiredEvaluationDeliversAPhotoOriginalNotAValidationFailure() async throws {
+        let files = try scratch()
+        defer { try? FileManager.default.removeItem(at: files.directory) }
+        let dng = files.directory.appendingPathComponent("frame.dng")
+        try Data([1, 2, 3, 4]).write(to: dng)
+        var renders = 0
+        var saves: [URL] = []
+        let model = RenderQueueViewModel(persistenceURL: files.persistence,
+                                         render: { _ in renders += 1; return files.output },
+                                         save: { url in saves.append(url) }, sessionId: launchSession)
+        model.renderAllowed = { false }
+        model.enqueuePhoto(sourceURL: dng, stockId: "test", iso: 400, gauge: .neutral,
+                           cropZoom: 1, seed: 0)
+
+        // A photo original is a DNG. Routing it through the video saver made
+        // the delivery fail as an invalid recording, so it is saved as a photo.
+        try await waitUntil { model.jobs.first?.status == .completed }
+        #expect(renders == 0)
+        #expect(saves == [dng])
+        #expect(model.jobs.first?.isPhoto == true)
+        #expect(model.jobs.first?.sourceSavedToPhotos == true)
+        #expect(model.jobs.first?.errorMessage == nil)
+        #expect(model.rendererErrorMessage == nil)
     }
 
     @Test func rescueDeliveryIsNeverGatedByThePaidRenderFeature() async throws {
@@ -116,28 +134,30 @@ struct RenderQueueRecoveryTests {
         #expect(!model.isRenderPausedForAccess)
     }
 
-    @Test func relaunchWhileUnsubscribedKeepsHeldJobsPending() async throws {
+    @Test func relaunchWhileUnsubscribedStillDeliversTheOriginal() async throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }
         try Data([4, 5, 6]).write(to: files.output)
         var renders = 0
+        var saves: [URL] = []
         let model = RenderQueueViewModel(persistenceURL: files.persistence,
                                          render: { _ in renders += 1; return files.output },
-                                         save: { _ in }, sessionId: launchSession)
+                                         save: { url in saves.append(url) }, sessionId: launchSession)
         model.renderAllowed = { false }
         model.enqueue(sourceURL: files.source, stockId: "test", iso: 400,
                       deliveryPreferences: RenderDeliveryPreferences())
-        try await Task.sleep(for: .milliseconds(20))
-        #expect(model.jobs.first?.status == .pending)
+        try await waitUntil { model.jobs.first?.status == .completed }
 
+        // A relaunch with no access must not resurrect a held job or lose the
+        // take: the original is the delivery, and nothing renders.
         let relaunched = RenderQueueViewModel(persistenceURL: files.persistence,
                                               render: { _ in renders += 1; return files.output },
-                                              save: { _ in }, sessionId: launchSession)
+                                              save: { url in saves.append(url) }, sessionId: launchSession)
         relaunched.renderAllowed = { false }
         relaunched.onAppear()
-        try await Task.sleep(for: .milliseconds(30))
+        try await Task.sleep(for: .milliseconds(50))
         #expect(relaunched.jobs.count == 1)
-        #expect(relaunched.isRenderPausedForAccess)
+        #expect(relaunched.jobs.first?.status == .completed)
         #expect(renders == 0)
     }
 

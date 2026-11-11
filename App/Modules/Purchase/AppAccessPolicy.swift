@@ -162,6 +162,13 @@ enum AppAccessPolicy {
         return channel
     }
 
+    /// An install anchor that is already past the included period. Used by the
+    /// developer "expire evaluation" action so the no-access path can be
+    /// exercised without waiting for the real deadline to arrive.
+    static func expiredAnchor(now: Date) -> Date {
+        now.addingTimeInterval(-(trialDuration + 24 * 60 * 60))
+    }
+
     /// A channel that could not be resolved this launch keeps the last verified
     /// channel. Without this, an offline sandbox tester is locked out of capture
     /// while the App Store is unreachable; a production user is unaffected
