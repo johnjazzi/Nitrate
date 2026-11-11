@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// AD-1: Purchase/settings screen — 7-day trial, $4.99/year, $9.99 lifetime.
+/// AD-1: Purchase/settings screen — 20-day evaluation, $4.99/year, $9.99 lifetime.
 struct PurchaseView: View {
     @State var viewModel: PurchaseViewModel
     @Binding var showFramedPreview: Bool
@@ -56,26 +56,34 @@ struct PurchaseView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    // Trial status
-                    trialStatusSection
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 24) {
+                        // Access status, and the way to the purchase options.
+                        trialStatusSection(revealPricing: {
+                            pricingExpanded = true
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                proxy.scrollTo(Self.pricingAnchor, anchor: .top)
+                            }
+                        })
 
-                    // Preview mode
-                    previewModeSection
-                    filmStocksSection
-                    exportSection
+                        // Preview mode
+                        previewModeSection
+                        filmStocksSection
+                        exportSection
 
 #if DEBUG
-                    debugSection
+                        debugSection
 #endif
 
-                    // App info
-                    appInfoSection
-                    pricingDisclosure
-                    legalDisclosure
+                        // App info
+                        appInfoSection
+                        pricingDisclosure
+                            .id(Self.pricingAnchor)
+                        legalDisclosure
+                    }
+                    .padding()
                 }
-                .padding()
             }
             .navigationTitle("Settings")
             .onAppear {
@@ -130,7 +138,12 @@ struct PurchaseView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private var trialStatusSection: some View {
+    /// Anchor the status card scrolls to when it offers the purchase options.
+    private static let pricingAnchor = "settings.pricing"
+
+    /// Access status at the top of Settings: how long rendering is included, or
+    /// that it is unlocked, plus the one action that matters from here.
+    private func trialStatusSection(revealPricing: @escaping () -> Void) -> some View {
         VStack(spacing: 8) {
 #if DEBUG || NITRATE_LOCAL_DEVELOPMENT
             if viewModel.isDevelopmentBuild {
@@ -144,10 +157,10 @@ struct PurchaseView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             } else {
-                customerTrialStatusContent
+                customerTrialStatusContent(revealPricing: revealPricing)
             }
 #else
-            customerTrialStatusContent
+            customerTrialStatusContent(revealPricing: revealPricing)
 #endif
         }
         .padding()
@@ -156,7 +169,7 @@ struct PurchaseView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    @ViewBuilder private var customerTrialStatusContent: some View {
+    @ViewBuilder private func customerTrialStatusContent(revealPricing: @escaping () -> Void) -> some View {
         if viewModel.isPurchased {
             Image(systemName: "checkmark.seal.fill")
                 .font(NitrateTypography.font(.largeTitle))
@@ -167,19 +180,45 @@ struct PurchaseView: View {
             Image(systemName: "clock.badge.checkmark")
                 .font(NitrateTypography.font(.largeTitle))
                 .foregroundStyle(.tint)
-            Text("Free Trial")
+            Text(daysRemainingTitle)
                 .font(NitrateTypography.font(.title2).bold())
-            Text("\(viewModel.daysRemaining) days remaining")
+            // Literal: this period is included, it does not turn into a
+            // subscription by itself, and nothing is charged when it ends.
+            Text("Film rendering is included. No charge, and nothing starts a subscription.")
+                .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            purchaseOptionsButton(revealPricing: revealPricing)
         } else {
             Image(systemName: "lock.fill")
                 .font(NitrateTypography.font(.largeTitle))
                 .foregroundStyle(.secondary)
-            Text("Trial Expired")
+            Text("Rendering paused")
                 .font(NitrateTypography.font(.title2).bold())
-            Text("Unlock film rendering to continue. Recording stays free.")
+            Text("Recording stays free. Unlock film rendering to develop what you shoot.")
+                .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            purchaseOptionsButton(revealPricing: revealPricing)
         }
+    }
+
+    private var daysRemainingTitle: String {
+        let days = max(1, viewModel.daysRemaining)
+        return days == 1 ? "Last day included" : "\(days) days included"
+    }
+
+    private func purchaseOptionsButton(revealPricing: @escaping () -> Void) -> some View {
+        Button(action: revealPricing) {
+            Text("See purchase options")
+                .font(NitrateTypography.font(.footnote).weight(.semibold))
+                .padding(.horizontal, 16)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderedProminent)
+        .accessibilityIdentifier("settings.purchaseOptions")
+        .padding(.top, 4)
     }
 
 #if DEBUG || NITRATE_LOCAL_DEVELOPMENT
