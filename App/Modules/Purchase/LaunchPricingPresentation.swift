@@ -22,8 +22,10 @@ struct LaunchPricingPreview: Equatable, Sendable {
 /// until the product has loaded, so this copy can never stand in for a missing
 /// store price.
 enum LaunchPricingPresentation {
-    /// The explicit label required for the free preview.
-    static let headline = "US launch pricing"
+    /// The explicit label for the local preview. It names itself a developer
+    /// preview because it can only appear on a build that cannot transact: real
+    /// prices always come from `Product.displayPrice` at checkout.
+    static let headline = "Developer pricing preview"
     /// The exact, owner-approved US amounts. Rendering is the paid feature.
     static let yearlyPrice = "US $4.99"
     static let lifetimePrice = "US $9.99"
@@ -43,6 +45,6 @@ enum LaunchPricingPresentation {
             headline: headline,
             yearlyPrice: yearlyPrice,
             lifetimePrice: lifetimePrice,
-            footnote: "This build is not charged. Recording stays free.")
+            footnote: "Not purchasable in this build. Recording stays free.")
     }
 }

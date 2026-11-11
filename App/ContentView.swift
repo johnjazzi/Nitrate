@@ -507,6 +507,29 @@ struct ContentView: View {
         .onChange(of: showSettings || showQueueSheet || showStockSheet || showDaylightRescue) { _, shown in
             if shown { cameraViewModel.endSlowZoom() }
         }
+        .onChange(of: renderQueueViewModel.isRenderPausedForAccess) { _, paused in
+            // A capture held for access is explained once, in the camera's own
+            // notice, and then only flagged: the take is safe and the next one
+            // still captures.
+            guard paused else { return }
+            cameraViewModel.showNotice(
+                "Film rendering is paused. Your capture is kept and will develop once rendering is available.",
+                severity: .warning, kind: .accessRequired)
+        }
+        .onChange(of: renderQueueViewModel.rendererErrorMessage) { _, message in
+            // Every render warning goes through the camera notice; only a
+            // blocked queue keeps its own banner (see `errorOverlays`).
+            guard let message, !renderQueueViewModel.isPersistenceBlocked else { return }
+            cameraViewModel.showNotice(message, severity: .error, kind: .renderFailed)
+        }
+        .onChange(of: cameraViewModel.errorMessage) { _, message in
+            // Non-blocking failures become notices so every warning has one
+            // home; the banner is reserved for a camera that cannot run at all.
+            guard let message, !cameraViewModel.isBlockingErrorMessage else { return }
+            cameraViewModel.showNotice(
+                message, severity: .error,
+                kind: message.contains("space") ? .storage : .operationFailed)
+        }
         .onChange(of: cameraViewModel.activeLens) { _, lens in
             // A lens change invalidates any sustained estimate and any ramp.
             cameraViewModel.endSlowZoom()
@@ -1063,7 +1086,10 @@ struct ContentView: View {
                 .padding(.leading, 68)
                 .padding(.top, top.maxY + 8)
                 .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
-                .onChange(of: notice.id) { _, _ in noticeExpanded = false }
+                .onAppear { noticeExpanded = notice.emphasis == .prominent }
+                .onChange(of: notice.id) { _, _ in
+                    noticeExpanded = notice.emphasis == .prominent
+                }
                 .transition(.opacity)
         }
     }
@@ -1605,13 +1631,18 @@ struct ContentView: View {
 
     private var errorOverlays: some View {
         Group {
-            if let error = cameraViewModel.errorMessage {
+            if let error = cameraViewModel.errorMessage,
+               cameraViewModel.isBlockingErrorMessage {
                 VStack {
                     cameraErrorBanner(error)
                     Spacer()
                 }
             }
-            if let renderError = renderQueueViewModel.rendererErrorMessage {
+            // A durable queue failure is the one message that still needs its own
+            // banner: it has a Resume action and blocks delivery. Every other
+            // warning and error is a camera notice, so there is one place to look.
+            if let renderError = renderQueueViewModel.rendererErrorMessage,
+               renderQueueViewModel.isPersistenceBlocked {
                 VStack {
                     Spacer()
                     renderErrorBanner(renderError)
