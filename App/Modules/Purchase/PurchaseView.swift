@@ -104,6 +104,11 @@ struct PurchaseView: View {
             } message: {
                 Text(viewModel.purchaseError ?? "")
             }
+            .alert("Restore Purchases", isPresented: restoreBinding) {
+                Button("OK") { viewModel.dismissRestoreMessage() }
+            } message: {
+                Text(viewModel.restoreMessage ?? "")
+            }
         }
     }
 
@@ -743,6 +748,13 @@ struct PurchaseView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 #endif
+
+    private var restoreBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.restoreMessage != nil },
+            set: { if !$0 { viewModel.dismissRestoreMessage() } }
+        )
+    }
 
     private var errorBinding: Binding<Bool> {
         Binding(

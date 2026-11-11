@@ -35,6 +35,8 @@ final class PurchaseViewModel {
     var subscriptionPrice: String?
     var lifetimePrice: String?
     var purchaseError: String?
+    /// Outcome of a Restore Purchases tap: restored, or nothing found.
+    var restoreMessage: String?
     /// Non-nil when StoreKit product loading failed; the UI shows unavailable.
     var productLoadError: String?
 
@@ -123,10 +125,20 @@ final class PurchaseViewModel {
             do {
                 try await storeManager.restore()
                 await refreshEntitlementsAfterGrant()
+                // A restore with no feedback reads as a dead button. Say what
+                // Apple found, either way.
+                restoreMessage = isPurchased
+                    ? "Purchases restored. Film rendering is unlocked."
+                    : "No purchases were found for this Apple Account."
             } catch {
                 purchaseError = error.localizedDescription
             }
         }
+    }
+
+    /// Clears the restore confirmation once the alert is dismissed.
+    func dismissRestoreMessage() {
+        restoreMessage = nil
     }
 
     /// Show Apple's offer-code sheet, then pick up the entitlement it grants.
