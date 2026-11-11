@@ -51,7 +51,7 @@ struct AppAccessPolicyTests {
     }
 
     @Test func sandboxDoesNotRequireAPurchaseDuringEvaluation() {
-        // The 7-day local evaluation is the same on sandbox as on production, so
+        // The twenty-day local evaluation is the same on sandbox as on production, so
         // App Review can reach the checkout without being granted free access.
         let state = AppAccessPolicy.evaluate(
             distribution: .sandbox,
@@ -105,9 +105,12 @@ struct AppAccessPolicyTests {
         #expect(AccessDistribution.sandbox.isCacheable)
     }
 
-    // MARK: - Production trial evaluation (local, 7 days)
+    // MARK: - Production trial evaluation (local, 20 days)
 
-    @Test func productionTrialIsActiveWithinSevenDays() {
+    @Test func productionTrialIsTwentyDaysFromInstall() {
+        #expect(AppAccessPolicy.trialDayCount == 20)
+        #expect(AppAccessPolicy.trialDuration == 20 * day)
+
         let state = AppAccessPolicy.evaluate(
             distribution: .appStore,
             firstLaunch: reference.addingTimeInterval(-3 * day - 3600),
@@ -115,13 +118,24 @@ struct AppAccessPolicyTests {
             verifiedEntitlements: [])
         #expect(state.trialActive)
         #expect(state.canUsePaidFeatures)
-        #expect(state.trialDaysRemaining == 4)
+        #expect(state.trialDaysRemaining == 17,
+                "twenty days from install, minus the three elapsed and the started hour")
     }
 
-    @Test func productionTrialExpiresAfterSevenDays() {
+    @Test func productionTrialStillRunsOnDayNineteen() {
         let state = AppAccessPolicy.evaluate(
             distribution: .appStore,
-            firstLaunch: reference.addingTimeInterval(-8 * day),
+            firstLaunch: reference.addingTimeInterval(-19 * day),
+            now: reference,
+            verifiedEntitlements: [])
+        #expect(state.trialActive)
+        #expect(state.trialDaysRemaining == 1)
+    }
+
+    @Test func productionTrialExpiresAfterTwentyDays() {
+        let state = AppAccessPolicy.evaluate(
+            distribution: .appStore,
+            firstLaunch: reference.addingTimeInterval(-21 * day),
             now: reference,
             verifiedEntitlements: [])
         #expect(!state.trialActive)
@@ -511,14 +525,14 @@ struct StoreKitTestingRoutingTests {
 
         let expired = AppAccessPolicy.evaluate(
             distribution: .storeKitTesting,
-            firstLaunch: reference.addingTimeInterval(-8 * day),
+            firstLaunch: reference.addingTimeInterval(-21 * day),
             now: reference,
             verifiedEntitlements: [])
         #expect(!expired.canUsePaidFeatures)
 
         let purchased = AppAccessPolicy.evaluate(
             distribution: .storeKitTesting,
-            firstLaunch: reference.addingTimeInterval(-8 * day),
+            firstLaunch: reference.addingTimeInterval(-21 * day),
             now: reference,
             verifiedEntitlements: [VerifiedEntitlement(
                 productID: PaidProduct.yearlySubscription.rawValue,

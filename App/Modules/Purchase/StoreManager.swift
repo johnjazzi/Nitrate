@@ -15,7 +15,7 @@ final class StoreManager {
     static let yearlySubscriptionID = PaidProduct.yearlySubscription.rawValue
     static let lifetimeID = PaidProduct.lifetime.rawValue
 
-    /// Legacy persistence key; the local 7-day evaluation window is anchored to
+    /// Legacy persistence key; the local 20-day evaluation window is anchored to
     /// it and kept for compatibility with installs that already recorded it.
     static let installDateKey = "install_date"
 

@@ -139,8 +139,12 @@ struct AppAccessState: Equatable, Sendable {
 /// of its own — every input is passed in so the whole decision is deterministic
 /// and testable off-device.
 enum AppAccessPolicy {
-    static let trialDuration: TimeInterval = 7 * 24 * 60 * 60
-    static let trialDayCount = 7
+    /// Twenty days of film rendering from first launch, then the purchase is
+    /// required to keep rendering. This is the app's own evaluation timer: it
+    /// never charges, never converts to a subscription, and Apple's sheet only
+    /// appears if the operator chooses to buy.
+    static let trialDuration: TimeInterval = 20 * 24 * 60 * 60
+    static let trialDayCount = 20
 
     /// The raw value an earlier build persisted for the sandbox channel. Kept so
     /// an install that already cached it migrates instead of losing its channel.

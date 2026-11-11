@@ -11,7 +11,7 @@ Applies to rejection of submission `b20af7c0-0344-4a1e-ae04-0e5011dbde92`, revie
 - Load real products and verified entitlements in sandbox. Preserve the exact product IDs `com.nitrate.subscription.yearly` and `com.nitrate.lifetime`.
 - Keep Restore Purchases reachable after a purchase as well as before one.
 
-The seven-day local evaluation, pricing, and render-only gate are unchanged. TestFlight no longer bypasses checkout; testers can use a free sandbox purchase after the evaluation. This does not grant an App Store entitlement after launch.
+The twenty-day local evaluation, pricing, and render-only gate are unchanged. TestFlight no longer bypasses checkout; testers can use a free sandbox purchase after the evaluation. This does not grant an App Store entitlement after launch.
 
 ## Gates before upload
 
