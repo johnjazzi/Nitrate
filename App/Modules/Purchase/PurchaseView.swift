@@ -689,6 +689,12 @@ struct PurchaseView: View {
             Toggle("Show DEBUG button", isOn: $showsDebugButton)
             Toggle("Show FAULT test button", isOn: $showsFaultButton)
             Toggle("Legacy Manual Controls", isOn: legacyManualControlsEnabled)
+            Button("Restart evaluation") {
+                viewModel.restartEvaluation()
+            }
+            Text("Clears the install anchor so the twenty-day evaluation starts again on this device.")
+                .font(NitrateTypography.font(.caption))
+                .foregroundStyle(.secondary)
             Text("The FAULT button previews the recording-failure overlay. "
                  + "Same switches as the debug sheet.")
                 .font(NitrateTypography.font(.caption))

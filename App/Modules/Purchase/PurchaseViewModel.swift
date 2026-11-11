@@ -141,6 +141,15 @@ final class PurchaseViewModel {
         }
     }
 
+#if DEBUG
+    /// Development-only: clear the install anchor so the twenty-day evaluation
+    /// can be seen again on this device. Compiled out of every shipped build.
+    func restartEvaluation() {
+        UserDefaults.standard.removeObject(forKey: StoreManager.installDateKey)
+        Task { await loadState() }
+    }
+#endif
+
     /// Retry a failed product load and refresh the displayed prices.
     func retryLoadProducts() {
         Task { await loadState() }
