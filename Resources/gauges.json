@@ -3,16 +3,16 @@
   "gauges": [
     {
       "gauge": "8mm",
-      "sizeMultiplier": 3.2,
-      "amplitudeMultiplier": 0.55,
+      "sizeMultiplier": 2.72,
+      "amplitudeMultiplier": 0.6325,
       "diffusionPreset": "radius35",
       "diffusionAmount": 0.35,
       "halationMultiplier": 1.0
     },
     {
       "gauge": "16mm",
-      "sizeMultiplier": 2.025,
-      "amplitudeMultiplier": 0.396,
+      "sizeMultiplier": 1.721,
+      "amplitudeMultiplier": 0.4554,
       "diffusionPreset": "radius16",
       "diffusionAmount": 0.21,
       "halationMultiplier": 1.0
