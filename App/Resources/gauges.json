@@ -3,10 +3,10 @@
   "gauges": [
     {
       "gauge": "8mm",
-      "sizeMultiplier": 4.0,
+      "sizeMultiplier": 3.2,
       "amplitudeMultiplier": 0.55,
       "diffusionPreset": "radius35",
-      "diffusionAmount": 0.5,
+      "diffusionAmount": 0.35,
       "halationMultiplier": 1.0
     },
     {
@@ -14,15 +14,15 @@
       "sizeMultiplier": 2.025,
       "amplitudeMultiplier": 0.396,
       "diffusionPreset": "radius16",
-      "diffusionAmount": 0.3,
+      "diffusionAmount": 0.21,
       "halationMultiplier": 1.0
     },
     {
       "gauge": "35mm",
-      "sizeMultiplier": 0.9,
+      "sizeMultiplier": 0.81,
       "amplitudeMultiplier": 0.36,
       "diffusionPreset": "radius4",
-      "diffusionAmount": 0.2,
+      "diffusionAmount": 0.14,
       "halationMultiplier": 0.45
     },
     {

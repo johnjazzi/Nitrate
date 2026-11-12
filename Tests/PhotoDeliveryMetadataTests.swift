@@ -116,7 +116,9 @@ struct PhotoDeliveryMetadataTests {
         // The still's own claims are present and describe the still.
         #expect(still["diffusion-still-scale"] == "0.50")
         #expect(still["halation-still-scale"] == "0.50")
-        #expect(still["diffusion-amount"] == "0.15", "16mm 0.30 at the still share")
+        // `diffusion-amount` is formatted at 2 decimals like its sibling keys, so
+        // the 16mm still's 0.105 reports as 0.10.
+        #expect(still["diffusion-amount"] == "0.10", "16mm 0.21 at the still share")
         // Movie-only claims are dropped, and the codec tells the truth.
         for key in PhotoDeliveryMetadata.movieOnlyKeys {
             #expect(still[key] == nil, "\(key) describes a take, not a still")

@@ -408,7 +408,7 @@ struct PhotoDevelopmentPipelineTests {
         let darkOff = darkBand.map { off[$0] }.reduce(0, +) / Double(darkBand.count)
         let darkOn = darkBand.map { on[$0] }.reduce(0, +) / Double(darkBand.count)
         // Shipped stills mix half the take's amount (`stillDiffusionScale` 0.5),
-        // so 8mm arrives at 0.25 rather than 0.5 and the lift is about half the
+        // so 8mm arrives at 0.175 rather than 0.35 and the lift is about half the
         // one a video frame gets at the same gauge.
         #expect(darkOn > darkOff + 0.2,
                 "diffusion must lift the dark side of the edge (\(darkOff) -> \(darkOn))")

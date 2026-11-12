@@ -86,9 +86,9 @@ from `DiffusionPhysics` (20 µm scatter × negative width × `filterGain`), and 
 per-gauge amounts are taste.
 
 ```
-8mm   radius35  0.50
-16mm  radius16  0.30
-35mm  radius4   0.20
+8mm   radius35  0.35
+16mm  radius16  0.21
+35mm  radius4   0.14
 75mm  bypass    -
 ```
 
