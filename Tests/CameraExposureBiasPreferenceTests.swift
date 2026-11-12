@@ -2,7 +2,7 @@ import Foundation
 import Testing
 
 /// The house exposure is a persisted preference. Every install — including one
-/// that has never touched the EV control — starts at -1.2 EV, and whatever the
+/// that has never touched the EV control — starts at -0.4 EV, and whatever the
 /// user then chooses is remembered across camera sessions and app launches.
 struct CameraExposureBiasPreferenceTests {
     private func store(_ name: String) throws -> UserDefaults {
@@ -16,8 +16,8 @@ struct CameraExposureBiasPreferenceTests {
         let defaults = try store("default")
         #expect(CameraExposureBiasPreference.storedValue(in: defaults) == nil,
                 "Nothing is persisted before the first session.")
-        #expect(CameraExposureBiasPreference.load(from: defaults) == -1.2)
-        #expect(CameraExposureBiasPreference.defaultValue == -1.2)
+        #expect(CameraExposureBiasPreference.load(from: defaults) == -0.4)
+        #expect(CameraExposureBiasPreference.defaultValue == -0.4)
         #expect(CameraExposureBiasPreference.preferenceKey == "camera.exposureBiasEV")
     }
 
@@ -41,11 +41,11 @@ struct CameraExposureBiasPreferenceTests {
     @Test func unusableStoredValuesFallBackToTheDefault() throws {
         let defaults = try store("garbage")
         defaults.set("not a number", forKey: CameraExposureBiasPreference.preferenceKey)
-        #expect(CameraExposureBiasPreference.load(from: defaults) == -1.2)
-        #expect(CameraExposureBiasPreference.resolved(nil) == -1.2)
-        #expect(CameraExposureBiasPreference.resolved(.nan) == -1.2)
-        #expect(CameraExposureBiasPreference.resolved(.infinity) == -1.2)
-        #expect(CameraExposureBiasPreference.resolved(-.infinity) == -1.2)
+        #expect(CameraExposureBiasPreference.load(from: defaults) == -0.4)
+        #expect(CameraExposureBiasPreference.resolved(nil) == -0.4)
+        #expect(CameraExposureBiasPreference.resolved(.nan) == -0.4)
+        #expect(CameraExposureBiasPreference.resolved(.infinity) == -0.4)
+        #expect(CameraExposureBiasPreference.resolved(-.infinity) == -0.4)
     }
 
     @Test func savingNonFiniteInputIsRefused() throws {

@@ -249,7 +249,7 @@ final class CameraViewModel {
     /// readout). Only drives the scene while the device meters automatically.
     ///
     /// Unlike the session-only 60 fps mode this is a persisted preference: it
-    /// starts from `CameraExposureBiasPreference` (a house default of -1.2 EV for
+    /// starts from `CameraExposureBiasPreference` (a house default of -0.4 EV for
     /// anyone who has never moved the control) and every user change is saved, so
     /// it survives camera sessions and app launches. It is deliberately NOT reset
     /// at the foreground-session boundary.

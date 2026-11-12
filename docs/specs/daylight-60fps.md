@@ -699,3 +699,21 @@ the foreground-session boundary. Two consequences of note:
    default already buys the stops, so the offer arrives later.
 2. The EV control, not the mode, is now the first thing to reach for: an
    under-honoured default is a normal preference change, not a rescue.
+
+House exposure default (2026-11-11): the shipped compensation moves from
+**-1.2 EV** to **-0.4 EV** (`CameraExposureBiasPreference.defaultValue`). The
+shape of the preference is unchanged — still one persisted value shared by both
+modes, still what a first launch and an unusable stored value fall back to, still
+written by the EV control. Two consequences follow from the smaller pull:
+
+1. The rescue threshold moves with it. `DaylightExposureRescuePolicy` offers the
+   affordance at `meteredEV - targetEV >= 2`, so with the new default the meter
+   must reach **+1.6 EV** (that is -0.4 + 2) before the button appears, where the
+   -1.2 default asked for +0.8 EV. The offer therefore arrives earlier.
+2. A still no longer develops under its meter. `RAWPhotoDecoder.baseExposureEV`
+   lifts every non-flash still by +1 EV at decode, so a -0.4 EV capture develops
+   to about **+0.6 EV over the meter** where -1.2 EV developed to -0.2 EV. Video
+   carries no such lift and is delivered at the bias it was shot with, so the two
+   modes now sit about a stop apart before push/pull — the still path has one
+   extra stop of gain (`RAWPhotoDecoder.baseExposureEV`) that has no video
+   counterpart, which is the whole of the difference.

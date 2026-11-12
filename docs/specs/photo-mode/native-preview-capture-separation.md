@@ -319,7 +319,7 @@ floats the ISO, both held is fully manual, neither held is `continuousAutoExposu
 ### Not changed
 
 The compensation itself is still one stored preference shared by both modes
-(`CameraExposureBiasPreference`, house default -1.2 EV, written by the EV control). A device that
+(`CameraExposureBiasPreference`, house default -0.4 EV, written by the EV control). A device that
 shows a high EV on entry is showing a value the control was left at, not a default.
 
 ## The ISO that did not move — root causes and fixes, October 28, 2026
