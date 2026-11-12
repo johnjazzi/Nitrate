@@ -63,6 +63,7 @@ final class StillFilmEffectsStage {
                                      sceneLiftStops: sceneLiftStops,
                                      halationHeadroom: halationHeadroom,
                                      exposureStops: Float(config.effectivePushPull.stops.stops),
+                                     postEmulsionStops: SystemExposureScheme.developLiftStops,
                                      width: source.width, height: source.height)
     }
 

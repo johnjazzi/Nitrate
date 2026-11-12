@@ -641,6 +641,9 @@ final class PipelineRenderer: @unchecked Sendable {
                     // LUT pass below therefore grades with no exposure of its own.
                     highlightCeiling: highlightCeiling,
                     exposureStops: Float(config.effectivePushPull.stops.stops),
+                    // The stop the camera captured under, put back after the
+                    // emulsion. Flat, and applied before the LUT below.
+                    postEmulsionStops: SystemExposureScheme.developLiftStops,
                     width: width,
                     height: height
                 ) else { return nil }
@@ -1187,6 +1190,7 @@ final class PipelineRenderer: @unchecked Sendable {
                             // the sensor saw.
                             highlightCeiling: context.highlightCeiling,
                             exposureStops: Float(config.effectivePushPull.stops.stops),
+                            postEmulsionStops: SystemExposureScheme.developLiftStops,
                             // The delivered texture is already the crop, so the
                             // stage works in delivery pixels, not source pixels.
                             width: outputWidth,

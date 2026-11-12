@@ -1509,8 +1509,12 @@ final class CameraViewModel {
         manualISO = presented?.iso ?? snapshot.iso
         isManualExposure = snapshot.isoLocked
         liveShutterSeconds = presented?.duration ?? snapshot.durationSeconds
-        liveExposureBias = snapshot.ev
-        liveExposureTargetOffset = snapshot.meteringOffset
+        // The snapshot's EV is the intent we installed on the device; the operator
+        // reads the value they chose.
+        liveExposureBias = SystemExposureScheme.displayed(snapshot.ev)
+        // The snapshot's offset is measured against the INSTALLED bias; the
+        // operator's meter reads against the value they set.
+        liveExposureTargetOffset = SystemExposureScheme.displayed(snapshot.meteringOffset)
         hasExposureMeter = true
     }
 
@@ -1894,9 +1898,12 @@ final class CameraViewModel {
     func setExposureBias(_ bias: Float) {
         if isDevelopmentPhotoMode {
             guard !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile else { return }
-            session.setDevelopmentPhotoEV(bias)
+            // The intent carries the INSTALLED value: the photo controller writes
+            // it straight to the device's target bias.
+            session.setDevelopmentPhotoEV(SystemExposureScheme.installed(bias))
             // Photo writes the same persisted preference Video does; without this
-            // the value only ever existed for the current launch.
+            // the value only ever existed for the current launch. It stores the
+            // operator's value, not the installed one.
             CameraExposureBiasPreference.save(bias)
             return
         }
@@ -2086,7 +2093,7 @@ final class CameraViewModel {
         // cannot show what it costs. Predict that here, or the EV indicator says
         // 0 EV for a choice that will shoot nearly two stops darker.
         liveExposureTargetOffset = CameraAperturePolicy.predictedExposureOffsetEV(
-            measuredOffset: session.currentExposureTargetOffset,
+            measuredOffset: SystemExposureScheme.displayed(session.currentExposureTargetOffset),
             deviceAperture: liveAperture,
             selectedAperture: selectedLensAperture,
             isDeferred: usesSharedIdlePreview && !isDevelopmentPhotoMode)

@@ -386,7 +386,8 @@ kernel void spatial_scene_prepare(
 ///
 /// ORDER IS PHYSICAL: a diffusion filter sits in front of the lens, so it
 /// softens the scene light BEFORE the emulsion scatters it. The halation layers
-/// are therefore added to the DIFFUSED scene, not the other way round.
+/// are therefore added to the DIFFUSED scene, not the other way round. The
+/// system's develop lift is applied after all of it — see `postEmulsionStops`.
 ///
 /// Halation applies no colour tint: the colour is the consequence of the
 /// per-layer physics — red responds to the least light and scatters furthest,
@@ -411,6 +412,9 @@ kernel void spatial_halation_apply(
     constant float& diffusionAmount        [[buffer(4)]],
     constant float& exposureStops          [[buffer(5)]],
     constant float& exposureCeiling        [[buffer(6)]],
+    /// The system's develop lift, in stops. Positive, and applied LAST — after
+    /// the emulsion has scattered its light. See this kernel's ORDER note.
+    constant float& postEmulsionStops      [[buffer(7)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
@@ -470,8 +474,17 @@ kernel void spatial_halation_apply(
 
     float3 scattered = max(float3(0.0f), linear + contribution);
 
-    output.write(float4(apple_log_encode(scattered.r),
-                        apple_log_encode(scattered.g),
-                        apple_log_encode(scattered.b),
+    // ORDER: the system's develop lift comes last. The camera captured a stop
+    // under, so the frame the film stages were handed is a stop darker than the
+    // picture being delivered — halation is therefore measured against the light
+    // the film actually received, and the halo it scattered is lifted here with
+    // the scene that produced it. A flat gain rather than `spatial_expose`: the
+    // push/pull curve is a development choice that holds clipped highlights, while
+    // this only restores the exposure the operator asked for.
+    float3 delivered = scattered * exp2(postEmulsionStops);
+
+    output.write(float4(apple_log_encode(delivered.r),
+                        apple_log_encode(delivered.g),
+                        apple_log_encode(delivered.b),
                         base.a), gid);
 }

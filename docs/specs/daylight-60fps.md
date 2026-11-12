@@ -710,10 +710,9 @@ written by the EV control. Two consequences follow from the smaller pull:
    affordance at `meteredEV - targetEV >= 2`, so with the new default the meter
    must reach **+1.6 EV** (that is -0.4 + 2) before the button appears, where the
    -1.2 default asked for +0.8 EV. The offer therefore arrives earlier.
-2. A still no longer develops under its meter. `RAWPhotoDecoder.baseExposureEV`
-   lifts every non-flash still by +1 EV at decode, so a -0.4 EV capture develops
-   to about **+0.6 EV over the meter** where -1.2 EV developed to -0.2 EV. Video
-   carries no such lift and is delivered at the bias it was shot with, so the two
-   modes now sit about a stop apart before push/pull — the still path has one
-   extra stop of gain (`RAWPhotoDecoder.baseExposureEV`) that has no video
-   counterpart, which is the whole of the difference.
+2. A still develops at the exposure its meter asked for. `RAWPhotoDecoder` applies
+   no decode-side lift any more (`baseExposureEV` is 0), and the one stop the
+   scheme holds back at capture is put back after the emulsion stages for stills
+   and video alike — the halo is measured on what the sensor recorded, and both
+   modes are delivered at the bias they were shot with. Stills and video now sit
+   on the same delivery rule instead of a stop apart.

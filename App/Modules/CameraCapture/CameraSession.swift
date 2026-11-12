@@ -2807,7 +2807,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// mode and Apple resets that bias to 0, so reading it back made the control
     /// appear to revert. Compensation is applied by scaling the metered ISO
     /// instead, which survives the shutter-priority re-meter.
-    private(set) var exposureBiasEV: Float = CameraExposureBiasPreference.load()
+    private(set) var exposureBiasEV: Float = SystemExposureScheme.installed(CameraExposureBiasPreference.load())
 
     /// Supported EV compensation range, bounded to a film-useful ±3 EV span
     /// (fallback ±3 EV before the device is ready).
@@ -2819,10 +2819,15 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// Set EV compensation and re-pin the shutter-priority exposure so the change
     /// is visible immediately. No-op in manual ISO mode, where the ISO chooser
     /// drives exposure directly.
+    ///
+    /// `ev` is the operator-facing value. The device is given
+    /// `SystemExposureScheme.installed(ev)`, so the sensor holds a stop under the
+    /// exposure the operator asked for and the readout keeps showing theirs.
     func setExposureBiasEV(_ ev: Float) {
         guard ev.isFinite else { return }
         let range = exposureBiasRange
-        let clamped = min(max(ev, range.lowerBound), range.upperBound)
+        let installed = SystemExposureScheme.installed(ev)
+        let clamped = min(max(installed, range.lowerBound), range.upperBound)
         sessionQueue.async { [weak self] in
             guard let self else { return }
             guard self.exposureBiasEV != clamped else { return }

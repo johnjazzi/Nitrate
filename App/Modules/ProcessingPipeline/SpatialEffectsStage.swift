@@ -109,7 +109,24 @@ final class SpatialEffectsStage {
     /// `sceneLiftStops` is zero for every video frame and for any still whose
     /// decode was not lifted, in which case this is exactly `(0.75, 1.5, 3)`.
     static func halationKnees(sceneLiftStops: Float) -> SIMD3<Float> {
-        SIMD3(redKnee, greenKnee, blueKnee) * liftScale(sceneLiftStops)
+        SIMD3(redKnee, greenKnee, blueKnee) * liftScale(sceneLiftStops) * halationOnsetScale
+    }
+
+    /// How far to raise the authored knees so the onset lands where the scheme
+    /// wants it in the DELIVERED image.
+    ///
+    /// The lift a still or a take was decoded with is already cancelled by
+    /// `liftScale`, so the knees above are authored against the light the film
+    /// saw. `SystemExposureScheme` then captures a stop under and lifts it back
+    /// after the emulsion, so the mask is measured on a frame a stop darker than
+    /// the delivered picture: the onset rises a stop on its own, and this scale
+    /// adds the rest of `halationOnsetStops`. Both terms are read from the scheme
+    /// so tuning either one moves the onset, never the arithmetic here.
+    ///
+    /// With the shipped scheme (-1 capture, 1.5 onset) this is exactly √2, which
+    /// puts the delivered onset 1.5 stops above the previous tuning.
+    static var halationOnsetScale: Float {
+        powf(2, SystemExposureScheme.halationOnsetStops + SystemExposureScheme.captureStops)
     }
 
     // MARK: - Where halation reaches full contribution
@@ -266,12 +283,19 @@ final class SpatialEffectsStage {
         /// the light the film actually receives. Stills pass 0 — their exposure is
         /// baked into the decode.
         exposureStops: Float = 0,
+        /// The system's develop lift, in stops, applied to the scene AFTER the
+        /// halation and diffusion stages and before the encode that feeds the
+        /// stock LUT. This is where the stop the camera captured under is put
+        /// back; see `SystemExposureScheme`. Unlike `exposureStops` it is a flat
+        /// gain, and it is deliberately not applied to the halation mask: the
+        /// emulsion has to scatter the light it actually received.
+        postEmulsionStops: Float = 0,
         width: Int,
         height: Int
     ) -> MTLTexture? {
         let plan = diffusion.plan(sourceWidth: width)
         // Only all three disabled means byte-for-byte identity, including Log noise.
-        guard strength != 0 || plan != nil || exposureStops != 0 else { return source }
+        guard strength != 0 || plan != nil || exposureStops != 0 || postEmulsionStops != 0 else { return source }
 
         let halfWidth = max(1, (width + 1) / 2)
         let halfHeight = max(1, (height + 1) / 2)
@@ -384,6 +408,7 @@ final class SpatialEffectsStage {
         //    re-encode — one full-resolution pass for both effects.
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
             var stops = exposureStops
+            var lift = postEmulsionStops
             var ceiling = Self.halationCeiling(sceneLiftStops: sceneLiftStops,
                                                headroom: halationHeadroom,
                                                highlightCeiling: highlightCeiling)
@@ -415,6 +440,7 @@ final class SpatialEffectsStage {
             encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 4)
             encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 5)
             encoder.setBytes(&ceiling, length: MemoryLayout<Float>.size, index: 6)
+            encoder.setBytes(&lift, length: MemoryLayout<Float>.size, index: 7)
             encoder.dispatchThreadgroups(fullGroups, threadsPerThreadgroup: Self.groupSize)
             encoder.endEncoding()
         }

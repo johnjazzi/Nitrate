@@ -47,7 +47,12 @@ struct DevelopFramePreviewRendererTests {
         let flashReading = try #require(DevelopFramePreviewRenderer.measurePhoto(flash, exposureEV: 0))
         let ambientReading = try #require(DevelopFramePreviewRenderer.measurePhoto(ambient, exposureEV: 1))
         #expect(abs(flashReading - ambientReading) < 0.001)
-        #expect(DevelopFramePreviewRenderer.measurePhoto(ambient) == ambientReading)
+        // The default is the decoder's own applied exposure, and the decoder now
+        // applies none: a still is metered on the frame the sensor recorded, with
+        // the scheme's stop put back after the emulsion.
+        #expect(DevelopFramePreviewRenderer.measurePhoto(ambient)
+            == DevelopFramePreviewRenderer.measurePhoto(ambient, exposureEV: RAWPhotoDecoder.baseExposureEV))
+        #expect(RAWPhotoDecoder.baseExposureEV == 0)
     }
 
     private func assertSpatialRange(_ image: CGImage) throws {

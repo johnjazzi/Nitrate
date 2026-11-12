@@ -155,7 +155,8 @@ struct PhotoDeliveryMetadataTests {
             }
         }
         let legacy = try payload(try writtenProperties(config(gauge: nil), capture: .init()))
-        #expect(legacy["photo-exposure-ev"] == "1.00")
+        // The legacy path applies no decode lift either, so it records zero.
+        #expect(legacy["photo-exposure-ev"] == "0.00")
         #expect(legacy["halation-scene-lift-ev"] == nil)
     }
 

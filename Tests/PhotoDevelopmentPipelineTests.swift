@@ -19,8 +19,16 @@ struct PhotoDevelopmentPipelineTests {
     /// pixel and the whole frame bloomed orange. The fix is a knee scale, not a
     /// weaker stock, so the halo around a true specular is unchanged.
     @Test func liftedStillsMeasureAgainstLiftedKnees() {
+        let authored = SIMD3<Float>(0.75, 1.5, 3)
+        let onset = SpatialEffectsStage.halationOnsetScale
         let unlifted = SpatialEffectsStage.halationKnees(sceneLiftStops: 0)
-        #expect(unlifted == SIMD3<Float>(0.75, 1.5, 3), "video and unlifted stills keep the authored knees")
+        // The scheme's develop lift is carried by the mask's own frame rather
+        // than by a knee scale, so the authored numbers above stand and only the
+        // onset the scheme is asking for sits on top of them.
+        for channel in 0..<3 {
+            #expect(abs(unlifted[channel] - authored[channel] * onset) < 0.001,
+                    "video and unlifted stills keep the authored knees")
+        }
 
         let lifted = SpatialEffectsStage.halationKnees(sceneLiftStops: 2.988)
         let scale = pow(Float(2), Float(2.988))
@@ -31,7 +39,7 @@ struct PhotoDevelopmentPipelineTests {
         // The measurement that matters: a wall the lift put at 2x white must not
         // read as superwhite once the knees follow the lift.
         let wall: Float = 2.0
-        #expect(max(0, wall - unlifted.x) > 0, "unlifted knees call a 2x wall superwhite")
+        #expect(max(0, wall - authored.x) > 0, "unlifted knees call a 2x wall superwhite")
         #expect(max(0, wall - lifted.x) == 0, "lifted knees do not")
 
         // A genuine specular still clears every layer, so the halo does not vanish.
@@ -39,9 +47,25 @@ struct PhotoDevelopmentPipelineTests {
         #expect(specular - lifted.z > 0)
 
         // Out-of-range and non-finite lifts cannot produce a nonsense knee.
-        #expect(SpatialEffectsStage.halationKnees(sceneLiftStops: -.infinity) == SIMD3<Float>(0.75, 1.5, 3))
+        #expect(SpatialEffectsStage.halationKnees(sceneLiftStops: -.infinity) == unlifted)
         let extreme = SpatialEffectsStage.halationKnees(sceneLiftStops: 99)
         #expect(extreme.x.isFinite && extreme.x > 0)
+    }
+
+    /// The delivered halation onset sits one and a half stops above the light the
+    /// emulsion saw, and the scheme owns both halves of that number: the capture
+    /// stop is already inside the mask's frame, the onset constant is the rest.
+    @Test func theDeliveredHalationOnsetIsOneAndAHalfStopsAboveTheEmulsion() {
+        let scheme = SystemExposureScheme.self
+        #expect(scheme.captureStops == -1, "the scheme captures one stop under")
+        #expect(scheme.developLiftStops == scheme.captureStops * -1,
+                "the develop lift is the capture stop put back, or the delivered exposure moves")
+        #expect(abs(SpatialEffectsStage.halationOnsetScale - powf(2, 0.5)) < 0.0001,
+                "√2: a stop from the darker mask frame, half a stop from the onset constant")
+        #expect(scheme.halationOnsetStops == 1.5)
+        // Both halves read the same numbers, so moving either one moves the onset.
+        #expect(abs(SpatialEffectsStage.halationOnsetScale
+                    - powf(2, scheme.halationOnsetStops + scheme.captureStops)) < 0.0001)
     }
 
     /// The delivery switch still governs a photo this app CAPTURED; only an
@@ -90,19 +114,21 @@ struct PhotoDevelopmentPipelineTests {
         }
     }
 
-    /// The still base exposure is a lift, so it must count toward the scene lift
-    /// the halation knees are scaled by — otherwise the one-stop fix reintroduces
-    /// the orange bloom it took a whole investigation to remove.
-    @Test func stillBaseExposureCountsTowardTheHalationSceneLift() {
-        #expect(RAWPhotoDecoder.baseExposureEV == 1)
-        #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 0) == 1)
-        #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 2.988) == 3.988)
+    /// Decode applies no still lift. The scheme's stop goes back in AFTER the
+    /// emulsion, so the scene lift the halation knees are scaled by is the
+    /// capture's own baseline and nothing else.
+    @Test func stillsDecodeWithoutALiftSoTheSceneLiftIsTheCaptureBaseline() {
+        #expect(RAWPhotoDecoder.baseExposureEV == 0)
+        #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 0) == 0)
+        #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 2.988) == 2.988)
 
-        // A 2x wall stays below the lifted red knee once both lifts are counted.
+        // The knees still scale with the capture's own baseline, which is the
+        // part of the lift a raw decode applies before any film stage sees it.
+        let unlifted = SpatialEffectsStage.halationKnees(sceneLiftStops: 0)
         let lifted = SpatialEffectsStage.halationKnees(
             sceneLiftStops: RAWPhotoDecoder.sceneLiftStops(baselineExposure: 2.988))
-        let wallAtTwoStopsLift: Float = 2
-        #expect(max(0, wallAtTwoStopsLift - lifted.x) == 0)
+        #expect(lifted.x > unlifted.x)
+        #expect(lifted.y > unlifted.y)
     }
 
     @Test func nativeFlashUsesItsMeteredExposureWithoutTheAmbientStillLift() {

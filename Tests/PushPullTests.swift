@@ -530,6 +530,9 @@ struct PushPullTests {
         var diffusionAmount: Float = 0
         var exposureStops = Float(stops.stops)
         var exposureCeiling = ceiling
+        // Neutral: this harness measures the push/pull curve itself, so the
+        // system's develop lift stays out of it.
+        var postEmulsionStops: Float = 0
         encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
         encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
@@ -537,6 +540,7 @@ struct PushPullTests {
         encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 4)
         encoder.setBytes(&exposureStops, length: MemoryLayout<Float>.size, index: 5)
         encoder.setBytes(&exposureCeiling, length: MemoryLayout<Float>.size, index: 6)
+        encoder.setBytes(&postEmulsionStops, length: MemoryLayout<Float>.size, index: 7)
         encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1))
         encoder.endEncoding()

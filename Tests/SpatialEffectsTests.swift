@@ -379,8 +379,10 @@ struct SpatialEffectsTests {
         #expect(allLayers.z > 0.002, "blue must respond above its 3.0 knee (was \\(allLayers.z))")
     }
 
+    /// Red responds from the scheme's own onset upwards, and the ramp keeps its
+    /// 1/10 slope: the raised onset moves WHERE red starts, not how fast it builds.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func halationStartsEarlierAndBuildsMoreGradually() throws {
+    func halationStartsAtTheSchemesOnsetAndBuildsGradually() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
@@ -395,14 +397,19 @@ struct SpatialEffectsTests {
             let input = Self.appleLogDecode(Double(source[(128 * Self.side + 128) * 4]))
             return Self.linearMean(linear, width: Self.side, columns: 120..<136, rows: 120..<136).x - input
         }
+        // Red's knee with the scheme's onset applied: excess above it is the mask,
+        // scaled by the 1/10 ramp (referenceSuperwhite 10).
+        let knee = 0.75 * Double(SpatialEffectsStage.halationOnsetScale)
         #expect(abs(try redAdded(0.5)) < 0.002)
-        let early = try redAdded(0.9)
-        #expect(early > 0.01, "red now responds below the previous 1.0 onset")
-        #expect(abs(early - 0.015) < 0.003)
+        #expect(abs(try redAdded(0.9)) < 0.002, "0.9 sits below the raised red onset")
+        let early = try redAdded(1.25)
+        #expect(early > 0.01, "red responds once it clears the raised knee")
+        #expect(abs(early - (1.25 - knee) / 10) < 0.005)
         let lower = try redAdded(2)
         let upper = try redAdded(3)
-        #expect(abs(lower - 0.125) < 0.003)
-        #expect(abs((upper - lower) - 0.1) < 0.004, "ramp slope is 1/10, not the old 1/8")
+        #expect(abs(lower - (2 - knee) / 10) < 0.005)
+        #expect(abs((upper - lower) - 0.1) < 0.008,
+                "ramp slope is still 1/10 (got \(upper - lower))")
     }
 
     /// An all-red source exposes only the red layer, so its halo must stay red.
@@ -608,6 +615,10 @@ struct SpatialEffectsTests {
             encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
             encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
             encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
+            // Neutral: this harness pins the linear ADD, not the system's
+            // develop lift, which gets its own test.
+            var postEmulsionStops: Float = 0
+            encoder.setBytes(&postEmulsionStops, length: MemoryLayout<Float>.size, index: 7)
             encoder.dispatchThreadgroups(
                 MTLSize(width: 1, height: 1, depth: 1),
                 threadsPerThreadgroup: MTLSize(width: side, height: side, depth: 1)
@@ -690,6 +701,9 @@ struct SpatialEffectsTests {
         encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
         encoder.setBytes(&diffusionWeights, length: MemoryLayout<SIMD4<Float>>.size, index: 3)
         encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 4)
+        // Neutral: the develop lift is not what this pins.
+        var postEmulsionStops: Float = 0
+        encoder.setBytes(&postEmulsionStops, length: MemoryLayout<Float>.size, index: 7)
         encoder.dispatchThreadgroups(
             MTLSize(width: 1, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: side, height: side, depth: 1)
