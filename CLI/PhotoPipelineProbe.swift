@@ -140,11 +140,11 @@ enum PhotoPipelineProbe {
         } else {
             print("RAW-DNG not a DNG container (CIRAWFilter paths only)")
         }
-        print(String(format: "RAW-REF referenceSuperwhite=%.2f anchored=%.2f headroom=%.2f",
+        print(String(format: "RAW-REF referenceSuperwhite=%.2f headroom=%.2f ceiling=%.2f",
                      SpatialEffectsStage.halationReferenceSuperwhite(sceneLiftStops: decoded.sceneLiftStops),
-                     SpatialEffectsStage.halationReferenceSuperwhite(
-                        sceneLiftStops: decoded.sceneLiftStops, headroom: decoded.halationHeadroom),
-                     decoded.halationHeadroom))
+                     decoded.halationHeadroom,
+                     SpatialEffectsStage.halationCeiling(sceneLiftStops: decoded.sceneLiftStops,
+                                                         headroom: decoded.halationHeadroom)))
         print(String(format: "RAW-LIFT baseline=%.3f stillBase=%.2f sceneLift=%.3f knees=%.2f/%.2f/%.2f",
                      decoded.baselineExposure, RAWPhotoDecoder.baseExposureEV, decoded.sceneLiftStops,
                      SpatialEffectsStage.halationKnees(sceneLiftStops: decoded.sceneLiftStops).x,

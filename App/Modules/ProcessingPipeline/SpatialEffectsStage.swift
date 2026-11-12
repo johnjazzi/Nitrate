@@ -131,53 +131,26 @@ final class SpatialEffectsStage {
 
     // MARK: - Where halation reaches full contribution
 
-    /// Share of a STILL's measured highlight ceiling at which the halo is at full
-    /// strength. Not used for video, which has no measurement to apply it to.
-    ///
-    /// This is a DENOMINATOR, not a knee: the per-layer knees decide WHICH light
-    /// bleeds, this decides how much of the requested strength a given excess
-    /// buys. Lower it and every pixel above a knee contributes more, which is the
-    /// lever for "DSLR halation should read stronger". 1.0 would anchor exactly to
-    /// the file's brightest 0.01%; 0.15625 stretches the previous 0.125 ramp by
-    /// 25%, matching the gentler video reference.
-    ///
-    /// One number on purpose: halve it to double the effect.
-    static let stillAnchorShare: Float = 0.15625
-
-    /// Floor under that anchor, in multiples of white, so a frame with almost no
-    /// light above white cannot drive the denominator toward zero and veil itself.
-    ///
-    /// It bites on ordinary DSLR frames (a NEF measures ~1.03x white), so it is
-    /// the second knob: lower it to let `stillAnchorShare` act, raise it to hold
-    /// the effect back. Tuned together with the share — changing one alone moves
-    /// nothing on the files the two knobs were fitted to.
-    static let stillAnchorFloorWhite: Float = 0.078125
-
     /// The superwhite value at which halation reaches FULL contribution.
     ///
-    /// VIDEO passes no `headroom` and gets the authored constant: the knees and
-    /// this reference were designed for Apple Log 2, which carries about 12x
-    /// diffuse white, and 10x leaves room for an 11x specular without letting it
-    /// swamp the graded frame. Every video frame is therefore unchanged by
-    /// anything in this section.
+    /// ONE absolute number, stills and video alike. The knees and this reference
+    /// were both authored for Apple Log 2, which carries about 12x diffuse white,
+    /// and 10x leaves room for an 11x specular without letting it swamp the graded
+    /// frame. So the halo ramps over the same span of light whatever the source,
+    /// which is what lets a still and a take of one scene grade the same way.
     ///
-    /// A STILL passes `headroom`, the file's own measured ceiling in the same
-    /// lifted units as the frame (see `RAWPhotoDecoder.measureHeadroom`). A
-    /// single-exposure raw CLIPS at its own white: across 35 DSLR raws the
-    /// brightest 0.01% of pixels sat at 0.5-3.7x white, so against the authored 8x
-    /// halation reached 7-48% of its range and the halo read faint. Anchoring to
-    /// what the file actually carries puts a clipped specular - and a clipped sky,
-    /// which is clipped all the same - at full contribution.
+    /// A still used to be measured instead: the reference was a share of the
+    /// file's own p99.99, on the reasoning that a single-exposure raw clips at its
+    /// own white and would never reach a fixed 10x. It does not, but measuring
+    /// made the ramp depend on the brightest pixels of that particular file — a
+    /// fused ProRAW anchored near 0.7x white where the take's sits at 10x — so a
+    /// still began to glow far earlier than a take of the same scene. That
+    /// mismatch is the bug; the ramp is now a rule, not a measurement.
     ///
-    /// Both ends scale with the decode lift, exactly as the knees do, so a lifted
-    /// still is measured against the same scene it came from (`halationKnees`).
-    /// The result never exceeds the authored value, however bright the file.
-    static func halationReferenceSuperwhite(sceneLiftStops: Float, headroom: Float? = nil) -> Float {
-        let lift = liftScale(sceneLiftStops)
-        let authored = referenceSuperwhite * lift
-        guard let headroom, headroom.isFinite else { return authored }
-        let anchored = headroom * stillAnchorShare
-        return min(authored, max(lift * stillAnchorFloorWhite, anchored))
+    /// It scales with the decode lift, exactly as the knees do, so a lifted still
+    /// is measured against the same scene it came from (`halationKnees`).
+    static func halationReferenceSuperwhite(sceneLiftStops: Float) -> Float {
+        referenceSuperwhite * liftScale(sceneLiftStops)
     }
 
     private static func liftScale(_ sceneLiftStops: Float) -> Float {
@@ -193,7 +166,7 @@ final class SpatialEffectsStage {
     /// fades to none there and the pixel stays white and keeps halating. What
     /// "truly clipped" means is a property of the SOURCE, so it is measured
     /// wherever it can be: a still clips at its `headroom`
-    /// (see `halationReferenceSuperwhite`), a take at its `highlightCeiling`.
+    /// (see `RAWPhotoDecoder.measureHeadroom`), a take at its `highlightCeiling`.
     /// Apple Log 2's ~12x white is only the fallback — it is the top of the
     /// RECORDING range, and holding there would let a pull crush a dimmer
     /// highlight that is nevertheless blown.
@@ -267,8 +240,10 @@ final class SpatialEffectsStage {
         layerScale: SIMD3<Float>,
         diffusion: DiffusionSettings = .disabled,
         sceneLiftStops: Float = 0,
-        /// Measured highlight ceiling of a still, in lifted units. Nil for video,
-        /// which keeps the authored reference. See `halationReferenceSuperwhite`.
+        /// Measured highlight ceiling of a still, in lifted units, used by the
+        /// push/pull hold. Nil for video, which hands over its own measured
+        /// `highlightCeiling` instead. See `halationCeiling`. The halo's own
+        /// reference is absolute and takes no measurement from here.
         halationHeadroom: Float? = nil,
         /// The take's own highlight ceiling, in the frame's scene units, measured
         /// from the source frames. A take's halation reference stays authored (see
@@ -414,8 +389,7 @@ final class SpatialEffectsStage {
                                                highlightCeiling: highlightCeiling)
             var strength = strength
             var layerScale = layerScale
-            var referenceSuperwhite = Self.halationReferenceSuperwhite(
-                sceneLiftStops: sceneLiftStops, headroom: halationHeadroom)
+            var referenceSuperwhite = Self.halationReferenceSuperwhite(sceneLiftStops: sceneLiftStops)
             // Unused level slots are bound to a real, samplable texture rather
             // than left unbound; their weights are zero, so they contribute
             // nothing and the blend stays a normalized average.

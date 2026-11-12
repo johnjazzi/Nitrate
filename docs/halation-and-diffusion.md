@@ -12,8 +12,7 @@ Everything below is scene-linear and pre-LUT.
 | number | owner | file | what it does |
 |---|---|---|---|
 | `redKnee` / `greenKnee` / `blueKnee` | engine | `SpatialEffectsStage` | light below these does not bleed; red first, then green, then blue |
-| `referenceSuperwhite` | engine | `SpatialEffectsStage` | superwhite that reaches **full** contribution for video |
-| `stillAnchorShare` / `stillAnchorFloorWhite` | engine | `SpatialEffectsStage` | where a **still** reaches full contribution |
+| `referenceSuperwhite` | engine | `SpatialEffectsStage` | superwhite that reaches **full** contribution, stills and takes alike |
 | `halationStrength` | stock | `Resources/stocks.json` | how strong the effect is at full contribution |
 | `halationRadiusFraction` | stock | `Resources/stocks.json` | how far the halo spreads (fraction of half-width) |
 | `halationTint` | stock | `Resources/stocks.json` | per-layer weighting; red strongest |
@@ -21,26 +20,29 @@ Everything below is scene-linear and pre-LUT.
 | `diffusionPreset` / `diffusionAmount` | gauge | `Resources/gauges.json` | radius (px @ 1080p wide) and mix |
 | `stillDiffusionScale` | stock | `Resources/stocks.json` | share of the diffusion mix a still uses |
 
-## Video vs still: the one thing that differs
-
-A take is locked to its shutter. A raw photo clips at its own white.
+## The reference is a rule, not a measurement
 
 ```
-video : reference = referenceSuperwhite × 2^lift            (8x, authored for Apple Log 2)
-still : reference = clamp(headroom × stillAnchorShare,  floor,  authored)
-                    where headroom = p99.99 of the configured decode, peak channel
+reference = referenceSuperwhite × 2^lift        (10x diffuse white, Apple Log 2)
 ```
 
-`lift` is the decode's own lift (`BaselineExposure` + the still base exposure), and
-**both** the knees and the reference scale by it, so a lifted still is measured
-against the same scene it came from.
+One expression, a still or a take. `lift` is the decode's own lift
+(`BaselineExposure`), and **both** the knees and the reference scale by it, so a
+lifted still is measured against the same scene it came from.
 
-Why the split: across 35 DSLR raws (29 Nikon D700 NEF, 6 Sony NEX-6 ARW) the
-brightest 0.01 % of pixels sat at 0.5–3.7× white while the reference was 8× — so
-halation ran at 7–48 % of its range and read faint. A fused ProRAW carries more
-(4.7× at p99.99, 12× at max); Apple Log 2 is designed for ~12×.
+A still used to be measured instead — the reference was a share of the file's own
+p99.99 — on the reasoning that a single-exposure raw clips at its own white and
+would never reach 10x. It does not, but the measurement made the ramp depend on
+the brightest pixels of that particular file: for a fused ProRAW the anchor landed
+near 0.7× white against a take's 10×, so a still began to glow well before the
+video shot beside it. Whole-frame blooming orange stills were the visible form of
+that. Nothing about the file reaches the reference any more.
 
-`RenderCLI --raw-headroom <files|dirs>` prints exactly these numbers per file.
+What a still does differently is strength and diffusion, not threshold:
+`stillHalationScale` and `stillDiffusionScale` in `Resources/stocks.json`.
+
+`RenderCLI --raw-headroom <files|dirs>` still prints each file's measured ceiling.
+That number now feeds the push/pull hold (`halationCeiling`) only.
 
 ## Push/pull is a scene-light change, not a grade
 
@@ -100,17 +102,16 @@ radii therefore run one direct separable pass.
 ## Changing something
 
 - Halo too strong/weak on **everything**: `halationStrength` in `stocks.json`.
-- Halo too strong/weak on **DSLR stills only**: `stillAnchorShare` (halves the
-  anchor to double the effect), then `stillAnchorFloorWhite` if the share is not
-  biting.
-- Halo on stills vs video: `stillHalationScale`.
+- Where the halo reaches full strength, stills and takes together:
+  `referenceSuperwhite` in `SpatialEffectsStage` (lower saturates sooner).
+- Halo strength on **stills alone**: `stillHalationScale`.
 - Softness: `diffusionAmount` per gauge in `gauges.json`.
 - Radius: `filterGain` in `DiffusionPhysics` — not the gauges.
 
 ## What holds these in tests
 
-- `HalationReferenceTests` — the reference rule: video constant, still anchored,
-  floor, cap, non-finite fallback.
+- `HalationReferenceTests` — the reference rule: one absolute point, scaled by the
+  decode lift, with no measurement able to move it.
 - `SpatialEffectsTests.aPullDarkensTheHaloWithTheFrame` — the video pull lands
   before the emulsion and the halo follows it.
 - `DiffusionHighlightProfileTests` — a highlight scatters smoothly, no plateau.

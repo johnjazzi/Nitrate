@@ -43,8 +43,9 @@ final class StillFilmEffectsStage {
     ///    setting (`effectiveStillDiffusion`), which keeps the gauge's radius but
     ///    mixes a smaller share — a held frame reads softer than a moving one.
     /// `halationHeadroom` is the file's measured highlight ceiling; see
-    /// `SpatialEffectsStage.halationReferenceSuperwhite`. A still passes it, a
-    /// video frame does not.
+    /// `SpatialEffectsStage.halationCeiling`. A still passes it, a video frame
+    /// does not. The halo's own reference takes no measurement: stills and takes
+    /// ramp to full strength over the same span of light.
     ///
     /// The job's push/pull is applied HERE, in front of the emulsion, exactly as
     /// a video take's is: the development gain is a scene-light change, so

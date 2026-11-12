@@ -297,9 +297,10 @@ native HLG → shared input adapter ┴→ Apple Wide Gamut / Log 2
 The halation model is **physically informed, not a calibrated film simulation**.
 Its channel thresholds are 0.75×, 1.5× and 3× decoded diffuse white; radius
 multipliers are 1.8×, 1× and 0.5× the stock's base radius. Channel energy is divided
-by a 10× excess reference before stock weights and strength are applied,
-starting earlier with a gentler ramp. Stills retain their measured-headroom
-anchor, with its share and floor also raised 25%. These are starting values for device tuning, not measured emulsion properties. Halation
+by a 10× excess reference before stock weights and strength are applied, starting
+earlier with a gentler ramp. The reference is that one absolute point for stills
+and takes alike — it is never measured off the file, so both ramp over the same
+span of light. These are starting values for device tuning, not measured emulsion properties. Halation
 addition is scene-linear and pre-LUT, with no background-dependent shadow gate;
 final colour and highlight rolloff come from the same stock LUT as the source.
 Passing GPU tests establishes the operation order and numerical behaviour, not
