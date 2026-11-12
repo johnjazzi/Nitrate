@@ -309,23 +309,49 @@ static inline float3 spatial_expose(float3 linear, float stops, float ceiling) {
     return stops < 0.0f ? min(exposed, linear) : max(exposed, linear);
 }
 
-static inline float3 spatial_energy(float3 linear, float3 knees) {
-    // Per-layer response. `max(0, linear - knee)` is continuous and grows with
-    // intensity, so a brighter source bleeds further and reaches more layers.
-    // The knee ordering is explicit and fixed — red (least scattered light,
-    // clears first), then green, then blue — and must never be permuted: it is
-    // what makes a faint halo read red and a bright one read white.
-    return max(float3(0.0f), linear - knees);
+/// Per-layer halation response, in STOPS above diffuse white.
+///
+/// Each layer starts at its own `onsetStops` and reaches full contribution at
+/// `referenceStops`, so the growth is linear in stops: every stop of extra
+/// brightness adds the same increment of scattered light. The previous form was
+/// linear in LIGHT over the same span, which spends most of that span near the
+/// top — on a 4.7-stop ramp, a highlight 2 stops above the onset was only ~6 %
+/// of the way to full — so a highlight appeared to do nothing and then suddenly
+/// saturate. Linear in stops puts the growth where an operator can see it.
+///
+/// The per-layer response is the physics: `max(0, ...)` is continuous, so a
+/// brighter source bleeds further and reaches more layers, and the onset
+/// ordering is explicit and fixed — red (least scattered light, clears first),
+/// then green, then blue — and must never be permuted. It is what makes a faint
+/// halo read red. At `referenceStops` all three layers are at 1.0, so the hue of
+/// a highlight AT the reference is the layer weights (`layerScale`), not the
+/// ordering.
+///
+/// `frameWhiteStops` is where the frame being measured sits relative to the
+/// DELIVERED picture, in stops: a take whose capture was held a stop under is
+/// measured on a frame a stop darker, so its mask frame is at -1. This is the
+/// whole of the old knee/onset/reference scaling — one additive offset replaces
+/// two multiplicative ones, and the authored onsets below are shared by stills
+/// and takes because it is the same scene light either way.
+static inline float3 spatial_halation_energy(float3 linear, float3 onsetStops,
+                                             float referenceStops, float frameWhiteStops) {
+    float3 stops = log2(max(linear, 1.0e-6f)) - frameWhiteStops;
+    // Per-layer span. Guarded so an onset pushed past the reference degenerates
+    // to a step instead of dividing by zero.
+    float3 span = max(referenceStops - onsetStops, 0.05f);
+    return clamp((stops - onsetStops) / span, 0.0f, 1.0f);
 }
 
 kernel void spatial_halation_mask(
     texture2d<float, access::read>  input  [[texture(0)]],
     texture2d<float, access::write> mask   [[texture(1)]],
-    constant float& redKnee                [[buffer(0)]],
-    constant float& greenKnee              [[buffer(1)]],
-    constant float& blueKnee               [[buffer(2)]],
+    constant float& redOnsetStops          [[buffer(0)]],
+    constant float& greenOnsetStops        [[buffer(1)]],
+    constant float& blueOnsetStops         [[buffer(2)]],
     constant float& exposureStops          [[buffer(3)]],
     constant float& exposureCeiling        [[buffer(4)]],
+    constant float& referenceStops         [[buffer(5)]],
+    constant float& frameWhiteStops        [[buffer(6)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= mask.get_width() || gid.y >= mask.get_height()) {
@@ -336,7 +362,9 @@ kernel void spatial_halation_mask(
     float3 linear = spatial_expose(
         spatial_linear_block(input, gid, spatial_mask_scale(mask, input), valid),
         exposureStops, exposureCeiling);
-    float3 energy = spatial_energy(linear, float3(redKnee, greenKnee, blueKnee));
+    float3 energy = spatial_halation_energy(linear, float3(redOnsetStops, greenOnsetStops,
+                                                          blueOnsetStops),
+                                            referenceStops, frameWhiteStops);
 
     mask.write(float4(energy, 1.0f), gid);
 }
@@ -354,11 +382,13 @@ kernel void spatial_scene_prepare(
     texture2d<float, access::read>  input  [[texture(0)]],
     texture2d<float, access::write> mask   [[texture(1)]],
     texture2d<float, access::write> linear [[texture(2)]],
-    constant float& redKnee                [[buffer(0)]],
-    constant float& greenKnee              [[buffer(1)]],
-    constant float& blueKnee               [[buffer(2)]],
+    constant float& redOnsetStops          [[buffer(0)]],
+    constant float& greenOnsetStops        [[buffer(1)]],
+    constant float& blueOnsetStops         [[buffer(2)]],
     constant float& exposureStops          [[buffer(3)]],
     constant float& exposureCeiling        [[buffer(4)]],
+    constant float& referenceStops         [[buffer(5)]],
+    constant float& frameWhiteStops        [[buffer(6)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= mask.get_width() || gid.y >= mask.get_height()) {
@@ -369,7 +399,9 @@ kernel void spatial_scene_prepare(
     float3 scene = spatial_expose(
         spatial_linear_block(input, gid, spatial_mask_scale(mask, input), valid),
         exposureStops, exposureCeiling);
-    float3 energy = spatial_energy(scene, float3(redKnee, greenKnee, blueKnee));
+    float3 energy = spatial_halation_energy(scene, float3(redOnsetStops, greenOnsetStops,
+                                                          blueOnsetStops),
+                                            referenceStops, frameWhiteStops);
 
     mask.write(float4(energy, 1.0f), gid);
     linear.write(float4(scene, 1.0f), gid);
@@ -386,14 +418,16 @@ kernel void spatial_scene_prepare(
 ///
 /// ORDER IS PHYSICAL: a diffusion filter sits in front of the lens, so it
 /// softens the scene light BEFORE the emulsion scatters it. The halation layers
-/// are therefore added to the DIFFUSED scene, not the other way round.
+/// are therefore added to the DIFFUSED scene, not the other way round. The
+/// system's develop lift is applied after all of it — see `postEmulsionStops`.
 ///
-/// Halation applies no colour tint: the colour is the consequence of the
-/// per-layer physics — red responds to the least light and scatters furthest,
-/// so a faint halo reads red, and where green and blue have also responded the
-/// sum tends to white. The energy is ADDED over the source's own footprint as
-/// well, which is why a very bright source reads as larger rather than hollowed
-/// into a ring.
+/// Halation's colour is mostly the consequence of the per-layer physics: red
+/// responds to the least light and scatters furthest, so a faint halo reads red,
+/// and as a highlight climbs more layers respond and the sum whitens. Above the
+/// reference all three layers sit at 1.0, so a highlight at or past full
+/// contribution takes the shape of the layer weights rather than growing
+/// redder. The energy is ADDED over the source's own footprint as well, which is
+/// why a very bright source reads as larger rather than hollowed into a ring.
 kernel void spatial_halation_apply(
     texture2d<float, access::read>  source [[texture(0)]],
     texture2d<float, access::sample> red   [[texture(1)]],
@@ -406,11 +440,13 @@ kernel void spatial_halation_apply(
     texture2d<float, access::sample> diffusionLevel3 [[texture(8)]],
     constant float& strength               [[buffer(0)]],
     constant float3& layerScale            [[buffer(1)]],
-    constant float& referenceSuperwhite    [[buffer(2)]],
-    constant float4& diffusionWeights      [[buffer(3)]],
-    constant float& diffusionAmount        [[buffer(4)]],
-    constant float& exposureStops          [[buffer(5)]],
-    constant float& exposureCeiling        [[buffer(6)]],
+    constant float4& diffusionWeights      [[buffer(2)]],
+    constant float& diffusionAmount        [[buffer(3)]],
+    constant float& exposureStops          [[buffer(4)]],
+    constant float& exposureCeiling        [[buffer(5)]],
+    /// The system's develop lift, in stops. Positive, and applied LAST — after
+    /// the emulsion has scattered its light. See this kernel's ORDER note.
+    constant float& postEmulsionStops      [[buffer(6)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
@@ -435,11 +471,11 @@ kernel void spatial_halation_apply(
                               green.sample(spatial_linear_sampler, uv).g,
                               blue.sample(spatial_linear_sampler, uv).b);
 
-    // Normalize by the superwhite level that should reach full contribution, so
-    // an 11x excess does not swamp the graded image. `layerScale` weights each
-    // layer's contribution: red is the strongest because it is the layer most
-    // re-exposed by scattered light.
-    float3 contribution = diffusion / max(referenceSuperwhite, 0.0001f) * layerScale * strength;
+    // The mask is already a 0..1 fraction of the layer's own onset-to-reference
+    // span (see `spatial_halation_energy`), so there is nothing left to
+    // normalize here: `layerScale` weights each layer's contribution, red
+    // strongest because it is the layer most re-exposed by scattered light.
+    float3 contribution = diffusion * layerScale * strength;
 
     // Decode the source to linear scene light, add the scattered energy there,
     // and re-encode. Adding in the encoded domain instead would apply the log
@@ -470,8 +506,17 @@ kernel void spatial_halation_apply(
 
     float3 scattered = max(float3(0.0f), linear + contribution);
 
-    output.write(float4(apple_log_encode(scattered.r),
-                        apple_log_encode(scattered.g),
-                        apple_log_encode(scattered.b),
+    // ORDER: the system's develop lift comes last. The camera captured a stop
+    // under, so the frame the film stages were handed is a stop darker than the
+    // picture being delivered — halation is therefore measured against the light
+    // the film actually received, and the halo it scattered is lifted here with
+    // the scene that produced it. A flat gain rather than `spatial_expose`: the
+    // push/pull curve is a development choice that holds clipped highlights, while
+    // this only restores the exposure the operator asked for.
+    float3 delivered = scattered * exp2(postEmulsionStops);
+
+    output.write(float4(apple_log_encode(delivered.r),
+                        apple_log_encode(delivered.g),
+                        apple_log_encode(delivered.b),
                         base.a), gid);
 }

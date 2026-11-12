@@ -23,7 +23,8 @@ struct DiffusionTests {
     ///
     /// Radius is the physical spread, so it is not a taste knob; the amount is
     /// the mix, and a held frame reads softer than a moving one at the same
-    /// amount. 16mm therefore stays 16 px and drops 0.30 to 0.15.
+    /// amount. 16mm therefore stays 16 px and mixes half the gauge's amount
+    /// (0.21 -> 0.105 on the shipped ladder).
     @Test
     func stillShareKeepsTheRadiusAndMixesLess() throws {
         var stock = FilmStockConfig(stockId: "kokak", displayName: "s", category: .video,
@@ -32,12 +33,13 @@ struct DiffusionTests {
         stock.printGauge = .sixteenMillimetre
         stock.stillDiffusionScale = 0.5
 
+        let gaugeAmount = PrintGauge.sixteenMillimetre.diffusion.amount
         let take = stock.effectiveDiffusion
         let still = stock.effectiveStillDiffusion
         #expect(take.preset == .radius16)
-        #expect(take.amount == 0.3)
+        #expect(take.amount == gaugeAmount)
         #expect(still.preset == take.preset, "the radius is physical and must not move")
-        #expect(abs(still.amount - 0.15) < 0.0001)
+        #expect(abs(still.amount - gaugeAmount * 0.5) < 0.0001)
 
         // A stock with no still share keeps the take's amount exactly.
         stock.stillDiffusionScale = nil
@@ -249,9 +251,9 @@ struct DiffusionTests {
                     "\(gauge.rawValue) must ship its own radius")
             // The shipped starting ladder: softer format, wider and stronger.
             let shipped: [PrintGauge: (preset: DiffusionPreset, amount: Float)] = [
-                .eightMillimetre: (.radius35, 0.5),
-                .sixteenMillimetre: (.radius16, 0.3),
-                .thirtyFiveMillimetre: (.radius4, 0.2),
+                .eightMillimetre: (.radius35, 0.35),
+                .sixteenMillimetre: (.radius16, 0.21),
+                .thirtyFiveMillimetre: (.radius4, 0.14),
                 .seventyFiveMillimetre: (.radius75, 0)
             ]
             let expected = try #require(shipped[gauge])

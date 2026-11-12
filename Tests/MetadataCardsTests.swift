@@ -108,7 +108,7 @@ struct MetadataCardsTests {
         var queued = RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/take"), stockId: "kodak5219",
                                iso: 500, printGauge: .sixteenMillimetre)
         queued.receipt = nil
-        #expect(ReceiptMetadataCards.diffusionValue([:], job: queued) == "16px · 0.30")
+        #expect(ReceiptMetadataCards.diffusionValue([:], job: queued) == "16px · 0.21")
 
         var bypassed = RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/take"), stockId: "kodak5219",
                                  iso: 500, printGauge: .seventyFiveMillimetre)

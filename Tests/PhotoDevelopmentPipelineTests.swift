@@ -10,38 +10,69 @@ struct PhotoDevelopmentPipelineTests {
     private final class BundleToken {}
     private final class Counter: @unchecked Sendable { var value = 0 }
 
-    /// A still that the RAW decode lifted by N stops must be measured against
-    /// knees lifted by the same factor.
+    /// A still that the RAW decode lifted by N stops must be measured against the
+    /// same onsets as a take; the lift moves the FRAME, not the threshold.
     ///
     /// This is the bug behind "raw gets more halation than video": a ProRAW
-    /// carrying BaselineExposure +2.99 EV put an indoor wall at ~2x white, so an
-    /// ordinary lit surface cleared red's knee (1.0) and green's (2.0) on every
-    /// pixel and the whole frame bloomed orange. The fix is a knee scale, not a
-    /// weaker stock, so the halo around a true specular is unchanged.
-    @Test func liftedStillsMeasureAgainstLiftedKnees() {
-        let unlifted = SpatialEffectsStage.halationKnees(sceneLiftStops: 0)
-        #expect(unlifted == SIMD3<Float>(0.75, 1.5, 3), "video and unlifted stills keep the authored knees")
+    /// carrying BaselineExposure +2.99 EV put an indoor wall at ~2x nominal white
+    /// while the thresholds stayed on the unlifted scale, so an ordinary lit
+    /// surface cleared red AND green on every pixel and the whole frame bloomed
+    /// orange. The fix is an offset in the frame, not a weaker stock, so the halo
+    /// around a true specular is unchanged.
+    @Test func liftedStillsMeasureAgainstTheSameOnsets() {
+        let onsets = SpatialEffectsStage.halationOnsets()
+        #expect(onsets == SpatialEffectsStage.authoredOnsets)
+        #expect(onsets.x < onsets.y && onsets.y < onsets.z, "red comes on first")
 
-        let lifted = SpatialEffectsStage.halationKnees(sceneLiftStops: 2.988)
-        let scale = pow(Float(2), Float(2.988))
-        for channel in 0..<3 {
-            #expect(abs(lifted[channel] - unlifted[channel] * scale) < 0.001)
+        // The scene level a layer triggers at, in the frame the mask reads.
+        func trigger(onset: Float, lift: Float) -> Float {
+            pow(2, onset + SpatialEffectsStage.frameWhiteStops(sceneLiftStops: lift))
         }
+        // A lift raises the trigger by exactly the lift, so the halo stays on the
+        // same scene light however the file was exposed: a still and a take of one
+        // scene grade the same way.
+        let unlifted = trigger(onset: onsets.x, lift: 0)
+        let lifted = trigger(onset: onsets.x, lift: 2.988)
+        #expect(abs(lifted / unlifted - pow(2, 2.988)) < 0.001,
+                "the trigger must follow the decode lift exactly")
 
-        // The measurement that matters: a wall the lift put at 2x white must not
-        // read as superwhite once the knees follow the lift.
-        let wall: Float = 2.0
-        #expect(max(0, wall - unlifted.x) > 0, "unlifted knees call a 2x wall superwhite")
-        #expect(max(0, wall - lifted.x) == 0, "lifted knees do not")
+        // The wall the lift put at 1.59x: with the authored onsets it sits BELOW
+        // red's lifted trigger, so an ordinary lit wall does not scatter at all.
+        // That is the job the onsets do, and it is why raising them from the debug
+        // sheet's outdoor scene mattered.
+        let wall: Float = 1.59
+        #expect(wall < lifted, "the lifted wall must not reach red's trigger")
+        #expect(wall < trigger(onset: onsets.x, lift: 0) * powf(2, 2.988),
+                "nor an unlifted one, at the same scene light")
 
         // A genuine specular still clears every layer, so the halo does not vanish.
-        let specular: Float = lifted.z * 1.5
-        #expect(specular - lifted.z > 0)
+        let specular: Float = 20
+        for onset in [onsets.x, onsets.y, onsets.z] {
+            #expect(specular > trigger(onset: onset, lift: 2.988),
+                    "a bright specular must still clear every layer")
+        }
+    }
 
-        // Out-of-range and non-finite lifts cannot produce a nonsense knee.
-        #expect(SpatialEffectsStage.halationKnees(sceneLiftStops: -.infinity) == SIMD3<Float>(0.75, 1.5, 3))
-        let extreme = SpatialEffectsStage.halationKnees(sceneLiftStops: 99)
-        #expect(extreme.x.isFinite && extreme.x > 0)
+    /// The delivered onsets, and where the compensation for holding the capture
+    /// under now lives: the frame offset, and nothing else.
+    @Test func theDeliveredOnsetIsTheAuthoredOnset() {
+        let scheme = SystemExposureScheme.self
+        #expect(scheme.captureStops == -1, "the scheme captures one stop under")
+        #expect(scheme.developLiftStops == -scheme.captureStops,
+                "the develop lift is the capture stop put back, or the delivered exposure moves")
+
+        let onsets = SpatialEffectsStage.halationOnsets()
+        #expect(abs(powf(2, onsets.x) - 0.75262) < 0.001, "red responds from 0.75x diffuse white")
+        #expect(abs(powf(2, onsets.y) - 1.32869) < 0.001, "green from 1.33x")
+        #expect(abs(powf(2, onsets.z) - 2.98970) < 0.001, "blue from 2.99x")
+
+        // A take is measured a stop under the picture it delivers, and that offset
+        // is the whole of the compensation: the same onset lands on the same
+        // delivered level without a threshold scale.
+        let frameWhite = SpatialEffectsStage.frameWhiteStops(sceneLiftStops: 0)
+        #expect(abs(frameWhite - scheme.captureStops) < 0.0001)
+        #expect(abs(2 * powf(2, onsets.x + frameWhite) - powf(2, onsets.x)) < 0.001,
+                "the mask-frame trigger, doubled by the develop lift, is the delivered onset")
     }
 
     /// The delivery switch still governs a photo this app CAPTURED; only an
@@ -90,19 +121,22 @@ struct PhotoDevelopmentPipelineTests {
         }
     }
 
-    /// The still base exposure is a lift, so it must count toward the scene lift
-    /// the halation knees are scaled by — otherwise the one-stop fix reintroduces
-    /// the orange bloom it took a whole investigation to remove.
-    @Test func stillBaseExposureCountsTowardTheHalationSceneLift() {
-        #expect(RAWPhotoDecoder.baseExposureEV == 1)
-        #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 0) == 1)
-        #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 2.988) == 3.988)
+    /// Decode applies no still lift. The scheme's stop goes back in AFTER the
+    /// emulsion, so the frame offset `frameWhiteStops` carries is the capture's own
+    /// baseline and nothing else.
+    @Test func stillsDecodeWithoutALiftSoTheSceneLiftIsTheCaptureBaseline() {
+        #expect(RAWPhotoDecoder.baseExposureEV == 0)
+        #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 0) == 0)
+        #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 2.988) == 2.988)
 
-        // A 2x wall stays below the lifted red knee once both lifts are counted.
-        let lifted = SpatialEffectsStage.halationKnees(
+        // The frame offset moves with the capture's own baseline, which is the part
+        // of the lift a raw decode applies before any film stage sees it; the
+        // onsets themselves stay authored.
+        let unlifted = SpatialEffectsStage.frameWhiteStops(sceneLiftStops: 0)
+        let lifted = SpatialEffectsStage.frameWhiteStops(
             sceneLiftStops: RAWPhotoDecoder.sceneLiftStops(baselineExposure: 2.988))
-        let wallAtTwoStopsLift: Float = 2
-        #expect(max(0, wallAtTwoStopsLift - lifted.x) == 0)
+        #expect(abs(lifted - unlifted - 2.988) < 0.0001)
+        #expect(SpatialEffectsStage.halationOnsets() == SpatialEffectsStage.authoredOnsets)
     }
 
     @Test func nativeFlashUsesItsMeteredExposureWithoutTheAmbientStillLift() {
@@ -408,7 +442,7 @@ struct PhotoDevelopmentPipelineTests {
         let darkOff = darkBand.map { off[$0] }.reduce(0, +) / Double(darkBand.count)
         let darkOn = darkBand.map { on[$0] }.reduce(0, +) / Double(darkBand.count)
         // Shipped stills mix half the take's amount (`stillDiffusionScale` 0.5),
-        // so 8mm arrives at 0.25 rather than 0.5 and the lift is about half the
+        // so 8mm arrives at 0.175 rather than 0.35 and the lift is about half the
         // one a video frame gets at the same gauge.
         #expect(darkOn > darkOff + 0.2,
                 "diffusion must lift the dark side of the edge (\(darkOff) -> \(darkOn))")

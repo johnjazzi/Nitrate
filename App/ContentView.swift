@@ -644,6 +644,17 @@ struct ContentView: View {
         )
     }
 
+    /// The push/pull this take will be developed with, shown on the exposure
+    /// column. Resolved exactly the way the stock sheet and the direct-render path
+    /// resolve it: the stock's remembered choice, with an automatic rule read off
+    /// the live meter.
+    private var shootingPushPull: PushPullExposure? {
+        guard let stock = selectedStock else { return nil }
+        return library.lastPushPull(for: stock.stockId)
+            .resolved(meteredOffsetEV: cameraViewModel.hasExposureMeter
+                ? cameraViewModel.liveExposureTargetOffset : nil)
+    }
+
     /// Lock the camera's white balance to the selected stock's color
     /// temperature (daylight 5600K / tungsten 3200K) so the Apple Log → LUT
     /// transform sees a consistent per-stock white point.
@@ -1363,6 +1374,9 @@ struct ContentView: View {
                                          pushPull: developPushPull)
             },
             isPhotoMode: isPhotoMode,
+            // The push/pull the exposure column reports: the shooting choice while
+            // shooting, and the panel's own resolved value while developing.
+            pushPull: isDevelopMode ? developPushPull : shootingPushPull,
             photoStatus: photoDeliveryStatus,
             onPhotoCapture: {
                 let gauge = selectedStock.flatMap { library.lastGauge(for: $0.stockId) } ?? .neutral

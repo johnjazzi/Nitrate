@@ -1037,10 +1037,10 @@ enum CameraExposureBiasPreference {
         CommandLine.arguments.contains(isolationArgument)
     }
 
-    /// A little over a stop under the meter. It holds highlight detail in the
-    /// ordinary daylight this camera is usually pointed at, and it sits inside
-    /// the ±3 EV span `CameraSession.exposureBiasRange` permits on every device.
-    static let defaultValue: Float = -1.2
+    /// Under the meter. It holds highlight detail in the ordinary daylight this
+    /// camera is usually pointed at, and it sits inside the ±3 EV span
+    /// `CameraSession.exposureBiasRange` permits on every device.
+    static let defaultValue: Float = -0.4
 
     /// The compensation to use. A missing, non-numeric or non-finite stored value
     /// falls back to the default — never silently to 0, which would be

@@ -249,7 +249,7 @@ final class CameraViewModel {
     /// readout). Only drives the scene while the device meters automatically.
     ///
     /// Unlike the session-only 60 fps mode this is a persisted preference: it
-    /// starts from `CameraExposureBiasPreference` (a house default of -1.2 EV for
+    /// starts from `CameraExposureBiasPreference` (a house default of -0.4 EV for
     /// anyone who has never moved the control) and every user change is saved, so
     /// it survives camera sessions and app launches. It is deliberately NOT reset
     /// at the foreground-session boundary.
@@ -347,13 +347,7 @@ final class CameraViewModel {
             + "mode=\(isDevelopmentPhotoMode) configured=\(cameraConfigured) gate=\(lifecycleGate.isActive) "
             + "profile=\(isChangingCaptureProfile) busy=\(isPhotoCaptureBusy) snapshot=\(photoExposureSnapshot != nil)"
         print(line)
-        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("photo-exposure-trace.txt")
-        if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
-        if let file = try? FileHandle(forWritingTo: url) {
-            defer { try? file.close() }
-            _ = try? file.seekToEnd(); try? file.write(contentsOf: (line + "\n").data(using: .utf8)!)
-        }
+        CaptureTraceFile.write(line)
     }
 
     // MARK: - Actions
@@ -1509,8 +1503,12 @@ final class CameraViewModel {
         manualISO = presented?.iso ?? snapshot.iso
         isManualExposure = snapshot.isoLocked
         liveShutterSeconds = presented?.duration ?? snapshot.durationSeconds
-        liveExposureBias = snapshot.ev
-        liveExposureTargetOffset = snapshot.meteringOffset
+        // The snapshot's EV is the intent we installed on the device; the operator
+        // reads the value they chose.
+        liveExposureBias = SystemExposureScheme.displayed(snapshot.ev)
+        // The snapshot's offset is measured against the INSTALLED bias; the
+        // operator's meter reads against the value they set.
+        liveExposureTargetOffset = SystemExposureScheme.displayed(snapshot.meteringOffset)
         hasExposureMeter = true
     }
 
@@ -1884,6 +1882,15 @@ final class CameraViewModel {
         return range.upperBound > range.lowerBound
     }
 
+    /// Whether an exposure control may be touched at all.
+    ///
+    /// Exposure is frozen for the length of a take — the session refuses the write
+    /// — so a control that still moved would only ever show a value the sensor
+    /// never took. The rulers dim and disable while this is false.
+    var isExposureAdjustable: Bool {
+        !isStartingRecording && !isRecording && !isStoppingRecording && !isChangingFrameRate
+    }
+
     /// Set EV compensation (stops). Clamped to the device range and applied on
     /// the session queue; manual ISO mode is unaffected.
     ///
@@ -1894,13 +1901,16 @@ final class CameraViewModel {
     func setExposureBias(_ bias: Float) {
         if isDevelopmentPhotoMode {
             guard !isPhotoCaptureBusy, !isChangingFrameRate, !isChangingCaptureProfile else { return }
-            session.setDevelopmentPhotoEV(bias)
+            // The intent carries the INSTALLED value: the photo controller writes
+            // it straight to the device's target bias.
+            session.setDevelopmentPhotoEV(SystemExposureScheme.installed(bias))
             // Photo writes the same persisted preference Video does; without this
-            // the value only ever existed for the current launch.
+            // the value only ever existed for the current launch. It stores the
+            // operator's value, not the installed one.
             CameraExposureBiasPreference.save(bias)
             return
         }
-        guard !isChangingFrameRate, !isChangingCaptureProfile else { return }
+        guard isExposureAdjustable, !isChangingFrameRate, !isChangingCaptureProfile else { return }
         let range = session.exposureBiasRange
         let clamped = min(max(bias, range.lowerBound), range.upperBound)
         liveExposureBias = clamped
@@ -2086,7 +2096,7 @@ final class CameraViewModel {
         // cannot show what it costs. Predict that here, or the EV indicator says
         // 0 EV for a choice that will shoot nearly two stops darker.
         liveExposureTargetOffset = CameraAperturePolicy.predictedExposureOffsetEV(
-            measuredOffset: session.currentExposureTargetOffset,
+            measuredOffset: SystemExposureScheme.displayed(session.currentExposureTargetOffset),
             deviceAperture: liveAperture,
             selectedAperture: selectedLensAperture,
             isDeferred: usesSharedIdlePreview && !isDevelopmentPhotoMode)

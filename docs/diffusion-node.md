@@ -25,9 +25,9 @@ frame, so a preset keeps its size relative to the picture. `sigma = radius / 2`.
 
 | Gauge | Radius @1080p | Amount | Behaviour |
 |-------|---------------|--------|-----------|
-| 8mm   | 35 px         | 0.50   | rendered  |
-| 16mm  | 16 px         | 0.30   | rendered  |
-| 35mm  | 4 px          | 0.20   | rendered  |
+| 8mm   | 35 px         | 0.35   | rendered  |
+| 16mm  | 16 px         | 0.21   | rendered  |
+| 35mm  | 4 px          | 0.14   | rendered  |
 | 75mm  | 75 px         | 0      | **bypassed** |
 
 The ladder runs from the softest format to the sharpest: the gauge with the
@@ -89,8 +89,8 @@ which is roughly the cost of a small blur at full working resolution.
   the source (catches blocky pyramid seams);
 - `off`, `radius75` and amount 0 hand back the input texture object itself;
 - diffusion composes with halation instead of replacing it;
-- every gauge owns its radius and amount (8mm > 16mm > 35mm, 0.50 / 0.40 /
-  0.20), the shipped document is identical in both copies, and 75mm stays off.
+- every gauge owns its radius and amount (8mm > 16mm > 35mm, 0.35 / 0.21 /
+  0.14), the shipped document is identical in both copies, and 75mm stays off.
 
 ## Tuning it
 

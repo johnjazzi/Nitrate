@@ -521,6 +521,15 @@ final class PipelineRenderer: @unchecked Sendable {
         var halationStrength: Float
         var halationRadiusFraction: Float
         var halationTint: SIMD3<Float>
+        /// Halation onset, as three dials. The shipping paths read the stage's
+        /// authored onsets; the sheet varies them on one frame so a value can be
+        /// judged before it is authored anywhere.
+        /// Per-layer halation onsets, in stops above diffuse white, in the
+        /// DELIVERED picture's scale. Seeded from the stage so the dials open on
+        /// the shipping look; a shipping path reads the stage's constants.
+        var halationRedOnsetStops: Float
+        var halationGreenOnsetStops: Float
+        var halationBlueOnsetStops: Float
         var glowStrength: Float
         /// Lens diffusion node: preset radius ladder plus its blend amount.
         /// Off by default, so the sheet opens on the stock's shipping look.
@@ -539,6 +548,9 @@ final class PipelineRenderer: @unchecked Sendable {
             self.halationStrength = config.effectiveHalationStrength
             self.halationRadiusFraction = config.halationRadiusFraction
             self.halationTint = config.halationTint
+            self.halationRedOnsetStops = SpatialEffectsStage.authoredOnsets.x
+            self.halationGreenOnsetStops = SpatialEffectsStage.authoredOnsets.y
+            self.halationBlueOnsetStops = SpatialEffectsStage.authoredOnsets.z
             self.glowStrength = config.glowStrength
             self.diffusion = config.effectiveDiffusion
         }
@@ -576,6 +588,12 @@ final class PipelineRenderer: @unchecked Sendable {
     struct DebugFrameRender {
         let texture: MTLTexture
         let pixelBuffer: CVPixelBuffer
+        /// The source frame's own highlight ceiling in stops above diffuse white,
+        /// measured from its code values. An empty halation mask is usually a fact
+        /// about this number — nothing in the frame reaches the onset — so the
+        /// sheet reports it beside the onset dial instead of leaving halation
+        /// looking broken.
+        let peakStopsAboveWhite: Float?
         var width: Int { CVPixelBufferGetWidth(pixelBuffer) }
         var height: Int { CVPixelBufferGetHeight(pixelBuffer) }
     }
@@ -623,10 +641,12 @@ final class PipelineRenderer: @unchecked Sendable {
             // ceiling comes from the frame on screen, not the authored 12x
             // fallback. A single frame IS the whole picture here, so measuring it
             // per frame is the right granularity (the take path measures once).
-            let highlightCeiling: Float? = config.effectivePushPull.isNeutral
-                ? nil
-                : PushPullTransfer.measuredHighlightCeiling(peakCodes: profile == .hlgBT2020
-                    ? peakCodes(of: sourceTexture.texture) : Self.peakCodes(of: pixelBuffer))
+            // Always measured: the sheet reports it. An empty halation mask is
+            // usually a fact about the frame's headroom rather than about the
+            // dials, and nothing else in the sheet can tell the two apart.
+            let measuredCeiling = PushPullTransfer.measuredHighlightCeiling(
+                peakCodes: profile == .hlgBT2020 ? peakCodes(of: sourceTexture.texture) : Self.peakCodes(of: pixelBuffer))
+            let highlightCeiling: Float? = config.effectivePushPull.isNeutral ? nil : measuredCeiling
 
             return withExtendedLifetime(sourceTexture.cvTexture) { () -> DebugFrameRender? in
                 guard let halated = spatialStage.applyHalation(
@@ -636,11 +656,21 @@ final class PipelineRenderer: @unchecked Sendable {
                     radiusFraction: parameters.halationRadiusFraction,
                     layerScale: parameters.halationTint,
                     diffusion: parameters.diffusion,
+                    // The onsets are dials on this sheet only; the shipping
+                    // paths read the stage's constants. They open on those
+                    // constants, so a value worth keeping can be pasted
+                    // straight into them.
+                    authoredOnsets: SIMD3(parameters.halationRedOnsetStops,
+                                          parameters.halationGreenOnsetStops,
+                                          parameters.halationBlueOnsetStops),
                     // The pull is applied HERE, in front of the emulsion, so the
                     // halo is measured against the light the film receives. The
                     // LUT pass below therefore grades with no exposure of its own.
                     highlightCeiling: highlightCeiling,
                     exposureStops: Float(config.effectivePushPull.stops.stops),
+                    // The stop the camera captured under, put back after the
+                    // emulsion. Flat, and applied before the LUT below.
+                    postEmulsionStops: SystemExposureScheme.developLiftStops,
                     width: width,
                     height: height
                 ) else { return nil }
@@ -678,7 +708,8 @@ final class PipelineRenderer: @unchecked Sendable {
                     height: height
                 ) else { return nil }
 
-                return DebugFrameRender(texture: outputTexture, pixelBuffer: outputBuffer)
+                return DebugFrameRender(texture: outputTexture, pixelBuffer: outputBuffer,
+                                        peakStopsAboveWhite: measuredCeiling.map { log2($0) })
             }
         }
     }
@@ -1187,6 +1218,7 @@ final class PipelineRenderer: @unchecked Sendable {
                             // the sensor saw.
                             highlightCeiling: context.highlightCeiling,
                             exposureStops: Float(config.effectivePushPull.stops.stops),
+                            postEmulsionStops: SystemExposureScheme.developLiftStops,
                             // The delivered texture is already the crop, so the
                             // stage works in delivery pixels, not source pixels.
                             width: outputWidth,

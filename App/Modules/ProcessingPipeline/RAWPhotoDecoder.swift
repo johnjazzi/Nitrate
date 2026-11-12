@@ -19,9 +19,10 @@ final class RAWPhotoDecoder {
         let metadata: DNGMetadata?
         /// Highlight ceiling the file actually carries: the 99.99th percentile
         /// of its configured decode, in the same lifted units the film stages
-        /// see. Halation is anchored to this instead of a constant, because a
-        /// single-exposure raw clips at its own white (see
-        /// `SpatialEffectsStage.halationReferenceSuperwhite`).
+        /// see. Halation's push/pull hold is anchored to this instead of a
+        /// constant, because a single-exposure raw clips at its own white (see
+        /// `SpatialEffectsStage.halationCeiling`); the ramp's own reference is
+        /// fixed and does not read it.
         let halationHeadroom: Float
 
         /// Additional lift actually applied by CIRAWFilter, separate from its baseline.
@@ -51,15 +52,17 @@ final class RAWPhotoDecoder {
 
     /// Legacy ambient still exposure before the film stages.
     ///
-    /// The RAW pipeline's neutral rendering sits low: a develop came out about a
-    /// stop under what the same capture looks like in Photos, consistently, on
-    /// both ProRAW and maker raws. This is the single number that fixes the base
-    /// rather than leaving every photo to be corrected by hand with push/pull.
+    /// Zero. The still's lift is the scheme's own stop (`SystemExposureScheme`),
+    /// applied AFTER the emulsion stages so the halation mask is measured on the
+    /// frame the sensor actually recorded. It used to sit here, at decode, which
+    /// put the lift ahead of the halo and made a still read a stop brighter than
+    /// the exposure the operator set.
     ///
-    /// It is a LIFT, so it also counts toward the halation scene lift (see
-    /// `sceneLiftStops`) — a frame lifted here must not be measured against
-    /// un-lifted knees, which is the bug that made raw blooms orange.
-    static let baseExposureEV: Float = 1
+    /// It is still counted in the scene lift (see `sceneLiftStops`) for the
+    /// benefit of any future pre-emulsion lift: a frame lifted here must not be
+    /// measured against un-lifted knees, which is the bug that made raw blooms
+    /// orange.
+    static let baseExposureEV: Float = 0
 
     static func exposureEV(for flash: FlashRecord?) -> Float {
         guard let flash, flash.mode == .native, flash.resolved == true, !flash.wasRefused else {
