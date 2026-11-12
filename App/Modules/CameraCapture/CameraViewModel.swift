@@ -347,13 +347,7 @@ final class CameraViewModel {
             + "mode=\(isDevelopmentPhotoMode) configured=\(cameraConfigured) gate=\(lifecycleGate.isActive) "
             + "profile=\(isChangingCaptureProfile) busy=\(isPhotoCaptureBusy) snapshot=\(photoExposureSnapshot != nil)"
         print(line)
-        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("photo-exposure-trace.txt")
-        if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
-        if let file = try? FileHandle(forWritingTo: url) {
-            defer { try? file.close() }
-            _ = try? file.seekToEnd(); try? file.write(contentsOf: (line + "\n").data(using: .utf8)!)
-        }
+        CaptureTraceFile.write(line)
     }
 
     // MARK: - Actions
@@ -1888,6 +1882,15 @@ final class CameraViewModel {
         return range.upperBound > range.lowerBound
     }
 
+    /// Whether an exposure control may be touched at all.
+    ///
+    /// Exposure is frozen for the length of a take — the session refuses the write
+    /// — so a control that still moved would only ever show a value the sensor
+    /// never took. The rulers dim and disable while this is false.
+    var isExposureAdjustable: Bool {
+        !isStartingRecording && !isRecording && !isStoppingRecording && !isChangingFrameRate
+    }
+
     /// Set EV compensation (stops). Clamped to the device range and applied on
     /// the session queue; manual ISO mode is unaffected.
     ///
@@ -1907,7 +1910,7 @@ final class CameraViewModel {
             CameraExposureBiasPreference.save(bias)
             return
         }
-        guard !isChangingFrameRate, !isChangingCaptureProfile else { return }
+        guard isExposureAdjustable, !isChangingFrameRate, !isChangingCaptureProfile else { return }
         let range = session.exposureBiasRange
         let clamped = min(max(bias, range.lowerBound), range.upperBound)
         liveExposureBias = clamped

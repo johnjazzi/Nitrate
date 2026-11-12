@@ -58,6 +58,10 @@ struct CameraControlBar: View {
     /// The only thing the Develop centre action does. It never touches capture.
     var onDevelopRender: () -> Void = {}
     var isPhotoMode = false
+    /// The push/pull this take will be developed with: the stock's remembered
+    /// choice, resolved against the live meter when it is automatic. Nil hides the
+    /// badge, which is also what a neutral result does.
+    var pushPull: PushPullExposure? = nil
     var photoStatus: String? = nil
     var onPhotoCapture: () -> Void = {}
     var photoExposure: PhotoExposureSnapshot? = nil
@@ -263,8 +267,13 @@ struct CameraControlBar: View {
     /// One setting, two modes. Auto drives the scene's auto-exposure target bias
     /// (EV); manual drives the ISO chooser. Long-press toggles between them.
     private var exposureHoldEnabled: Bool {
-        !cameraViewModel.isStartingRecording && !cameraViewModel.isRecording
-            && !cameraViewModel.isStoppingRecording && !cameraViewModel.isChangingFrameRate
+        cameraViewModel.isExposureAdjustable
+    }
+
+    /// The EV ruler is unusable from two directions: the device may not report a
+    /// range, and a take freezes exposure for its whole length.
+    private var evRulerEnabled: Bool {
+        cameraViewModel.isExposureAdjustable && cameraViewModel.isExposureBiasAvailable
     }
 
     private var exposureSetting: some View {
@@ -298,6 +307,8 @@ struct CameraControlBar: View {
                 // this one and not the EV ruler that shares the column.
                 .accessibilityIdentifier("camera.isoRuler")
                 .accessibilityLabel("ISO")
+                .disabled(!cameraViewModel.isExposureAdjustable)
+                .opacity(cameraViewModel.isExposureAdjustable ? 1 : 0.4)
             } else {
                 // Ruler rather than a 1:1 slider: EV compensation needs
                 // repeatable 0.1 EV detents, with 12pt of travel per tick.
@@ -309,16 +320,48 @@ struct CameraControlBar: View {
                     tint: .orange,
                     length: 120
                 )
-                .disabled(!cameraViewModel.isExposureBiasAvailable)
-                .opacity(cameraViewModel.isExposureBiasAvailable ? 1 : 0.4)
+                .disabled(!evRulerEnabled)
+                .opacity(evRulerEnabled ? 1 : 0.4)
             }
 
             // Keep the previous footer's exact font height without its words.
             // This preserves the shooting bar and viewfinder geometry.
-            Text(" ")
-                .font(NitrateTypography.font(size: 9))
-                .accessibilityHidden(true)
+            exposureFooter
         }
+    }
+
+    /// The exposure column's footer: the lock while a take freezes exposure,
+    /// otherwise the push/pull this take will be developed with.
+    ///
+    /// Which of the two wins is the order they matter in: a frozen control is what
+    /// the operator is looking at right now, and the push/pull is a standing
+    /// decision that is still on screen before and after the take.
+    @ViewBuilder
+    private var exposureFooter: some View {
+        if !cameraViewModel.isExposureAdjustable {
+            Image(systemName: "lock.fill").opacity(0.45)
+        } else if let pushPull, !pushPull.isNeutral {
+            pushPullBadge(pushPull.stops)
+        } else {
+            Text(" ")
+        }
+    }
+
+    /// "PUSH +1" / "PULL 2" — the film's own word for the shift, so the exposure
+    /// column says which way the take is being deviated from the box speed.
+    private func pushPullBadge(_ stops: PushPullStops) -> some View {
+        HStack(spacing: 2) {
+            Text(stops.effectWord)
+            Text(stops.displayName)
+        }
+        .font(NitrateTypography.font(size: 9).monospacedDigit())
+        .lineLimit(1)
+        .minimumScaleFactor(0.6)
+        // Push adds light and grain, pull takes it away: the tint says which way
+        // at a glance, and the word says it again for anyone who cannot separate
+        // the two hues.
+        .foregroundStyle(stops.isPull ? Color.cyan.opacity(0.9) : Color.orange)
+        .accessibilityLabel("Film \(stops.effectName) \(abs(stops.stops)) stops")
     }
 
     /// "+0.0" / "-1.3" style auto-exposure bias readout.
