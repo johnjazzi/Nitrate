@@ -162,6 +162,9 @@ targets:
       - path: App/Modules/CameraCapture/CameraZoomPolicy.swift
       - path: App/Modules/CameraCapture/CameraFocalZoomPolicy.swift
       - path: App/Modules/ProcessingPipeline/GrainModel.swift
+      # GrainModel reads its gauge multipliers and diffusion pair from the types
+      # in this file, so the target needs it or GrainModel cannot compile.
+      - path: App/Modules/ProcessingPipeline/DiffusionModel.swift
       - path: App/Modules/CameraCapture/FramedPreviewLayout.swift
       - path: Tests/CameraCleanupPresentationTests.swift
       - path: App/Modules/CameraCapture/RecordingTimerBadge.swift
