@@ -162,7 +162,10 @@ struct DevelopFramePreviewRendererTests {
         #expect(rotated.image.width == normal.image.height)
         #expect(rotated.image.height == normal.image.width)
         #expect(rotated.measuredOffsetEV == normal.measuredOffsetEV)
-        let expectedImage = CIImage(cgImage: normal.image).transformed(by: CGAffineTransform(rotationAngle: .pi / 2))
+        // Core Image's rotation sense, which the preview matches to the player's:
+        // the odd quarter turns are the negated CI angle (see
+        // previewMatchesAPlayersOrientationForEveryTrackTransform).
+        let expectedImage = CIImage(cgImage: normal.image).transformed(by: CGAffineTransform(rotationAngle: -.pi / 2))
         let expected = try #require(CIContext().createCGImage(expectedImage, from: expectedImage.extent,
             format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!))
         let actualPixels = try pixels(rotated.image), expectedPixels = try pixels(expected)
@@ -255,6 +258,147 @@ struct DevelopFramePreviewRendererTests {
         #expect(try mean(pull.image) < mean(neutral.image))
         #expect(pull.measuredOffsetEV == neutral.measuredOffsetEV)
         #expect(neutral.captureDescription == nil, "the generated movie has no capture-exposure metadata")
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires Metal and bundled film resources"))
+    func anUpsideDownTrackIsAppliedOnceThroughTheFileEntryPoint() async throws {
+        let renderer = DevelopFramePreviewRenderer(bundle: bundle)
+        let config = try stock()
+        let upright = try await renderer.preview(url: try Self.writeMovie(transform: .identity), isPhoto: false,
+                                                 stock: config, gauge: .neutral, pushPull: .neutral)
+        let flipped = try await renderer.preview(url: try Self.writeMovie(
+            transform: CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 128, ty: 80)), isPhoto: false,
+                                                 stock: config, gauge: .neutral, pushPull: .neutral)
+        #expect(upright.image.width == flipped.image.width)
+        #expect(upright.image.height == flipped.image.height)
+        let expectedImage = CIImage(cgImage: upright.image).transformed(by: CGAffineTransform(rotationAngle: .pi))
+        let expected = try #require(CIContext().createCGImage(expectedImage, from: expectedImage.extent,
+            format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!))
+        let actualPixels = try pixels(flipped.image), expectedPixels = try pixels(expected)
+        #expect(actualPixels.count == expectedPixels.count)
+        let difference = zip(actualPixels, expectedPixels).map { abs(Int($0.0) - Int($0.1)) }.max() ?? 255
+        #expect(difference <= 2)
+    }
+
+    /// One short HEVC movie at the given track transform, so the file entry point
+    /// (not the in-memory seam) decides the orientation.
+    private static func writeMovie(transform: CGAffineTransform) async throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("develop-upside-down-\(UUID().uuidString).mov")
+        let writer = try AVAssetWriter(url: url, fileType: .mov)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.hevc,
+            AVVideoCompressionPropertiesKey: [AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel],
+            AVVideoWidthKey: 128, AVVideoHeightKey: 80,
+            AVVideoColorPropertiesKey: [
+                AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
+            ]
+        ])
+        input.transform = transform
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input,
+            sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String:
+                kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange])
+        writer.add(input)
+        writer.startWriting()
+        writer.startSession(atSourceTime: .zero)
+        let frame = try DevelopPreviewFixtures.hlgBuffer()
+        for index in 0..<12 {
+            let deadline = Date().addingTimeInterval(5)
+            while !input.isReadyForMoreMediaData, Date() < deadline {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            try #require(adaptor.append(frame, withPresentationTime: CMTime(value: Int64(index), timescale: 24)))
+        }
+        input.markAsFinished()
+        await writer.finishWriting()
+        try #require(writer.status == .completed, "\(String(describing: writer.error))")
+        return url
+    }
+
+    /// The fixture's own definition is the ground truth: row 0 of the source
+    /// buffer is the top, and its green rises with row index. A preview that
+    /// reads top-to-bottom as bottom-to-top is a vertical flip, which looks
+    /// exactly like an upside-down frame on a real scene — and it is invisible to
+    /// a test that only compares the pipeline against itself.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires Metal and bundled film resources"))
+    func previewKeepsTheSourceRowOrder() async throws {
+        let preview = try await DevelopFramePreviewRenderer(bundle: bundle).gradientVideo(stock())
+        let bytes = try pixels(preview.image)
+        let width = preview.image.width, height = preview.image.height
+        func greenShare(_ rows: Range<Int>) -> Double {
+            var total = 0.0, green = 0.0
+            for row in rows {
+                for column in 0..<width {
+                    let index = (row * width + column) * 4
+                    green += Double(bytes[index + 1])
+                    total += Double(bytes[index])
+                }
+            }
+            return total > 0 ? green / total : 0
+        }
+        let top = greenShare(0..<(height / 4))
+        let bottom = greenShare(((height * 3) / 4)..<height)
+        #expect(bottom > top, "green rises with row index in the source; bottom=\(bottom) top=\(top)")
+    }
+
+    /// AVFoundation's own upright rendering of a track, used as the orientation
+    /// ground truth: whatever a player shows is what the preview must show. No
+    /// hand-derived rotation convention can substitute for it — mirroring and
+    /// rotation sense are exactly what a convention gets wrong.
+    private static func uprightReference(_ url: URL) async throws -> CGImage {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        let (image, _) = try await generator.image(at: CMTime(seconds: 0.2, preferredTimescale: 600))
+        return image
+    }
+
+    /// Mean luminance of each quadrant, as [topLeft, topRight, bottomLeft,
+    /// bottomRight]. The fixture's light rises with the coded column and monotone
+    /// grading preserves which corner is bright, so this compares orientation
+    /// without comparing colour.
+    private func quadrants(_ image: CGImage) throws -> [Double] {
+        let bytes = try pixels(image)
+        let width = image.width, height = image.height
+        var sums = [Double](repeating: 0, count: 4)
+        for row in 0..<height {
+            for column in 0..<width {
+                let index = (row * width + column) * 4
+                let quadrant = (row < height / 2 ? 0 : 2) + (column < width / 2 ? 0 : 1)
+                sums[quadrant] += (Double(bytes[index]) + Double(bytes[index + 1]) + Double(bytes[index + 2])) / 3
+            }
+        }
+        return sums.map { $0 / Double((width / 2) * (height / 2)) }
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires Metal and bundled film resources"))
+    func previewMatchesAPlayersOrientationForEveryTrackTransform() async throws {
+        let renderer = DevelopFramePreviewRenderer(bundle: bundle)
+        let config = try stock()
+        let cases: [(String, CGAffineTransform)] = [
+            ("identity", .identity),
+            ("quarterTurn", CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 80, ty: 0)),
+            ("upsideDown", CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 128, ty: 80)),
+            ("threeQuarterTurn", CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 128))
+        ]
+        for (name, transform) in cases {
+            let url = try await Self.writeMovie(transform: transform)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let reference = try quadrants(try await Self.uprightReference(url))
+            let preview = try await renderer.preview(url: url, isPhoto: false, stock: config,
+                                                     gauge: .neutral, pushPull: .neutral)
+            let actual = try quadrants(preview.image)
+            let referenceBrightest = reference.enumerated().max { $0.element < $1.element }?.offset
+            let actualBrightest = actual.enumerated().max { $0.element < $1.element }?.offset
+            let referenceDarkest = reference.enumerated().min { $0.element < $1.element }?.offset
+            let actualDarkest = actual.enumerated().min { $0.element < $1.element }?.offset
+            #expect(actualBrightest == referenceBrightest,
+                    "\(name): brightest quadrant player=\(referenceBrightest ?? -1) preview=\(actualBrightest ?? -1) player=\(reference) preview=\(actual)")
+            #expect(actualDarkest == referenceDarkest,
+                    "\(name): darkest quadrant player=\(referenceDarkest ?? -1) preview=\(actualDarkest ?? -1) player=\(reference) preview=\(actual)")
+        }
     }
 
     @Test func cancellationAndMissingOriginalNeverReturnAPlaceholderPreview() async throws {
