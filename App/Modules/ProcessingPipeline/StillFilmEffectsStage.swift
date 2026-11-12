@@ -34,9 +34,8 @@ final class StillFilmEffectsStage {
     /// Two things arrive with the source and both matter:
     ///
     ///  * `sceneLiftStops` is how far the RAW decode lifted this frame.
-    ///    Halation measures excess above diffuse white, so a lifted still has to
-    ///    be measured against lifted knees; see
-    ///    `SpatialEffectsStage.halationKnees`.
+    ///    Halation measures excess above diffuse white, so a lifted still's mask
+    ///    frame moves with the lift; see `SpatialEffectsStage.frameWhiteStops`.
     ///  * the lens diffusion node is passed in the same call, so a still gets
     ///    the same scene-linear diffusion as a video frame: same code path, same
     ///    decode/encode, same order in front of the emulsion. It is the STILL

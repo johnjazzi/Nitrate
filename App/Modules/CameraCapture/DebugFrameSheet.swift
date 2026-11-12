@@ -14,6 +14,8 @@ struct DebugFrameBitmap: Sendable {
     let pixels: [UInt8]
     var milliseconds: Double = 0
     var orientedImage: CGImage?
+    /// The source frame's highlight ceiling, in stops above diffuse white.
+    var peakStopsAboveWhite: Float?
 
     init?(pixelBuffer: CVPixelBuffer) {
         let width = CVPixelBufferGetWidth(pixelBuffer)
@@ -64,6 +66,8 @@ final class DebugFrameViewModel: Identifiable {
     let stocks: [FilmStockConfig]
     private(set) var image: CGImage?
     private(set) var lastRenderMilliseconds: Double = 0
+    /// Highlight headroom of the frozen frame, reported beside the halation onset.
+    private(set) var peakStopsAboveWhite: Float?
     private(set) var message: String?
 
     private let frame: CVPixelBuffer
@@ -121,6 +125,7 @@ final class DebugFrameViewModel: Identifiable {
         message = nil
         image = bitmap.makeCGImage()
         lastRenderMilliseconds = bitmap.milliseconds
+        peakStopsAboveWhite = bitmap.peakStopsAboveWhite
     }
 
     private nonisolated static func render(_ input: DebugFrameRenderInput) -> DebugFrameBitmap? {
@@ -134,6 +139,7 @@ final class DebugFrameViewModel: Identifiable {
         else { return nil }
         bitmap.orientedImage = oriented
         bitmap.milliseconds = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+        bitmap.peakStopsAboveWhite = result.peakStopsAboveWhite
         return bitmap
     }
 }
@@ -459,6 +465,29 @@ struct DebugFrameSheet: View {
                                     { viewModel.parameters.halationStrength = $0 }),
                        in: 0...8, step: 0.01)
             }
+            // One onset per layer, in stops above diffuse white: the level where
+            // that layer starts to halate, and the number that can be pasted
+            // straight into the stage's constants. Red comes on first — 0 is
+            // diffuse white, and the ramp runs from here up to the stage's
+            // reference (10x white, 3.32 stops) at an even rate per stop.
+            labelled(String(format: "Onset  R %+.2f   G %+.2f   B %+.2f  stops above white",
+                            viewModel.parameters.halationRedOnsetStops,
+                            viewModel.parameters.halationGreenOnsetStops,
+                            viewModel.parameters.halationBlueOnsetStops)) {
+                VStack(spacing: 4) {
+                    Slider(value: float({ viewModel.parameters.halationRedOnsetStops },
+                                        { viewModel.parameters.halationRedOnsetStops = $0 }),
+                           in: -6...3.3, step: 0.05)
+                    Slider(value: float({ viewModel.parameters.halationGreenOnsetStops },
+                                        { viewModel.parameters.halationGreenOnsetStops = $0 }),
+                           in: -6...3.3, step: 0.05)
+                    Slider(value: float({ viewModel.parameters.halationBlueOnsetStops },
+                                        { viewModel.parameters.halationBlueOnsetStops = $0 }),
+                           in: -6...3.3, step: 0.05)
+                }
+            }
+            Text(halationReadout)
+                .font(NitrateTypography.font(.caption).monospacedDigit())
             labelled(String(format: "Radius fraction %.4f", viewModel.parameters.halationRadiusFraction)) {
                 Slider(value: float({ viewModel.parameters.halationRadiusFraction },
                                     { viewModel.parameters.halationRadiusFraction = $0 }),
@@ -479,6 +508,36 @@ struct DebugFrameSheet: View {
             }
         }
     }
+
+    /// The onsets the stage will actually use against what the frame carries.
+    ///
+    /// Both numbers are stops above diffuse white — the scale the dials are in —
+    /// so the comparison is direct. The frame's peak arrives relative to the
+    /// frame's own 1.0, and the mask reads the frame through `frameWhiteStops`, so
+    /// the peak is shifted by the same offset before the two are put side by side.
+    /// Without the two numbers an empty halo is ambiguous: either the dials are
+    /// doing nothing or nothing in the frame is bright enough to scatter, and
+    /// those need different fixes.
+    private var halationReadout: String {
+        let onsets = SpatialEffectsStage.halationOnsets(
+            authored: SIMD3(viewModel.parameters.halationRedOnsetStops,
+                            viewModel.parameters.halationGreenOnsetStops,
+                            viewModel.parameters.halationBlueOnsetStops))
+        let line = "onset R \(signed(onsets.x)) G \(signed(onsets.y)) B \(signed(onsets.z)) stops"
+        guard let peak = viewModel.peakStopsAboveWhite else {
+            return "frame peak unmeasured · \(line)"
+        }
+        let deliveredPeak = peak - SpatialEffectsStage.frameWhiteStops(sceneLiftStops: 0)
+        let reach = deliveredPeak < onsets.x
+            ? " · nothing in the frame reaches the red onset"
+            : ""
+        return "frame peak \(signed(deliveredPeak)) stops "
+            + "(\(fmt(powf(2, peak)))× white, relative to the frame) · \(line)\(reach)"
+    }
+
+    private func signed(_ value: Float) -> String { String(format: "%+.2f", value) }
+
+    private func fmt(_ value: Float) -> String { String(format: "%.2f", value) }
 
     /// Lens diffusion node: the radius ladder plus the blend amount, with the
     /// resolved blur reported at THIS frame's width so the pixel figures mean

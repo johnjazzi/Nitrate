@@ -19,9 +19,10 @@ final class RAWPhotoDecoder {
         let metadata: DNGMetadata?
         /// Highlight ceiling the file actually carries: the 99.99th percentile
         /// of its configured decode, in the same lifted units the film stages
-        /// see. Halation is anchored to this instead of a constant, because a
-        /// single-exposure raw clips at its own white (see
-        /// `SpatialEffectsStage.halationReferenceSuperwhite`).
+        /// see. Halation's push/pull hold is anchored to this instead of a
+        /// constant, because a single-exposure raw clips at its own white (see
+        /// `SpatialEffectsStage.halationCeiling`); the ramp's own reference is
+        /// fixed and does not read it.
         let halationHeadroom: Float
 
         /// Additional lift actually applied by CIRAWFilter, separate from its baseline.

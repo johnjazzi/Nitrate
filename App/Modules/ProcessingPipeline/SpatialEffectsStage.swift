@@ -75,82 +75,80 @@ final class SpatialEffectsStage {
     private static let greenRadiusMultiplier: Float = 1.0
     private static let blueRadiusMultiplier: Float = 0.5
 
-    /// Per-layer knees, in multiples of diffuse white (decoded linear 1.0 = 100%
-    /// scene reflection). Red is re-exposed by the least scattered light and blue
-    /// by the most, so red responds first. The ordering is what makes a faint
-    /// halo read red and a bright one read white: as intensity climbs the source
-    /// clears more knees, which is also why a very bright source appears to grow.
-    private static let redKnee: Float = 0.75
-    private static let greenKnee: Float = 1.5
-    private static let blueKnee: Float = 3.0
+    /// Per-layer halation onsets, in STOPS above diffuse white: the brightness at
+    /// which that layer starts to scatter.
+    ///
+    /// Red is re-exposed by the least scattered light and blue by the most, so
+    /// red comes on first — that ordering is what makes a faint halo read red and
+    /// a bright one read white, and it must never be permuted. The value is the
+    /// DELIVERED onset, i.e. the level in the picture the operator looks at, so
+    /// the dial is legible on its own terms: 0 is diffuse white and Apple Log 2
+    /// clips at +3.58.
+    ///
+    /// Stops rather than multiples of white because the response is logarithmic
+    /// in light: one dial step is one stop brighter wherever it sits in the
+    /// range, and the ramp from an onset to its reference is linear in stops, not
+    /// in light (see `spatial_halation_energy`). The old form — a knee in white
+    /// multiples with growth linear in light — spent most of its span near the
+    /// top, so a highlight appeared to do nothing and then saturate.
+    private static let redOnsetStops: Float = -1.4150   // 0.375x diffuse white
+    private static let greenOnsetStops: Float = -0.4150 // 0.75x
+    private static let blueOnsetStops: Float = 0.5850   // 1.5x
 
-    /// Superwhite excess that reaches full contribution. Apple Log 2 tops out
-    /// near 12x diffuse white. Lower knees and a 10x excess reference widen
-    /// the ramp so it starts sooner and builds more gradually, instead of
-    /// letting an 11x specular swamp the graded image.
-    private static let referenceSuperwhite: Float = 10.0
+    /// Where a layer reaches FULL contribution: 10x diffuse white, ONE value for
+    /// stills and takes alike.
+    ///
+    /// Apple Log 2 records to about 12x white (`appleLog2ClipWhite`), so 10x sits
+    /// inside the recorded range and leaves room for an 11x specular without
+    /// letting it swamp the graded frame. Both ends of the ramp are authored on
+    /// the same scale, so a still and a take of one scene grade the same way
+    /// whatever the file's own baseline exposure — that invariance is the point
+    /// of expressing the ramp in stops rather than in measured white multiples.
+    static let halationReferenceStops: Float = 3.3219    // log2(10)
 
     /// Apple Log 2's recorded range tops out near 12x diffuse white (code 1.0
     /// decodes to ~12.0), so a video frame is truly clipped there. See the
     /// superwhite note in `spatial.metal`.
     static let appleLog2ClipWhite: Float = 12.0
 
-    /// The knees above, expressed in the light a caller actually hands in.
-    ///
-    /// The knees are authored for Apple Log 2, where decoded 1.0 is 100 % scene
-    /// reflection. A still that the RAW decoder lifted by N stops is N stops
-    /// brighter in every pixel, so measuring its excess against the un-lifted
-    /// knees reports ordinary lit surfaces as superwhite: measured on a ProRAW
-    /// carrying BaselineExposure +2.99 EV, an indoor wall sat at ~2x white, so
-    /// it cleared the red AND green knees on every pixel and the whole frame
-    /// bloomed orange. Scaling the knees by the same lift measures the same
-    /// quantity the video path measures.
-    ///
-    /// `sceneLiftStops` is zero for every video frame and for any still whose
-    /// decode was not lifted, in which case this is exactly `(0.75, 1.5, 3)`.
-    static func halationKnees(sceneLiftStops: Float) -> SIMD3<Float> {
-        SIMD3(redKnee, greenKnee, blueKnee) * liftScale(sceneLiftStops) * halationOnsetScale
+    /// The authored onsets, for a caller that wants to seed a dial from them.
+    static var authoredOnsets: SIMD3<Float> {
+        SIMD3(redOnsetStops, greenOnsetStops, blueOnsetStops)
     }
 
-    /// How far to raise the authored knees so the onset lands where the scheme
-    /// wants it in the DELIVERED image.
+    /// The onsets a frame is measured against.
     ///
-    /// The lift a still or a take was decoded with is already cancelled by
-    /// `liftScale`, so the knees above are authored against the light the film
-    /// saw. `SystemExposureScheme` then captures a stop under and lifts it back
-    /// after the emulsion, so the mask is measured on a frame a stop darker than
-    /// the delivered picture: the onset rises a stop on its own, and this scale
-    /// adds the rest of `halationOnsetStops`. Both terms are read from the scheme
-    /// so tuning either one moves the onset, never the arithmetic here.
+    /// Path-independent by construction. A still's decode lift and a take's
+    /// capture held under both move the FRAME, not the onset, and
+    /// `frameWhiteStops` carries them — so the numbers here are the delivered
+    /// onsets for stills and takes alike, which is what lets one scene grade the
+    /// same way through either path.
     ///
-    /// With the shipped scheme (-1 capture, 1.5 onset) this is exactly √2, which
-    /// puts the delivered onset 1.5 stops above the previous tuning.
-    static var halationOnsetScale: Float {
-        powf(2, SystemExposureScheme.halationOnsetStops + SystemExposureScheme.captureStops)
+    /// `authored` replaces the constants, for the debug sheet's onset dials;
+    /// every shipping path passes nil.
+    static func halationOnsets(authored: SIMD3<Float>? = nil) -> SIMD3<Float> {
+        let onsets = authored ?? authoredOnsets
+        return SIMD3(clampOnset(onsets.x), clampOnset(onsets.y), clampOnset(onsets.z))
     }
 
-    // MARK: - Where halation reaches full contribution
+    /// Where the frame being measured sits relative to the DELIVERED picture, in
+    /// stops.
+    ///
+    /// A diffuse white surface delivers at 1.0 — the develop lift is the stop the
+    /// capture was held under, put back — so a take is measured on a frame a stop
+    /// darker than the picture (−1), and a still whose decode was lifted N stops
+    /// is measured N stops above that (−1 + N). This one additive offset replaces
+    /// the multiplicative knee and reference scaling the model used to need, and
+    /// it is the only place the two paths differ.
+    static func frameWhiteStops(sceneLiftStops: Float) -> Float {
+        let lift = sceneLiftStops.isFinite ? max(-8, min(8, sceneLiftStops)) : 0
+        let capture = SystemExposureScheme.captureStops.isFinite ? SystemExposureScheme.captureStops : 0
+        return capture + lift
+    }
 
-    /// The superwhite value at which halation reaches FULL contribution.
-    ///
-    /// ONE absolute number, stills and video alike. The knees and this reference
-    /// were both authored for Apple Log 2, which carries about 12x diffuse white,
-    /// and 10x leaves room for an 11x specular without letting it swamp the graded
-    /// frame. So the halo ramps over the same span of light whatever the source,
-    /// which is what lets a still and a take of one scene grade the same way.
-    ///
-    /// A still used to be measured instead: the reference was a share of the
-    /// file's own p99.99, on the reasoning that a single-exposure raw clips at its
-    /// own white and would never reach a fixed 10x. It does not, but measuring
-    /// made the ramp depend on the brightest pixels of that particular file — a
-    /// fused ProRAW anchored near 0.7x white where the take's sits at 10x — so a
-    /// still began to glow far earlier than a take of the same scene. That
-    /// mismatch is the bug; the ramp is now a rule, not a measurement.
-    ///
-    /// It scales with the decode lift, exactly as the knees do, so a lifted still
-    /// is measured against the same scene it came from (`halationKnees`).
-    static func halationReferenceSuperwhite(sceneLiftStops: Float) -> Float {
-        referenceSuperwhite * liftScale(sceneLiftStops)
+    private static func clampOnset(_ stops: Float) -> Float {
+        guard stops.isFinite else { return 0 }
+        return max(-6, min(halationReferenceStops, stops))
     }
 
     private static func liftScale(_ sceneLiftStops: Float) -> Float {
@@ -240,15 +238,22 @@ final class SpatialEffectsStage {
         layerScale: SIMD3<Float>,
         diffusion: DiffusionSettings = .disabled,
         sceneLiftStops: Float = 0,
+        /// The per-layer onsets to measure against instead of the stage's own
+        /// constants, in stops above diffuse white, for the debug sheet's dials.
+        /// Nil on every shipping path: the onsets are a rule there, not a
+        /// per-frame choice. The values ARE the delivered onsets — the frame's own
+        /// offset is applied separately, through `frameWhiteStops` — so a dial
+        /// value can be pasted straight into the constants above.
+        authoredOnsets: SIMD3<Float>? = nil,
         /// Measured highlight ceiling of a still, in lifted units, used by the
         /// push/pull hold. Nil for video, which hands over its own measured
         /// `highlightCeiling` instead. See `halationCeiling`. The halo's own
-        /// reference is absolute and takes no measurement from here.
+        /// reference is authored and takes no measurement from here.
         halationHeadroom: Float? = nil,
         /// The take's own highlight ceiling, in the frame's scene units, measured
-        /// from the source frames. A take's halation reference stays authored (see
-        /// `halationReferenceSuperwhite`), but the push/pull hold must anchor to
-        /// what THIS take carries: a hazy sky tops out near 3x white, and a hold
+        /// from the source frames. A take's halation ramp stays authored (see
+        /// `halationReferenceStops`), but the push/pull hold must anchor to what
+        /// THIS take carries: a hazy sky tops out near 3x white, and a hold
         /// anchored at Apple Log 2's 12x would let a pull drag it down into the
         /// stock's cast. Nil for a still, which measures its own `halationHeadroom`.
         highlightCeiling: Float? = nil,
@@ -302,13 +307,13 @@ final class SpatialEffectsStage {
         let maskGroups = threadgroups(width: maskWidth, height: maskHeight)
         let fullGroups = threadgroups(width: width, height: height)
 
-        // 1. Prepare: per-layer superwhite excess, and — when the diffusion node
+        // 1. Prepare: the per-layer halation mask, and — when the diffusion node
         //    is on — the scene-linear frame it blurs, from the same decode.
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
-            let knees = Self.halationKnees(sceneLiftStops: sceneLiftStops)
-            var red = knees.x
-            var green = knees.y
-            var blue = knees.z
+            let onsets = Self.halationOnsets(authored: authoredOnsets)
+            var red = onsets.x
+            var green = onsets.y
+            var blue = onsets.z
             // The mask and the ladder must be measured on the EXPOSED scene, or
             // the apply pass would add a halo taken from light the film never saw.
             var stops = exposureStops
@@ -318,6 +323,11 @@ final class SpatialEffectsStage {
             var ceiling = Self.halationCeiling(sceneLiftStops: sceneLiftStops,
                                                headroom: halationHeadroom,
                                                highlightCeiling: highlightCeiling)
+            var referenceStops = Self.halationReferenceStops
+            // Where this frame sits relative to the picture it will deliver, so
+            // the onsets above are read on one scale whatever the capture held
+            // under or the decode lifted.
+            var frameWhite = Self.frameWhiteStops(sceneLiftStops: sceneLiftStops)
             encoder.setComputePipelineState(scene == nil ? halationMaskPipeline : scenePreparePipeline)
             encoder.setTexture(source, index: 0)
             encoder.setTexture(halationMask, index: 1)
@@ -329,6 +339,8 @@ final class SpatialEffectsStage {
             encoder.setBytes(&blue, length: MemoryLayout<Float>.size, index: 2)
             encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 3)
             encoder.setBytes(&ceiling, length: MemoryLayout<Float>.size, index: 4)
+            encoder.setBytes(&referenceStops, length: MemoryLayout<Float>.size, index: 5)
+            encoder.setBytes(&frameWhite, length: MemoryLayout<Float>.size, index: 6)
             encoder.dispatchThreadgroups(maskGroups, threadsPerThreadgroup: Self.groupSize)
             encoder.endEncoding()
         }
@@ -389,7 +401,6 @@ final class SpatialEffectsStage {
                                                highlightCeiling: highlightCeiling)
             var strength = strength
             var layerScale = layerScale
-            var referenceSuperwhite = Self.halationReferenceSuperwhite(sceneLiftStops: sceneLiftStops)
             // Unused level slots are bound to a real, samplable texture rather
             // than left unbound; their weights are zero, so they contribute
             // nothing and the blend stays a normalized average.
@@ -409,12 +420,11 @@ final class SpatialEffectsStage {
             }
             encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
             encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
-            encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
-            encoder.setBytes(&diffusionWeights, length: MemoryLayout<SIMD4<Float>>.size, index: 3)
-            encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 4)
-            encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 5)
-            encoder.setBytes(&ceiling, length: MemoryLayout<Float>.size, index: 6)
-            encoder.setBytes(&lift, length: MemoryLayout<Float>.size, index: 7)
+            encoder.setBytes(&diffusionWeights, length: MemoryLayout<SIMD4<Float>>.size, index: 2)
+            encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 3)
+            encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 4)
+            encoder.setBytes(&ceiling, length: MemoryLayout<Float>.size, index: 5)
+            encoder.setBytes(&lift, length: MemoryLayout<Float>.size, index: 6)
             encoder.dispatchThreadgroups(fullGroups, threadsPerThreadgroup: Self.groupSize)
             encoder.endEncoding()
         }

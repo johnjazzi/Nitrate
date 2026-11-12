@@ -30,11 +30,13 @@ enum SystemExposureScheme {
     /// operator's, and only push/pull changes it.
     static let developLiftStops: Float = 1
 
-    /// How far the halation onset sits above the light the emulsion saw, measured
-    /// in the DELIVERED image. The scheme's own capture stop is already inside
-    /// that number, because the mask is measured on the pre-lift frame — see
-    /// `SpatialEffectsStage.halationOnsetScale`.
-    static let halationOnsetStops: Float = 1.5
+    /// The halation onset is NOT here: it is authored in stops above diffuse
+    /// white in `SpatialEffectsStage` (`redOnsetStops` and friends), and the
+    /// scheme's own capture stop reaches the mask through
+    /// `SpatialEffectsStage.frameWhiteStops` instead of through a threshold. So
+    /// tuning the capture placement still moves what the mask measures without
+    /// moving the delivered onset, which is the whole point of holding the
+    /// capture under and repaying it after the emulsion.
 
     /// The compensation to INSTALL on the device for an operator-facing value.
     ///

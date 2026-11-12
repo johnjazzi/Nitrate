@@ -10,62 +10,64 @@ struct PhotoDevelopmentPipelineTests {
     private final class BundleToken {}
     private final class Counter: @unchecked Sendable { var value = 0 }
 
-    /// A still that the RAW decode lifted by N stops must be measured against
-    /// knees lifted by the same factor.
+    /// A still that the RAW decode lifted by N stops must be measured against the
+    /// same onsets as a take; the lift moves the FRAME, not the threshold.
     ///
     /// This is the bug behind "raw gets more halation than video": a ProRAW
-    /// carrying BaselineExposure +2.99 EV put an indoor wall at ~2x white, so an
-    /// ordinary lit surface cleared red's knee (1.0) and green's (2.0) on every
-    /// pixel and the whole frame bloomed orange. The fix is a knee scale, not a
-    /// weaker stock, so the halo around a true specular is unchanged.
-    @Test func liftedStillsMeasureAgainstLiftedKnees() {
-        let authored = SIMD3<Float>(0.75, 1.5, 3)
-        let onset = SpatialEffectsStage.halationOnsetScale
-        let unlifted = SpatialEffectsStage.halationKnees(sceneLiftStops: 0)
-        // The scheme's develop lift is carried by the mask's own frame rather
-        // than by a knee scale, so the authored numbers above stand and only the
-        // onset the scheme is asking for sits on top of them.
-        for channel in 0..<3 {
-            #expect(abs(unlifted[channel] - authored[channel] * onset) < 0.001,
-                    "video and unlifted stills keep the authored knees")
-        }
+    /// carrying BaselineExposure +2.99 EV put an indoor wall at ~2x nominal white
+    /// while the thresholds stayed on the unlifted scale, so an ordinary lit
+    /// surface cleared red AND green on every pixel and the whole frame bloomed
+    /// orange. The fix is an offset in the frame, not a weaker stock, so the halo
+    /// around a true specular is unchanged.
+    @Test func liftedStillsMeasureAgainstTheSameOnsets() {
+        let onsets = SpatialEffectsStage.halationOnsets()
+        #expect(onsets == SpatialEffectsStage.authoredOnsets)
+        #expect(onsets.x < onsets.y && onsets.y < onsets.z, "red comes on first")
 
-        let lifted = SpatialEffectsStage.halationKnees(sceneLiftStops: 2.988)
-        let scale = pow(Float(2), Float(2.988))
-        for channel in 0..<3 {
-            #expect(abs(lifted[channel] - unlifted[channel] * scale) < 0.001)
+        // The scene level a layer triggers at, in the frame the mask reads.
+        func trigger(onset: Float, lift: Float) -> Float {
+            pow(2, onset + SpatialEffectsStage.frameWhiteStops(sceneLiftStops: lift))
         }
+        // A lift raises the trigger by exactly the lift, so the halo stays on the
+        // same scene light however the file was exposed: a still and a take of one
+        // scene grade the same way.
+        let unlifted = trigger(onset: onsets.x, lift: 0)
+        let lifted = trigger(onset: onsets.x, lift: 2.988)
+        #expect(abs(lifted / unlifted - pow(2, 2.988)) < 0.001,
+                "the trigger must follow the decode lift exactly")
 
-        // The measurement that matters: a wall the lift put at 2x white must not
-        // read as superwhite once the knees follow the lift.
-        let wall: Float = 2.0
-        #expect(max(0, wall - authored.x) > 0, "unlifted knees call a 2x wall superwhite")
-        #expect(max(0, wall - lifted.x) == 0, "lifted knees do not")
+        // The wall the lift put at 1.59x sits above the lifted trigger by the same
+        // margin an unlifted wall sat above the unlifted one — that equality IS the
+        // fix — but only just, so an ordinary wall must not bloom.
+        let wall: Float = 1.59
+        #expect(wall / lifted > 1, "the lifted wall is still just above red's trigger")
+        #expect(wall / lifted < 1.1, "and only just: an ordinary wall must not bloom")
 
         // A genuine specular still clears every layer, so the halo does not vanish.
-        let specular: Float = lifted.z * 1.5
-        #expect(specular - lifted.z > 0)
-
-        // Out-of-range and non-finite lifts cannot produce a nonsense knee.
-        #expect(SpatialEffectsStage.halationKnees(sceneLiftStops: -.infinity) == unlifted)
-        let extreme = SpatialEffectsStage.halationKnees(sceneLiftStops: 99)
-        #expect(extreme.x.isFinite && extreme.x > 0)
+        let specular: Float = 9
+        #expect(specular - trigger(onset: onsets.z, lift: 2.988) > 0)
     }
 
-    /// The delivered halation onset sits one and a half stops above the light the
-    /// emulsion saw, and the scheme owns both halves of that number: the capture
-    /// stop is already inside the mask's frame, the onset constant is the rest.
-    @Test func theDeliveredHalationOnsetIsOneAndAHalfStopsAboveTheEmulsion() {
+    /// The delivered onsets, and where the compensation for holding the capture
+    /// under now lives: the frame offset, and nothing else.
+    @Test func theDeliveredOnsetIsTheAuthoredOnset() {
         let scheme = SystemExposureScheme.self
         #expect(scheme.captureStops == -1, "the scheme captures one stop under")
-        #expect(scheme.developLiftStops == scheme.captureStops * -1,
+        #expect(scheme.developLiftStops == -scheme.captureStops,
                 "the develop lift is the capture stop put back, or the delivered exposure moves")
-        #expect(abs(SpatialEffectsStage.halationOnsetScale - powf(2, 0.5)) < 0.0001,
-                "√2: a stop from the darker mask frame, half a stop from the onset constant")
-        #expect(scheme.halationOnsetStops == 1.5)
-        // Both halves read the same numbers, so moving either one moves the onset.
-        #expect(abs(SpatialEffectsStage.halationOnsetScale
-                    - powf(2, scheme.halationOnsetStops + scheme.captureStops)) < 0.0001)
+
+        let onsets = SpatialEffectsStage.halationOnsets()
+        #expect(abs(powf(2, onsets.x) - 0.375) < 0.001, "red responds from 0.375x diffuse white")
+        #expect(abs(powf(2, onsets.y) - 0.75) < 0.001, "green from 0.75x")
+        #expect(abs(powf(2, onsets.z) - 1.5) < 0.001, "blue from 1.5x")
+
+        // A take is measured a stop under the picture it delivers, and that offset
+        // is the whole of the compensation: the same onset lands on the same
+        // delivered level without a threshold scale.
+        let frameWhite = SpatialEffectsStage.frameWhiteStops(sceneLiftStops: 0)
+        #expect(abs(frameWhite - scheme.captureStops) < 0.0001)
+        #expect(abs(2 * powf(2, onsets.x + frameWhite) - 0.375) < 0.001,
+                "the mask-frame trigger, doubled by the develop lift, is the delivered onset")
     }
 
     /// The delivery switch still governs a photo this app CAPTURED; only an
@@ -115,20 +117,21 @@ struct PhotoDevelopmentPipelineTests {
     }
 
     /// Decode applies no still lift. The scheme's stop goes back in AFTER the
-    /// emulsion, so the scene lift the halation knees are scaled by is the
-    /// capture's own baseline and nothing else.
+    /// emulsion, so the frame offset `frameWhiteStops` carries is the capture's own
+    /// baseline and nothing else.
     @Test func stillsDecodeWithoutALiftSoTheSceneLiftIsTheCaptureBaseline() {
         #expect(RAWPhotoDecoder.baseExposureEV == 0)
         #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 0) == 0)
         #expect(RAWPhotoDecoder.sceneLiftStops(baselineExposure: 2.988) == 2.988)
 
-        // The knees still scale with the capture's own baseline, which is the
-        // part of the lift a raw decode applies before any film stage sees it.
-        let unlifted = SpatialEffectsStage.halationKnees(sceneLiftStops: 0)
-        let lifted = SpatialEffectsStage.halationKnees(
+        // The frame offset moves with the capture's own baseline, which is the part
+        // of the lift a raw decode applies before any film stage sees it; the
+        // onsets themselves stay authored.
+        let unlifted = SpatialEffectsStage.frameWhiteStops(sceneLiftStops: 0)
+        let lifted = SpatialEffectsStage.frameWhiteStops(
             sceneLiftStops: RAWPhotoDecoder.sceneLiftStops(baselineExposure: 2.988))
-        #expect(lifted.x > unlifted.x)
-        #expect(lifted.y > unlifted.y)
+        #expect(abs(lifted - unlifted - 2.988) < 0.0001)
+        #expect(SpatialEffectsStage.halationOnsets() == SpatialEffectsStage.authoredOnsets)
     }
 
     @Test func nativeFlashUsesItsMeteredExposureWithoutTheAmbientStillLift() {

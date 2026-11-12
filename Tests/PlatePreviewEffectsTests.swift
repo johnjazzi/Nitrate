@@ -361,7 +361,14 @@ struct PlatePreviewEffectsTests {
     func halationLeavesDarkInputUnchanged() throws {
         let device = try device()
         let pipeline = try pipeline(device)
-        let plate = try uniformPlate(device, side: 512, code: 140)   // decoded linear ~0.30
+        // The plate sits under red's onset, and both numbers are read from the
+        // stage rather than hard-coded: a fixed code value would silently become a
+        // different test every time the onset moves.
+        let redOnset = Double(SpatialEffectsStage.halationOnsets().x)
+        let frameWhite = Double(SpatialEffectsStage.frameWhiteStops(sceneLiftStops: 0))
+        let redOnsetLevel = pow(2, redOnset + frameWhite)
+        let code = UInt8(clamping: Int((Double(SpatialEffectsTests.appleLogEncode(redOnsetLevel * 0.6)) * 255).rounded()))
+        let plate = try uniformPlate(device, side: 512, code: code)
         let lut = try identityLUT(device)
 
         func frame(_ strength: Float) throws -> Frame {
