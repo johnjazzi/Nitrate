@@ -148,7 +148,11 @@ struct DebugFrameRenderTests {
     func onsetDialsChangeTheMaskPerLayer() throws {
         let renderer = try makeRenderer()
         let config = try loadConfig()
-        let frame = try Self.makeSyntheticFrame()
+        // A highlight that stays BELOW the reference (10x white, +3.32 stops above
+        // the mask frame's 1.0): an onset can never be pushed past the reference, so
+        // a frame brighter than it saturates every layer whatever the dials say and
+        // could not demonstrate the reverse direction at all.
+        let frame = try Self.makeSyntheticFrame(background: 0.5, highlight: 0.85)
 
         var seeded = PipelineRenderer.DebugFrameParameters(config: config)
         seeded.halationStrength = 0.9
@@ -160,10 +164,11 @@ struct DebugFrameRenderTests {
                 "the dials must open on the shipping onsets")
 
         // Where the fixture's own levels sit, in the scale the mask reads: the
-        // frame's offset, then stops above its 1.0.
+        // frame's offset, then stops above its 1.0. Read from the codes the fixture
+        // was built with, so the two directions below cannot drift apart.
         let frameWhite = SpatialEffectsStage.frameWhiteStops(sceneLiftStops: 0)
         let backgroundStops = Float(log2(SpatialEffectsTests.appleLogDecode(0.5))) - frameWhite
-        let highlightStops = Float(log2(SpatialEffectsTests.appleLogDecode(0.9))) - frameWhite
+        let highlightStops = Float(log2(SpatialEffectsTests.appleLogDecode(0.85))) - frameWhite
 
         var redLow = seeded
         redLow.halationRedOnsetStops = backgroundStops - 1

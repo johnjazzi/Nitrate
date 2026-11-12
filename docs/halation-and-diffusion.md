@@ -25,9 +25,9 @@ Everything below is scene-linear and pre-LUT.
 All four numbers are stops above diffuse white:
 
 ```
-redOnset    -1.415   0.375x diffuse white
-greenOnset  -0.415   0.75x
-blueOnset   +0.585   1.5x
+redOnset    -0.41    0.75x diffuse white
+greenOnset  +0.41    1.33x
+blueOnset   +1.58    2.99x
 reference   +3.322   10x, inside Apple Log 2's ~12x recorded range
 ```
 

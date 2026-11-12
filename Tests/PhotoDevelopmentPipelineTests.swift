@@ -36,16 +36,21 @@ struct PhotoDevelopmentPipelineTests {
         #expect(abs(lifted / unlifted - pow(2, 2.988)) < 0.001,
                 "the trigger must follow the decode lift exactly")
 
-        // The wall the lift put at 1.59x sits above the lifted trigger by the same
-        // margin an unlifted wall sat above the unlifted one — that equality IS the
-        // fix — but only just, so an ordinary wall must not bloom.
+        // The wall the lift put at 1.59x: with the authored onsets it sits BELOW
+        // red's lifted trigger, so an ordinary lit wall does not scatter at all.
+        // That is the job the onsets do, and it is why raising them from the debug
+        // sheet's outdoor scene mattered.
         let wall: Float = 1.59
-        #expect(wall / lifted > 1, "the lifted wall is still just above red's trigger")
-        #expect(wall / lifted < 1.1, "and only just: an ordinary wall must not bloom")
+        #expect(wall < lifted, "the lifted wall must not reach red's trigger")
+        #expect(wall < trigger(onset: onsets.x, lift: 0) * powf(2, 2.988),
+                "nor an unlifted one, at the same scene light")
 
         // A genuine specular still clears every layer, so the halo does not vanish.
-        let specular: Float = 9
-        #expect(specular - trigger(onset: onsets.z, lift: 2.988) > 0)
+        let specular: Float = 20
+        for onset in [onsets.x, onsets.y, onsets.z] {
+            #expect(specular > trigger(onset: onset, lift: 2.988),
+                    "a bright specular must still clear every layer")
+        }
     }
 
     /// The delivered onsets, and where the compensation for holding the capture
@@ -57,16 +62,16 @@ struct PhotoDevelopmentPipelineTests {
                 "the develop lift is the capture stop put back, or the delivered exposure moves")
 
         let onsets = SpatialEffectsStage.halationOnsets()
-        #expect(abs(powf(2, onsets.x) - 0.375) < 0.001, "red responds from 0.375x diffuse white")
-        #expect(abs(powf(2, onsets.y) - 0.75) < 0.001, "green from 0.75x")
-        #expect(abs(powf(2, onsets.z) - 1.5) < 0.001, "blue from 1.5x")
+        #expect(abs(powf(2, onsets.x) - 0.75262) < 0.001, "red responds from 0.75x diffuse white")
+        #expect(abs(powf(2, onsets.y) - 1.32869) < 0.001, "green from 1.33x")
+        #expect(abs(powf(2, onsets.z) - 2.98970) < 0.001, "blue from 2.99x")
 
         // A take is measured a stop under the picture it delivers, and that offset
         // is the whole of the compensation: the same onset lands on the same
         // delivered level without a threshold scale.
         let frameWhite = SpatialEffectsStage.frameWhiteStops(sceneLiftStops: 0)
         #expect(abs(frameWhite - scheme.captureStops) < 0.0001)
-        #expect(abs(2 * powf(2, onsets.x + frameWhite) - 0.375) < 0.001,
+        #expect(abs(2 * powf(2, onsets.x + frameWhite) - powf(2, onsets.x)) < 0.001,
                 "the mask-frame trigger, doubled by the develop lift, is the delivered onset")
     }
 

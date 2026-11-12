@@ -91,9 +91,15 @@ final class SpatialEffectsStage {
     /// in light (see `spatial_halation_energy`). The old form — a knee in white
     /// multiples with growth linear in light — spent most of its span near the
     /// top, so a highlight appeared to do nothing and then saturate.
-    private static let redOnsetStops: Float = -1.4150   // 0.375x diffuse white
-    private static let greenOnsetStops: Float = -0.4150 // 0.75x
-    private static let blueOnsetStops: Float = 0.5850   // 1.5x
+    /// Authored from an outdoor scene in the debug sheet: these are the onsets that
+    /// read most natural on real light, and they sit about a stop above the earlier
+    /// authored set, so an ordinary sunlit surface has to climb a little further
+    /// before it scatters. Red comes on first, then green, then blue, and the ramp
+    /// each layer runs from its onset up to the reference is the same length in
+    /// stops.
+    private static let redOnsetStops: Float = -0.4100   // 0.75x diffuse white
+    private static let greenOnsetStops: Float = 0.4100  // 1.33x
+    private static let blueOnsetStops: Float = 1.5800   // 2.99x
 
     /// Where a layer reaches FULL contribution: 10x diffuse white, ONE value for
     /// stills and takes alike.

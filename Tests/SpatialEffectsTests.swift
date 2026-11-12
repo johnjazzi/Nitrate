@@ -487,7 +487,12 @@ struct SpatialEffectsTests {
         for level in [1.25, 2, 3] {
             let added = try redAdded(level)
             #expect(added > 0.01, "red responds once it clears its onset (at \(level))")
-            #expect(abs(added - maskLevel(level)) < 0.01,
+            // The mask read back through the half-res texture is good to about a
+            // twentieth of a stop, and the fraction is a share of the span, so the
+            // tolerance is stated in stops: in fractions it would silently tighten
+            // every time an onset rises and the span shortens.
+            let tolerance = 0.06 / (reference - onset)
+            #expect(abs(added - maskLevel(level)) < tolerance,
                     "the add is the mask fraction at \(level): \(added) vs \(maskLevel(level))")
         }
         // Doubling the level is one stop, so the increments must match.
