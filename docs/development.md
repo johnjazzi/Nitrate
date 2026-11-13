@@ -82,18 +82,20 @@ Agents share the verification build lock. Direct xcodebuild commands using the
 same DerivedData must honor it too; never run simultaneous builds against that
 folder. Do not clear another active agent's build outputs.
 
-## Version convention: M.m.p (n)
+## Version convention: M.m.p
 
-- **M.m.p** is `MARKETING_VERSION` / `CFBundleShortVersionString`.
-- **(n)** is `CURRENT_PROJECT_VERSION` / `CFBundleVersion` for manual builds.
-- Each release PR into main advances patch by default.
+- **M.m.p** is `MARKETING_VERSION` / `CFBundleShortVersionString` in `project.yml`.
+- There is no hand-maintained build number. Cloud assigns its own increasing
+  integer to distributed builds; do not reintroduce a second counter in
+  `project.yml`.
+- The PR that owns the release rolls the version forward: patch by default.
 - A `release:minor` or `release:major` PR label requests that larger increment.
   Do not combine bump labels. No label means patch.
-- Each manual distribution rebuild advances the build, not the patch again.
+- A PR carrying only changes on top of an already-rolled main leaves the version
+  alone; the gate fails only when a PR's version is behind its base.
 - Ordinary Debug/DevRelease development compiles do not require a version bump.
-- Cloud automatically assigns its own increasing integer to distributed builds.
-  Do not overwrite Cloud's counter. Its raw archive may still show the source
-  build number before export; verify the distributed build in TestFlight.
+- Verify the distributed build in TestFlight; its build number is Cloud's, and a
+  Cloud archive may still show a different local build string before export.
 
 ### Prepare a release PR
 
@@ -111,26 +113,20 @@ an already-prepared PR. Review the diff and commit the metadata with the release
 For a minor or major release, pass matching labels to prepare/check, for example
 `--labels '["release:minor"]'`, and apply the same label to the GitHub PR.
 
-For a manual production distribution rebuild only:
-
-```sh
-python3 scripts/release_version.py bump-build
-xcodegen generate
-```
-
 Before any manual upload, check the highest build already uploaded for that
-version in App Store Connect. The helper increments the local source number; it
-cannot discover or reserve Apple's remote counter. Prefer Cloud as the single
-normal TestFlight uploader to avoid collisions between manual and Cloud uploads.
+version in App Store Connect and set that archive's build number above it.
+Nothing in the repository reserves Apple's remote counter, and `project.yml`
+maintains no build number of its own. Prefer Cloud as the single normal
+TestFlight uploader to avoid collisions between manual and Cloud uploads.
 Never edit an already-created archive to change its version or identifier.
 
 ### PR gate versus automatic edits
 
 `.github/workflows/release-version.yml` checks main-targeted PRs. It runs the
-helper tests and requires the exact next release version plus an advanced source
-build. Label changes retrigger it. The workflow is read-only: it does not edit
-branches, commit, push, or merge. Run prepare before the PR; the coordinating
-agent owns that release-preparation step.
+helper tests and requires the PR's release version not to be behind its base.
+Label changes retrigger it. The workflow is read-only: it does not edit
+branches, commit, push, or merge. Run prepare in the PR that owns the release;
+the coordinating agent owns that release-preparation step.
 
 Making **Release version gate** a required main-branch status check is a separate
 GitHub repository setting. A workflow file alone does not stop an owner from

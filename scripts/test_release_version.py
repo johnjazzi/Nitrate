@@ -17,7 +17,6 @@ settings:
   base:
     # Keep comments, quotes, unrelated values and whitespace.
     MARKETING_VERSION: "1.2.3"  # release
-    CURRENT_PROJECT_VERSION: '7' # build
     SWIFT_VERSION: "6.0"
 targets: {}
 '''
@@ -55,7 +54,7 @@ class ReleaseVersionTests(unittest.TestCase):
                 self.project.write_bytes(FIXTURE.replace("\n", "\r\n").encode())
                 result = self.run_helper("prepare", "--base", self.base, labels=labels)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                wanted = FIXTURE.replace('"1.2.3"', f'"{expected}"').replace("'7'", "'8'")
+                wanted = FIXTURE.replace('"1.2.3"', f'"{expected}"')
                 self.assertEqual(self.project.read_bytes(), wanted.replace("\n", "\r\n").encode())
                 result = self.run_helper("prepare", "--base", self.base, labels=labels)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -79,29 +78,16 @@ class ReleaseVersionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('"2.0.0"', self.project.read_text())
 
-    def test_bump_build_changes_only_build_even_without_base(self):
-        for build in (8, 9):
-            result = self.run_helper("bump-build")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(self.project.read_text(), FIXTURE.replace("'7'", f"'{build}'"))
-        self.assertEqual(self.git("rev-parse", "HEAD").stdout.strip(), self.base)
-
-    def test_prepare_preserves_higher_manual_build_and_repairs_old_build(self):
-        for current, expected in ((30, 30), (2, 8)):
-            with self.subTest(current=current):
-                self.project.write_text(FIXTURE.replace("'7'", f"'{current}'"))
-                result = self.run_helper("prepare", "--base", self.base)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn(f"'{expected}'", self.project.read_text())
-
-    def test_check_rejects_unbumped_mismatch_and_unadvanced_build(self):
-        for version, build in (("1.2.3", "8"), ("1.2.5", "8"), ("1.3.0", "8"),
-                               ("1.2.4", "7"), ("1.2.4", "6")):
-            with self.subTest(version=version, build=build):
-                text = FIXTURE.replace("1.2.3", version).replace("'7'", f"'{build}'")
+    def test_check_accepts_a_version_rolled_elsewhere_and_rejects_regression(self):
+        # The PR that owns the release rolls the version; a PR carrying only
+        # changes on top of an already-rolled main leaves it as is.
+        for version, accepted in (("1.2.3", True), ("1.2.4", True), ("1.3.0", True),
+                                  ("1.2.2", False), ("1.1.9", False)):
+            with self.subTest(version=version):
+                text = FIXTURE.replace("1.2.3", version)
                 self.project.write_text(text)
                 result = self.run_helper("check", "--base", self.base)
-                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
                 self.assertEqual(self.project.read_text(), text)
 
     def test_invalid_metadata_fails_without_writing(self):
@@ -109,19 +95,15 @@ class ReleaseVersionTests(unittest.TestCase):
             FIXTURE.replace("1.2.3", version)
             for version in ("1.2", "01.2.3", "1.2.03", "v1.2.3", "1.2.3-beta", "-1.2.3", "1.2.3.4")
         ] + [
-            FIXTURE.replace("'7'", build)
-            for build in ("'0'", "'07'", "'-1'", "'7.0'", "no", "'7\"", "[]")
-        ] + [
             FIXTURE.replace('    MARKETING_VERSION: "1.2.3"  # release\n', ""),
             FIXTURE + '    MARKETING_VERSION: "1.2.3"\n',
             FIXTURE + '    "MARKETING_VERSION": "1.2.3"\n',
-            FIXTURE + '    CURRENT_PROJECT_VERSION: "7"\n',
             FIXTURE.replace("settings:", "wrong:"),
             FIXTURE.replace("  base:", "  wrong:"),
             FIXTURE.replace("  base:", "  base: {}\n  base:"),
             "settings: {}\n" + FIXTURE,
             FIXTURE.replace('    MARKETING_VERSION: "1.2.3"', '    MARKETING_VERSION: ["1.2.3"]'),
-            FIXTURE.replace("    CURRENT_PROJECT_VERSION", "\tCURRENT_PROJECT_VERSION"),
+            FIXTURE.replace("    MARKETING_VERSION", "\tMARKETING_VERSION"),
             FIXTURE.replace('"1.2.3"  # release', '1.2.3#not-a-comment'),
             FIXTURE + 'overrides: {MARKETING_VERSION: "9.9.9"}\n',
         ]
@@ -150,11 +132,11 @@ class ReleaseVersionTests(unittest.TestCase):
         self.assertIn("JSON", result.stderr)
 
     def test_unquoted_fields_preserve_spaces_comments_and_no_final_newline(self):
-        text = FIXTURE.replace('"1.2.3"', "1.2.3").replace("'7'", "7").rstrip("\n")
+        text = FIXTURE.replace('"1.2.3"', "1.2.3").rstrip("\n")
         self.project.write_text(text)
         result = self.run_helper("prepare", "--base", self.base)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.project.read_text(), text.replace("1.2.3", "1.2.4").replace(": 7 #", ": 8 #"))
+        self.assertEqual(self.project.read_text(), text.replace("1.2.3", "1.2.4"))
 
     def test_malformed_trusted_base_is_rejected_before_writes(self):
         self.project.write_text(FIXTURE.replace("1.2.3", "invalid"))
@@ -175,12 +157,12 @@ class ReleaseVersionTests(unittest.TestCase):
         self.assertFalse((self.repo / "INJECTED").exists())
 
     def test_check_accepts_exact_patch_and_is_read_only(self):
-        prepared = FIXTURE.replace('"1.2.3"', '"1.2.4"').replace("'7'", "'8'")
+        prepared = FIXTURE.replace('"1.2.3"', '"1.2.4"')
         self.project.write_text(prepared)
         result = self.run_helper("check", "--base", self.base)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.project.read_text(), prepared)
-        self.assertIn("1.2.4 (8)", result.stdout)
+        self.assertIn("1.2.4", result.stdout)
 
 
 class WorkflowContractTests(unittest.TestCase):

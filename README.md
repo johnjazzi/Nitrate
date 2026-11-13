@@ -529,19 +529,22 @@ exposure, grain and preview policies, and the film-stock catalogue.
 
 ## Versioning
 
-`MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `project.yml` are the single
-source of truth. XcodeGen feeds them into the generated Info.plist, and the
-launch splash renders them through `AppVersion` (`App/AppIdentity.swift`).
+`MARKETING_VERSION` in `project.yml` is the single source of truth for the
+release version. XcodeGen feeds it into the generated Info.plist, and the launch
+splash renders it through `AppVersion` (`App/AppIdentity.swift`). The build
+number in parentheses is not maintained in the repository — Xcode Cloud assigns
+it to anything distributed.
 
 - This release candidate is **0.8.0 (35)**, based on **0.7.1 (34)**.
   It unifies Photo, Video and Re-develop into review-first development, adds
   colour/push-pull still previews and exposure estimates, improves cancellation
   and load deadlines, and makes History more compact with larger previews.
   Preparing the release PR does not mean it has been distributed.
-- Advance `MARKETING_VERSION` for each release PR into `main` (a patch increment
-  by default unless a larger increment is explicitly requested).
-- Increment `CURRENT_PROJECT_VERSION` for each new archive intended for
-  distribution, including rebuilds. Ordinary local Debug builds do not bump it.
+- Roll `MARKETING_VERSION` forward in the PR that owns the release (a patch
+  increment by default unless a larger increment is explicitly requested). A PR
+  carrying only changes on top of an already-rolled `main` leaves it alone.
+- Do not reintroduce a hand-maintained build number. Xcode Cloud's increasing
+  counter is the build string for distributed builds.
 - `AppVersion.stage` (`App/AppIdentity.swift`) is the single source of truth for
   the stage suffix. It is `.beta` while the app is distributed through
   TestFlight; set it to `nil` for an App Store release. The launch splash and
