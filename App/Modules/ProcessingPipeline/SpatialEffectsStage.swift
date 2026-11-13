@@ -92,14 +92,14 @@ final class SpatialEffectsStage {
     /// multiples with growth linear in light — spent most of its span near the
     /// top, so a highlight appeared to do nothing and then saturate.
     /// Authored from an outdoor scene in the debug sheet: these are the onsets that
-    /// read most natural on real light, and they sit about a stop above the earlier
-    /// authored set, so an ordinary sunlit surface has to climb a little further
-    /// before it scatters. Red comes on first, then green, then blue, and the ramp
-    /// each layer runs from its onset up to the reference is the same length in
-    /// stops.
-    private static let redOnsetStops: Float = -0.4100   // 0.75x diffuse white
-    private static let greenOnsetStops: Float = 0.4100  // 1.33x
-    private static let blueOnsetStops: Float = 1.5800   // 2.99x
+    /// read most natural on real light, and they sit about a stop and a half above
+    /// the earlier authored set, so an ordinary sunlit surface has to climb a
+    /// little further before it scatters. Red comes on first, then green, then
+    /// blue, and the ramp each layer runs from its onset up to the reference is the
+    /// same length in stops.
+    private static let redOnsetStops: Float = 0.2000    // 1.15x diffuse white
+    private static let greenOnsetStops: Float = 1.2000  // 2.30x
+    private static let blueOnsetStops: Float = 2.1000   // 4.29x
 
     /// Where a layer reaches FULL contribution: 10x diffuse white, ONE value for
     /// stills and takes alike.

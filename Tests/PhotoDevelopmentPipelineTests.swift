@@ -62,9 +62,9 @@ struct PhotoDevelopmentPipelineTests {
                 "the develop lift is the capture stop put back, or the delivered exposure moves")
 
         let onsets = SpatialEffectsStage.halationOnsets()
-        #expect(abs(powf(2, onsets.x) - 0.75262) < 0.001, "red responds from 0.75x diffuse white")
-        #expect(abs(powf(2, onsets.y) - 1.32869) < 0.001, "green from 1.33x")
-        #expect(abs(powf(2, onsets.z) - 2.98970) < 0.001, "blue from 2.99x")
+        #expect(abs(powf(2, onsets.x) - 1.14870) < 0.001, "red responds from 1.15x diffuse white")
+        #expect(abs(powf(2, onsets.y) - 2.29740) < 0.001, "green from 2.30x")
+        #expect(abs(powf(2, onsets.z) - 4.28709) < 0.001, "blue from 4.29x")
 
         // A take is measured a stop under the picture it delivers, and that offset
         // is the whole of the compensation: the same onset lands on the same

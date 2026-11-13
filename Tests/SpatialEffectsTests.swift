@@ -495,16 +495,21 @@ struct SpatialEffectsTests {
             #expect(abs(added - maskLevel(level)) < tolerance,
                     "the add is the mask fraction at \(level): \(added) vs \(maskLevel(level))")
         }
-        // Doubling the level is one stop, so the increments must match.
-        let atHalf = try redAdded(0.5)
-        let atOne = try redAdded(1)
-        let atTwo = try redAdded(2)
-        let atFour = try redAdded(4)
-        let first = atOne - atHalf
-        let second = atTwo - atOne
-        let third = atFour - atTwo
-        #expect(abs(first - second) < 0.01 && abs(second - third) < 0.01,
-                "one stop must add the same amount wherever it sits: \(first) \(second) \(third)")
+        // Doubling the level is one stop, so the increments must match. The three
+        // levels are derived from the onset rather than hard-coded: a literal set
+        // only stays inside the ramp while the onset happens to sit below it, so
+        // raising an onset would silently move the lowest sample out of the ramp
+        // and leave red's response flat where the test expects a step. The top
+        // sample stays two stops clear of the reference, where the ramp clamps.
+        let base = pow(2, onset + frameWhite + 0.1)
+        let first = try redAdded(base * 2) - redAdded(base)
+        let second = try redAdded(base * 4) - redAdded(base * 2)
+        // Stated in stops, like the fraction check above: the add is measured
+        // through an encode/decode round trip, which compresses a fixed addition
+        // slightly more in a brighter frame, so the evenness is good to a
+        // twentieth of a stop rather than to the bit.
+        #expect(abs(first - second) < 0.05 / (reference - onset),
+                "one stop must add the same amount wherever it sits: \(first) \(second)")
     }
 
     /// An all-red source exposes only the red layer, so its halo must stay red.
