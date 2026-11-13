@@ -36,7 +36,7 @@ Agent work, with explicit evidence:
 - [ ] Test real StoreKit purchase, cancellation, restore, refund/revocation and expired entitlement in sandbox. Verify products and prices against the account. For a subscription, substantiate ongoing value and communicate terms.[5]
 - [ ] Confirm Release excludes test entry points/forced grants and any private debug content; inspect the actual archive, not only Debug behavior.
 - [ ] Run full tests, native UI tests, strict lint, Release archive validation and the physical-device checklist below. Save head SHA, results, device/OS and artifact identity.
-- [ ] Increment the build number for each new upload. A build string uniquely identifies the uploaded build; do not keep reusing `1`.[2]
+- [ ] Confirm a unique build string for each upload. Cloud builds carry Xcode Cloud's increasing number; a hand-made archive must set its own, since `project.yml` maintains none. Do not keep reusing `1`.[2]
 - [ ] Recheck current SDK/upload requirements. Apple's current requirements page states Xcode 26 / iOS 26 SDK or later for applicable uploads since April 28, 2026; installed Xcode 27 clears that version floor, not all submission checks.[9]
 
 Do not run an upload automatically from this document. Once account and disk prerequisites are cleared: regenerate from `project.yml`, archive scheme Nitrate in Release for generic iOS, use Xcode Organizer Validate/Distribute → App Store Connect, then verify processing status in the exact app record.[2][10]

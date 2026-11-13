@@ -111,8 +111,8 @@ class DevIdentityTests(unittest.TestCase):
                 self.assertEqual(settings["CODE_SIGN_IDENTITY"], "Apple Development")
                 self.assertEqual(settings["PROVISIONING_PROFILE_SPECIFIER"], "")
                 # Compare configurations, not a frozen release number: normal
-                # patch/build increments must not break identity verification.
-                for key in ("MARKETING_VERSION", "CURRENT_PROJECT_VERSION"):
+                # patch increments must not break identity verification.
+                for key in ("MARKETING_VERSION",):
                     self.assertEqual(settings[key], self.settings["Release"][key])
                 self.assertNotIn("CODE_SIGN_ENTITLEMENTS", settings)
 

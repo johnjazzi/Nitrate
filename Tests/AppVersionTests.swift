@@ -3,7 +3,7 @@ import Testing
 
 /// The splash shows the version on its bottom edge, so the formatting is part of
 /// the user-visible surface even though the strings themselves come from
-/// MARKETING_VERSION / CURRENT_PROJECT_VERSION in project.yml.
+/// MARKETING_VERSION in project.yml and the bundle's CFBundleVersion.
 struct AppVersionTests {
     @Test func displayIncludesBuildAndStage() {
         #expect(AppVersion.display(marketing: "0.1.0", build: "1", stage: .alpha) == "0.1.0 (1) · ALPHA")

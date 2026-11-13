@@ -5,10 +5,10 @@ Examples (run anywhere inside the repository):
   python3 scripts/release_version.py check --base origin/main
   python3 scripts/release_version.py prepare --base origin/main
   python3 scripts/release_version.py prepare --base origin/main --labels '["release:minor"]'
-  python3 scripts/release_version.py bump-build
 
 Labels may also come from RELEASE_LABELS_JSON (a JSON array of label names).
-This tool never commits, pushes, or changes Xcode Cloud's CI build counter.
+This tool never commits or pushes, and it never touches the build number:
+Xcode Cloud supplies its own increasing CFBundleVersion to anything distributed.
 """
 
 import argparse
@@ -29,15 +29,14 @@ class ReleaseError(ValueError):
 class Metadata:
     text: str
     version: str
-    build: int
     spans: dict
 
 
 def read_metadata(text):
-    """Accept only the project's simple scalar version fields, never reformat YAML.
+    """Accept only the project's simple scalar version field, never reformat YAML.
 
     Fail closed on noncanonical/ambiguous fields instead of pretending to be a
-    general YAML parser. Both fields must occur exactly once in settings.base.
+    general YAML parser. The field must occur exactly once in settings.base.
     """
     settings = list(re.finditer(r'''(?m)^["']?settings["']? *:''', text))
     if len(settings) != 1:
@@ -54,8 +53,7 @@ def read_metadata(text):
     if base_count != 1:
         raise ReleaseError("Expected exactly one settings.base mapping")
     fields = {}
-    for key, pattern in (("MARKETING_VERSION", r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"),
-                         ("CURRENT_PROJECT_VERSION", r"[1-9][0-9]*")):
+    for key, pattern in (("MARKETING_VERSION", r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"),):
         # Version overrides in flow mappings would evade a line-only scan.
         if any(re.search(rf'''[{{,][ \t]*["']?{key}["']? *:''', line.split("#", 1)[0])
                for line in text.splitlines()):
@@ -85,7 +83,6 @@ def read_metadata(text):
         start, end = match.span("value")
         fields[key] = (match["value"], (line_start + start, line_start + end))
     return Metadata(text, fields["MARKETING_VERSION"][0],
-                    int(fields["CURRENT_PROJECT_VERSION"][0]),
                     {key: entry[1] for key, entry in fields.items()})
 
 
@@ -95,6 +92,10 @@ def git(root, *args):
     if result.returncode:
         raise ReleaseError(result.stderr.strip() or "git command failed")
     return result.stdout.strip()
+
+
+def version_key(version):
+    return tuple(int(part) for part in version.split("."))
 
 
 def expected_version(base_version, raw_labels):
@@ -117,8 +118,8 @@ def expected_version(base_version, raw_labels):
     return f"{major}.{minor}.{patch + 1}"
 
 
-def replace_metadata(current, version, build):
-    replacements = {"MARKETING_VERSION": version, "CURRENT_PROJECT_VERSION": str(build)}
+def replace_metadata(current, version):
+    replacements = {"MARKETING_VERSION": version}
     text = current.text
     for key, (start, end) in sorted(current.spans.items(), key=lambda item: item[1][0], reverse=True):
         text = text[:start] + replacements[key] + text[end:]
@@ -134,34 +135,24 @@ def main(argv=None):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("--base", required=True, help="Trusted base commit or Git ref")
         command.add_argument("--labels", default=None, help="JSON array of PR label names")
-    commands.add_parser("bump-build", help="Increment only the build for a local/manual distribution rebuild")
     args = parser.parse_args(argv)
     try:
         root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
         project = root / "project.yml"
         current = read_metadata(project.read_bytes().decode("utf-8"))
-        if args.command == "bump-build":
-            build = current.build + 1
-            updated = replace_metadata(current, current.version, build)
-            project.write_bytes(updated.encode("utf-8"))
-            print(f"Prepared manual distribution build: {current.version} ({build}); regenerate with XcodeGen before archiving")
-            return 0
         oid = git(root, "rev-parse", "--verify", "--end-of-options", args.base + "^{commit}")
         base = read_metadata(git(root, "show", oid + ":project.yml"))
         raw_labels = args.labels if args.labels is not None else os.environ.get("RELEASE_LABELS_JSON", "[]")
         expected = expected_version(base.version, raw_labels)
         if args.command == "prepare":
-            build = max(current.build, base.build + 1)
-            updated = replace_metadata(current, expected, build)
+            updated = replace_metadata(current, expected)
             if updated != current.text:
                 project.write_bytes(updated.encode("utf-8"))
-            print(f"Prepared release: {expected} ({build}); review and commit project.yml yourself")
+            print(f"Prepared release: {expected}; review and commit project.yml yourself")
             return 0
-        if current.version != expected:
-            raise ReleaseError(f"Expected MARKETING_VERSION {expected} from base {base.version}; found {current.version}. Run prepare with the same base and labels.")
-        if current.build <= base.build:
-            raise ReleaseError(f"CURRENT_PROJECT_VERSION must exceed base build {base.build}; run prepare")
-        print(f"Release version valid: {current.version} ({current.build})")
+        if version_key(current.version) < version_key(base.version):
+            raise ReleaseError(f"MARKETING_VERSION {current.version} is behind base {base.version}; run prepare with the same base and labels.")
+        print(f"Release version valid: {current.version}")
         return 0
     except (ReleaseError, OSError, UnicodeError) as error:
         print(f"release-version: {error}", file=sys.stderr)

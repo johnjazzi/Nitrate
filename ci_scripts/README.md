@@ -68,9 +68,10 @@ read or save the live Apple workflow. Confirm Start Conditions and Post-Actions
 in the signed-in owner session; an unauthenticated browser cannot verify them.
 
 Use Xcode Cloud's build number for distributed builds; it increments independently
-of the marketing version. The marketing version remains in `project.yml` and
-must be bumped for a release PR. Check already-uploaded version/build pairs
-before mixing manual and Cloud uploads. Do not hardcode the Cloud build number
+of the marketing version. The marketing version remains in `project.yml` and is
+rolled by the PR that owns the release; nothing in the repository maintains a
+second build counter. Check already-uploaded version/build pairs before mixing
+manual and Cloud uploads. Do not hardcode the Cloud build number
 in a post-clone script or overwrite it by editing the generated project later.
 
 The local StoreKit run fixture is for local tests; it is not a requirement for

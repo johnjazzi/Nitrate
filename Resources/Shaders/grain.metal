@@ -20,6 +20,12 @@ struct GrainUniforms {
     // decorrelated grain. Video can carry more of it because the eye integrates
     // several frames, a single still viewed at 1:1 cannot.
     float chromaAmount;
+    // Reference pixels per raster pixel for the frame this pass writes, from
+    // `GrainModel.referenceScale(width:height:)`. The cell is authored in the
+    // 4K delivery render's pixels, so a smaller raster (a digitally cropped
+    // still, a 4:3 delivery crop) scales the cell by this before sampling.
+    // 1 leaves it unchanged.
+    float referenceScale;
 };
 
 /// Pass 2: 3D noise volume grain with temporal coherence (AD-9).
@@ -98,7 +104,21 @@ kernel void pass2_grain(
     // collapses) and finer size yields aliased noise, not finer grain. Floor the
     // effective size off that regime; 75mm's remaining graininess is removed by
     // the amplitude multiplier instead. grainSize is already stock × gauge.
-    float footprint = clamp(grainSize, 0.95f, 16.0f);
+    // `grainSize` is authored in REFERENCE-frame pixels: one 128^3 volume texel
+    // is one grain cell, and one cell spans `footprint` pixels of the 4K
+    // delivery render every gauge was tuned on. This pass may write a smaller
+    // raster -- a digitally cropped still, or a 4:3 delivery crop -- so convert
+    // the cell to THIS raster's pixels first. Without that, a cropped still
+    // carried grain magnified by exactly the crop factor.
+    float referenceScale = isfinite(uniforms.referenceScale) && uniforms.referenceScale > 0.0f
+        ? uniforms.referenceScale : 1.0f;
+    float footprint = clamp(grainSize, 0.95f, 16.0f) / referenceScale;
+    // A cell below one raster pixel cannot be resolved by a point-sampled
+    // volume. Scale the excursion by the cell -- the RMS of the independent
+    // cells that fall inside one output pixel -- so subpixel grain reads as
+    // fine texture instead of aliased noise. Same rule the preview applies to
+    // its drawable.
+    float cellDamping = saturate(footprint);
     float2 pixelCoord = float2(gid) / (128.0f * max(footprint, 0.1f));
     // A slowly varying vector displacement breaks the 128-texel repeat without
     // introducing pixelwise UV jumps. Its incommensurate scale keeps the field
@@ -131,7 +151,7 @@ kernel void pass2_grain(
     float toe = smoothstep(0.06f, 0.24f, luminance);
     float shoulder = 1.0f - smoothstep(0.56f, 1.0f, luminance);
     float latitude = toe * shoulder;
-    float amount = 0.55f * gaugeAmplitude * edgeFactor;
+    float amount = 0.55f * gaugeAmplitude * edgeFactor * cellDamping;
     float3 excursion = grain * (amount * latitude);
     excursion += fine * (0.004f * latitude);
 

@@ -107,9 +107,9 @@ xcodegen generate
 
 Then in Xcode: select the **Nitrate** scheme, destination **Any iOS Device (arm64)**, and **Product → Archive**. In the Organizer, **Validate App** first, then **Distribute App → App Store Connect → Upload**.[10]
 
-Before each upload, increment `CURRENT_PROJECT_VERSION` in `project.yml` — the build string must be unique per upload.[2]
+Each upload needs a build string you have not uploaded for that version before. Xcode Cloud assigns an increasing build number to every Cloud build; a hand-made archive must set its own, since `project.yml` no longer maintains one.[2]
 
-Current values: `MARKETING_VERSION` 0.1.0, `CURRENT_PROJECT_VERSION` 1, minimum iOS 27.
+Current values: `MARKETING_VERSION` 0.8.7, minimum iOS 27.
 
 Note that Apple's current requirements state uploads must be built with Xcode 26 / the iOS 26 SDK or later; your installed Xcode 27 clears that floor, but re-check the requirements page at submission time.[9]
 

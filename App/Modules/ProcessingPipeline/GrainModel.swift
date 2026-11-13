@@ -292,6 +292,27 @@ enum GrainModel {
     /// coarse gauge is not silently clipped back to a small footprint.
     static let footprintCeiling: Float = 16.0
 
+    /// The frame every gauge's footprint was authored against: one 128^3 volume
+    /// texel is one grain cell, and a cell spans `footprint` pixels of THIS
+    /// frame. A 4K delivery render is the reference, and it is the same number
+    /// the stock preview converts its drawable against.
+    static let referenceLongEdge: Float = 3840
+
+    /// Reference pixels per raster pixel for a pass writing `width` x `height`.
+    ///
+    /// 1 at the reference raster, below 1 on a wider frame and above 1 on a
+    /// smaller one. Dividing the footprint by it keeps one cell the same size
+    /// relative to the picture at any raster, which is what a digitally cropped
+    /// still (raster = source / crop) and a 4:3 delivery crop (2880 of 3840)
+    /// both need. An empty or non-finite raster resolves to the reference, so a
+    /// caller that cannot state its raster leaves the cell unchanged rather
+    /// than scaling it by a nonsense factor.
+    static func referenceScale(width: Int, height: Int) -> Float {
+        let longEdge = Float(max(width, height))
+        guard longEdge.isFinite, longEdge > 0 else { return 1 }
+        return referenceLongEdge / longEdge
+    }
+
     /// Photo-only presence. A native-crop A/B on a real 1000 ISO DNG at equal
     /// stock/seed/gauge reduced residual RMS from 0.00957 (gain 2) to 0.00478
     /// (gain 1.5) with texture still visible; 35 mm read as too rough before.

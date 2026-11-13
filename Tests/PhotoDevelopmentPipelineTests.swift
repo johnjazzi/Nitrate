@@ -62,9 +62,9 @@ struct PhotoDevelopmentPipelineTests {
                 "the develop lift is the capture stop put back, or the delivered exposure moves")
 
         let onsets = SpatialEffectsStage.halationOnsets()
-        #expect(abs(powf(2, onsets.x) - 0.75262) < 0.001, "red responds from 0.75x diffuse white")
-        #expect(abs(powf(2, onsets.y) - 1.32869) < 0.001, "green from 1.33x")
-        #expect(abs(powf(2, onsets.z) - 2.98970) < 0.001, "blue from 2.99x")
+        #expect(abs(powf(2, onsets.x) - 1.14870) < 0.001, "red responds from 1.15x diffuse white")
+        #expect(abs(powf(2, onsets.y) - 2.29740) < 0.001, "green from 2.30x")
+        #expect(abs(powf(2, onsets.z) - 4.28709) < 0.001, "blue from 4.29x")
 
         // A take is measured a stop under the picture it delivers, and that offset
         // is the whole of the compensation: the same onset lands on the same
@@ -340,32 +340,36 @@ struct PhotoDevelopmentPipelineTests {
     /// Native float residuals from the real still stage and shipped grain volume.
     /// The upper half is an unclipped midtone patch; the lower half carries a
     /// ramp/checker so output inequality is also checked on nonuniform content.
+    /// The probe frame is reference-width by default. A gauge's footprint is
+    /// authored in delivery-frame pixels, so a narrow raster pushes every gauge
+    /// below one pixel and the probe measures quantisation instead of the
+    /// kernel's cells.
     private func grainProbe(film: StillFilmRenderResources, seed: UInt32 = 42,
-                            gain: Float? = nil) throws -> (pixels: [Float16], rms: Double, lag: Double) {
-        let side = 256
+                            gain: Float? = nil, width: Int = 3840,
+                            height: Int = 256) throws -> (pixels: [Float16], rms: Double, lag: Double) {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float,
-            width: side, height: side, mipmapped: false)
+            width: width, height: height, mipmapped: false)
         descriptor.storageMode = .shared
         descriptor.usage = [.shaderRead]
         let input = try #require(film.device.makeTexture(descriptor: descriptor))
-        var source = [Float16](repeating: 1, count: side * side * 4)
-        for y in 0..<side {
-            for x in 0..<side {
-                let value: Float = y < side / 2 ? 0.5
-                    : 0.25 + 0.4 * Float(x) / Float(side - 1) + (((x / 4 + y / 4) % 2 == 0) ? 0.05 : 0)
-                for channel in 0..<3 { source[(y * side + x) * 4 + channel] = Float16(value) }
+        var source = [Float16](repeating: 1, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let value: Float = y < height / 2 ? 0.5
+                    : 0.25 + 0.4 * Float(x) / Float(width - 1) + (((x / 4 + y / 4) % 2 == 0) ? 0.05 : 0)
+                for channel in 0..<3 { source[(y * width + x) * 4 + channel] = Float16(value) }
             }
         }
         source.withUnsafeBytes { bytes in
-            input.replace(region: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0,
-                withBytes: bytes.baseAddress!, bytesPerRow: side * 8)
+            input.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
+                withBytes: bytes.baseAddress!, bytesPerRow: width * 8)
         }
         let output = try #require(film.effects.applyGrain(graded: input, commandQueue: film.queue,
             config: film.config, gauge: film.gauge, seed: seed, stillPresenceGain: gain))
         var pixels = source
         pixels.withUnsafeMutableBytes { bytes in
-            output.getBytes(bytes.baseAddress!, bytesPerRow: side * 8,
-                from: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0)
+            output.getBytes(bytes.baseAddress!, bytesPerRow: width * 8,
+                from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
         }
         let finiteAndInRange = pixels.allSatisfy { $0.isFinite && $0 >= 0 && $0 <= 1 }
         let preservesAlpha = stride(from: 3, to: pixels.count, by: 4).allSatisfy { pixels[$0] == 1 }
@@ -373,7 +377,7 @@ struct PhotoDevelopmentPipelineTests {
         #expect(preservesAlpha)
         var residuals = [Double](), neighbors = [Double]()
         func luma(_ x: Int, _ y: Int) -> Double {
-            let i = (y * side + x) * 4
+            let i = (y * width + x) * 4
             return (Double(pixels[i]) + Double(pixels[i + 1]) + Double(pixels[i + 2])) / 3 - 0.5
         }
         // Stay away from the patch boundary and the prefilter's clamp border.
@@ -542,6 +546,28 @@ struct PhotoDevelopmentPipelineTests {
         #expect(deterministic)
     }
 
+    @Test func stillGrainScalesWithTheFrameNotTheRaster() throws {
+        // Verified intent: a gauge's cell is authored in delivery-frame pixels,
+        // so a raster that covers part of the frame carries proportionally
+        // smaller grain instead of the same cell. A 100 mm telephoto still
+        // delivers 1448 px of a 4032 px capture; before this conversion a flat
+        // field measured the same grain amplitude at 1448 px as at 4032 px
+        // (2.27 code values), which is grain 2.78x coarser in the picture — the
+        // "telephoto has far more noticeable grain than 24 mm" report.
+        #expect(GrainModel.referenceScale(width: 3840, height: 2160) == 1)
+        #expect(GrainModel.referenceScale(width: 1920, height: 1080) == 2)
+        #expect(abs(GrainModel.referenceScale(width: 1448, height: 1086) - 3840.0 / 1448.0) < 0.001)
+        #expect(GrainModel.referenceScale(width: 0, height: 0) == 1)
+        let film = try StillFilmRenderResources(stockID: "kodak5219", gauge: .neutral, seed: 42,
+            bundle: Bundle(for: BundleToken.self))
+        let reference = try grainProbe(film: film, width: 3840)
+        let cropped = try grainProbe(film: film, width: 1448)
+        #expect(reference.rms > 0, "The reference frame must carry grain at all")
+        let ratio = cropped.rms / reference.rms
+        #expect(ratio > 0.25 && ratio < 0.8,
+                "A cropped raster must carry proportionally less grain, not the same cell: ratio \(ratio)")
+    }
+
     @Test func thirtyFiveMillimetreRoughnessIsReducedFromLegacyGain() throws {
         // Real-DNG comparison selected 1.5 as a conservative reduction from 2.0.
         // Bound synthetic roughness separately from any sensor-noise contribution.
@@ -591,13 +617,17 @@ struct PhotoDevelopmentPipelineTests {
         // strength, and a single 3024-px frame inspected at 1:1 showed it as
         // red/green/blue specks. Real emulsion grain is a density fluctuation, so
         // the shared (monochrome) part must dominate the anti-correlated R/B part.
+        // Frame at the shared reference width: at a small raster the grain cell
+        // falls below a pixel, the residual is quantisation, and the ratio stops
+        // describing the kernel.
+        let width = 3840, height = 256
         let input = CIImage(color: CIColor(red: 0.18, green: 0.18, blue: 0.18))
-            .cropped(to: CGRect(x: 0, y: 0, width: 256, height: 256))
+            .cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
         let film = try StillFilmRenderResources(stockID: "kodak5219", gauge: .sixteenMillimetre,
             seed: 11, bundle: Bundle(for: BundleToken.self))
         let developed = try DevelopmentPhotoRenderer.develop(linearImage: input, film: film)
-        var bytes = [UInt8](repeating: 0, count: 256 * 256 * 4)
-        film.context.render(developed, toBitmap: &bytes, rowBytes: 256 * 4,
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        film.context.render(developed, toBitmap: &bytes, rowBytes: width * 4,
             bounds: input.extent, format: .RGBA8,
             colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!)
         var sums = [Double](repeating: 0, count: 3)

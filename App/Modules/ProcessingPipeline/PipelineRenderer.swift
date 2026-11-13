@@ -727,6 +727,8 @@ final class PipelineRenderer: @unchecked Sendable {
                     return nil
                 }
 
+                // A probe canvas of whatever size the caller asked for: measure
+                // the cell as authored, not as a delivery raster would scale it.
                 guard runPass2(
                     inputTexture: glowed,
                     outputPixelBuffer: outputBuffer,
@@ -1440,6 +1442,9 @@ final class PipelineRenderer: @unchecked Sendable {
                             grainSize: GrainModel.effectiveSize(stockGrainSize: config.grainSize, gauge: gauge),
                             edgeBoostMultiplier: config.effectiveRecipe.edgeBoostMultiplier,
                             gaugeAmplitude: gauge.amplitudeMultiplier,
+                            referenceScale: GrainModel.referenceScale(
+                                width: outputWidth, height: outputHeight
+                            ),
                             width: outputWidth,
                             height: outputHeight
                         ) else {
@@ -1636,6 +1641,11 @@ final class PipelineRenderer: @unchecked Sendable {
 
     /// Pass 2: grain. Writes result directly into the output pixel buffer.
     /// Returns true on success.
+    /// `referenceScale` is the pixel scale the cell was authored against
+    /// (`GrainModel.referenceScale(width:height:)`), declared by the caller: a
+    /// delivery pass passes its own raster's scale, so a cropped delivery keeps
+    /// the cell constant relative to the frame. A probe canvas leaves the
+    /// default and measures the cell itself.
     private func runPass2(
         inputTexture: MTLTexture,
         outputPixelBuffer: CVPixelBuffer,
@@ -1644,6 +1654,7 @@ final class PipelineRenderer: @unchecked Sendable {
         grainSize: Float,
         edgeBoostMultiplier: Float,
         gaugeAmplitude: Float,
+        referenceScale: Float = 1.0,
         width: Int,
         height: Int
     ) -> Bool {
@@ -1658,7 +1669,8 @@ final class PipelineRenderer: @unchecked Sendable {
 
         var uniforms = GrainUniforms(
             frameIndex: frameIndex, iso: iso, grainSize: grainSize,
-            edgeBoostMultiplier: edgeBoostMultiplier, gaugeAmplitude: gaugeAmplitude
+            edgeBoostMultiplier: edgeBoostMultiplier, gaugeAmplitude: gaugeAmplitude,
+            referenceScale: referenceScale
         )
 
         encoder.setComputePipelineState(pass2Pipeline!)
@@ -1990,6 +2002,10 @@ struct GrainUniforms {
     /// Dye-cloud chroma strength; see `GrainModel.videoChromaAmount`. The video
     /// path takes the default, the still path overrides it.
     var chromaAmount: Float = GrainModel.videoChromaAmount
+    /// Reference pixels per raster pixel for the frame this pass writes; see
+    /// `GrainModel.referenceScale(width:height:)`. 1 leaves the cell unchanged,
+    /// which is what a 16:9 delivery render is.
+    var referenceScale: Float = 1.0
 }
 
 /// Everything one frame needs to be graded and appended, bundled so the frame

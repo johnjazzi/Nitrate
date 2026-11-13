@@ -6,8 +6,9 @@ enum AppIdentity {
     static let name = "Nitrate"
 }
 
-/// Version strings resolve from the bundle, which Xcode fills from
-/// `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` in project.yml.
+/// Version strings resolve from the bundle: `MARKETING_VERSION` in project.yml
+/// fills the release version, and `CFBundleVersion` is whatever build number the
+/// build carries — Xcode Cloud's own counter for anything distributed.
 ///
 /// Formatting is split from the bundle lookup so it can be tested without a
 /// host application.

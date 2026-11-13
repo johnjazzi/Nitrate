@@ -29,5 +29,5 @@ jobs:
           persist-credentials: false
       - name: Test release policy helper
         run: python3 scripts/test_release_version.py -v
-      - name: Check exact next release version and advanced local build
+      - name: Check the release version against the PR base
         run: python3 scripts/release_version.py check --base "$RELEASE_BASE_SHA"
