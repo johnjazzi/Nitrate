@@ -447,6 +447,23 @@ kernel void spatial_halation_apply(
     /// The system's develop lift, in stops. Positive, and applied LAST — after
     /// the emulsion has scattered its light. See this kernel's ORDER note.
     constant float& postEmulsionStops      [[buffer(6)]],
+    /// Stray light reaching the film while the transport ramps at the head and
+    /// the tail of a take, in stops of extra scene light. 0 on every frame that
+    /// is not ramping — that is, every frame of a take except its ends. See
+    /// `LightLeakTransport`.
+    constant float& leakStops              [[buffer(7)]],
+    constant float3& leakTint              [[buffer(8)]],
+    /// How much of the leak is weighted toward the frame's edges instead of
+    /// fogging the whole frame evenly, and how far in that weighting reaches, as
+    /// a fraction of the shorter side.
+    constant float& leakEdgeShare          [[buffer(9)]],
+    constant float& leakEdgeFalloff        [[buffer(10)]],
+    /// The share of this frame that never crossed the gate while it was exposed:
+    /// 0 for a frame in full register, 0.55 for one whose upper half had not been
+    /// drawn into the aperture yet. Only the frame that opens a ramping take is
+    /// partial, because the transport is stopped between takes with the film
+    /// mid-frame — see `LightLeakTransport.firstFrameSlip`.
+    constant float& leakSlip               [[buffer(11)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
@@ -504,7 +521,40 @@ kernel void spatial_halation_apply(
         linear = mix(linear, blurred, clamp(diffusionAmount, 0.0f, 1.0f));
     }
 
-    float3 scattered = max(float3(0.0f), linear + contribution);
+    // The transport's burn, applied in linear scene light beside the halo. It is
+    // an EXPOSURE — the film sat behind the open gate for longer, so the scene
+    // it saw is multiplied by `2^stops` — plus the gate's own warm veil, which
+    // is light that was never in the scene at all. Both are pre-encode, so the
+    // stock curve tones them with the rest of the frame instead of having them
+    // painted on afterwards. The veil is flat where the frame is fogged and
+    // weighted toward the edges where it is the seal leaking; `exp2(stops) - 1`
+    // is the extra light those stops amount to, in multiples of diffuse white,
+    // the same unit the halation onsets are measured in.
+    if (leakStops > 0.0f || leakSlip > 0.0f) {
+        float2 fromEdge = float2(min(uv.x, 1.0f - uv.x) * size.x,
+                                 min(uv.y, 1.0f - uv.y) * size.y);
+        float reach = min(size.x, size.y) * max(leakEdgeFalloff, 1.0e-4f);
+        float edge = exp(-min(fromEdge.x, fromEdge.y) / reach);
+        float leakWeight = mix(1.0f, edge, clamp(leakEdgeShare, 0.0f, 1.0f));
+        float leakGain = exp2(leakStops);
+        linear = linear * leakGain + leakTint * (leakGain - 1.0f) * leakWeight;
+    }
+
+    // The frame that was still crossing the gate hands the take its first
+    // picture. The part of it the aperture never reached is film that saw no light
+    // at all, so it comes up black: a partial frame, not a dim one. The boundary
+    // is soft because the film was moving while it was exposed, which is also why
+    // the arriving part carries less of the burn than the part that was already in
+    // the gate while the transport was at rest. The film arrives from the bottom
+    // of the frame, so it is the top that is short. The halo is masked with it —
+    // an unexposed part of the frame has no highlight to scatter from.
+    float inRegister = 1.0f;
+    if (leakSlip > 0.0f) {
+        float sweepSoftness = 0.14f;
+        inRegister = smoothstep(leakSlip - sweepSoftness, leakSlip + sweepSoftness, uv.y);
+    }
+
+    float3 scattered = max(float3(0.0f), (linear + contribution) * inRegister);
 
     // ORDER: the system's develop lift comes last. The camera captured a stop
     // under, so the frame the film stages were handed is a stop darker than the
