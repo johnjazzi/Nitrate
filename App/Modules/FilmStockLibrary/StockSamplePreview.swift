@@ -146,7 +146,9 @@ struct PreviewConfiguration: Equatable {
     let zoom: Float
 
     /// The 4K delivery frame.
-    static let defaultReferenceLongEdge: Float = 3840
+    /// One shared reference with the offline grain passes, so a card and a
+    /// render of the same gauge can never disagree about the cell's frame.
+    static let defaultReferenceLongEdge: Float = GrainModel.referenceLongEdge
 
     init(footprint: Float, amplitude: Float, whiteBalance: simd_float3x3,
          halationStrength: Float, halationRadiusFraction: Float, halationTint: SIMD3<Float>,

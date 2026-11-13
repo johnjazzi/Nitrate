@@ -35,6 +35,8 @@ final class PurchaseViewModel {
     var subscriptionPrice: String?
     var lifetimePrice: String?
     var purchaseError: String?
+    /// Outcome of a Restore Purchases tap: restored, or nothing found.
+    var restoreMessage: String?
     /// Non-nil when StoreKit product loading failed; the UI shows unavailable.
     var productLoadError: String?
 
@@ -123,10 +125,20 @@ final class PurchaseViewModel {
             do {
                 try await storeManager.restore()
                 await refreshEntitlementsAfterGrant()
+                // A restore with no feedback reads as a dead button. Say what
+                // Apple found, either way.
+                restoreMessage = isPurchased
+                    ? "Purchases restored. Film rendering is unlocked."
+                    : "No purchases were found for this Apple Account."
             } catch {
                 purchaseError = error.localizedDescription
             }
         }
+    }
+
+    /// Clears the restore confirmation once the alert is dismissed.
+    func dismissRestoreMessage() {
+        restoreMessage = nil
     }
 
     /// Show Apple's offer-code sheet, then pick up the entitlement it grants.
@@ -141,13 +153,23 @@ final class PurchaseViewModel {
         }
     }
 
-#if DEBUG || NITRATE_LOCAL_DEVELOPMENT
+#if DEBUG || NITRATE_LOCAL_DEVELOPMENT || NITRATE_EVALUATION_TOOLS
     /// Development-only: clear the install anchor so the twenty-day evaluation
     /// can be seen again on this device. Compiled out of every shipped build:
     /// DevRelease defines NITRATE_LOCAL_DEVELOPMENT, a distribution Release
     /// defines neither flag.
     func restartEvaluation() {
         UserDefaults.standard.removeObject(forKey: StoreManager.installDateKey)
+        Task { await loadState() }
+    }
+
+    /// Development-only: move the install anchor past the deadline so the
+    /// no-access path can be exercised on a build that does not bypass access.
+    /// `NITRATE_EVALUATION_TOOLS` exists for exactly that: it enables these
+    /// controls without enabling the local unlock.
+    func expireEvaluation() {
+        UserDefaults.standard.set(AppAccessPolicy.expiredAnchor(now: Date()),
+                                  forKey: StoreManager.installDateKey)
         Task { await loadState() }
     }
 #endif

@@ -140,6 +140,72 @@ struct DebugFrameRenderTests {
         #expect(result.texture.height == Self.height)
     }
 
+    /// The onset dials must move the mask, per layer. Dropping only the red onset
+    /// below the background starts red halation on light it rejected and must leave
+    /// green untouched, because each layer has its own onset; raising all three
+    /// above the highlight empties the mask.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func onsetDialsChangeTheMaskPerLayer() throws {
+        let renderer = try makeRenderer()
+        let config = try loadConfig()
+        // A highlight that stays BELOW the reference (10x white, +3.32 stops above
+        // the mask frame's 1.0): an onset can never be pushed past the reference, so
+        // a frame brighter than it saturates every layer whatever the dials say and
+        // could not demonstrate the reverse direction at all.
+        let frame = try Self.makeSyntheticFrame(background: 0.5, highlight: 0.85)
+
+        var seeded = PipelineRenderer.DebugFrameParameters(config: config)
+        seeded.halationStrength = 0.9
+        seeded.glowStrength = 0
+        // Pin a radius that reaches the measured band rather than relying on the
+        // stock's small default, which at this 128px frame diffuses only a few px.
+        seeded.halationRadiusFraction = 0.03
+        #expect(seeded.halationRedOnsetStops == SpatialEffectsStage.authoredOnsets.x,
+                "the dials must open on the shipping onsets")
+
+        // Where the fixture's own levels sit, in the scale the mask reads: the
+        // frame's offset, then stops above its 1.0. Read from the codes the fixture
+        // was built with, so the two directions below cannot drift apart.
+        let frameWhite = SpatialEffectsStage.frameWhiteStops(sceneLiftStops: 0)
+        let backgroundStops = Float(log2(SpatialEffectsTests.appleLogDecode(0.5))) - frameWhite
+        let highlightStops = Float(log2(SpatialEffectsTests.appleLogDecode(0.85))) - frameWhite
+
+        var redLow = seeded
+        redLow.halationRedOnsetStops = backgroundStops - 1
+        var allHigh = seeded
+        allHigh.halationRedOnsetStops = highlightStops + 0.5
+        allHigh.halationGreenOnsetStops = highlightStops + 0.5
+        allHigh.halationBlueOnsetStops = highlightStops + 0.5
+
+        func render(_ parameters: PipelineRenderer.DebugFrameParameters) throws -> Frame {
+            let result = try #require(renderer.renderDebugFrame(
+                pixelBuffer: frame, config: config, parameters: parameters))
+            return try read(result.pixelBuffer)
+        }
+
+        let seededFrame = try render(seeded)
+        let redLowFrame = try render(redLow)
+        let allHighFrame = try render(allHigh)
+
+        // Far background (block spans 48..<80): light the seeded onset rejects.
+        let seededFar = mean(seededFrame, columns: 5..<25, rows: 5..<25)
+        let redLowFar = mean(redLowFrame, columns: 5..<25, rows: 5..<25)
+        let redDelta = (redLowFar.red - seededFar.red) / 255.0
+        let greenDelta = (redLowFar.green - seededFar.green) / 255.0
+        #expect(redDelta > 0.01,
+                "dropping the red onset must start red halation below it (delta \(redDelta))")
+        #expect(abs(greenDelta) < 0.005,
+                "a red-only onset change must not move green (delta \(greenDelta))")
+
+        // Band hugging the outside of the highlight: raising the onsets past the
+        // frame's peak empties the mask, so the halo it carried goes away.
+        let seededBand = mean(seededFrame, columns: 82..<100, rows: 52..<76)
+        let allHighBand = mean(allHighFrame, columns: 82..<100, rows: 52..<76)
+        let lost = (allHighBand.red - seededBand.red) / 255.0
+        #expect(lost < -0.002,
+                "raising all three onsets past the highlight must remove the halo (delta \(lost))")
+    }
+
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
     func halationStrengthChangesTheOutputPixels() throws {
         let renderer = try makeRenderer()
@@ -288,11 +354,25 @@ struct DebugFrameRenderTests {
         // Uniform input means the half-resolution mask is uniform as well, so
         // its exact expected contribution needs no blur or GPU implementation.
         let linear = pow(2.0, (Double(code) - 0.69336945) / 0.08550479) - 0.00964052
-        let knees = [1.0, 2.0, 4.0]
+        // The mask is a 0..1 fraction of each layer's own onset-to-reference span,
+        // measured in the frame the mask reads — the scheme's own baseline for a
+        // debug frame, and nothing else.
+        let frameWhite = Double(SpatialEffectsStage.frameWhiteStops(sceneLiftStops: 0))
+        let referenceStops = Double(SpatialEffectsStage.halationReferenceStops)
+        let onsets = SpatialEffectsStage.halationOnsets()
+        let stops = log2(linear) - frameWhite
+        func energy(_ onset: Float) -> Double {
+            let span = max(referenceStops - Double(onset), 0.05)
+            return min(1, max(0, (stops - Double(onset)) / span))
+        }
         let scales = [Double(parameters.halationTint.x), Double(parameters.halationTint.y),
                       Double(parameters.halationTint.z)]
-        let expectedCodes = zip(knees, scales).map { knee, scale -> Float16 in
-            let combined = linear + max(0, linear - knee) * scale * 4 / 8
+        let strength = Double(parameters.halationStrength)
+        // The develop lift is applied last, to the whole delivered frame, so the
+        // expected code has to carry it too.
+        let lift = exp2(Double(SystemExposureScheme.developLiftStops))
+        let expectedCodes = zip([onsets.x, onsets.y, onsets.z], scales).map { onset, scale -> Float16 in
+            let combined = (linear + energy(onset) * scale * strength) * lift
             return Float16(0.69336945 + 0.08550479 * log2(combined + 0.00964052))
         }
         let expectedSource = try Self.makeSyntheticFrame(background: code, highlight: code)
@@ -312,7 +392,14 @@ struct DebugFrameRenderTests {
         let expected = try read(reference.pixelBuffer)
         let maximumDifference = zip(actual.pixels, expected.pixels)
             .map { abs(Int($0.0) - Int($0.1)) }.max() ?? 0
-        #expect(maximumDifference <= 2,
+        // The expected source is a half-float, and one ULP at code 0.8 is
+        // 0.000488 of a code. Blue's share of this halo is only ~0.05 in linear
+        // light now that its onset sits above green's, so rounding the reference
+        // to the nearest half-float and grading it through the 33-cube trilinear
+        // LUT can move a delivered code by three. That is a quantisation budget,
+        // not a claim about the render: the check is that halation enters the LUT
+        // rather than being painted on afterwards.
+        #expect(maximumDifference <= 3,
                 "Halation must enter the LUT as added scene light (max byte difference \(maximumDifference))")
     }
 
@@ -323,11 +410,11 @@ struct DebugFrameRenderTests {
         let frame = try Self.makeSyntheticFrame()
 
         var coarse = PipelineRenderer.DebugFrameParameters(config: config)
-        coarse.applyGauge(.eightMillimetre)      // size x 3.0, presence x 1.00
+        coarse.applyGauge(.eightMillimetre)      // coarsest rung: largest footprint, loudest presence
         coarse.halationStrength = 0
         coarse.glowStrength = 0
         var fine = coarse
-        fine.applyGauge(.seventyFiveMillimetre)  // size x 0.55, presence x 0.04
+        fine.applyGauge(.seventyFiveMillimetre)  // finest rung: floored footprint, quietest presence
 
         // The gauge must actually move the grain axes it owns.
         #expect(coarse.realizedFootprint > fine.realizedFootprint)

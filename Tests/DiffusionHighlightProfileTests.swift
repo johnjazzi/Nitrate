@@ -110,7 +110,7 @@ struct DiffusionHighlightProfileTests {
     ///
     /// The stock carries no diffusion of its own, so the gauge's preset applies;
     /// the stock's `stillDiffusionScale` of 0.5 takes the authored amount to the
-    /// share a develop actually mixes (0.20 -> 0.10 at 35mm). `.disabled` is the
+    /// share a develop actually mixes (0.14 -> 0.07 at 35mm). `.disabled` is the
     /// same stock and gauge with only the node off, so the difference between
     /// the two renders is the node itself.
     private func still(gauge: PrintGauge, includingDiffusion: Bool) throws -> StillFilmRenderResources {

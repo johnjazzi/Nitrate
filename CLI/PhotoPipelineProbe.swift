@@ -6,11 +6,14 @@ import ImageIO
 enum PhotoPipelineProbe {
     /// How much light a raw carries ABOVE its own white point.
     ///
-    /// Halation's trigger is a multiple of white (`halationReferenceSuperwhite`),
-    /// which assumes a file can hold several stops of highlight headroom. A fused
+    /// Halation's trigger is a fixed stop point (`halationReferenceStops`, 10x
+    /// diffuse white), which assumes a file can hold several stops of highlight
+    /// headroom. A fused
     /// ProRAW can (measured 21.9x); a single-exposure DSLR raw clips at its own
     /// white (a Nikon D700 NEF measured 5.4x after the decoder's own lift), so a
-    /// constant reference asks for headroom the file does not have.
+    /// fixed 12x ceiling would ask for headroom the file does not have. The
+    /// reference no longer reads any of this: it is the fixed 10x point, and only
+    /// the push/pull hold is anchored to the measured ceiling.
     ///
     /// This scan measures each file's own ceiling on the configured decode — the
     /// image the pipeline actually receives — and reports the percentiles a
@@ -29,7 +32,7 @@ enum PhotoPipelineProbe {
         let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
         // 256 is plenty for a percentile and cheap enough to scan a folder.
         let sample = 256
-        print("FILE | make model | liftEv | max | p99.99 | p99.9 | p99 | above1 | refNow | refAnchored")
+        print("FILE | make model | liftEv | max | p99.99 | p99.9 | p99 | above1 | frameWhite | oldAnchor")
         for url in files {
             do {
                 let decoded = try decoder.decode(url: url, temperature: 5600)
@@ -54,8 +57,10 @@ enum PhotoPipelineProbe {
                     return values[min(values.count - 1, max(0, Int(Double(values.count - 1) * p)))]
                 }
                 let aboveFraction = Double(values.filter { $0 > 1 }.count) / Double(max(1, values.count))
-                let referenceNow = SpatialEffectsStage.halationReferenceSuperwhite(
+                let frameWhite = SpatialEffectsStage.frameWhiteStops(
                     sceneLiftStops: decoded.sceneLiftStops)
+                // What the retired measurement would have anchored the ramp to,
+                // printed for comparison: the reference itself no longer moves.
                 let anchored = min(8, max(2, percentile(0.9999)))
                 let model = [decoded.metadata?.make, decoded.metadata?.model]
                     .compactMap { $0 }.joined(separator: " ")
@@ -67,7 +72,7 @@ enum PhotoPipelineProbe {
                              percentile(0.9999), percentile(0.999),
                              percentile(0.99),
                              aboveFraction * 100,
-                             referenceNow, anchored))
+                             frameWhite, anchored))
             } catch {
                 print("\(url.lastPathComponent) | FAILED: \(error)")
             }
@@ -140,16 +145,21 @@ enum PhotoPipelineProbe {
         } else {
             print("RAW-DNG not a DNG container (CIRAWFilter paths only)")
         }
-        print(String(format: "RAW-REF referenceSuperwhite=%.2f anchored=%.2f headroom=%.2f",
-                     SpatialEffectsStage.halationReferenceSuperwhite(sceneLiftStops: decoded.sceneLiftStops),
-                     SpatialEffectsStage.halationReferenceSuperwhite(
-                        sceneLiftStops: decoded.sceneLiftStops, headroom: decoded.halationHeadroom),
-                     decoded.halationHeadroom))
-        print(String(format: "RAW-LIFT baseline=%.3f stillBase=%.2f sceneLift=%.3f knees=%.2f/%.2f/%.2f",
+        print(String(format: "RAW-REF referenceStops=%.2f (%.2fx white) onsets=%.2f/%.2f/%.2f frameWhite=%.2f ceiling=%.2f",
+                     SpatialEffectsStage.halationReferenceStops,
+                     powf(2, SpatialEffectsStage.halationReferenceStops),
+                     SpatialEffectsStage.halationOnsets().x,
+                     SpatialEffectsStage.halationOnsets().y,
+                     SpatialEffectsStage.halationOnsets().z,
+                     SpatialEffectsStage.frameWhiteStops(sceneLiftStops: decoded.sceneLiftStops),
+                     SpatialEffectsStage.halationCeiling(sceneLiftStops: decoded.sceneLiftStops,
+                                                         headroom: decoded.halationHeadroom)))
+        print(String(format: "RAW-LIFT baseline=%.3f stillBase=%.2f sceneLift=%.3f onsets=%.2f/%.2f/%.2f frameWhite=%.2f",
                      decoded.baselineExposure, RAWPhotoDecoder.baseExposureEV, decoded.sceneLiftStops,
-                     SpatialEffectsStage.halationKnees(sceneLiftStops: decoded.sceneLiftStops).x,
-                     SpatialEffectsStage.halationKnees(sceneLiftStops: decoded.sceneLiftStops).y,
-                     SpatialEffectsStage.halationKnees(sceneLiftStops: decoded.sceneLiftStops).z))
+                     SpatialEffectsStage.halationOnsets().x,
+                     SpatialEffectsStage.halationOnsets().y,
+                     SpatialEffectsStage.halationOnsets().z,
+                     SpatialEffectsStage.frameWhiteStops(sceneLiftStops: decoded.sceneLiftStops)))
         print("RAW settings: \(decoded.settings)")
         try inspect("00-configured-raw", decoded.linearImage)
         try inspect("01-raw", raw)

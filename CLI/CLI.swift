@@ -41,6 +41,20 @@ import Foundation
             } catch { print("Grain comparison failed: \(error)"); exit(1) }
             return
         }
+        if arguments.first == "--photo-grain-zoom-probe", arguments.count == 4 {
+            do {
+                try PhotoGrainComparison.zoomRun(input: URL(fileURLWithPath: arguments[1]), stock: arguments[2],
+                                                directory: URL(fileURLWithPath: arguments[3], isDirectory: true))
+            } catch { print("Grain zoom probe failed: \(error)"); exit(1) }
+            return
+        }
+        if arguments.first == "--photo-grain-flat-probe", arguments.count == 3 {
+            do {
+                try PhotoGrainComparison.flatRun(stock: arguments[1],
+                                                directory: URL(fileURLWithPath: arguments[2], isDirectory: true))
+            } catch { print("Grain flat probe failed: \(error)"); exit(1) }
+            return
+        }
         if arguments.first == "--raw-headroom", arguments.count >= 2 {
             do {
                 try PhotoPipelineProbe.headroom(in: arguments.dropFirst().map { URL(fileURLWithPath: $0) })

@@ -254,12 +254,23 @@ actor DevelopFramePreviewRenderer {
         let color = try resources()
         let source = try Self.boundedBuffer(buffer, cropZoom: cropZoom)
         let finished = try color.grade(color.prepare(source), stock: stock, pushPull: pushPull)
-        let rotation = CGAffineTransform(a: transform.a, b: transform.b, c: transform.c, d: transform.d, tx: 0, ty: 0)
-        let upright = Self.normalized(finished.transformed(by: rotation))
+        // The track transform is authored for a top-down frame, and Core Image's
+        // space is bottom-up: applying it verbatim turns the odd quarter turns the
+        // wrong way round. Negating the off-diagonal terms is the same transform
+        // written in Core Image's space, and it leaves 0° and 180° untouched.
+        let rotation = CGAffineTransform(a: transform.a, b: -transform.b, c: -transform.c, d: transform.d, tx: 0, ty: 0)
+        let upright = Self.normalized(finished.transformed(by: Self.bufferToTopDown).transformed(by: rotation))
         try Task.checkCancellation()
         return DevelopFramePreview(image: try FilmOutputDisplayConverter.makeSRGBImage(fromGamma24: upright),
                                    measuredOffsetEV: measurement, captureDescription: captureDescription)
     }
+
+    /// A decoded buffer's first row is its TOP row. Handing that buffer to Core
+    /// Image through a Metal texture puts that row at Core Image's origin, which is
+    /// the bottom, so every frame arrives upside down. Undoing it ONCE here, before
+    /// the track transform, is what makes a preview match what a player shows — a
+    /// vertical mirror of a real scene reads as an upside-down frame.
+    private static let bufferToTopDown = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: 0)
 
     private static func normalized(_ image: CIImage) -> CIImage {
         image.transformed(by: CGAffineTransform(translationX: -image.extent.minX, y: -image.extent.minY))

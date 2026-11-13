@@ -275,6 +275,66 @@ struct SpatialEffectsTests {
                 "added light at the source centre (\\(centreAdded)) must exceed the tail (\\(tailAdded)) — the source grows, it is not a ring")
     }
 
+    /// A clipped point light grows a WARM halo that reaches past its own
+    /// footprint — the property the frame's brightest pixel is judged by.
+    ///
+    /// Sampled with the stock's own shipping numbers (strength, radius fraction,
+    /// layer tint from `Resources/stocks.json`) and the scheme's own onset, so
+    /// re-tuning any of them moves this test with the look instead of silently
+    /// pinning an old one. The light is 8 px at 12x white in a 1920-wide frame:
+    /// the hardest case for a halo, because a small source carries little energy
+    /// and the half-resolution mask averages it down further.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func clippedPointLightHalatesWarmOutsideItsOwnFootprint() throws {
+        struct Catalog: Decodable { let stocks: [FilmStockConfig] }
+        let url = TestRepository.root.appendingPathComponent("App/Resources/stocks.json")
+        let config = try #require(
+            try JSONDecoder().decode(Catalog.self, from: Data(contentsOf: url))
+                .stocks.first { $0.stockId == "kodak5219" },
+            "kodak5219 stock configuration")
+
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        let width = 1920, height = 1080
+        let surround = 0.02, size = 8
+        let source = Self.sourcePixels(width: width, height: height) { column, row in
+            let inside = abs(column - width / 2) < size / 2 && abs(row - height / 2) < size / 2
+            let v = inside ? 12.0 : surround
+            return SIMD3(v, v, v)
+        }
+        let input = try Self.makeTexture(device: device, width: width, height: height, pixels: source)
+        let output = try #require(stage.applyHalation(
+            source: input, commandQueue: queue,
+            strength: config.effectiveHalationStrength,
+            radiusFraction: config.halationRadiusFraction,
+            layerScale: config.halationTint,
+            diffusion: .disabled,
+            width: width, height: height))
+        let linear = Self.decodedLinear(
+            try Self.readBack(output, device: device, queue: queue, width: width, height: height),
+            count: width * height)
+
+        // Unlit background: anything lit out here is the emulsion, not the source.
+        let edge = width / 2 + size / 2
+        func added(_ span: Int) -> SIMD3<Double> {
+            Self.linearMean(linear, width: width, columns: (edge + span)..<(edge + span + 3),
+                            rows: (height / 2 - 2)..<(height / 2 + 2)) - SIMD3(repeating: surround)
+        }
+        let near = added(5)
+        #expect(near.x > 0.01, "the light must light the frame outside itself (was \(near.x))")
+        // Warm, in that order: red scatters furthest and responds to the least
+        // light, blue to the most. A neutral or blue halo means the layers are
+        // being fed each other's energy.
+        #expect(near.x > near.y && near.y >= near.z,
+                "the halo must be warm: r/g/b = \(near.x)/\(near.y)/\(near.z)")
+        // Local: far from the light the frame returns to its own level, so this
+        // is a halo and not a frame-wide lift.
+        let far = added(400)
+        #expect(abs(far.x) < 0.003 && abs(far.z) < 0.003,
+                "the halo must not be frame-wide (added \(far.x)/\(far.z))")
+    }
+
     /// Zero strength is identity when diffusion and exposure are also disabled.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
     func zeroStrengthIsIdentityForHalation() throws {
@@ -355,32 +415,49 @@ struct SpatialEffectsTests {
             let encoded = try Self.runHalation(
                 stage: stage, device: device, queue: queue,
                 width: Self.side, height: Self.side, sourcePixels: source,
-                strength: 1.0, radiusFraction: 0.03, layerScale: Self.tint
+                // Neutral layer weights: this test is about which layer a level
+                // clears, and the stock's red-dominant tint would mask a green or
+                // blue response that is really there.
+                strength: 1.0, radiusFraction: 0.03, layerScale: SIMD3(1, 1, 1)
             )
             let linear = Self.decodedLinear(encoded, count: Self.side * Self.side)
             let band = Self.linearMean(linear, width: Self.side, columns: 160..<180, rows: 100..<156)
             return band - SIMD3(repeating: Self.surround)
         }
 
-        // 1.25x: clears the lowered red knee, but not green.
-        let redOnly = try halo(1.25)
-        // 2.5x: clears red and green, still below blue.
-        let redGreen = try halo(2.5)
-        // 8.0x: clears all three.
-        let allLayers = try halo(8.0)
+        // Sample against the stage's own onsets rather than literal levels: the
+        // onsets are in stops above diffuse white and the mask reads the frame
+        // through `frameWhiteStops`, so the level that clears a layer is
+        // 2^(onset + frameWhite). Each level sits just under the NEXT layer's
+        // onset, which keeps the cleared layer's mask (and so the measured
+        // signal) as large as the window allows.
+        let onsets = SpatialEffectsStage.halationOnsets()
+        let frameWhite = SpatialEffectsStage.frameWhiteStops(sceneLiftStops: 0)
+        func level(clearing onset: Float) -> Double { pow(2, Double(onset + frameWhite)) }
+        // Above red, still under green.
+        let redOnly = try halo(level(clearing: onsets.y) * 0.95)
+        // Above green, still under blue.
+        let redGreen = try halo(level(clearing: onsets.z) * 0.95)
+        // Above all three.
+        let allLayers = try halo(level(clearing: onsets.z) * 2.5)
 
-        #expect(redOnly.x > 0.002, "red must respond above its 0.75 knee (was \\(redOnly.x))")
-        #expect(redOnly.y < redOnly.x * 0.1, "green must stay dark below its 1.5 knee (was \\(redOnly.y))")
-        #expect(redOnly.z < redOnly.x * 0.1, "blue must stay dark below its 3.0 knee (was \\(redOnly.z))")
+        #expect(redOnly.x > 0.002, "red must respond above its knee (was \(redOnly.x))")
+        #expect(redOnly.y < redOnly.x * 0.1, "green must stay dark below its knee (was \(redOnly.y))")
+        #expect(redOnly.z < redOnly.x * 0.1, "blue must stay dark below its knee (was \(redOnly.z))")
 
-        #expect(redGreen.y > 0.002, "green must respond above its 1.5 knee (was \\(redGreen.y))")
-        #expect(redGreen.z < redGreen.y * 0.1, "blue must stay dark below its 3.0 knee (was \\(redGreen.z))")
+        #expect(redGreen.y > 0.002, "green must respond above its knee (was \(redGreen.y))")
+        #expect(redGreen.z < redGreen.y * 0.1, "blue must stay dark below its knee (was \(redGreen.z))")
 
-        #expect(allLayers.z > 0.002, "blue must respond above its 3.0 knee (was \\(allLayers.z))")
+        #expect(allLayers.z > 0.002, "blue must respond above its knee (was \(allLayers.z))")
     }
 
+    /// Red responds from its onset upwards, and the ramp is linear in STOPS: two
+    /// levels a stop apart differ by the same increment as any other pair a stop
+    /// apart. That evenness is what the ramp is for — the old form was linear in
+    /// light, so it spent most of its span near the top and a highlight appeared
+    /// to do nothing and then saturate.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func halationStartsEarlierAndBuildsMoreGradually() throws {
+    func halationStartsAtItsOnsetAndBuildsEvenlyPerStop() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
@@ -395,14 +472,44 @@ struct SpatialEffectsTests {
             let input = Self.appleLogDecode(Double(source[(128 * Self.side + 128) * 4]))
             return Self.linearMean(linear, width: Self.side, columns: 120..<136, rows: 120..<136).x - input
         }
-        #expect(abs(try redAdded(0.5)) < 0.002)
-        let early = try redAdded(0.9)
-        #expect(early > 0.01, "red now responds below the previous 1.0 onset")
-        #expect(abs(early - 0.015) < 0.003)
-        let lower = try redAdded(2)
-        let upper = try redAdded(3)
-        #expect(abs(lower - 0.125) < 0.003)
-        #expect(abs((upper - lower) - 0.1) < 0.004, "ramp slope is 1/10, not the old 1/8")
+        let onset = Double(SpatialEffectsStage.halationOnsets().x)
+        let frameWhite = Double(SpatialEffectsStage.frameWhiteStops(sceneLiftStops: 0))
+        let reference = Double(SpatialEffectsStage.halationReferenceStops)
+        // The mask level a source sits at, as the kernel reads it.
+        func maskLevel(_ level: Double) -> Double {
+            let stops = log2(level) - frameWhite
+            return min(1, max(0, (stops - onset) / (reference - onset)))
+        }
+
+        #expect(abs(try redAdded(0.10)) < 0.002, "0.10 sits below the red onset")
+        let justUnder = pow(2, onset + frameWhite) * 0.9
+        #expect(abs(try redAdded(justUnder)) < 0.002, "just under the onset is still dark")
+        for level in [1.25, 2, 3] {
+            let added = try redAdded(level)
+            #expect(added > 0.01, "red responds once it clears its onset (at \(level))")
+            // The mask read back through the half-res texture is good to about a
+            // twentieth of a stop, and the fraction is a share of the span, so the
+            // tolerance is stated in stops: in fractions it would silently tighten
+            // every time an onset rises and the span shortens.
+            let tolerance = 0.06 / (reference - onset)
+            #expect(abs(added - maskLevel(level)) < tolerance,
+                    "the add is the mask fraction at \(level): \(added) vs \(maskLevel(level))")
+        }
+        // Doubling the level is one stop, so the increments must match. The three
+        // levels are derived from the onset rather than hard-coded: a literal set
+        // only stays inside the ramp while the onset happens to sit below it, so
+        // raising an onset would silently move the lowest sample out of the ramp
+        // and leave red's response flat where the test expects a step. The top
+        // sample stays two stops clear of the reference, where the ramp clamps.
+        let base = pow(2, onset + frameWhite + 0.1)
+        let first = try redAdded(base * 2) - redAdded(base)
+        let second = try redAdded(base * 4) - redAdded(base * 2)
+        // Stated in stops, like the fraction check above: the add is measured
+        // through an encode/decode round trip, which compresses a fixed addition
+        // slightly more in a brighter frame, so the evenness is good to a
+        // twentieth of a stop rather than to the bit.
+        #expect(abs(first - second) < 0.05 / (reference - onset),
+                "one stop must add the same amount wherever it sits: \(first) \(second)")
     }
 
     /// An all-red source exposes only the red layer, so its halo must stay red.
@@ -578,8 +685,8 @@ struct SpatialEffectsTests {
         let pipeline = try device.makeComputePipelineState(function: function)
         let side = 16
 
-        // Source 0.18; each layer carries 1.6, normalized by referenceSuperwhite
-        // 8 → 0.2 added in linear → 0.38.
+        // Source 0.18; each layer texture carries a mask FRACTION of 0.2 (the mask
+        // is normalized to 0..1 now), so the add is 0.2 in linear → 0.38.
         let source = Self.sourcePixels(width: side, height: side) { _, _ in SIMD3(0.18, 0.18, 0.18) }
         func fill(_ channel: Int, _ value: Float) -> [Float16] {
             var pixels = [Float16](repeating: 0, count: side * side * 4)
@@ -589,16 +696,15 @@ struct SpatialEffectsTests {
 
         func run(strength: Float) throws -> SIMD3<Double> {
             let sourceTexture = try Self.makeTexture(device: device, width: side, height: side, pixels: source)
-            let red = try Self.makeTexture(device: device, width: side, height: side, pixels: fill(0, 1.6))
-            let green = try Self.makeTexture(device: device, width: side, height: side, pixels: fill(1, 1.6))
-            let blue = try Self.makeTexture(device: device, width: side, height: side, pixels: fill(2, 1.6))
+            let red = try Self.makeTexture(device: device, width: side, height: side, pixels: fill(0, 0.2))
+            let green = try Self.makeTexture(device: device, width: side, height: side, pixels: fill(1, 0.2))
+            let blue = try Self.makeTexture(device: device, width: side, height: side, pixels: fill(2, 0.2))
             let output = try Self.makeTexture(device: device, width: side, height: side,
                                               pixels: [Float16](repeating: 0, count: side * side * 4))
             let commandBuffer = try #require(queue.makeCommandBuffer())
             let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
             var strength = strength
             var layerScale = SIMD3<Float>(1, 1, 1)
-            var referenceSuperwhite: Float = 8
             encoder.setComputePipelineState(pipeline)
             encoder.setTexture(sourceTexture, index: 0)
             encoder.setTexture(red, index: 1)
@@ -607,7 +713,10 @@ struct SpatialEffectsTests {
             encoder.setTexture(output, index: 4)
             encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
             encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
-            encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
+            // Neutral: this harness pins the linear ADD, not the system's
+            // develop lift, which gets its own test.
+            var postEmulsionStops: Float = 0
+            encoder.setBytes(&postEmulsionStops, length: MemoryLayout<Float>.size, index: 6)
             encoder.dispatchThreadgroups(
                 MTLSize(width: 1, height: 1, depth: 1),
                 threadsPerThreadgroup: MTLSize(width: side, height: side, depth: 1)
@@ -660,9 +769,11 @@ struct SpatialEffectsTests {
 
         let sourceTexture = try Self.makeTexture(device: device, width: side, height: side, pixels: source)
         // Decoys in `.r` of the green and blue textures are what a wrong read picks up.
-        let red = try Self.makeTexture(device: device, width: side, height: side, pixels: uniform(SIMD3(0.8, 0.9, 0.9)))
-        let green = try Self.makeTexture(device: device, width: side, height: side, pixels: uniform(SIMD3(0.7, 0.5, 0.7)))
-        let blue = try Self.makeTexture(device: device, width: side, height: side, pixels: uniform(SIMD3(0.6, 0.6, 0.4)))
+        // The layer values are mask fractions (eighth of the old raw energies, which
+        // the kernel used to divide by its reference): 0.1, 0.0625, 0.05.
+        let red = try Self.makeTexture(device: device, width: side, height: side, pixels: uniform(SIMD3(0.1, 0.1125, 0.1125)))
+        let green = try Self.makeTexture(device: device, width: side, height: side, pixels: uniform(SIMD3(0.0875, 0.0625, 0.0875)))
+        let blue = try Self.makeTexture(device: device, width: side, height: side, pixels: uniform(SIMD3(0.075, 0.075, 0.05)))
         let output = try Self.makeTexture(device: device, width: side, height: side,
                                           pixels: [Float16](repeating: 0, count: side * side * 4))
 
@@ -670,7 +781,6 @@ struct SpatialEffectsTests {
         let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
         var strength: Float = 1.0
         var layerScale = SIMD3<Float>(1, 1, 1)
-        var referenceSuperwhite: Float = 8
         // Diffusion disabled: zero amount, zero weights. The level slots still
         // have to be bound to samplable textures, so the red layer doubles for
         // them and contributes nothing.
@@ -687,9 +797,11 @@ struct SpatialEffectsTests {
         }
         encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
-        encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
-        encoder.setBytes(&diffusionWeights, length: MemoryLayout<SIMD4<Float>>.size, index: 3)
-        encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 4)
+        encoder.setBytes(&diffusionWeights, length: MemoryLayout<SIMD4<Float>>.size, index: 2)
+        encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 3)
+        // Neutral: the develop lift is not what this pins.
+        var postEmulsionStops: Float = 0
+        encoder.setBytes(&postEmulsionStops, length: MemoryLayout<Float>.size, index: 6)
         encoder.dispatchThreadgroups(
             MTLSize(width: 1, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: side, height: side, depth: 1)
@@ -700,7 +812,7 @@ struct SpatialEffectsTests {
         #expect(commandBuffer.status == .completed)
 
         let values = try Self.readBack(output, device: device, queue: queue, width: side, height: side)
-        // 0.18 + 0.8/8 = 0.28, 0.18 + 0.5/8 = 0.2425, 0.18 + 0.4/8 = 0.23.
+        // 0.18 + 0.1 = 0.28, 0.18 + 0.0625 = 0.2425, 0.18 + 0.05 = 0.23.
         let redOut = Self.appleLogDecode(Double(values[0]))
         let greenOut = Self.appleLogDecode(Double(values[1]))
         let blueOut = Self.appleLogDecode(Double(values[2]))
@@ -739,15 +851,22 @@ struct SpatialEffectsTests {
 
         let commandBuffer = try #require(queue.makeCommandBuffer())
         let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
-        var redKnee: Float = 1.0
-        var greenKnee: Float = 2.0
-        var blueKnee: Float = 4.0
+        var redOnset: Float = 0.0
+        var greenOnset: Float = 1.0
+        var blueOnset: Float = 2.0
+        // Onsets in stops above diffuse white, and the frame's own offset at zero
+        // so t = log2(linear) exactly. 0/1/2 stops are 1x/2x/4x white — the levels
+        // the white-multiple form used — and red still comes on first.
+        var referenceStops: Float = 3.0
+        var frameWhite: Float = 0
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(input, index: 0)
         encoder.setTexture(mask, index: 1)
-        encoder.setBytes(&redKnee, length: MemoryLayout<Float>.size, index: 0)
-        encoder.setBytes(&greenKnee, length: MemoryLayout<Float>.size, index: 1)
-        encoder.setBytes(&blueKnee, length: MemoryLayout<Float>.size, index: 2)
+        encoder.setBytes(&redOnset, length: MemoryLayout<Float>.size, index: 0)
+        encoder.setBytes(&greenOnset, length: MemoryLayout<Float>.size, index: 1)
+        encoder.setBytes(&blueOnset, length: MemoryLayout<Float>.size, index: 2)
+        encoder.setBytes(&referenceStops, length: MemoryLayout<Float>.size, index: 5)
+        encoder.setBytes(&frameWhite, length: MemoryLayout<Float>.size, index: 6)
         encoder.dispatchThreadgroups(
             MTLSize(width: (maskWidth + 15) / 16, height: (maskHeight + 15) / 16, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1)
@@ -763,11 +882,11 @@ struct SpatialEffectsTests {
     /// A subpixel superwhite must survive the half-resolution downsample.
     ///
     /// One 9x pixel in a 2x2 block with three 18% pixels averages to
-    /// (9 + 3*0.18) / 4 = 2.385 of diffuse white, so red clears its 1.0 knee
-    /// with 1.385 to spare and green clears its 2.0 knee. Averaging the ENCODED
-    /// values and decoding once instead collapses that to ~0.49, below red's
-    /// knee: the specular would vanish. The two outcomes are far apart, so this
-    /// pins the decode-before-average order.
+    /// (9 + 3*0.18) / 4 = 2.385 of diffuse white, so all three layers see a level
+    /// above red's onset and two of them clear green's. Averaging the ENCODED
+    /// values and decoding once instead collapses that to ~0.49 — below red's own
+    /// onset — so the specular would vanish entirely. The two outcomes are far
+    /// apart, so this pins the decode-before-average order.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
     func halationMaskDecodesEachSampleBeforeAveraging() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
@@ -779,18 +898,22 @@ struct SpatialEffectsTests {
             (column == 0 && row == 0) ? SIMD3(9.0, 9.0, 9.0) : SIMD3(0.18, 0.18, 0.18)
         }
 
-        // Mask texel (0,0) covers source pixels (0,0),(1,0),(0,1),(1,1).
+        // Mask texel (0,0) covers source pixels (0,0),(1,0),(0,1),(1,1), so the
+        // block sits at t = log2(2.385) = 1.254 stops above white.
         let red = Double(mask[0])
         let green = Double(mask[1])
         let blue = Double(mask[2])
-        #expect(abs(red - 1.385) < 0.02, "red must preserve the subpixel specular (was \\(red))")
-        #expect(abs(green - 0.385) < 0.02, "green must preserve the subpixel specular (was \\(green))")
-        #expect(blue < 0.01, "blue is below its explicit 4.0 knee and must stay dark (was \\(blue))")
+        #expect(abs(red - (1.254 - 0.0) / 3.0) < 0.02,
+                "red must preserve the subpixel specular (was \(red))")
+        #expect(abs(green - (1.254 - 1.0) / 2.0) < 0.02,
+                "green must respond to the specular from its own onset (was \(green))")
+        #expect(red > green, "the lower onset carries the larger fraction at one level")
+        #expect(blue < 0.01, "blue is below its 2-stop onset and must stay dark (was \(blue))")
     }
 
     /// A mask texel whose 2x2 block runs off an odd-sized frame must average the
     /// samples that exist, not always divide by four. Halving a partial block's
-    /// energy can drop it below a knee and erase the highlight there.
+    /// level can drop it below an onset and erase the highlight there.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
     func halationMaskAveragesOnlyValidPixelsForOddDimensions() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
@@ -798,8 +921,8 @@ struct SpatialEffectsTests {
 
         // 3x2 source into a 2x1 mask: the second mask texel covers source
         // columns 2 and 3, but column 3 does not exist, so only 2 samples are
-        // valid. A uniform 2.5x-white source makes the expected energy exact
-        // (red 1.5, green 0.5, blue 0) regardless of how many samples land.
+        // valid. A uniform 2.5x-white source (t = 1.322 stops) makes the expected
+        // fractions exact regardless of how many samples land.
         let mask = try Self.halationMask(
             device: device, queue: queue, width: 3, height: 2, maskWidth: 2, maskHeight: 1
         ) { _, _ in SIMD3(2.5, 2.5, 2.5) }
@@ -808,9 +931,11 @@ struct SpatialEffectsTests {
         let red = Double(mask[4])
         let green = Double(mask[5])
         let blue = Double(mask[6])
-        #expect(abs(red - 1.5) < 0.02, "partial block must average its valid samples (was \\(red))")
-        #expect(abs(green - 0.5) < 0.02, "partial block must average its valid samples (was \\(green))")
-        #expect(blue < 0.01, "blue is below its explicit 4.0 knee (was \\(blue))")
+        #expect(abs(red - 1.322 / 3.0) < 0.02,
+                "partial block must average its valid samples (was \(red))")
+        #expect(abs(green - 0.322 / 2.0) < 0.02,
+                "partial block must average its valid samples (was \(green))")
+        #expect(blue < 0.01, "blue is below its 2-stop onset (was \(blue))")
 
         // Texel (0,0): full block, same uniform source, must agree.
         #expect(abs(Double(mask[0]) - red) < 0.02,

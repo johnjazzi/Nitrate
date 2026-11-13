@@ -132,6 +132,17 @@ struct AppAccessPolicyTests {
         #expect(state.trialDaysRemaining == 1)
     }
 
+    @Test func expiredAnchorIsOutsideTheIncludedPeriod() {
+        let anchor = AppAccessPolicy.expiredAnchor(now: reference)
+        let state = AppAccessPolicy.evaluate(distribution: .appStore,
+                                             firstLaunch: anchor,
+                                             now: reference,
+                                             verifiedEntitlements: [])
+        #expect(!state.trialActive)
+        #expect(!state.canUsePaidFeatures)
+        #expect(state.trialDaysRemaining == 0)
+    }
+
     @Test func productionTrialExpiresAfterTwentyDays() {
         let state = AppAccessPolicy.evaluate(
             distribution: .appStore,

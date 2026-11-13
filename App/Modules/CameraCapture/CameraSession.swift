@@ -992,17 +992,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             + "deferred=\(defersVideoExposureWrites) controller=\(developmentPhotoController != nil) "
             + "recordedISO=\(sharedVideoManualISO.map { String($0) } ?? "none")"
         print(line)
-        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("photo-exposure-trace.txt")
-        if let data = (line + "\n").data(using: .utf8) {
-            if !FileManager.default.fileExists(atPath: url.path) {
-                FileManager.default.createFile(atPath: url.path, contents: nil)
-            }
-            if let file = try? FileHandle(forWritingTo: url) {
-                defer { try? file.close() }
-                _ = try? file.seekToEnd(); try? file.write(contentsOf: data)
-            }
-        }
+        CaptureTraceFile.write(line)
 #endif
     }
 
@@ -2358,6 +2348,12 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
     /// Neutral-scene EV offset (raw target offset + installed hardware bias),
     /// matching PhotoExposureSnapshot.meteringOffset in native AE and custom mode.
+    ///
+    /// Adding the bias back is what makes this independent of WHICH mechanism is
+    /// carrying it: `exposureTargetOffset` is measured against the camera's target,
+    /// which already includes the bias, so the sum is always the captured image's
+    /// level relative to the camera's neutral target — whether the compensation
+    /// went into the target or into the ISO the shutter pin holds.
     var currentExposureTargetOffset: Float {
         guard let device = activeDevice else { return 0 }
         return device.exposureTargetOffset + device.exposureTargetBias
@@ -2807,7 +2803,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// mode and Apple resets that bias to 0, so reading it back made the control
     /// appear to revert. Compensation is applied by scaling the metered ISO
     /// instead, which survives the shutter-priority re-meter.
-    private(set) var exposureBiasEV: Float = CameraExposureBiasPreference.load()
+    private(set) var exposureBiasEV: Float = SystemExposureScheme.installed(CameraExposureBiasPreference.load())
 
     /// Supported EV compensation range, bounded to a film-useful ±3 EV span
     /// (fallback ±3 EV before the device is ready).
@@ -2819,10 +2815,15 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// Set EV compensation and re-pin the shutter-priority exposure so the change
     /// is visible immediately. No-op in manual ISO mode, where the ISO chooser
     /// drives exposure directly.
+    ///
+    /// `ev` is the operator-facing value. The device is given
+    /// `SystemExposureScheme.installed(ev)`, so the sensor holds a stop under the
+    /// exposure the operator asked for and the readout keeps showing theirs.
     func setExposureBiasEV(_ ev: Float) {
         guard ev.isFinite else { return }
         let range = exposureBiasRange
-        let clamped = min(max(ev, range.lowerBound), range.upperBound)
+        let installed = SystemExposureScheme.installed(ev)
+        let clamped = min(max(installed, range.lowerBound), range.upperBound)
         sessionQueue.async { [weak self] in
             guard let self else { return }
             guard self.exposureBiasEV != clamped else { return }
@@ -2844,6 +2845,22 @@ final class CameraSession: NSObject, @unchecked Sendable {
             // working is not a control (this was Video's second dead control).
             self.applyDeviceExposureTargetBias()
         }
+    }
+
+    /// Return the camera's own exposure target to neutral.
+    ///
+    /// Custom exposure mode ignores the target bias, but the camera's METER does
+    /// not: with our bias still installed, the ISO it meters already contains the
+    /// compensation, and the shutter pin scales that ISO again.
+    private func clearExposureTargetBias(on device: AVCaptureDevice) {
+        guard device.maxExposureTargetBias > device.minExposureTargetBias,
+              abs(device.exposureTargetBias) > 0.001 else { return }
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            traceVideoExposure("bias-cleared")
+            device.setExposureTargetBias(0) { _ in }
+        } catch { reportCameraError(error) }
     }
 
     /// Hand our compensation to the device's own auto-exposure target.
@@ -2903,6 +2920,13 @@ final class CameraSession: NSObject, @unchecked Sendable {
         let duration = min(max(filmShutterDuration, device.activeFormat.minExposureDuration),
                            device.activeFormat.maxExposureDuration)
         let ev = exposureBiasEV
+        // The pin carries the compensation inside the ISO from here, so the camera's
+        // own target has to be neutral again. The idle still controller leaves its
+        // target bias installed, and a meter aiming at a target it no longer has has
+        // the pin apply the same compensation a second time: the capture — and the
+        // reading that reports it — dropped more than a stop the moment a take
+        // started, then stepped back when the camera re-metered.
+        clearExposureTargetBias(on: device)
         // A held pin is corrected from the device's own meter rather than by
         // re-metering: re-metering re-enters auto exposure (the shutter-priority
         // branch writes `AVCaptureDevice.autoISO`), which snapped the preview to
@@ -2999,6 +3023,16 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 return
             }
             self.pinnedExposure = ExposureStabilizer.Pin(iso: iso, ev: latestEV, meteredISO: meteredISO)
+            // The pin is the whole exposure story for a take: the compensation lives
+            // in the ratio between the ISO the camera metered and the ISO we hold,
+            // with the camera's own target left neutral. One line per pin says
+            // whether that stop is really installed — no readout can, because the
+            // readout sums the two mechanisms into one number.
+            let compensation = log2(iso / max(meteredISO, 1))
+            self.traceVideoExposure("pin-applied meteredISO=\(meteredISO) heldISO=\(iso) "
+                + "compensation=\(String(format: "%.2f", compensation)) "
+                + "targetEV=\(latestEV) deviceBias=\(device.exposureTargetBias) "
+                + "offset=\(device.exposureTargetOffset)")
         }
     }
 
@@ -4143,8 +4177,21 @@ final class CameraSession: NSObject, @unchecked Sendable {
         // First entry in a session: the shared exposure controls (a held ISO, the
         // EV compensation) come over from Video, the shutter does not — Photo's
         // idle exposure is the device's own auto exposure with that compensation
-        // applied, which is what `mirrorSharedExposureIntent` writes.
-        else { mirrorSharedExposureIntent(iso: sharedVideoManualISO) }
+        // applied.
+        //
+        // Applied here rather than through `mirrorSharedExposureIntent`: that path
+        // is written for an established graph and refuses while a device
+        // transition is in flight, which is exactly when this install runs. It
+        // therefore never reached the controller on the first install of a
+        // session, and the idle preview sat on the camera's own target bias (0)
+        // until the operator touched the EV control.
+        else {
+            let idle = VideoExposureContract.idle(frameRate: frameRate,
+                isManualExposure: sharedVideoManualISO != nil, manualISO: sharedVideoManualISO ?? 0,
+                bias: exposureBiasEV)
+            try controller.restoreIntent(.init(iso: idle.lockedISO, duration: idle.durationSeconds,
+                                               ev: idle.exposureBias, aperture: nil))
+        }
     }
 
     /// Attach the still profile to the shared idle session: the `.photo` preset

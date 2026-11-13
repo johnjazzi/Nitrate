@@ -8,41 +8,56 @@ import Testing
 struct GrainModelTests {
     private let tolerance: Float = 0.0001
 
-    /// Tuning shipped in `gauges.json`. Size relative to the previous ladder
-    /// (4.0 / 2.7 / 1.8 / 1.0): 8mm keeps its old size, 16mm sits three quarters
-    /// of the way there, 35mm halves it and 75mm asks for half and is floored.
+    /// Tuning shipped in `gauges.json`, and the ladder it replaced.
+    ///
+    /// This tuning trims the two coarse gauges by 15% — 8mm 3.2 -> 2.72, 16mm
+    /// 2.025 -> 1.721 — and lifts their presence by 15% in the same move, so a
+    /// finer footprint reads as grain of its own size rather than as less grain.
+    /// 35mm and 75mm keep both axes.
     private static let shippedSizes: [PrintGauge: Float] = [
-        .eightMillimetre: 4.0, .sixteenMillimetre: 2.025,
-        .thirtyFiveMillimetre: 0.9, .seventyFiveMillimetre: 0.5
+        .eightMillimetre: 2.72, .sixteenMillimetre: 1.721,
+        .thirtyFiveMillimetre: 0.81, .seventyFiveMillimetre: 0.5
     ]
-    /// Shipped size as a fraction of the previous ladder's size.
-    private static let sizeFractionOfPrevious: [PrintGauge: Float] = [
-        .eightMillimetre: 1.0, .sixteenMillimetre: 0.75,
-        .thirtyFiveMillimetre: 0.5, .seventyFiveMillimetre: 0.5
+    /// The sizes this tuning replaced, so every shipped ratio is checked against
+    /// the value it actually moved from rather than against an older ladder.
+    private static let replacedSizes: [PrintGauge: Float] = [
+        .eightMillimetre: 3.2, .sixteenMillimetre: 2.025,
+        .thirtyFiveMillimetre: 0.81, .seventyFiveMillimetre: 0.5
+    ]
+    /// Shipped size as a fraction of the size it replaced: the two coarse gauges
+    /// ship 15% less (16mm states the exact quotient of its shipped rounding), the
+    /// other two ship their own size.
+    private static let sizeFractionOfReplaced: [PrintGauge: Float] = [
+        .eightMillimetre: 0.85, .sixteenMillimetre: 1.721 / 2.025,
+        .thirtyFiveMillimetre: 1.0, .seventyFiveMillimetre: 1.0
     ]
     private static let shippedAmplitudes: [PrintGauge: Float] = [
-        .eightMillimetre: 0.55, .sixteenMillimetre: 0.396,
+        .eightMillimetre: 0.6325, .sixteenMillimetre: 0.4554,
         .thirtyFiveMillimetre: 0.36, .seventyFiveMillimetre: 0.165
     ]
-    /// Presence lift over the previous ladder, per gauge. 35mm carries more than
-    /// the 10% the other gauges ship: at half its previous footprint, card-size
-    /// grain measured 0.003386 against one 8-bit display step of 0.003922, and
-    /// 0.36 is the presence that clears that floor (measured 0.004033).
+    /// Presence lift over the ladder this one replaced, per gauge. The two coarse
+    /// gauges carry the 15% that pays for the 15% footprint they gave up; 35mm and
+    /// 75mm are unchanged. 35mm's own larger lift came with the tuning before this
+    /// one: at half its previous footprint, card-size grain measured 0.003386
+    /// against one 8-bit display step of 0.003922, and 0.36 is the presence that
+    /// clears that floor (measured 0.004033).
     private static let presenceLift: [PrintGauge: Float] = [
-        .eightMillimetre: 1.1, .sixteenMillimetre: 1.1,
-        .thirtyFiveMillimetre: 4.0 / 3.0, .seventyFiveMillimetre: 1.1
+        .eightMillimetre: 1.15, .sixteenMillimetre: 1.15,
+        .thirtyFiveMillimetre: 1.0, .seventyFiveMillimetre: 1.0
     ]
-    /// The ladder this tuning replaced, used to state the half-size contract.
+    /// The size ladder this tuning replaced, kept because the 75mm half-size
+    /// contract is stated against it: 75mm's own size has never moved.
     private static let previousSizes: [PrintGauge: Float] = [
         .eightMillimetre: 4.0, .sixteenMillimetre: 2.7,
         .thirtyFiveMillimetre: 1.8, .seventyFiveMillimetre: 1.0
     ]
+    /// The amplitude ladder this tuning replaced.
     private static let previousAmplitudes: [PrintGauge: Float] = [
-        .eightMillimetre: 0.50, .sixteenMillimetre: 0.36,
-        .thirtyFiveMillimetre: 0.27, .seventyFiveMillimetre: 0.15
+        .eightMillimetre: 0.55, .sixteenMillimetre: 0.396,
+        .thirtyFiveMillimetre: 0.36, .seventyFiveMillimetre: 0.165
     ]
-    /// `grainSize` of the two shipped stocks in `stocks.json`.
-    private static let shippedStockSizes: [Float] = [1.15, 1.3]
+    /// `grainSize` of the three shipped stocks in `stocks.json`.
+    private static let shippedStockSizes: [Float] = [1.0, 1.15, 1.3]
 
     // MARK: - Bundled configuration
 
@@ -183,7 +198,7 @@ struct GrainModelTests {
         // Nominal multipliers are strictly monotonic across the ladder.
         let multipliers = PrintGauge.allCases.sorted { $0.sizeMultiplier < $1.sizeMultiplier }
             .map(\.sizeMultiplier)
-        #expect(multipliers == [0.5, 0.9, 2.025, 4.0], "unexpected ladder: \(multipliers)")
+        #expect(multipliers == [0.5, 0.81, 1.721, 2.72], "unexpected ladder: \(multipliers)")
         // 35mm is the middle of the ladder and the render default.
         #expect(PrintGauge.neutral == .thirtyFiveMillimetre)
         // Effective footprints are ordered across the whole ladder.
@@ -197,33 +212,53 @@ struct GrainModelTests {
         #expect(coarse >= neutral * 2, "8mm should be a real step up: \(neutral) -> \(coarse)")
     }
 
-    /// 8mm, 16mm and 35mm land on exactly half their previous footprint on both
-    /// shipped stocks; the safety bounds are the pre-tuning ones and do not clip
-    /// those rungs.
-    /// 8mm keeps the footprint it had before this tuning, 16mm keeps three
-    /// quarters of it, 35mm halves it. Only 35mm changes how fine the grain is;
-    /// the coarse gauge stays where it was so the ladder's top does not move.
-    @Test func coarseThroughNeutralGaugesShipTheDeclaredSizeFractionOnEveryShippedStock() {
+    /// The two coarse gauges ship 85% of the size they replaced on every shipped
+    /// stock; the unchanged safety bounds clip neither rung.
+    @Test func coarseAndMediumGaugesShipTheirDeclaredSizeFractionWithoutClipping() {
         #expect(GrainModel.footprintFloor == 0.95, "the safety floor must stay at its origin/dev value")
         #expect(GrainModel.footprintCeiling == 16.0, "the safety ceiling must stay at its origin/dev value")
-        let unclamped: [PrintGauge] = [.eightMillimetre, .sixteenMillimetre, .thirtyFiveMillimetre]
         for stockSize in Self.shippedStockSizes {
-            for gauge in unclamped {
-                let previousSize = Self.previousSizes[gauge] ?? 0
-                let fraction = Self.sizeFractionOfPrevious[gauge] ?? 1
-                let previousFootprint = previousSize * stockSize
+            for gauge: PrintGauge in [.eightMillimetre, .sixteenMillimetre] {
+                let replacedFootprint = (Self.replacedSizes[gauge] ?? 0) * stockSize
+                let fraction = Self.sizeFractionOfReplaced[gauge] ?? 1
                 let footprint = GrainModel.effectiveSize(stockGrainSize: stockSize, gauge: gauge)
                 #expect(footprint > GrainModel.footprintFloor,
                         "\(gauge.rawValue) on \(stockSize) must not reach the floor: \(footprint)")
-                #expect(abs(footprint - previousFootprint * fraction) < tolerance,
-                        "\(gauge.rawValue) on \(stockSize): \(footprint) vs \(fraction) of \(previousFootprint)")
+                #expect(footprint < GrainModel.footprintCeiling,
+                        "\(gauge.rawValue) on \(stockSize) must not reach the ceiling: \(footprint)")
+                #expect(abs(footprint - replacedFootprint * fraction) < tolerance,
+                        "\(gauge.rawValue) on \(stockSize): \(footprint) vs \(fraction) of \(replacedFootprint)")
             }
         }
     }
 
+    /// 35mm ships its own size and only the coarsest shipped stock carries a
+    /// footprint the size asks for: 0.81 × 1.15 and 0.81 × 1.0 both land under the
+    /// unchanged 0.95 floor, so the delivered footprint stops at the floor. On the
+    /// finest stock that is no change at all, because the floor already pinned
+    /// 35mm there — and its footprint then equals 75mm's.
+    @Test func thirtyFiveMillimetreStopsAtTheFloorOnTheFinerShippedStocks() {
+        let replaced = Self.replacedSizes[.thirtyFiveMillimetre] ?? 0
+        let fraction = Self.sizeFractionOfReplaced[.thirtyFiveMillimetre] ?? 1
+        let coarse: Float = 1.3
+        #expect(abs(GrainModel.effectiveSize(stockGrainSize: coarse, gauge: .thirtyFiveMillimetre)
+                    - replaced * coarse * fraction) < tolerance,
+                "the coarsest shipped stock carries the whole size")
+        for stockSize: Float in [1.0, 1.15] {
+            let requested = replaced * stockSize * fraction
+            #expect(requested < GrainModel.footprintFloor,
+                    "the requested size on \(stockSize) is under the floor by design")
+            let footprint = GrainModel.effectiveSize(stockGrainSize: stockSize, gauge: .thirtyFiveMillimetre)
+            #expect(abs(footprint - GrainModel.footprintFloor) < tolerance,
+                    "the floor pins 35mm on \(stockSize) at \(footprint)")
+            #expect(GrainModel.effectiveSize(stockGrainSize: stockSize, gauge: .seventyFiveMillimetre) == footprint,
+                    "on \(stockSize) the floor collapses 35mm onto 75mm's footprint")
+        }
+    }
+
     /// The unchanged floor means the finest gauge cannot reach exactly half of
-    /// its previous footprint on either shipped stock: 0.5 × 1.15 and 0.5 × 1.3
-    /// are both under 0.95, so the delivered footprint stops at the floor.
+    /// its previous footprint on any shipped stock: 0.5 × 1.0, 0.5 × 1.15 and
+    /// 0.5 × 1.3 are all under 0.95, so the delivered footprint stops at the floor.
     @Test func finestGaugeStopsAtTheFloorInsteadOfExactlyHalving() {
         for stockSize in Self.shippedStockSizes {
             let previousFootprint = stockSize * (Self.previousSizes[.seventyFiveMillimetre] ?? 0)
@@ -258,10 +293,9 @@ struct GrainModelTests {
         }
     }
 
-    /// Presence follows the shipped lift over the previous ladder at every edge
-    /// boost, and the single loudness scale stays at 0.55. 8mm, 16mm and 75mm
-    /// ship 10% louder; 35mm ships the larger lift that keeps its card-size
-    /// grain above the 8-bit floor at half its previous footprint.
+    /// Presence follows the shipped lift over the ladder this one replaced at every
+    /// edge boost, and the single loudness scale stays at 0.55. The two coarse
+    /// gauges ship 15% louder; 35mm and 75mm ship their own presence.
     @Test func presenceFollowsTheShippedLiftOverThePreviousLadder() {
         #expect(GrainModel.baseAmount == 0.55)
         for gauge in PrintGauge.allCases {
@@ -293,9 +327,9 @@ struct GrainModelTests {
                                preset: String, amount: String)
 
     private static let shippedEntries: [Entry] = [
-        ("8mm", "4.0", "0.55", "radius35", "0.5"),
-        ("16mm", "2.025", "0.396", "radius16", "0.4"),
-        ("35mm", "0.9", "0.36", "radius4", "0.2"),
+        ("8mm", "2.72", "0.6325", "radius35", "0.35"),
+        ("16mm", "1.721", "0.4554", "radius16", "0.21"),
+        ("35mm", "0.81", "0.36", "radius4", "0.14"),
         ("75mm", "0.5", "0.165", "radius75", "0")
     ]
 

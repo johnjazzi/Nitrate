@@ -58,14 +58,7 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         traceSequence &+= 1
         let line = "Photo exposure trace: n=\(traceSequence) t=\(ProcessInfo.processInfo.systemUptime) event=\(event) zoom=\(device.videoZoomFactor) generation=\(generation) ISO=\(device.iso) duration=\(device.exposureDuration.seconds) mode=\(device.exposureMode.rawValue) bias=\(device.exposureTargetBias) offset=\(device.exposureTargetOffset) adjusting=\(device.isAdjustingExposure) isoLocked=\(isoLocked) shutterLocked=\(shutterLocked) EV=\(ev) pending=\(setterInFlight) limited=\(targetLimited) stopped=\(stopped) biasPending=\(biasSettersInFlight) intentPending=\(intentNeedsApply) capturePending=\(pendingCapture != nil) capturing=\(capturing)"
         print(line)
-        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("photo-exposure-trace.txt")
-        if let data = (line + "\n").data(using: .utf8) {
-            if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
-            if let file = try? FileHandle(forWritingTo: url) {
-                defer { try? file.close() }
-                _ = try? file.seekToEnd(); try? file.write(contentsOf: data)
-            }
-        }
+        CaptureTraceFile.write(line)
     }
 
     var isCapturing: Bool {

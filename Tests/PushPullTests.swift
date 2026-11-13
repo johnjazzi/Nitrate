@@ -525,18 +525,20 @@ struct PushPullTests {
         for level in 0..<4 { encoder.setTexture(levelTexture, index: 5 + level) }
         var strength: Float = 0
         var layerScale = SIMD3<Float>(0, 0, 0)
-        var referenceSuperwhite: Float = 1
         var diffusionWeights = SIMD4<Float>(0, 0, 0, 0)
         var diffusionAmount: Float = 0
         var exposureStops = Float(stops.stops)
         var exposureCeiling = ceiling
+        // Neutral: this harness measures the push/pull curve itself, so the
+        // system's develop lift stays out of it.
+        var postEmulsionStops: Float = 0
         encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
-        encoder.setBytes(&referenceSuperwhite, length: MemoryLayout<Float>.size, index: 2)
-        encoder.setBytes(&diffusionWeights, length: MemoryLayout<SIMD4<Float>>.size, index: 3)
-        encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 4)
-        encoder.setBytes(&exposureStops, length: MemoryLayout<Float>.size, index: 5)
-        encoder.setBytes(&exposureCeiling, length: MemoryLayout<Float>.size, index: 6)
+        encoder.setBytes(&diffusionWeights, length: MemoryLayout<SIMD4<Float>>.size, index: 2)
+        encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 3)
+        encoder.setBytes(&exposureStops, length: MemoryLayout<Float>.size, index: 4)
+        encoder.setBytes(&exposureCeiling, length: MemoryLayout<Float>.size, index: 5)
+        encoder.setBytes(&postEmulsionStops, length: MemoryLayout<Float>.size, index: 6)
         encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1))
         encoder.endEncoding()
