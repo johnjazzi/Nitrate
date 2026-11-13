@@ -21,7 +21,7 @@ struct CameraZoomSnapshot: Equatable, Sendable {
     }
 }
 
-enum CameraZoomDirection: Sendable { case out, `in` }
+enum CameraZoomDirection: Sendable, Equatable { case out, `in` }
 
 enum CameraZoomPolicy {
     static let defaultDisplayCeiling = 5.0
@@ -32,6 +32,12 @@ enum CameraZoomPolicy {
         multiplier * (150.0 / 24.0)
     }
     static let rampRate: Float = 0.25
+    /// Step cadence for an app-driven slow zoom. 60 Hz keeps the preview
+    /// following the hand the way the removed hardware ramp did.
+    static let rampTickInterval: TimeInterval = 1.0 / 60.0
+    /// Slow-zoom snapshot cadence. The label and ruler do not need a per-frame
+    /// update, and every publish hops to the main actor.
+    static let rampPublishInterval: TimeInterval = 0.1
 
     struct Bounds: Equatable, Sendable {
         let multiplier: Double
@@ -60,6 +66,33 @@ enum CameraZoomPolicy {
 
     static func accepts(commandRevision: UInt64, cameraRevision: UInt64) -> Bool {
         commandRevision == cameraRevision
+    }
+
+    /// Device zoom factor for an app-driven ramp `elapsed` seconds after it
+    /// started, at `rate` stops per second toward `direction`.
+    ///
+    /// Elapsed time is measured by the caller from a monotonic clock, not
+    /// counted in ticks: a late or coalesced tick then catches up on the next
+    /// step instead of slowing the ramp down. The result is clamped to the
+    /// supplied device window, so a late tick lands exactly on an endpoint
+    /// rather than overshooting it; an absurd elapsed value saturates to the
+    /// endpoint too. Returns nil for unusable input so a bad command can never
+    /// move the lens.
+    static func rampFactor(initial: Double, rate: Double, elapsed: TimeInterval,
+                           direction: CameraZoomDirection,
+                           minimum: Double, maximum: Double) -> Double? {
+        guard initial.isFinite, initial > 0,
+              rate.isFinite, rate > 0,
+              elapsed.isFinite, elapsed >= 0,
+              minimum.isFinite, minimum > 0,
+              maximum.isFinite, minimum <= maximum else { return nil }
+        let octaves = rate * elapsed
+        let factor = direction == .in
+            ? initial * pow(2, octaves)
+            : initial * pow(2, -octaves)
+        // `pow` saturates to infinity/zero for extreme elapsed values; clamping
+        // turns either one into the endpoint instead of failing the ramp.
+        return min(max(factor, minimum), maximum)
     }
 }
 

@@ -145,6 +145,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
     private var zoomLifecycle = CameraZoomRampLifecycle()
     private var zoomObserver: (@MainActor @Sendable (CameraZoomSnapshot?) -> Void)?
     private var zoomSamplingGeneration: UInt64 = 0
+    /// The app-driven slow zoom currently stepping the device. Queue-confined;
+    /// nil whenever no ramp is running.
+    private var zoomRamp: ZoomRampState?
     // Queue-confined. Preserve the user's preference when a lens/format cannot
     // fulfill it; only the recording connection falls back to Off.
     private var preferredStabilization = CameraStabilizationMode(
@@ -1937,6 +1940,33 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
     // MARK: - Zoom
 
+    /// One app-driven slow zoom: the arrows step `videoZoomFactor` themselves
+    /// instead of calling `ramp(toVideoZoomFactor:withRate:)`.
+    ///
+    /// The hardware ramp crosses 2x by switching the sensor's secondary native
+    /// resolution, and that switch re-derives exposure even under custom mode —
+    /// measured on the iPhone 18 Pro wide camera (4K Apple Log 2) as a ~15% ISO
+    /// drop and a single-frame luma step. Stepping the zoom ourselves and
+    /// re-asserting the held custom exposure under the same device lock avoids
+    /// the switch entirely. Queue-confined.
+    private struct ZoomRampState {
+        let direction: CameraZoomDirection
+        let initialFactor: Double
+        /// `DispatchTime.uptimeNanoseconds` at the begin command; monotonic, so
+        /// scheduling latency cannot slow the ramp.
+        let startedAtNanoseconds: UInt64
+        /// Exposure captured only when the device was already in custom mode
+        /// (shutter priority, manual ISO, or a frozen recording). Continuous AE
+        /// is never frozen just to zoom.
+        let heldExposure: HeldExposure?
+        var lastPublishedAtNanoseconds: UInt64
+    }
+
+    private struct HeldExposure {
+        let duration: CMTime
+        let iso: Float
+    }
+
     private func zoomBounds(for device: AVCaptureDevice) -> CameraZoomPolicy.Bounds? {
         let multiplier: Double
         if #available(iOS 18.0, *) {
@@ -2044,7 +2074,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
                                           displayFactor: min(max(raw, bounds.minimumDisplay), bounds.maximumDisplay),
                                           minimumDisplayFactor: bounds.minimumDisplay,
                                           maximumDisplayFactor: bounds.maximumDisplay,
-                                          isRamping: device.isRampingVideoZoom,
+                                          isRamping: zoomLifecycle.isRamping || device.isRampingVideoZoom,
                                           isPerLens: {
                                             if #available(iOS 18.0, *) { return false }
                                             return true
@@ -2096,16 +2126,31 @@ final class CameraSession: NSObject, @unchecked Sendable {
             self.cancelZoomOnQueue()
             guard !self.isPhotoCaptureGraphInstalled else { self.publishZoom(); return }
             let endpoint = direction == .in ? bounds.maximumDevice : bounds.minimumDevice
-            guard abs(Double(device.videoZoomFactor) - endpoint) > 0.001 else { self.publishZoom(); return }
-            do {
-                try device.lockForConfiguration()
-                defer { device.unlockForConfiguration() }
-                device.ramp(toVideoZoomFactor: CGFloat(endpoint), withRate: CameraZoomPolicy.rampRate)
-                _ = self.zoomLifecycle.begin(revision: revision)
-                self.zoomSamplingGeneration &+= 1
-                self.sampleZoom(generation: self.zoomSamplingGeneration, remaining: 600)
-            } catch { self.reportCameraError(error) }
+            let initial = Double(device.videoZoomFactor)
+            guard abs(initial - endpoint) > 0.001 else { self.publishZoom(); return }
+            // A pending shutter re-meter samples the framing from before the
+            // gesture. Retire its callback, but keep an existing pin: the ramp
+            // holds that exposure rather than discarding the user's lock.
+            self.meterGeneration.invalidate()
+            self.isShutterMeteringPending = false
+            let now = DispatchTime.now().uptimeNanoseconds
+            self.zoomRamp = ZoomRampState(
+                direction: direction,
+                initialFactor: initial,
+                startedAtNanoseconds: now,
+                heldExposure: device.exposureMode == .custom
+                    ? HeldExposure(duration: device.exposureDuration, iso: device.iso)
+                    : nil,
+                lastPublishedAtNanoseconds: now
+            )
+            guard self.zoomLifecycle.begin(revision: revision) else {
+                self.zoomRamp = nil
+                self.publishZoom()
+                return
+            }
+            self.zoomSamplingGeneration &+= 1
             self.publishZoom()
+            self.scheduleZoomTick(generation: self.zoomSamplingGeneration)
         }
     }
 
@@ -2114,8 +2159,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             guard let self, self.zoomLifecycle.cameraRevision == revision else { return }
             self.cancelZoomOnQueue()
             self.publishZoom()
-            self.zoomSamplingGeneration &+= 1
-            self.sampleZoom(generation: self.zoomSamplingGeneration, remaining: 20)
+            self.scheduleZoomReadback(generation: self.zoomSamplingGeneration)
         }
     }
 
@@ -2135,6 +2179,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
 
     private func cancelZoomOnQueue() {
         zoomSamplingGeneration &+= 1
+        zoomRamp = nil
         if let device = activeDevice, device.isRampingVideoZoom {
             do {
                 try device.lockForConfiguration()
@@ -2145,15 +2190,75 @@ final class CameraSession: NSObject, @unchecked Sendable {
         _ = zoomLifecycle.end(revision: zoomLifecycle.cameraRevision)
     }
 
-    private func sampleZoom(generation: UInt64, remaining: Int) {
-        guard remaining > 0 else { return }
+    private func scheduleZoomTick(generation: UInt64) {
+        sessionQueue.asyncAfter(deadline: .now() + CameraZoomPolicy.rampTickInterval) { [weak self] in
+            self?.tickZoomRamp(generation: generation)
+        }
+    }
+
+    /// One trailing readback after a released ramp, so the label reflects the
+    /// device once the last step settles.
+    private func scheduleZoomReadback(generation: UInt64) {
         sessionQueue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             guard let self, self.zoomSamplingGeneration == generation else { return }
             self.publishZoom()
-            if self.activeDevice?.isRampingVideoZoom == true || remaining > 590 {
-                self.sampleZoom(generation: generation, remaining: remaining - 1)
-            }
         }
+    }
+
+    /// One 60 Hz step of the app-driven ramp.
+    ///
+    /// The zoom and the held exposure are written under a single device lock:
+    /// splitting them would let the 2x sensor switch expose a frame between the
+    /// two writes. Every guard (generation, lifecycle, active device) is
+    /// re-checked here, so a stale tick, a lens switch, a session stop or a
+    /// release that landed while this tick was scheduled cannot write.
+    private func tickZoomRamp(generation: UInt64) {
+        guard generation == zoomSamplingGeneration, zoomLifecycle.isRamping,
+              var ramp = zoomRamp, let device = activeDevice,
+              let bounds = zoomBounds(for: device) else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        let elapsed = Double(now &- ramp.startedAtNanoseconds) / 1_000_000_000
+        guard let factor = CameraZoomPolicy.rampFactor(
+            initial: ramp.initialFactor,
+            rate: Double(CameraZoomPolicy.rampRate),
+            elapsed: elapsed,
+            direction: ramp.direction,
+            minimum: bounds.minimumDevice,
+            maximum: bounds.maximumDevice
+        ) else {
+            cancelZoomOnQueue()
+            publishZoom()
+            return
+        }
+        let endpoint = ramp.direction == .in ? bounds.maximumDevice : bounds.minimumDevice
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            device.videoZoomFactor = CGFloat(factor)
+            // Re-assert only what was captured: a device that was not in custom
+            // mode keeps its continuous auto exposure untouched, and the
+            // two-parameter setter holds the current iris without touching WB.
+            if let held = ramp.heldExposure, device.exposureMode == .custom {
+                device.setExposureModeCustom(duration: held.duration, iso: held.iso) { _ in }
+            }
+        } catch {
+            cancelZoomOnQueue()
+            publishZoom()
+            reportCameraError(error)
+            return
+        }
+        guard factor != endpoint else {
+            cancelZoomOnQueue()
+            publishZoom()
+            return
+        }
+        if Double(now &- ramp.lastPublishedAtNanoseconds) / 1_000_000_000
+            >= CameraZoomPolicy.rampPublishInterval {
+            ramp.lastPublishedAtNanoseconds = now
+            publishZoom()
+        }
+        zoomRamp = ramp
+        scheduleZoomTick(generation: generation)
     }
 
     /// Focus the active lens at a normalized device point (0–1).
@@ -2171,6 +2276,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
             // locked exposure untouched.
             self.invalidateMetering()
             if self.isShutterPriority, !self.isRecordingOrPending {
+                // The tap re-meters and writes a fresh pin; that is an explicit
+                // exposure change, so stop holding the ramp's captured values.
+                self.cancelZoomOnQueue()
                 self.pinShutterToFilm()
             }
         }
@@ -2664,6 +2772,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 }
                 let previous = self.selectedLensAperture
                 self.selectedLensAperture = aperture
+                // An explicit iris write takes over from the ramp's held
+                // exposure; preserving it would override the chosen stop.
+                self.cancelZoomOnQueue()
                 do {
                     let mode: CameraAperturePolicy.ExposureMode = self.isShutterPriority ? .shutterPriority : .manual
                     let clampedDuration = min(max(filmShutterDuration, device.activeFormat.minExposureDuration),
@@ -2719,6 +2830,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
             if self.isRecordingOrPending {
                 operationError = CameraError.exposureChangeDuringRecording
             } else if let device = self.activeDevice {
+                // An explicit ISO takes over the pin; stop holding the ramp's
+                // captured exposure so it cannot overwrite this write.
+                self.cancelZoomOnQueue()
                 do {
                     try self.setExposureLocked(iso: iso, shutter: filmShutterDuration,
                                                on: device, mode: .manual)
@@ -2751,6 +2865,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             if self.isRecordingOrPending {
                 operationError = CameraError.exposureChangeDuringRecording
             } else if let device = self.activeDevice, device.isExposureModeSupported(.continuousAutoExposure) {
+                self.cancelZoomOnQueue()
                 do {
                     try device.lockForConfiguration()
                     defer { device.unlockForConfiguration() }
@@ -2781,6 +2896,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             if self.isRecordingOrPending {
                 operationError = CameraError.exposureChangeDuringRecording
             } else if let device = self.activeDevice, device.isExposureModeSupported(.autoExpose) {
+                self.cancelZoomOnQueue()
                 do {
                     try device.lockForConfiguration()
                     defer { device.unlockForConfiguration() }
@@ -2833,6 +2949,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 return
             }
             guard !self.isRecordingOrPending else { return }
+            // An accepted EV change owns exposure from here; a zoom tick must
+            // not restore the exposure snapshot captured before this retarget.
+            self.cancelZoomOnQueue()
             if self.isShutterPriority, self.pinnedExposure != nil {
                 // Retarget a held pin without reopening auto exposure. If initial
                 // metering is pending, its callback will use this latest EV.
@@ -2889,6 +3008,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
             if self.defersVideoDeviceWrites { self.sharedVideoManualISO = nil; return }
             guard !self.isRecordingOrPending else { return }
             self.isShutterPriority = true
+            // Enabling the held 180° shutter is an explicit exposure command:
+            // it takes over from any ramp exposure captured a moment earlier.
+            self.cancelZoomOnQueue()
             self.invalidateMetering()
             self.pinShutterToFilm()
         }
@@ -2902,11 +3024,13 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Re-meter and re-pin the 180° shutter (no-op when shutter priority is off
-    /// or while recording — exposure is frozen during a take).
+    /// Re-meter and re-pin the 180° shutter (no-op when shutter priority is off,
+    /// while recording — exposure is frozen during a take — or during a slow
+    /// zoom, whose held exposure must not be stepped by the periodic re-pin).
     func refreshShutterPriority() {
         sessionQueue.async { [weak self] in
-            guard let self, self.isShutterPriority, !self.isRecordingOrPending else { return }
+            guard let self, self.isShutterPriority, !self.isRecordingOrPending,
+                  self.zoomRamp == nil else { return }
             self.pinShutterToFilm()
         }
     }
