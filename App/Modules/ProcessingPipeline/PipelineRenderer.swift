@@ -31,6 +31,10 @@ final class PipelineRenderer: @unchecked Sendable {
     private let audioAppendRejectionAfterSamples: Int?
     private let outputDirectory: URL?
     private let allowsSyntheticInputForTests: Bool
+    /// Test-only: the transport ramp this renderer applies, instead of resolving
+    /// the Settings switch and the command-line knobs at render time.
+    /// Production leaves it nil and reads the switch, the way the app does.
+    private let transportRampOverride: LightLeakTransport?
     /// Test-only: when set, the video lane performs this instead of the
     /// receiver's real `append`. A test uses it to hold an append open forever
     /// — the writer backpressure a cancelled writer never releases — and prove
@@ -59,6 +63,7 @@ final class PipelineRenderer: @unchecked Sendable {
         audioAppendRejectionAfterSamples: Int? = nil,
         outputDirectory: URL? = nil,
         allowsSyntheticInputForTests: Bool = false,
+        transportRamp: LightLeakTransport? = nil,
         videoAppendOverride: (@Sendable (CVReadOnlyPixelBuffer, CMTime) async throws -> Void)? = nil
     ) throws {
         self.resourceBundle = resourceBundle
@@ -66,6 +71,7 @@ final class PipelineRenderer: @unchecked Sendable {
         self.audioAppendRejectionAfterSamples = audioAppendRejectionAfterSamples
         self.outputDirectory = outputDirectory
         self.allowsSyntheticInputForTests = allowsSyntheticInputForTests
+        self.transportRampOverride = transportRamp
         self.videoAppendOverride = videoAppendOverride
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw RenderError.noMetalDevice
@@ -279,6 +285,23 @@ final class PipelineRenderer: @unchecked Sendable {
         }
 
         // Writer setup
+        // The transport ramp: the film is already rolling when the take starts, so
+        // the delivered timeline is the leader plus the take, and the take itself
+        // is over-exposed at both ends while the transport finds its speed. It is
+        // all counted in frames, so it needs the take's cadence.
+        let lightLeak = transportRampOverride ?? LightLeakTransport.resolved()
+        let frameRate = Double(nominalFrameRate)
+        let frameDuration = CMTime(seconds: frameRate > 0 ? 1 / frameRate : 1 / 24,
+                                   preferredTimescale: 600)
+        let leaderDuration = CMTimeMultiply(frameDuration, multiplier: Int32(lightLeak.leaderCount))
+        // The frame ahead of the film: the take at its metered exposure, so the
+        // clip can be recognised. It is one more frame on the front, and the
+        // session starts there, which leaves the take's own frames and its sound
+        // exactly where the reader put them.
+        let leadsWithNominalFrame = lightLeak.isActive && lightLeak.opensWithNominalFrame
+        let posterDuration = leadsWithNominalFrame ? frameDuration : .zero
+        let takeFrameCount = max(Int((renderRange.duration.seconds * frameRate).rounded()), 0)
+
         let outputURL = tempOutputURL()
         let writer: AVAssetWriter
         do {
@@ -348,8 +371,12 @@ final class PipelineRenderer: @unchecked Sendable {
                 throw RenderError.writerFailed(writer.error)
             }
             // Reader sample timestamps remain on the source timeline. Starting the
-            // writer session at the trim origin maps the selected range to output 0.
-            let sessionStart = renderRange.start
+            // writer session at the trim origin maps the selected range to output 0
+            // — and, with the transport ramp on, one leader earlier: the film that
+            // ran before the take belongs in front of it rather than after it,
+            // which is also what leaves the take's own sound where the reader put
+            // it.
+            let sessionStart = CMTimeSubtract(CMTimeSubtract(renderRange.start, leaderDuration), posterDuration)
             writer.startSession(atSourceTime: sessionStart)
 
             do {
@@ -378,7 +405,11 @@ final class PipelineRenderer: @unchecked Sendable {
                 captureFirstBufferEvidence: collectDecodedBufferEvidence,
                 progress: progress,
                 progressRange: renderRange,
-                sourceProfile: capturePolicy?.sourceProfile ?? .appleLog2
+                sourceProfile: capturePolicy?.sourceProfile ?? .appleLog2,
+                lightLeak: lightLeak,
+                frameDuration: frameDuration,
+                takeFrameCount: takeFrameCount,
+                leadsWithNominalFrame: leadsWithNominalFrame
             )
             try Task.checkCancellation()
             guard frameResult.counters.processed > 0 else {
@@ -789,7 +820,18 @@ final class PipelineRenderer: @unchecked Sendable {
         captureFirstBufferEvidence: Bool,
         progress: (@Sendable (Double) -> Void)?,
         progressRange: CMTimeRange,
-        sourceProfile: CameraSourceProfile
+        sourceProfile: CameraSourceProfile,
+        /// The transport ramp for this render: the leader and trailer frames to
+        /// add and the burn each end of the take carries.
+        lightLeak: LightLeakTransport,
+        /// One frame of the take, so the ramp and the added frames can be placed
+        /// on the delivered timeline.
+        frameDuration: CMTime,
+        /// How many frames the take holds, for the tail's ramp.
+        takeFrameCount: Int,
+        /// Whether the clip opens with a frame of the take at its metered
+        /// exposure, ahead of the black film.
+        leadsWithNominalFrame: Bool
     ) async throws -> (counters: RenderDiagnosticsManifest.Counters,
                        firstBufferEvidence: RenderDiagnosticsManifest.DecodedBufferEvidence?) {
         guard let lut = renderQueue.sync(execute: { lutTexture }) else {
@@ -819,10 +861,24 @@ final class PipelineRenderer: @unchecked Sendable {
             )
         }
 
+        // The film is running before the take: the leader goes in front of it on
+        // the delivered timeline. Its timestamps sit under the trim origin, which
+        // is where the writer's session starts (see `renderInternally`), so the
+        // take's own frames — and its sound — stay exactly where the reader put
+        // them.
+        let leaderStart = CMTimeSubtract(progressRange.start,
+                                         CMTimeMultiply(frameDuration, multiplier: Int32(lightLeak.leaderCount)))
+        /// The frame ahead of the film, at the position the writer's session
+        /// starts from.
+        let posterTime = CMTimeSubtract(leaderStart, frameDuration)
+
         return try await withTaskCancellationHandler {
             // These mutable values are owned exclusively by this task.
             var frameIndex: UInt32 = 0
             var firstFrame = true
+            /// Where the take's own last frame landed, so the trailer can run on
+            /// from there.
+            var lastFrameTime: CMTime?
             // The provider is non-`Sendable`; the box carries it into the raced
             // read task without requiring an unsafe transfer of the provider
             // itself. The provider is only read by one task at a time.
@@ -863,6 +919,22 @@ final class PipelineRenderer: @unchecked Sendable {
                     break
                 }
                 guard let sample else {
+                    // The take ends, the film does not: the trailer runs on past
+                    // the last exposed frame, which is why it is written here —
+                    // before the receiver is finished.
+                    if cancellationHandle.videoReaderStatus == .completed, lightLeak.trailerCount > 0 {
+                        do {
+                            let last = lastFrameTime ?? progressRange.end
+                            for step in 1...lightLeak.trailerCount {
+                                let time = CMTimeAdd(last,
+                                                     CMTimeMultiply(frameDuration, multiplier: Int32(step)))
+                                try await appendFilmFrame(to: videoReceiver, at: time,
+                                                          cancellationHandle: cancellationHandle)
+                            }
+                        } catch {
+                            videoFailure = error
+                        }
+                    }
                     // End of video. A reader that stopped for any reason other
                     // than reaching the end of its range is a failure.
                     switch cancellationHandle.videoReaderStatus {
@@ -890,17 +962,56 @@ final class PipelineRenderer: @unchecked Sendable {
                     // per pair while motion and PTS stay 60 fps.
                     let grainIndex = GrainPairingPolicy.grainIndex(frameIndex: frameIndex,
                                                                    pairing: grainPairing)
+                    // The transport's burn is a fact about WHICH frame this is:
+                    // the take's first frames are over-exposed while the film is
+                    // still coming up to speed, and its last while it comes to
+                    // rest.
+                    let leak = lightLeak.frame(atFrame: Int(frameIndex), ofFrameCount: takeFrameCount)
+                    let context = FrameRenderContext(
+                        receiver: videoReceiver,
+                        config: config,
+                        delivery: delivery,
+                        lut: lut,
+                        cancellationHandle: cancellationHandle,
+                        highlightCeiling: highlightCeiling,
+                        sourceProfile: sourceProfile
+                    )
+                    // The head of the film is written once the first take frame has
+                    // been read, because the clip's own first frame is made from
+                    // it: the take at the exposure the camera metered it at, with
+                    // the burn the transport put on it removed. It is a delivery
+                    // decision rather than a mechanical one — see
+                    // `LightLeakTransport.opensWithNominalFrame` — and it is what
+                    // makes the take identifiable in Photos and in a preview grid.
+                    // The writer takes frames in order, so this comes before the
+                    // black film and the take.
+                    if isFirstFrame {
+                        if leadsWithNominalFrame {
+                            _ = try await renderFrame(
+                                sample: sample,
+                                leak: .none,
+                                context: context,
+                                frameIndex: frameIndex,
+                                grainIndex: grainIndex,
+                                captureEvidence: false,
+                                outputTime: posterTime
+                            )
+                        }
+                        // The film is running before the take: unexposed frames
+                        // ahead of it, at the positions the writer's session starts
+                        // from (see `renderInternally`), so the take's own frames —
+                        // and its sound — stay exactly where the reader put them.
+                        for index in 0..<lightLeak.leaderCount {
+                            let time = CMTimeAdd(leaderStart,
+                                                 CMTimeMultiply(frameDuration, multiplier: Int32(index)))
+                            try await appendFilmFrame(to: videoReceiver, at: time,
+                                                      cancellationHandle: cancellationHandle)
+                        }
+                    }
                     let evidence = try await renderFrame(
                         sample: sample,
-                        context: FrameRenderContext(
-                            receiver: videoReceiver,
-                            config: config,
-                            delivery: delivery,
-                            lut: lut,
-                            cancellationHandle: cancellationHandle,
-                            highlightCeiling: highlightCeiling,
-                            sourceProfile: sourceProfile
-                        ),
+                        leak: leak,
+                        context: context,
                         frameIndex: frameIndex,
                         grainIndex: grainIndex,
                         captureEvidence: captureFirstBufferEvidence && isFirstFrame
@@ -913,6 +1024,7 @@ final class PipelineRenderer: @unchecked Sendable {
 
                 counters.processed += 1
                 counters.appended += 1
+                lastFrameTime = sample.presentationTimeStamp
                 if let progress,
                    let fraction = progressAccumulator?.fraction(forAppendedSeconds: sample.presentationTimeStamp.seconds) {
                     progress(fraction)
@@ -1120,6 +1232,70 @@ final class PipelineRenderer: @unchecked Sendable {
         return peaks
     }
 
+    /// Append one unexposed frame: the film that ran behind the gate before the
+    /// take was exposed, or that ran on after it was cut. There is nothing on it
+    /// to grade, so it is written straight to the receiver's own pool as opaque
+    /// black rather than through the stock's LUT — a leader is not a picture of
+    /// black, it is the absence of a picture.
+    ///
+    /// It shares the shipping append path (including the test override and the
+    /// cancellation gate) so a leader frame can neither outrun a cancel nor
+    /// vanish from a render that counts its appends.
+    private func appendFilmFrame(
+        to receiver: AVAssetWriterInput.PixelBufferReceiver,
+        at time: CMTime,
+        cancellationHandle: RenderCancellationHandle
+    ) async throws {
+        guard let pool = receiver.pixelBufferPool else {
+            if cancellationHandle.writerStatus == .cancelled { throw CancellationError() }
+            throw RenderError.stageFailed("pixel-buffer-pool", "Writer pixel buffer pool is unavailable.")
+        }
+        var buffer: CVMutablePixelBuffer
+        do {
+            buffer = try pool.makeMutablePixelBuffer()
+        } catch {
+            if cancellationHandle.writerStatus == .cancelled { throw CancellationError() }
+            throw RenderError.stageFailed("pixel-buffer-allocation",
+                                          "Unable to allocate output pixel buffer (\(error)).")
+        }
+        buffer.withUnsafeBuffer { pixelBuffer in
+            guard CVPixelBufferLockBaseAddress(pixelBuffer, []) == kCVReturnSuccess else { return }
+            defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+            guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return }
+            let rowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer)
+            let height = CVPixelBufferGetHeight(pixelBuffer)
+            // The pool is 32BGRA; opaque black is B=G=R=0, A=255, which in one
+            // little-endian word is 0xFF000000.
+            for row in 0..<height {
+                let pixels = base.advanced(by: row * rowBytes).assumingMemoryBound(to: UInt32.self)
+                for column in 0..<(rowBytes / 4) { pixels[column] = 0xFF00_0000 }
+            }
+        }
+
+        let appendGate = cancellationHandle.cancellationGate
+        if appendGate.isSignalled || Task.isCancelled { throw CancellationError() }
+        let appendInputs = RacedInputs((receiver: receiver,
+                                        buffer: CVReadOnlyPixelBuffer(buffer),
+                                        time: time))
+        do {
+            try await raceAgainstCancellation(gate: appendGate) {
+                let inputs = appendInputs.value
+                if let override = self.videoAppendOverride {
+                    try await override(inputs.buffer, inputs.time)
+                } else {
+                    try await inputs.receiver.append(inputs.buffer, with: inputs.time)
+                }
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            if Task.isCancelled || cancellationHandle.writerStatus == .cancelled {
+                throw CancellationError()
+            }
+            throw RenderError.stageFailed("video-append", "The film frame could not be appended (\(error)).")
+        }
+    }
+
     /// Grade and encode a single frame: LUT pass, spatial halation/glow,
     /// grain pass, then append. Throws the stage failure to report, if any.
     ///
@@ -1128,10 +1304,15 @@ final class PipelineRenderer: @unchecked Sendable {
     /// append call changed.
     private func renderFrame(
         sample: CMReadySampleBuffer<CMSampleBuffer.DynamicContent>,
+        leak: LightLeakFrame,
         context: FrameRenderContext,
         frameIndex: UInt32,
         grainIndex: UInt32,
-        captureEvidence: Bool
+        captureEvidence: Bool,
+        /// Where the finished frame belongs on the delivered timeline. `nil` puts
+        /// it at its own source time, which is every frame of the take; the one
+        /// frame that is written ahead of the film is placed explicitly.
+        outputTime: CMTime? = nil
     ) async throws -> RenderDiagnosticsManifest.DecodedBufferEvidence? {
         if let renderFailureAfterFrames, frameIndex >= renderFailureAfterFrames {
             throw RenderError.stageFailed("injected-frame-failure", "Synthetic writer failure after \(frameIndex) frames.")
@@ -1221,6 +1402,9 @@ final class PipelineRenderer: @unchecked Sendable {
                             highlightCeiling: context.highlightCeiling,
                             exposureStops: Float(config.effectivePushPull.stops.stops),
                             postEmulsionStops: SystemExposureScheme.developLiftStops,
+                            // The gate's leak at this point in the take, in the
+                            // same pre-LUT scene light as the halo.
+                            leak: leak,
                             // The delivered texture is already the crop, so the
                             // stage works in delivery pixels, not source pixels.
                             width: outputWidth,
@@ -1295,7 +1479,7 @@ final class PipelineRenderer: @unchecked Sendable {
         // until that call ever settles) instead of pinning the frame loop.
         let appendInputs = RacedInputs((receiver: receiver,
                                         buffer: CVReadOnlyPixelBuffer(outputBuffer),
-                                        time: sample.presentationTimeStamp))
+                                        time: outputTime ?? sample.presentationTimeStamp))
         do {
             try await raceAgainstCancellation(gate: appendGate) {
                 let inputs = appendInputs.value

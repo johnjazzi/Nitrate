@@ -28,6 +28,12 @@ struct PurchaseView: View {
     @AppStorage(DeliverySettings.saveOriginalLogKey) private var saveOriginalLog = false
     @AppStorage(DeliverySettings.saveOriginalRAWToPhotosKey) private var saveOriginalRAWToPhotos = false
     @AppStorage(DeliverySettings.renderQualityKey) private var renderQuality = RenderExportQuality.high.rawValue
+    /// The transport ramp: off by default, because it adds frames the take did not
+    /// have, and it is a flourish of the mechanism rather than part of a stock.
+    /// The renderer reads the same keys when it renders a take.
+    @AppStorage(TransportRampSettings.isEnabledKey) private var transportRamp = false
+    @AppStorage(TransportRampSettings.lengthKey)
+    private var transportRampLength = TransportRampSettings.Length.standard.rawValue
     @AppStorage(DeliverySettings.deliveryFramingKey) private var deliveryFraming = DeliveryFraming.defaultValue.rawValue
     @AppStorage(CaptureFormat.preferenceKey) private var captureFormat = CaptureFormat.defaultValue.rawValue
     /// The stored capture format clamped to what this phone can deliver, so a
@@ -614,6 +620,32 @@ struct PurchaseView: View {
                     }
                 }
             }
+            SettingsToggleRow(icon: "film",
+                              title: "Transport Ramp",
+                              accessibilityTitle: "Transport ramp",
+                              help: "Opens and closes a take the way the film transport does: "
+                                  + "unexposed frames of film run before and after it, and the "
+                                  + "take's first and last frames are over-exposed while the "
+                                  + "mechanism finds its speed and comes to rest. Adds those frames "
+                                  + "to the rendered video. Off by default; applies to videos "
+                                  + "rendered afterward.",
+                              isOn: $transportRamp)
+            SettingsControlRow(icon: "timer",
+                               title: "Ramp Length",
+                               accessibilityTitle: "Ramp length",
+                               help: "How long the transport takes to come up to speed and to stop, "
+                                   + "in frames. At 24 fps, 8 frames is a third of a second. "
+                                   + "Only used when the transport ramp is on.") {
+                SettingsSelectionRow(title: "Ramp Length",
+                                     valueText: transportRampLengthBinding.wrappedValue.title) {
+                    Picker("Ramp Length", selection: transportRampLengthBinding) {
+                        ForEach(TransportRampSettings.Length.allCases, id: \.rawValue) { length in
+                            Text(length.title).tag(length)
+                        }
+                    }
+                }
+            }
+            .disabled(!transportRamp)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -624,6 +656,13 @@ struct PurchaseView: View {
     private var exportQualityBinding: Binding<RenderExportQuality> {
         Binding(get: { RenderExportQuality(rawValue: renderQuality) ?? .high },
                 set: { renderQuality = $0.rawValue })
+    }
+
+    /// The Ramp Length row edits the stored raw string through the enum, so an
+    /// absent or unrecognised value shows — and keeps — Standard.
+    private var transportRampLengthBinding: Binding<TransportRampSettings.Length> {
+        Binding(get: { TransportRampSettings.Length(rawValue: transportRampLength) ?? .standard },
+                set: { transportRampLength = $0.rawValue })
     }
 
     /// The Camera Control row edits the stored raw string through the enum, so an

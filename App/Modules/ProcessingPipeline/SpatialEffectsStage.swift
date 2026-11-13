@@ -276,12 +276,18 @@ final class SpatialEffectsStage {
         /// gain, and it is deliberately not applied to the halation mask: the
         /// emulsion has to scatter the light it actually received.
         postEmulsionStops: Float = 0,
+        /// Stray light from the film transport ramping at the head and tail of a
+        /// take. Added in scene-linear light with the halo, before the encode
+        /// that feeds the stock LUT. `.none` on every frame that is not ramping,
+        /// which is every still and every frame of a take except its ends.
+        leak: LightLeakFrame = .none,
         width: Int,
         height: Int
     ) -> MTLTexture? {
         let plan = diffusion.plan(sourceWidth: width)
         // Only all three disabled means byte-for-byte identity, including Log noise.
-        guard strength != 0 || plan != nil || exposureStops != 0 || postEmulsionStops != 0 else { return source }
+        guard strength != 0 || plan != nil || exposureStops != 0 || postEmulsionStops != 0
+                || leak.isActive else { return source }
 
         let halfWidth = max(1, (width + 1) / 2)
         let halfHeight = max(1, (height + 1) / 2)
@@ -431,6 +437,16 @@ final class SpatialEffectsStage {
             encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 4)
             encoder.setBytes(&ceiling, length: MemoryLayout<Float>.size, index: 5)
             encoder.setBytes(&lift, length: MemoryLayout<Float>.size, index: 6)
+            var leakStops = leak.stops
+            var leakTint = leak.tint
+            var leakEdgeShare = leak.edgeShare
+            var leakEdgeFalloff = leak.edgeFalloff
+            encoder.setBytes(&leakStops, length: MemoryLayout<Float>.size, index: 7)
+            encoder.setBytes(&leakTint, length: MemoryLayout<SIMD3<Float>>.size, index: 8)
+            encoder.setBytes(&leakEdgeShare, length: MemoryLayout<Float>.size, index: 9)
+            encoder.setBytes(&leakEdgeFalloff, length: MemoryLayout<Float>.size, index: 10)
+            var leakSlip = leak.slip
+            encoder.setBytes(&leakSlip, length: MemoryLayout<Float>.size, index: 11)
             encoder.dispatchThreadgroups(fullGroups, threadsPerThreadgroup: Self.groupSize)
             encoder.endEncoding()
         }
