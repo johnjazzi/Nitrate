@@ -1,98 +1,108 @@
 import SwiftUI
 
-/// The REC cap is red even at rest. Its stop mark acknowledges the accepted
-/// tap immediately and allows cancellation while capture is starting.
+/// The classic REC cap on the minimal surfaces: a neutral light disc inside a
+/// thin hairline ring, with a semantic red stop mark only while a take is live.
+///
+/// The machined body is gone — no gradient cap, rim, bevel or shadow — so the
+/// control reads as a flat shutter against the preview and its state reads
+/// through one colour change. Idle shows quiet dark REC lettering on the light
+/// disc; an accepted tap replaces it with the red stop square immediately, so
+/// startup stays visible and cancellable. Finalizing keeps the square but dims
+/// it. The 84pt footprint, tap handling and press feedback are unchanged.
 struct RecordPlungerFace: View {
     let presentation: RecordButtonPresentation
     var isPressed = false
     var rotationDegrees: Double = 0
 
+    /// Unchanged footprint: the flat cap cannot resize the shutter row.
+    private static let diameter: CGFloat = 84
+    /// The approved study's neutral idle disc (#d6d4cf).
+    private static let disc = Color(red: 0.84, green: 0.83, blue: 0.81)
+    /// Hairline outer ring, neutral rather than a simulated metal rim.
+    private static let ring = Color.white.opacity(0.62)
+    /// The shared semantic recording red, matching the live status face and the
+    /// modern REC face. Confirmed recording red is never recoloured by accent.
+    private static let stopRed = Color(red: 0.95, green: 0.22, blue: 0.18)
+
+    /// The same mark cancels startup, stops capture, and remains while draining.
+    private var showsStopMark: Bool {
+        presentation != .idle
+    }
+
+    /// Finalizing ignores taps, so the square reads as busy instead of live.
+    private var isBusy: Bool {
+        presentation == .stopping
+    }
+
     var body: some View {
         ZStack {
             Circle()
-                .fill(LinearGradient(colors: [Color(white: 0.12), Color(white: 0.3)],
-                                     startPoint: .top, endPoint: .bottom))
-                .padding(3)
+                .fill(Self.disc)
+                .padding(9)
             Circle()
-                .fill(LinearGradient(
-                    colors: [Color(red: 0.72, green: 0.39, blue: 0.38),
-                             Color(red: 0.58, green: 0.26, blue: 0.26),
-                             Color(red: 0.43, green: 0.18, blue: 0.19)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing
-                ))
-                .overlay {
-                    Circle().strokeBorder(
-                        LinearGradient(colors: [.white.opacity(0.48), .white.opacity(0.06), .black.opacity(0.65)],
-                                       startPoint: .top, endPoint: .bottom), lineWidth: 1.5
-                    )
-                }
-                .shadow(color: .black.opacity(isPressed ? 0.25 : 0.65),
-                        radius: isPressed ? 1 : 3, x: 0, y: isPressed ? 1 : 4)
-                .overlay {
-                    Group {
-                        if presentation != .idle {
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(.white.opacity(presentation == .stopping ? 0.4 : 0.9))
-                                .frame(width: 15, height: 15)
-                        } else {
-                            Text("REC")
-                                .font(NitrateTypography.font(size: 11))
-                                .tracking(1)
-                                .foregroundStyle(.white.opacity(0.85))
-                        }
-                    }
-                    .rotationEffect(.degrees(rotationDegrees))
-                }
-                .padding(8)
-                .offset(y: isPressed ? 1.5 : -1)
+                .strokeBorder(Self.ring, lineWidth: CameraControlBorder.lineWidth)
+                .padding(3)
+            glyph
         }
-        .frame(width: 84, height: 84)
+        .frame(width: Self.diameter, height: Self.diameter)
+        .offset(y: isPressed ? 1.5 : 0)
         .contentShape(Circle())
         .accessibilityHidden(true)
     }
+
+    private var glyph: some View {
+        ZStack {
+            if showsStopMark {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Self.stopRed)
+                    .frame(width: 30, height: 30)
+                    .opacity(isBusy ? 0.45 : 1)
+            } else {
+                Text("REC")
+                    .font(NitrateTypography.font(size: 11))
+                    .tracking(1)
+                    .foregroundStyle(Color.black.opacity(0.62))
+            }
+        }
+        .rotationEffect(.degrees(rotationDegrees))
+    }
 }
 
-/// A small vertical strip, not a literal perforation diagram. Width follows the
-/// selected film gauge, not its inverse grain-size multiplier. Neutral is 35mm.
+/// Gauge readout for the stock group: the number with `mm` beneath it, stacked
+/// so neither is squeezed onto the other's baseline. No strip and no
+/// perforations — the gauge is type, not a simulated film canister. The 28x28
+/// slot keeps the existing stock-row geometry, and the whole stack rotates with
+/// the face so it stays readable in landscape holds.
 struct CameraGaugeLabel: View {
     let gauge: PrintGauge
     var rotationDegrees: Double = 0
 
-    private var stripWidth: CGFloat {
-        switch gauge {
-        case .eightMillimetre: 12
-        case .sixteenMillimetre: 16
-        case .thirtyFiveMillimetre: 21
-        case .seventyFiveMillimetre: 26
-        }
+    private var number: String {
+        gauge.displayName.replacingOccurrences(of: "mm", with: "")
     }
 
     var body: some View {
-        Text(gauge.displayName)
-            .font(NitrateTypography.font(size: 10))
-            .foregroundStyle(.white.opacity(0.95))
-            .fixedSize()
-            .frame(width: 28, height: 28)
-            .background {
-                Path { path in
-                    let left = (28 - stripWidth) / 2
-                    path.addRoundedRect(in: CGRect(x: left, y: 0, width: stripWidth, height: 28),
-                                        cornerSize: CGSize(width: 1, height: 1))
-                    for y: CGFloat in [4, 21] {
-                        path.addRect(CGRect(x: left, y: y, width: 1.5, height: 3))
-                        path.addRect(CGRect(x: left + stripWidth - 1.5, y: y, width: 1.5, height: 3))
-                    }
-                }
-                .fill(Color(red: 0.58, green: 0.34, blue: 0.16).opacity(0.75),
-                      style: FillStyle(eoFill: true))
-            }
-            .rotationEffect(.degrees(rotationDegrees))
-            .frame(width: 28, height: 28)
-            .accessibilityLabel("Print gauge, \(gauge.displayName)")
+        VStack(spacing: 1) {
+            Text(number)
+                .font(NitrateTypography.font(size: 14))
+                .foregroundStyle(.white.opacity(0.92))
+            Text("mm")
+                .font(NitrateTypography.font(size: 8))
+                .foregroundStyle(.white.opacity(0.6))
+        }
+        .lineLimit(1)
+        .fixedSize()
+        .frame(width: 28, height: 28)
+        .rotationEffect(.degrees(rotationDegrees))
+        .frame(width: 28, height: 28)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Print gauge, \(gauge.displayName)")
     }
 }
 
 /// The shipping duotone stock face, independent of the stock-picker interaction.
+/// The identity stripes and the ISO lettering are preserved; the blurred
+/// material rim behind the label is removed so the swatch stays flat.
 struct CameraFilmStockFace: View {
     let primary: Color
     let secondary: Color
@@ -108,12 +118,9 @@ struct CameraFilmStockFace: View {
                 }
             }
             Text(isoLight)
-                .font(NitrateTypography.font(size: 10))
-                .foregroundStyle(.black)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 2)
-                .background(.ultraThinMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: 3))
+                .font(NitrateTypography.font(size: 11))
+                .tracking(0.5)
+                .foregroundStyle(.white)
         }
         .frame(width: faceSize * 1.15, height: faceSize)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))

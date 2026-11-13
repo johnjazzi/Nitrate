@@ -414,13 +414,17 @@ struct CameraDesignRenderTests {
         }
     }
 
-    @MainActor @Test func gaugeStripUsesOrderedRealWidthsAndLegibleLettering() throws {
+    /// The minimal gauge is type only: the number stacked over `mm`, inside the
+    /// existing 28x28 slot, in every hold. The sepia strip and its perforation
+    /// notches are gone, so the readout stays neutral beside the stock chip.
+    @MainActor @Test func gaugeStacksNumberOverMillimetresWithoutAStrip() throws {
         #expect(PrintGauge.neutral == .thirtyFiveMillimetre)
         for degrees in [0.0, 90.0, -90.0] {
-            var widths: [Int] = []
             for gauge in PrintGauge.allCases {
                 let image = try render(CameraGaugeLabel(gauge: gauge, rotationDegrees: degrees)
                     .padding(4), name: "gauge-\(gauge.rawValue)-\(degrees)")
+                #expect(image.width == 72 && image.height == 72,
+                        "Gauge cannot enlarge its existing stock-row slot.")
                 let data = try pixels(image)
                 let sepia = stride(from: 0, to: data.count, by: 4).filter { index in
                     let red = Int(data[index])
@@ -428,53 +432,97 @@ struct CameraDesignRenderTests {
                     let blue = Int(data[index + 2])
                     return red > green + 15 && green > blue + 8 && data[index + 3] > 80
                 }
-                let white = stride(from: 0, to: data.count, by: 4).filter {
-                    data[$0] > 180 && abs(Int(data[$0]) - Int(data[$0 + 2])) < 12
+                #expect(sepia.count < 20, "The gauge is neutral type; the sepia strip is gone.")
+                let ink = stride(from: 0, to: data.count, by: 4).filter { index in
+                    guard data[index + 3] > 80, data[index] > 150 else { return false }
+                    return abs(Int(data[index]) - Int(data[index + 2])) < 12
                 }
-                #expect(sepia.count > 120, "Real gauge needs a subtle, nonblank sepia strip behind its label.")
-                #expect(white.count > 35, "Gauge lettering remains bright and legible.")
-                let across = sepia.map { degrees == 0 ? ($0 / 4) % image.width : ($0 / 4) / image.width }
-                widths.append((across.max() ?? 0) - (across.min() ?? 0))
-                #expect(image.width == 72 && image.height == 72, "Gauge cannot enlarge its existing stock-row slot.")
+                #expect(ink.count > 35, "Gauge number and unit remain legible.")
+                let columns = ink.map { ($0 / 4) % image.width }
+                let rows = ink.map { ($0 / 4) / image.width }
+                #expect(try #require(columns.min()) >= 6)
+                #expect(try #require(columns.max()) < image.width - 6)
+                #expect(try #require(rows.min()) >= 6)
+                #expect(try #require(rows.max()) < image.height - 6)
+                if degrees == 0 {
+                    // A single line would sit in the middle; stacking must reach
+                    // the upper and lower thirds of the slot.
+                    #expect(try #require(rows.min()) < 29, "The gauge number sits above the unit.")
+                    #expect(try #require(rows.max()) > 43, "mm sits beneath the number.")
+                }
             }
-            #expect(zip(widths, widths.dropFirst()).allSatisfy { $0 < $1 },
-                    "8, 16, 35 and 75mm must become progressively wider, not follow grain coarseness.")
         }
     }
 
-    @MainActor @Test func plungerStaysMutedRedAndMovesWithoutScaling() throws {
+    /// The classic cap is flat now: a neutral light disc inside a hairline ring
+    /// at rest, and the semantic recording red only while a take is live. Red
+    /// stays reserved for confirmed/live capture, so idle can no longer look
+    /// like a recording; the face still answers a press by moving, never scaling.
+    @MainActor @Test func plungerIsNeutralAtRestAndRedOnlyWhileLive() throws {
+        func face(_ state: RecordButtonPresentation, pressed: Bool = false) throws -> (data: [UInt8], image: CGImage) {
+            let image = try render(RecordPlungerFace(presentation: state, isPressed: pressed)
+                .padding(8), name: "plunger-\(state)-\(pressed)")
+            return (try pixels(image), image)
+        }
+        func redMass(_ data: [UInt8]) -> Int {
+            var total = 0
+            var index = 0
+            while index + 3 < data.count {
+                total += max(0, Int(data[index]) - Int(data[index + 1]))
+                index += 4
+            }
+            return total
+        }
+        func redPixels(_ data: [UInt8]) -> Int {
+            var count = 0
+            var index = 0
+            while index + 3 < data.count {
+                let red = Int(data[index])
+                let green = Int(data[index + 1])
+                if red > green + 40 && red > 60 && data[index + 3] > 60 { count += 1 }
+                index += 4
+            }
+            return count
+        }
+        let idle = try face(.idle)
+        let starting = try face(.starting)
+        let recording = try face(.recording)
+        let stopping = try face(.stopping)
         for state in states {
-            for pressed in [false, true] {
-                let image = try render(RecordPlungerFace(presentation: state, isPressed: pressed)
-                    .padding(8), name: "plunger-\(state)-\(pressed)")
-                #expect(image.width == 200 && image.height == 200)
-                let data = try pixels(image)
-                let redInk = stride(from: 0, to: data.count, by: 4).filter {
-                    Int(data[$0]) > Int(data[$0 + 1]) + 35 && data[$0] > 90 && data[$0] < 220
-                }
-                #expect(redInk.count > 7_000, "The real face must remain a nonblank washed-red cap in every state.")
-                #expect(data[3] == 0, "Circular face must not acquire a rectangular bezel.")
-            }
+            let stateFace = try face(state)
+            #expect(stateFace.image.width == 200 && stateFace.image.height == 200,
+                    "An 84pt cap with 8pt padding at 2x is 200pt in every state.")
+            #expect(stateFace.data[3] == 0, "Circular face must not acquire a rectangular bezel.")
         }
+        #expect(redPixels(idle.data) == 0, "Idle is a neutral light disc: no red cap any more.")
+        #expect(redPixels(starting.data) > 2_000, "A pending start shows the red stop mark at once.")
+        #expect(redPixels(recording.data) > 2_000, "A confirmed take shows the red stop mark.")
+        #expect(redPixels(stopping.data) > 2_000, "Finalizing keeps the stop mark.")
+        #expect(redMass(stopping.data) < redMass(recording.data),
+                "Finalizing reads as busy: the same red mark, dimmed.")
+        let rest = try face(.idle, pressed: false)
+        let pressed = try face(.idle, pressed: true)
+        #expect(rest.data != pressed.data, "Press feedback moves the flat cap instead of scaling it.")
+        #expect(pressed.image.width == 200 && pressed.image.height == 200)
     }
 
-    /// The classic plunger is optimistic too: it swaps the idle REC mark for the
-    /// recording mark on the tap, while capture is still spinning up, exactly as
+    /// The classic plunger is optimistic too: it swaps the idle REC lettering for
+    /// the stop mark on the tap, while capture is still spinning up, exactly as
     /// on a confirmed take. Both faces therefore answer immediately, and only
     /// finalizing dims the mark.
-    @MainActor @Test func plungerShowsTheRecordingMarkFromTheTap() throws {
+    @MainActor @Test func plungerShowsTheStopMarkFromTheTap() throws {
         func mark(_ state: RecordButtonPresentation) throws -> (bounds: CGRect, area: Double) {
             let image = try render(RecordPlungerFace(presentation: state).padding(8),
                                    name: "plunger-mark-\(state)")
             let data = try pixels(image)
             let scale = CGFloat(image.width) / 100
-            // Inspect only the central glyph, excluding the bevel and shadow.
+            // The red stop square is the only red ink on the flat cap.
             var points = [CGPoint]()
-            for y in (image.height * 35 / 100)..<(image.height * 65 / 100) {
-                for x in (image.width * 35 / 100)..<(image.width * 65 / 100) {
+            for y in 0..<image.height {
+                for x in 0..<image.width {
                     let offset = (y * image.width + x) * 4
-                    if data[offset] > 210, data[offset + 1] > 210,
-                       data[offset + 2] > 210, data[offset + 3] > 210 {
+                    if Int(data[offset]) > Int(data[offset + 1]) + 40,
+                       data[offset] > 60, data[offset + 3] > 200 {
                         points.append(CGPoint(x: CGFloat(x) / scale, y: CGFloat(y) / scale))
                     }
                 }
@@ -489,11 +537,11 @@ struct CameraDesignRenderTests {
         let idle = try mark(.idle)
         let starting = try mark(.starting)
         let recording = try mark(.recording)
+        #expect(idle.area == 0, "Idle shows quiet REC lettering, not the stop mark.")
         for face in [starting, recording] {
-            #expect((14...16).contains(face.bounds.width) && (14...16).contains(face.bounds.height),
-                    "Both pending and confirmed takes must show the 15pt square stop mark.")
-            #expect(face.area > 190, "The stop mark must be filled and visible.")
-            #expect(face.area > idle.area * 2, "Pending capture must replace the idle REC lettering immediately.")
+            #expect((28.5...31.5).contains(face.bounds.width) && (28.5...31.5).contains(face.bounds.height),
+                    "Both pending and confirmed takes must show the 30pt stop mark.")
+            #expect(face.area > 800, "The stop mark must be filled and visible.")
         }
         #expect(abs(starting.bounds.midX - recording.bounds.midX) <= 0.5
                 && abs(starting.bounds.midY - recording.bounds.midY) <= 0.5,

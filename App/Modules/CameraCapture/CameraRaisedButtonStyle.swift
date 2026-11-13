@@ -1,40 +1,49 @@
 import SwiftUI
 
-/// Shared borders for rectangular camera controls and recessed wells.
+/// Shared border tokens for the camera controls that still need a hairline.
+/// The minimal surface pass removed every decorative rim, so `lineWidth` now
+/// only names the one hairline the flat faces draw — the REC cap's outer ring.
 enum CameraControlBorder {
     static let lineWidth: CGFloat = 1
     static let cornerRadius: CGFloat = 12
 }
 
 /// Fixed 44pt toolbar keys use an actual circle, including the hit region.
+/// Flat neutral fill: no material, rim gradient or shadow, so the preview is
+/// the only body the key sits on.
 struct CameraRoundButtonStyle: ButtonStyle {
     var faceColor: Color?
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .background {
-                Circle().fill(.ultraThinMaterial)
-                    .overlay {
-                        Circle().fill((faceColor ?? .black).opacity(configuration.isPressed ? 0.7 : 0.45))
-                    }
+                Circle()
+                    .fill(base(isPressed: configuration.isPressed))
+                    .overlay { Circle().fill(tint(isPressed: configuration.isPressed)) }
             }
-            .overlay {
-                Circle().strokeBorder(
-                    LinearGradient(colors: [.white.opacity(0.38), .black.opacity(0.5)],
-                                   startPoint: .top, endPoint: .bottom), lineWidth: 1)
-            }
-            .shadow(color: .black.opacity(0.35), radius: configuration.isPressed ? 1 : 3, y: 2)
             .contentShape(Circle())
+    }
+
+    /// One dark neutral base for every key, so white glyphs stay legible over
+    /// bright footage.
+    private func base(isPressed: Bool) -> Color {
+        .black.opacity(isPressed ? 0.66 : 0.5)
+    }
+
+    /// A selected key adds its accent as a restrained cast over the dark base —
+    /// never a bright accent tile that would swallow the glyph.
+    private func tint(isPressed: Bool) -> Color {
+        (faceColor ?? .clear).opacity(isPressed ? 0.42 : 0.28)
     }
 }
 
-/// Shared tactile face for camera controls, styled after the machined panel of a
-/// cinema camera: a soft-edged plate that is **translucent** rather than opaque,
-/// so the preview reads through it and only the bevel, the rim and the shadow
-/// define the control. A caller can still tint a control by supplying
-/// `faceColor`; the tint is laid into the translucent face, not painted over it.
+/// Shared face for rectangular camera controls. The visual weight comes from
+/// one dark fill and a restrained pressed opacity — no translucent material,
+/// bevel, rim or shadow. A caller can still tint a control by supplying
+/// `faceColor`; the tint is a flat cast over the fill, not a layer over a
+/// simulated plate.
 struct CameraRaisedButtonStyle: ButtonStyle {
-    /// Tint mixed into the translucent face. Nil keeps it neutral.
+    /// Tint of the flat face. Nil keeps it neutral.
     var faceColor: Color?
     var cornerRadius: CGFloat = CameraControlBorder.cornerRadius
 
@@ -45,7 +54,7 @@ struct CameraRaisedButtonStyle: ButtonStyle {
     }
 }
 
-/// The translucent raised face itself.
+/// The flat face itself.
 struct CameraRaisedSurface: ViewModifier {
     var faceColor: Color?
     var cornerRadius: CGFloat = CameraControlBorder.cornerRadius
@@ -57,63 +66,40 @@ struct CameraRaisedSurface: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
             .background {
-                shape
-                    .fill(.ultraThinMaterial)
-                    .overlay { shape.fill(fill) }
+                shape.fill(base)
+                    .overlay { shape.fill(tint) }
             }
-            .overlay {
-                shape.strokeBorder(bevel, lineWidth: CameraControlBorder.lineWidth).allowsHitTesting(false)
-            }
-            .shadow(color: .black.opacity(isPressed ? 0.16 : 0.38),
-                    radius: isPressed ? 1 : 4,
-                    x: 0,
-                    y: isPressed ? 1 : 2)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isPressed)
             .contentShape(shape)
     }
 
-    /// Barely tinted: the material supplies the body, so the face stays see-through
-    /// and the preview reads past the control.
-    private var fill: Color {
-        guard let faceColor else { return .black.opacity(isPressed ? 0.34 : 0.18) }
-        return faceColor.opacity(isPressed ? 0.78 : 0.62)
+    /// One dark neutral fill. Pressing deepens it slightly instead of moving a
+    /// bevel, and keeps the caller's glyph readable on any accent.
+    private var base: Color {
+        .black.opacity(isPressed ? 0.66 : 0.5)
     }
 
-    /// Bright along the top edge, dark underneath — the raised bevel.
-    private var bevel: LinearGradient {
-        LinearGradient(
-            colors: [.white.opacity(isPressed ? 0.16 : 0.42),
-                     .white.opacity(0.05),
-                     .black.opacity(isPressed ? 0.50 : 0.42)],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+    /// The accent cast for a selected/tinted control, kept restrained so it
+    /// reads as a matching dark fill rather than an accent-coloured plate.
+    private var tint: Color {
+        (faceColor ?? .clear).opacity(isPressed ? 0.42 : 0.28)
     }
 }
 
-/// Recessed face with a dark top rim and a light bottom rim; no layout padding.
+/// Flat recessed face for readouts; no top/bottom rim gradient, no material.
+/// Layout padding stays with the caller, exactly as before.
 struct CameraInsetSurface: ViewModifier {
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: CameraControlBorder.cornerRadius, style: .continuous)
         content
-            .background {
-                shape.fill(.ultraThinMaterial)
-                    .overlay { shape.fill(Color.black.opacity(0.18)) }
-            }
-            .overlay {
-                shape.strokeBorder(
-                    LinearGradient(colors: [.black.opacity(0.76), .black.opacity(0.20), .white.opacity(0.68)],
-                                   startPoint: .top, endPoint: .bottom),
-                    lineWidth: CameraControlBorder.lineWidth)
-                    .allowsHitTesting(false)
-            }
+            .background { shape.fill(Color.black.opacity(0.5)) }
             .contentShape(shape)
     }
 }
 
-/// A translucent raised plate that groups related controls — the soft raised
-/// area a machined camera panel forms around a cluster of buttons. See-through,
-/// so it frames the group without hiding the preview behind it.
+/// A flat neutral plate that groups related controls. It keeps the existing
+/// padding and hit region; only the simulated hardware — material, rims,
+/// shadows — is gone.
 struct CameraControlWell: ViewModifier {
     var cornerRadius: CGFloat = CameraControlBorder.cornerRadius
     var horizontalPadding: CGFloat = 6
@@ -123,32 +109,13 @@ struct CameraControlWell: ViewModifier {
         content
             .padding(.horizontal, horizontalPadding)
             .padding(.vertical, 5)
-            .background {
-                shape
-                    .fill(.ultraThinMaterial)
-                    .overlay { shape.fill(Color.black.opacity(0.18)) }
-            }
-            .overlay {
-                // The outer rim is inset: dark above, light below. The keys
-                // inside retain their raised bevels.
-                shape.strokeBorder(
-                    LinearGradient(
-                        colors: [.black.opacity(0.76), .black.opacity(0.20),
-                                 .white.opacity(0.68)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: CameraControlBorder.lineWidth
-                )
-
-                .allowsHitTesting(false)
-            }
+            .background { shape.fill(Color.black.opacity(0.32)) }
             .contentShape(shape)
     }
 }
 
 extension View {
-    /// Wrap a cluster of controls in the translucent raised plate.
+    /// Wrap a cluster of controls in the flat neutral plate.
     func cameraControlWell(cornerRadius: CGFloat = CameraControlBorder.cornerRadius, horizontalPadding: CGFloat = 6) -> some View {
         modifier(CameraControlWell(cornerRadius: cornerRadius, horizontalPadding: horizontalPadding))
     }
