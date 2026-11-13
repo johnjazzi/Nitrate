@@ -1474,7 +1474,8 @@ final class PipelineRenderer: @unchecked Sendable {
 
         var uniforms = GrainUniforms(
             frameIndex: frameIndex, iso: iso, grainSize: grainSize,
-            edgeBoostMultiplier: edgeBoostMultiplier, gaugeAmplitude: gaugeAmplitude
+            edgeBoostMultiplier: edgeBoostMultiplier, gaugeAmplitude: gaugeAmplitude,
+            referenceScale: GrainModel.referenceScale(width: width, height: height)
         )
 
         encoder.setComputePipelineState(pass2Pipeline!)
@@ -1806,6 +1807,10 @@ struct GrainUniforms {
     /// Dye-cloud chroma strength; see `GrainModel.videoChromaAmount`. The video
     /// path takes the default, the still path overrides it.
     var chromaAmount: Float = GrainModel.videoChromaAmount
+    /// Reference pixels per raster pixel for the frame this pass writes; see
+    /// `GrainModel.referenceScale(width:height:)`. 1 leaves the cell unchanged,
+    /// which is what a 16:9 delivery render is.
+    var referenceScale: Float = 1.0
 }
 
 /// Everything one frame needs to be graded and appended, bundled so the frame

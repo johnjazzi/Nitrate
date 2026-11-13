@@ -94,7 +94,9 @@ final class StillFilmEffectsStage {
                                                                          gauge: gauge),
                                      edgeBoostMultiplier: config.effectiveRecipe.edgeBoostMultiplier,
                                      gaugeAmplitude: gauge.amplitudeMultiplier * gain,
-                                     chromaAmount: GrainModel.stillChromaAmount)
+                                     chromaAmount: GrainModel.stillChromaAmount,
+                                     referenceScale: GrainModel.referenceScale(width: graded.width,
+                                                                               height: graded.height))
         encoder.setComputePipelineState(grainPipeline)
         encoder.setTexture(graded, index: 0)
         encoder.setTexture(output, index: 1)
