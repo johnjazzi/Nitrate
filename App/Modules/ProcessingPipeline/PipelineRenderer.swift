@@ -696,6 +696,8 @@ final class PipelineRenderer: @unchecked Sendable {
                     return nil
                 }
 
+                // A probe canvas of whatever size the caller asked for: measure
+                // the cell as authored, not as a delivery raster would scale it.
                 guard runPass2(
                     inputTexture: glowed,
                     outputPixelBuffer: outputBuffer,
@@ -1256,6 +1258,9 @@ final class PipelineRenderer: @unchecked Sendable {
                             grainSize: GrainModel.effectiveSize(stockGrainSize: config.grainSize, gauge: gauge),
                             edgeBoostMultiplier: config.effectiveRecipe.edgeBoostMultiplier,
                             gaugeAmplitude: gauge.amplitudeMultiplier,
+                            referenceScale: GrainModel.referenceScale(
+                                width: outputWidth, height: outputHeight
+                            ),
                             width: outputWidth,
                             height: outputHeight
                         ) else {
@@ -1452,6 +1457,11 @@ final class PipelineRenderer: @unchecked Sendable {
 
     /// Pass 2: grain. Writes result directly into the output pixel buffer.
     /// Returns true on success.
+    /// `referenceScale` is the pixel scale the cell was authored against
+    /// (`GrainModel.referenceScale(width:height:)`), declared by the caller: a
+    /// delivery pass passes its own raster's scale, so a cropped delivery keeps
+    /// the cell constant relative to the frame. A probe canvas leaves the
+    /// default and measures the cell itself.
     private func runPass2(
         inputTexture: MTLTexture,
         outputPixelBuffer: CVPixelBuffer,
@@ -1460,6 +1470,7 @@ final class PipelineRenderer: @unchecked Sendable {
         grainSize: Float,
         edgeBoostMultiplier: Float,
         gaugeAmplitude: Float,
+        referenceScale: Float = 1.0,
         width: Int,
         height: Int
     ) -> Bool {
@@ -1475,7 +1486,7 @@ final class PipelineRenderer: @unchecked Sendable {
         var uniforms = GrainUniforms(
             frameIndex: frameIndex, iso: iso, grainSize: grainSize,
             edgeBoostMultiplier: edgeBoostMultiplier, gaugeAmplitude: gaugeAmplitude,
-            referenceScale: GrainModel.referenceScale(width: width, height: height)
+            referenceScale: referenceScale
         )
 
         encoder.setComputePipelineState(pass2Pipeline!)
