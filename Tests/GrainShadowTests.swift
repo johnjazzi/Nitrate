@@ -28,17 +28,9 @@ struct GrainShadowTests {
         let height: Int
     }
 
-    /// Mirror of the production layout in `Resources/Shaders/grain.metal`. It has
-    /// to stay byte-identical: the kernel reads the whole struct, so a short
-    /// buffer would leave `chromaAmount` reading past the end.
-    private struct GrainUniforms {
-        var frameIndex: UInt32
-        var iso: Float
-        var grainSize: Float
-        var edgeBoostMultiplier: Float = 0
-        var gaugeAmplitude: Float = 1.0
-        var chromaAmount: Float = GrainModel.videoChromaAmount
-    }
+    // These probes bind the production `GrainUniforms` (this target compiles
+    // `PipelineRenderer.swift`), so they cannot drift from the kernel's layout
+    // the way a hand-kept mirror can; `GrainABITests` pins that layout.
 
     private final class BundleToken {}
 
