@@ -15,12 +15,13 @@ enum RecordingTimeLCDFocus: Equatable, Sendable {
     }
 }
 
-/// White information on the neutral control surface; the entire face opens the queue.
+/// Quiet type over the preview: no surface, box or rim. The entire face still
+/// opens the queue.
 ///
 /// The headline is the highest-priority state on the bar: an active take owns
 /// it as `RECORDING`, but the queue count, the storage warning and the tap
 /// target stay live throughout, and the remaining recording time is never
-/// displaced.
+/// displaced by an abbreviated placeholder.
 struct RecordingTimeLCD: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let estimatedSeconds: TimeInterval?
@@ -56,9 +57,6 @@ struct RecordingTimeLCD: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             headline
-            Rectangle()
-                .fill(.white.opacity(0.22))
-                .frame(height: 0.5)
             if showsRenderingActivity {
                 renderingActivity
             } else if isPhotoMode || photoFreeBytes != nil {
@@ -72,9 +70,12 @@ struct RecordingTimeLCD: View {
             }
             statusRow
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 6)
-        .modifier(CameraInsetSurface())
+        // Unboxed: the type sits on the image with a soft shadow for contrast
+        // instead of a plate, inset surface or hairline divider.
+        .padding(.horizontal, 2)
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .shadow(color: .black.opacity(0.55), radius: 1.5, y: 1)
     }
 
     /// Recording owns this line. The queue count stays beside it so the queue is
@@ -95,7 +96,7 @@ struct RecordingTimeLCD: View {
             }
         }
         .font(NitrateTypography.font(size: 8))
-        .foregroundStyle(.white.opacity(focus == .recording ? 0.95 : 0.75))
+        .foregroundStyle(.white.opacity(focus == .recording ? 0.85 : 0.6))
     }
 
     /// Queue, delivery and storage state. Rendering is the only state that shows
@@ -125,7 +126,7 @@ struct RecordingTimeLCD: View {
             }
         }
         .font(NitrateTypography.font(size: 8))
-        .foregroundStyle(.white.opacity(0.8))
+        .foregroundStyle(.white.opacity(0.65))
     }
 
     private func remainingTime(fontSize: CGFloat) -> some View {

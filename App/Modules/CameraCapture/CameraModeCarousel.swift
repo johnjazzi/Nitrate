@@ -51,9 +51,49 @@ enum CameraModeRowTap: Equatable {
     }
 }
 
-/// The selected mode stays centered, with its title below and ghosted neighbors.
-/// Slots below 132pt use swipes and accessibility adjustment for the neighbor,
-/// preserving the centered 44pt target. The parent owns the selection.
+/// How the row spends a given slot width. A 44pt letter is a control only while
+/// its whole target fits inside the slot; a neighbour whose target would be cut
+/// is a decorative peek, so the row never offers a half tap area. Pure, so the
+/// rule is exercised without rendering.
+enum CameraModeRowLayout {
+    /// One honest mode target, in points. Also the fixed width of a strip cell.
+    static let controlWidth: CGFloat = 44
+
+    /// How far a letter is pulled in toward the selection so the peeking modes
+    /// read as one group. It moves no live target — only the drawn glyph.
+    static let peekInset: CGFloat = 6
+
+    /// Every visible mode's whole 44pt target fits inside `width`, so the whole
+    /// row can be live.
+    static func fullStripFits(width: CGFloat, visibleCount: Int) -> Bool {
+        guard width.isFinite, width > 0, visibleCount > 0 else { return false }
+        return width >= CGFloat(visibleCount) * controlWidth
+    }
+
+    /// Shifts the fixed-width strip so the selected letter — not the strip —
+    /// lands on the slot's centre. One 44pt cell per visible mode.
+    static func centeringOffset(selectedIndex: Int, visibleCount: Int) -> CGFloat {
+        guard visibleCount > 0 else { return 0 }
+        let index = CGFloat(min(max(selectedIndex, 0), visibleCount - 1))
+        return (CGFloat(visibleCount - 1) - 2 * index) * (controlWidth / 2)
+    }
+
+    /// The drawn pull of one letter toward the selection. Zero for the selected
+    /// mode, so the accent letter stays exactly centred.
+    static func letterOffset(index: Int, selectedIndex: Int) -> CGFloat {
+        index == selectedIndex ? 0 : (index < selectedIndex ? peekInset : -peekInset)
+    }
+}
+
+/// The selected mode stays centred on one flat dark fill, with the neighbouring
+/// available modes peeking in from the slot's edges. There is no track, ring or
+/// raised face: selection reads through the resolved accent and a quiet caption.
+/// The parent owns the selection.
+///
+/// Every letter offered as a control keeps its whole 44pt target inside the
+/// slot. When the slot is too narrow for that (three visible modes in a narrow
+/// strip), the neighbours become decorative peeks and the existing swipe and
+/// accessibility adjustment still move the selection.
 struct CameraModeCarousel: View {
     let selected: CameraMode
     let enabled: Bool
@@ -66,19 +106,22 @@ struct CameraModeCarousel: View {
     private var visibleModes: [CameraMode] { CameraMode.visibleModes(photoAvailable: photoAvailable) }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The one resolved control accent shared with the rest of the camera
+    /// chrome. The appearance layer owns its value and its fallback, so the row
+    /// never invents a colour of its own.
+    @Environment(\.cameraControlAccent) private var controlAccent: Color
 
     /// Fixed row height. Keeps the row from resizing as the active label
     /// changes, and is itself the minimum touch height.
     static let height: CGFloat = 44
 
     /// The selected target's fixed width — the touch floor it never shrinks
-    /// below. Also one control's share of the centred pair.
+    /// below.
     static let minimumControlWidth: CGFloat = 44
 
-    /// The narrowest width that shows the centred 44pt target and a full
-    /// adjacent 44pt neighbour without overlap: 2 × (44/2 + 44) = 132pt. Below
-    /// it the row uses the compact fallback.
-    static let compactThreshold: CGFloat = minimumControlWidth * 3
+    /// The flat dark fill behind the selected letter. Deliberately smaller than
+    /// the 44pt target: the target is invisible, the fill is the state.
+    static let selectionFillSize: CGFloat = 28
 
     private let labelPadding: CGFloat = 3
     /// How far the caption may scale down before it truncates.
@@ -97,7 +140,7 @@ struct CameraModeCarousel: View {
 
     var body: some View {
         GeometryReader { proxy in
-            strip(compact: proxy.size.width < Self.compactThreshold)
+            strip(compact: !fitsFullStrip(width: proxy.size.width))
                 .frame(width: proxy.size.width, height: proxy.size.height)
                 .clipped()
         }
@@ -110,55 +153,53 @@ struct CameraModeCarousel: View {
 
     // MARK: - Layout
 
-    @ViewBuilder
-    private func strip(compact: Bool) -> some View {
-        if compact {
-            compactStrip
-        } else {
-            fullStrip
-        }
+    /// A letter is a live control only while its entire 44pt target fits in the
+    /// slot. Narrow slots keep the centred target and degrade the neighbours to
+    /// peeks rather than clipping a target in half.
+    func isInteractive(_ mode: CameraMode, in width: CGFloat) -> Bool {
+        mode == selected
+            || CameraModeRowLayout.fullStripFits(width: width, visibleCount: visibleModes.count)
     }
 
-    /// The centred target with a full, live neighbour immediately beside it.
-    /// The pair is nudged off its own centre so the *selected* target lands on
-    /// the row's centre.
-    private var fullStrip: some View {
-        HStack(spacing: 0) {
+    private func fitsFullStrip(width: CGFloat) -> Bool {
+        CameraModeRowLayout.fullStripFits(width: width, visibleCount: visibleModes.count)
+    }
+
+    /// One row of 44pt cells nudged so the selected letter lands on the slot's
+    /// centre. In a compact slot only the centred letter is a control; the
+    /// neighbours are drawn as peeks.
+    @ViewBuilder
+    private func strip(compact: Bool) -> some View {
+        let row = HStack(spacing: 0) {
             ForEach(visibleModes) { mode in
-                item(mode, interactive: true)
+                item(mode, interactive: !compact || mode == selected)
             }
         }
         .fixedSize()
         .offset(x: centeringOffset)
-    }
 
-    /// The compact fallback: the centred target stays live, the neighbour is a
-    /// decorative ghost, and the adjustment action still moves the selection.
-    private var compactStrip: some View {
-        ZStack {
-            item(neighbour, interactive: true)
-                .offset(x: selected == .develop ? Self.minimumControlWidth : -Self.minimumControlWidth)
-            item(selected, interactive: true)
+        if compact {
+            // One announced, adjustable element — the peeks are decoration and
+            // the swipe/adjust action owns the neighbour.
+            row
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(selected.voiceLabel)
+                .accessibilityIdentifier(selected.accessibilityIdentifier)
+                .accessibilityAddTraits(.isSelected)
+                .accessibilityHint(enabled ? "" : "Unavailable right now")
+                .accessibilityAdjustableAction(adjust)
+        } else {
+            row
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(selected.voiceLabel)
-        .accessibilityIdentifier(selected.accessibilityIdentifier)
-        .accessibilityAddTraits(.isSelected)
-        .accessibilityAdjustableAction(adjust)
     }
 
-    /// Shifts the centred pair so the selected mode — the leading half when
-    /// Develop is selected, the trailing half when Video is — lands on centre.
-    /// The whole block slides as the selection changes, animating both letters.
     private var centeringOffset: CGFloat {
-        let index = CGFloat(visibleModes.firstIndex(of: selected) ?? 0)
-        return (CGFloat(visibleModes.count - 1) - 2 * index) * (Self.minimumControlWidth / 2)
+        CameraModeRowLayout.centeringOffset(selectedIndex: index(of: selected),
+                                            visibleCount: visibleModes.count)
     }
 
-    /// The other visible mode, drawn as the ghosted neighbour.
-    private var neighbour: CameraMode {
-        guard let index = visibleModes.firstIndex(of: selected) else { return selected }
-        return visibleModes[index > 0 ? index - 1 : min(index + 1, visibleModes.count - 1)]
+    private func index(of mode: CameraMode) -> Int {
+        visibleModes.firstIndex(of: mode) ?? 0
     }
 
     private func adjust(_ direction: AccessibilityAdjustmentDirection) {
@@ -175,7 +216,7 @@ struct CameraModeCarousel: View {
     // MARK: - Items
 
     /// One mode control. When `interactive` it is a live, labelled button; when
-    /// not it is a decorative ghost that is never hit-testable or announced.
+    /// not it is a decorative peek that is never hit-testable or announced.
     private func item(_ mode: CameraMode, interactive: Bool) -> some View {
         let face = GeometryReader { geometry in
             let quarterTurn = abs(rotationDegrees).truncatingRemainder(dividingBy: 180) == 90
@@ -186,8 +227,10 @@ struct CameraModeCarousel: View {
                 .frame(width: faceWidth, height: faceHeight)
                 .rotationEffect(.degrees(rotationDegrees))
                 .frame(width: geometry.size.width, height: geometry.size.height)
-                // Bring the ghost inward without moving either 44pt touch target.
-                .offset(x: mode == selected ? 0 : (mode == .develop ? 6 : -6))
+                // Bring a peeking letter inward without moving either 44pt
+                // touch target; the selected letter is never moved.
+                .offset(x: CameraModeRowLayout.letterOffset(index: index(of: mode),
+                                                            selectedIndex: index(of: selected)))
         }
         .frame(width: Self.minimumControlWidth, height: Self.height)
         .contentShape(Rectangle())
@@ -216,18 +259,38 @@ struct CameraModeCarousel: View {
     }
 
     /// Keep both caption bands laid out so selection never changes row height.
+    /// Only the selected mode paints its caption, and it stays quiet: small,
+    /// dim and clear of the accent used for the letter.
     private func label(_ mode: CameraMode) -> some View {
         let isActive = mode == selected
-        return VStack(spacing: 0) {
-            Text(mode.letter)
-                .font(NitrateTypography.font(size: 14, relativeTo: .headline))
-                .foregroundColor(isActive ? .orange : Color.white.opacity(0.45))
+        return VStack(spacing: 1) {
+            ZStack {
+                if isActive { selectionFill }
+                Text(mode.letter)
+                    .font(NitrateTypography.font(size: 14, relativeTo: .headline))
+                    .foregroundColor(isActive ? controlAccent : Color.white.opacity(0.45))
+                    // Large Dynamic Type must not push the caption out of the
+                    // fixed 44pt row.
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(width: Self.selectionFillSize, height: Self.selectionFillSize)
             Text(mode.title)
-                .font(NitrateTypography.font(size: 12, relativeTo: .subheadline))
-                .foregroundColor(Color.white.opacity(isActive ? 0.9 : 0))
+                .font(NitrateTypography.font(size: 10, relativeTo: .caption2))
+                .foregroundColor(Color.white.opacity(isActive ? 0.75 : 0))
                 .lineLimit(1)
                 .minimumScaleFactor(minimumScale)
         }
+    }
+
+    /// A flat, accent-matched dark fill — no stroke, gradient, shadow or nested
+    /// ring. The accent at low opacity over charcoal resolves to a dark olive
+    /// for green and a dark warm neutral for orange, so the fill follows the one
+    /// shared accent without a second preference.
+    private var selectionFill: some View {
+        Circle()
+            .fill(Color(white: 0.10))
+            .overlay { Circle().fill(controlAccent.opacity(0.18)) }
     }
 
     // MARK: - Swipe

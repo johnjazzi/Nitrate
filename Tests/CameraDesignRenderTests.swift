@@ -342,7 +342,11 @@ struct CameraDesignRenderTests {
                 let face = RecordingStatusFace(presentation: state, text: "99:59.99", style: style)
                 let image = try render(face.padding(8), name: "status-\(style)-\(state)")
                 let data = try pixels(image)
-                #expect(data.contains { $0 > 200 })
+                // The face is unboxed now, so an opaque plate can no longer be the
+                // only painted surface: measure the mark and type themselves. The
+                // idle phase is the quietest at 0.55 white, hence the 100 gate.
+                let painted = stride(from: 3, to: data.count, by: 4).filter { data[$0] > 100 }.count
+                #expect(painted > 40, "Every phase must paint its mark and type, not just a panel.")
                 images.append(data)
                 if state == .starting { #expect(face.accessibilityStatus.contains("not yet confirmed")) }
                 if state == .stopping { #expect(face.accessibilityStatus.contains("timer frozen")) }

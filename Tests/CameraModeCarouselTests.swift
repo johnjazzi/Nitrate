@@ -49,6 +49,11 @@ struct CameraModeCarouselRenderTests {
     private let narrowWidth: CGFloat = 96
     private let defaultWidth: CGFloat = 200
 
+    /// The accent the appearance layer resolves for a daylight stock. Injected
+    /// explicitly so the row's selection colour is pinned by the test instead of
+    /// inherited from whatever the appearance layer defaults to.
+    private let testAccent = Color(.sRGB, red: 0.95, green: 0.45, blue: 0.12, opacity: 1)
+
     @Test func compactStripFitsItsRealCameraSlotWithoutDrawingOutsideIt() throws {
         // The row's fixed height is the touch floor; the bounds check below
         // renders at exactly that height. 96/120pt are the compact fallback
@@ -143,8 +148,11 @@ struct CameraModeCarouselRenderTests {
                                         width: defaultWidth, name: "carousel-enabled"))
         let disabled = try pixels(render(carousel(active: .develop, enabled: false),
                                          width: defaultWidth, name: "carousel-disabled"))
-        #expect(ink(disabled) < ink(enabled), "A disabled row dims its glyphs.")
-        #expect(ink(disabled) > 0, "A disabled row is dimmed, not erased.")
+        // The selected letter now sits on a flat fill, so the dim count is the
+        // same either way; the row must still *dim*, measured as painted
+        // intensity rather than as a count of touched pixels.
+        #expect(inkMass(disabled) < inkMass(enabled), "A disabled row dims its glyphs and its fill.")
+        #expect(inkMass(disabled) > 0, "A disabled row is dimmed, not erased.")
 
         let view = CameraModeCarousel(selected: .develop, enabled: false, onSelect: { _ in })
         #expect(view.resolvedSwipe(CGSize(width: -80, height: 0)) == .none,
@@ -182,7 +190,9 @@ struct CameraModeCarouselRenderTests {
     }
 
     private func render(_ view: some View, width: CGFloat, name: String) throws -> CGImage {
-        let renderer = ImageRenderer(content: view.frame(width: width, height: CameraModeCarousel.height))
+        let renderer = ImageRenderer(content: view
+            .frame(width: width, height: CameraModeCarousel.height)
+            .environment(\.cameraControlAccent, testAccent))
         renderer.scale = 2
         let image = try #require(renderer.cgImage)
         let directory = TestRepository.artifactDirectory("camera-mode-carousel")
@@ -244,5 +254,11 @@ struct CameraModeCarouselRenderTests {
     /// Count of visibly painted pixels (the row draws on a transparent ground).
     private func ink(_ data: [UInt8]) -> Int {
         stride(from: 0, to: data.count, by: 4).filter { data[$0 + 3] > 20 }.count
+    }
+
+    /// Total painted intensity, so a dimmed row is measurably quieter than a
+    /// live one even when both touch the same pixels.
+    private func inkMass(_ data: [UInt8]) -> Int {
+        stride(from: 3, to: data.count, by: 4).reduce(0) { $0 + Int(data[$1]) }
     }
 }
