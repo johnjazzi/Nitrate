@@ -55,6 +55,15 @@ struct PurchaseView: View {
     /// failures, storage warnings and live status are never affected.
     @AppStorage(CameraHintPreferences.showsAdvisoryTipsKey)
     private var showsAdvisoryTips = CameraHintPreferences.defaultShowsAdvisoryTips
+    /// The camera's control accent. Stored as its raw string so the camera screen
+    /// resolves the same value this picker writes; an absent or unrecognised
+    /// value follows the selected stock's light type.
+    @AppStorage(CameraControlColorPreference.preferenceKey)
+    private var cameraControlColor = CameraControlColorPreference.defaultValue.rawValue
+    /// Where the shooting screen places the lens controls. Presentation only: the
+    /// committed lens, zoom and camera stay whatever they already are.
+    @AppStorage(CameraLensControlPosition.preferenceKey)
+    private var lensControlPosition = CameraLensControlPosition.defaultValue.rawValue
 #if DEBUG
     @AppStorage(DebugControlPreferences.showsDebugButtonKey) private var showsDebugButton = true
     @AppStorage(DebugControlPreferences.showsFaultButtonKey) private var showsFaultButton = true
@@ -75,6 +84,9 @@ struct PurchaseView: View {
 
                         // Preview mode
                         previewModeSection
+                        // Camera appearance: the control accent and where the
+                        // lens controls sit. Presentation only.
+                        appearanceSection
                         filmStocksSection
                         exportSection
 
@@ -527,6 +539,68 @@ struct PurchaseView: View {
                                   + "or the selected stock may be off. Camera errors, warnings and recording "
                                   + "status always show.",
                               isOn: $showsAdvisoryTips)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// The stored control colour and lens placement, resolved for the pickers.
+    /// Both resolve an absent or unrecognised value the same way the camera
+    /// screen does, so the row never shows a choice the camera would not use.
+    private var controlColorBinding: Binding<CameraControlColorPreference> {
+        Binding(get: { CameraControlColorPreference.resolved(cameraControlColor) },
+                set: { cameraControlColor = $0.rawValue })
+    }
+
+    private var lensControlPositionBinding: Binding<CameraLensControlPosition> {
+        Binding(get: { CameraLensControlPosition.resolved(lensControlPosition) },
+                set: { lensControlPosition = $0.rawValue })
+    }
+
+    /// Appearance choices for the shooting screen. Both are presentation only:
+    /// neither resets the committed lens, zoom, stock or capture behaviour, and
+    /// neither recolours stock identity colours, recording red or warnings.
+    private var appearanceSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Appearance")
+                .font(NitrateTypography.font(.headline))
+
+            Text("Accent and layout for the camera controls.")
+                .font(NitrateTypography.font(.caption))
+                .foregroundStyle(.secondary)
+
+            SettingsControlRow(icon: "paintpalette",
+                               title: "Control color",
+                               accessibilityTitle: "Control color",
+                               help: "Sets the accent on selected camera controls. Follow stock uses "
+                                   + "halation orange for daylight stocks and green for tungsten stocks. "
+                                   + "Orange and green stay fixed whatever stock is loaded.") {
+                SettingsSelectionRow(title: "Control color",
+                                     valueText: controlColorBinding.wrappedValue.title) {
+                    Picker("Control color", selection: controlColorBinding) {
+                        ForEach(CameraControlColorPreference.allCases) { preference in
+                            Text(preference.title).tag(preference)
+                        }
+                    }
+                }
+            }
+
+            SettingsControlRow(icon: "circle.grid.2x1",
+                               title: "Lens control position",
+                               accessibilityTitle: "Lens control position",
+                               help: "Places the lens selector at the top right, or in a row above the "
+                                   + "shutter for one-handed switching. The selected lens is unchanged.") {
+                SettingsSelectionRow(title: "Lens control position",
+                                     valueText: lensControlPositionBinding.wrappedValue.title) {
+                    Picker("Lens control position", selection: lensControlPositionBinding) {
+                        ForEach(CameraLensControlPosition.allCases) { position in
+                            Text(position.title).tag(position)
+                        }
+                    }
+                }
+            }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
