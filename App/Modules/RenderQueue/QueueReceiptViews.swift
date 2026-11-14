@@ -17,6 +17,12 @@ extension RenderJob {
 }
 
 /// Independent sibling controls: the image never wraps the metadata/play/share actions.
+///
+/// `contactSheet` is the History sheet's presentation of the same receipt: one
+/// 4:3 poster with its stock/ISO/date line underneath and no inline buttons, so
+/// three or more cells fit across a phone. It reuses the same persisted
+/// `receipt.thumbnailJPEG` path as the regular row and adds no thumbnail store.
+/// The default keeps every existing usage exactly as it was.
 struct QueueReceiptCard: View {
     let job: RenderJob
     let openPhotos: () -> Void
@@ -25,8 +31,16 @@ struct QueueReceiptCard: View {
     let shareLocal: () -> Void
     /// Return a retained photo or video original to the shared Develop review.
     var redevelop: (() -> Void)? = nil
+    /// History contact-sheet cell: poster first, metadata outside the frame.
+    var contactSheet = false
 
     var body: some View {
+        if contactSheet { contactSheetCell } else { row }
+    }
+
+    // MARK: - Regular row (unchanged usage)
+
+    private var row: some View {
         HStack(spacing: 12) {
             posterControl
             VStack(alignment: .trailing, spacing: 8) {
@@ -67,6 +81,113 @@ struct QueueReceiptCard: View {
         .accessibilityValue((job.receipt?.recordedAt ?? job.createdAt)
             .formatted(date: .abbreviated, time: .shortened))
     }
+
+    // MARK: - Contact-sheet cell
+
+    private var contactSheetCell: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            contactPoster
+            Text(contactTitle)
+                .font(NitrateTypography.font(.caption2))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .foregroundStyle(.primary)
+            Text(contactMetadataLine)
+                .font(NitrateTypography.font(.caption2))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .foregroundStyle(.secondary)
+        }
+        .labelStyle(.iconOnly)
+        .tint(.primary)
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("queue.receiptCard")
+        .accessibilityLabel(contactTitle)
+        .accessibilityValue(contactMetadataLine)
+    }
+
+    /// Normalized 4:3 poster. Video receipts carry the narrow alternating
+    /// black/white frame strip; it is a media cue, never a status.
+    private var contactPoster: some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(Color(uiColor: .tertiarySystemFill))
+            .aspectRatio(QueueContactSheetLayout.cellAspect, contentMode: .fit)
+            .overlay {
+                contactPosterContent
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+            .overlay(alignment: .bottom) {
+                if job.isPhoto != true {
+                    QueueFrameStripBorder()
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                contactStatusMark
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
+            }
+    }
+
+    /// A quiet corner mark for anything that is not a finished render. The
+    /// poster is the subject; status stays legible without a caption row.
+    @ViewBuilder private var contactStatusMark: some View {
+        switch job.status {
+        case .completed:
+            EmptyView()
+        case .failed:
+            contactMarkSymbol("exclamationmark", color: .red, label: "Failed")
+        case .pending:
+            contactMarkSymbol("clock", color: .white, label: "Pending")
+        case .processing:
+            contactMarkSymbol("arrow.triangle.2.circlepath", color: .white, label: "Processing")
+        case .awaitingStock:
+            contactMarkSymbol("film", color: .white, label: "Awaiting stock")
+        }
+    }
+
+    private func contactMarkSymbol(_ symbol: String, color: Color, label: String) -> some View {
+        Image(systemName: symbol)
+            .font(NitrateTypography.font(.caption2))
+            .foregroundStyle(color)
+            .padding(4)
+            .background(.black.opacity(0.6), in: Circle())
+            .padding(3)
+            .accessibilityLabel(label)
+    }
+
+    @ViewBuilder private var contactPosterContent: some View {
+        if job.permitsLocalMedia, let data = job.receipt?.thumbnailJPEG, let image = UIImage(data: data) {
+            Image(uiImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+        } else {
+            VStack(spacing: 3) {
+                Image(systemName: "photo")
+                Text("No preview")
+                    .font(NitrateTypography.font(.caption2))
+                    .multilineTextAlignment(.center)
+            }
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// Stock/record name; the same wording the regular card and metadata use.
+    private var contactTitle: String { job.receiptTitle }
+
+    /// Selected ISO and the recorded (or queued) day, outside the poster frame.
+    private var contactMetadataLine: String {
+        let iso = QueueReceiptPresentation.number(Double(job.iso))
+        let day = (job.receipt?.recordedAt ?? job.createdAt)
+            .formatted(.dateTime.day().month(.abbreviated))
+        return "ISO \(iso) · \(day)"
+    }
+
 
     @ViewBuilder private var posterControl: some View {
         if !job.permitsLocalMedia {
@@ -172,6 +293,32 @@ struct QueueReceiptCard: View {
             .accessibilityHint("Returns the original to Develop for preview, gauge and push/pull before rendering.")
             .accessibilityIdentifier(job.isPhoto == true ? "queue.redevelopPhoto" : "queue.redevelopVideo")
         }
+    }
+}
+
+/// Narrow alternating black/white strip along a video poster's edge.
+///
+/// It reads as a film edge — a media-type cue only. Status stays in the cell's
+/// spoken value and its own marks, so the strip is never the sole signal and is
+/// hidden from VoiceOver.
+struct QueueFrameStripBorder: View {
+    var height: CGFloat = 3
+    var segmentWidth: CGFloat = 7
+
+    var body: some View {
+        Canvas { context, size in
+            var x: CGFloat = 0
+            var isBlack = true
+            while x < size.width {
+                let width = min(segmentWidth, size.width - x)
+                context.fill(Path(CGRect(x: x, y: 0, width: width, height: size.height)),
+                             with: .color(isBlack ? .black : .white))
+                x += width
+                isBlack.toggle()
+            }
+        }
+        .frame(height: height)
+        .accessibilityHidden(true)
     }
 }
 
