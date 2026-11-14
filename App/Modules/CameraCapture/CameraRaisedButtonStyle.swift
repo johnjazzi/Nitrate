@@ -1,49 +1,87 @@
 import SwiftUI
 
-/// Shared border tokens for the camera controls that still need a hairline.
-/// The minimal surface pass removed every decorative rim, so `lineWidth` now
-/// only names the one hairline the flat faces draw — the REC cap's outer ring.
+/// Shared border tokens for the camera controls that draw a rim or a hairline.
+/// Both surface styles consume the same geometry, so changing style can never
+/// move or resize a control; only the drawing differs. The numbers stay the
+/// minimal pass's values, so callers and the border contract tests that pin them
+/// are unaffected by the style switch.
 enum CameraControlBorder {
     static let lineWidth: CGFloat = 1
     static let cornerRadius: CGFloat = 12
 }
 
 /// Fixed 44pt toolbar keys use an actual circle, including the hit region.
-/// Flat neutral fill: no material, rim gradient or shadow, so the preview is
-/// the only body the key sits on.
+///
+/// The style itself stays stateless: the circular face is drawn by
+/// `CameraRoundSurface`, a view modifier, so the environment read happens in the
+/// view graph rather than inside `makeBody`.
 struct CameraRoundButtonStyle: ButtonStyle {
     var faceColor: Color?
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .background {
-                Circle()
-                    .fill(base(isPressed: configuration.isPressed))
-                    .overlay { Circle().fill(tint(isPressed: configuration.isPressed)) }
-            }
-            .contentShape(Circle())
-    }
-
-    /// One dark neutral base for every key, so white glyphs stay legible over
-    /// bright footage.
-    private func base(isPressed: Bool) -> Color {
-        .black.opacity(isPressed ? 0.66 : 0.5)
-    }
-
-    /// A selected key adds its accent as a restrained cast over the dark base —
-    /// never a bright accent tile that would swallow the glyph.
-    private func tint(isPressed: Bool) -> Color {
-        (faceColor ?? .clear).opacity(isPressed ? 0.42 : 0.28)
+            .modifier(CameraRoundSurface(faceColor: faceColor, isPressed: configuration.isPressed))
     }
 }
 
-/// Shared face for rectangular camera controls. The visual weight comes from
-/// one dark fill and a restrained pressed opacity — no translucent material,
-/// bevel, rim or shadow. A caller can still tint a control by supplying
-/// `faceColor`; the tint is a flat cast over the fill, not a layer over a
-/// simulated plate.
+/// The circular key face.
+///
+/// `.minimal` (the default) keeps one dark neutral fill with a restrained accent
+/// cast. `.classic` restores the translucent material key with a rim gradient and
+/// a cast shadow. Both keep the caller's `faceColor` as a tint in the face, so a
+/// stock-aware accent survives either style.
+struct CameraRoundSurface: ViewModifier {
+    var faceColor: Color?
+    var isPressed = false
+
+    @Environment(\.cameraUIStyle) private var uiStyle
+
+    func body(content: Content) -> some View {
+        if uiStyle == .classic {
+            content
+                .background {
+                    Circle()
+                        .fill(.ultraThinMaterial)
+                        .overlay {
+                            Circle().fill((faceColor ?? .black).opacity(isPressed ? 0.7 : 0.45))
+                        }
+                }
+                .overlay {
+                    Circle().strokeBorder(
+                        LinearGradient(colors: [.white.opacity(0.38), .black.opacity(0.5)],
+                                       startPoint: .top, endPoint: .bottom),
+                        lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
+                .shadow(color: .black.opacity(0.35), radius: isPressed ? 1 : 3, y: 2)
+                .contentShape(Circle())
+        } else {
+            content
+                .background {
+                    Circle()
+                        .fill(.black.opacity(isPressed ? 0.66 : 0.5))
+                        .overlay {
+                            Circle().fill((faceColor ?? .clear).opacity(isPressed ? 0.42 : 0.28))
+                        }
+                }
+                .contentShape(Circle())
+        }
+    }
+}
+
+/// Shared face for rectangular camera controls.
+///
+/// `.minimal` (the default) is one dark fill and a restrained pressed opacity. `.classic`
+/// restores the machined translucent plate: material body, bright-over-dark bevel
+/// and a cast shadow that collapses on press. A caller can tint a control by
+/// supplying `faceColor` in either style; the tint is the caller's accent, kept
+/// independent of the surface style.
+///
+/// Everything that draws a plate goes through here — the toolbar keys, the lens
+/// selector and the manual controls — so the manual faces follow the screen's
+/// style without carrying a style of their own.
 struct CameraRaisedButtonStyle: ButtonStyle {
-    /// Tint of the flat face. Nil keeps it neutral.
+    /// Tint of the face. Nil keeps it neutral.
     var faceColor: Color?
     var cornerRadius: CGFloat = CameraControlBorder.cornerRadius
 
@@ -54,68 +92,154 @@ struct CameraRaisedButtonStyle: ButtonStyle {
     }
 }
 
-/// The flat face itself.
+/// The rectangular face itself.
 struct CameraRaisedSurface: ViewModifier {
     var faceColor: Color?
     var cornerRadius: CGFloat = CameraControlBorder.cornerRadius
     var isPressed = false
 
+    @Environment(\.cameraUIStyle) private var uiStyle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        content
-            .background {
-                shape.fill(base)
-                    .overlay { shape.fill(tint) }
-            }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isPressed)
-            .contentShape(shape)
+        if uiStyle == .classic {
+            content
+                .background {
+                    shape.fill(.ultraThinMaterial)
+                        .overlay { shape.fill(classicFill) }
+                }
+                .overlay {
+                    shape.strokeBorder(classicBevel, lineWidth: CameraControlBorder.lineWidth)
+                        .allowsHitTesting(false)
+                }
+                .shadow(color: .black.opacity(isPressed ? 0.16 : 0.38),
+                        radius: isPressed ? 1 : 4,
+                        x: 0,
+                        y: isPressed ? 1 : 2)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isPressed)
+                .contentShape(shape)
+        } else {
+            content
+                .background {
+                    shape.fill(minimalBase)
+                        .overlay { shape.fill(minimalTint) }
+                }
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isPressed)
+                .contentShape(shape)
+        }
     }
 
-    /// One dark neutral fill. Pressing deepens it slightly instead of moving a
-    /// bevel, and keeps the caller's glyph readable on any accent.
-    private var base: Color {
+    /// Classic: barely tinted, because the material supplies the body and the
+    /// preview still reads past the control.
+    private var classicFill: Color {
+        guard let faceColor else { return .black.opacity(isPressed ? 0.34 : 0.18) }
+        return faceColor.opacity(isPressed ? 0.78 : 0.62)
+    }
+
+    /// Classic: bright along the top edge, dark underneath.
+    private var classicBevel: LinearGradient {
+        LinearGradient(
+            colors: [.white.opacity(isPressed ? 0.16 : 0.42),
+                     .white.opacity(0.05),
+                     .black.opacity(isPressed ? 0.50 : 0.42)],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    /// Minimal: one dark neutral fill. Pressing deepens it slightly instead of
+    /// moving a bevel, and keeps the caller's glyph readable on any accent.
+    private var minimalBase: Color {
         .black.opacity(isPressed ? 0.66 : 0.5)
     }
 
-    /// The accent cast for a selected/tinted control, kept restrained so it
-    /// reads as a matching dark fill rather than an accent-coloured plate.
-    private var tint: Color {
+    /// Minimal: the accent cast for a selected/tinted control, kept restrained so
+    /// it reads as a matching dark fill rather than an accent-coloured plate.
+    private var minimalTint: Color {
         (faceColor ?? .clear).opacity(isPressed ? 0.42 : 0.28)
     }
 }
 
-/// Flat recessed face for readouts; no top/bottom rim gradient, no material.
-/// Layout padding stays with the caller, exactly as before.
+/// Recessed face for readouts. Layout padding stays with the caller.
+///
+/// `.minimal` (the default) is one flat black fill. `.classic` restores the
+/// material recess with a dark top rim and a light bottom rim.
 struct CameraInsetSurface: ViewModifier {
+    @Environment(\.cameraUIStyle) private var uiStyle
+
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: CameraControlBorder.cornerRadius, style: .continuous)
-        content
-            .background { shape.fill(Color.black.opacity(0.5)) }
-            .contentShape(shape)
+        if uiStyle == .classic {
+            content
+                .background {
+                    shape.fill(.ultraThinMaterial)
+                        .overlay { shape.fill(Color.black.opacity(0.18)) }
+                }
+                .overlay {
+                    shape.strokeBorder(
+                        LinearGradient(colors: [.black.opacity(0.76), .black.opacity(0.20), .white.opacity(0.68)],
+                                       startPoint: .top, endPoint: .bottom),
+                        lineWidth: CameraControlBorder.lineWidth)
+                        .allowsHitTesting(false)
+                }
+                .contentShape(shape)
+        } else {
+            content
+                .background { shape.fill(Color.black.opacity(0.5)) }
+                .contentShape(shape)
+        }
     }
 }
 
-/// A flat neutral plate that groups related controls. It keeps the existing
-/// padding and hit region; only the simulated hardware — material, rims,
-/// shadows — is gone.
+/// A plate that groups related controls. It keeps the existing padding and hit
+/// region in both styles; only the simulated hardware differs.
+///
+/// `.minimal` (the default) is a flat neutral fill. `.classic` restores the
+/// translucent raised plate with its inset dark-over-light rim.
 struct CameraControlWell: ViewModifier {
     var cornerRadius: CGFloat = CameraControlBorder.cornerRadius
     var horizontalPadding: CGFloat = 6
 
+    @Environment(\.cameraUIStyle) private var uiStyle
+
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        content
-            .padding(.horizontal, horizontalPadding)
-            .padding(.vertical, 5)
-            .background { shape.fill(Color.black.opacity(0.32)) }
-            .contentShape(shape)
+        if uiStyle == .classic {
+            content
+                .padding(.horizontal, horizontalPadding)
+                .padding(.vertical, 5)
+                .background {
+                    shape.fill(.ultraThinMaterial)
+                        .overlay { shape.fill(Color.black.opacity(0.18)) }
+                }
+                .overlay {
+                    // The outer rim is inset: dark above, light below. The keys
+                    // inside retain their raised bevels.
+                    shape.strokeBorder(
+                        LinearGradient(
+                            colors: [.black.opacity(0.76), .black.opacity(0.20),
+                                     .white.opacity(0.68)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: CameraControlBorder.lineWidth
+                    )
+                    .allowsHitTesting(false)
+                }
+                .contentShape(shape)
+        } else {
+            content
+                .padding(.horizontal, horizontalPadding)
+                .padding(.vertical, 5)
+                .background { shape.fill(Color.black.opacity(0.32)) }
+                .contentShape(shape)
+        }
     }
 }
 
 extension View {
-    /// Wrap a cluster of controls in the flat neutral plate.
+    /// Wrap a cluster of controls in the control plate.
     func cameraControlWell(cornerRadius: CGFloat = CameraControlBorder.cornerRadius, horizontalPadding: CGFloat = 6) -> some View {
         modifier(CameraControlWell(cornerRadius: cornerRadius, horizontalPadding: horizontalPadding))
     }
