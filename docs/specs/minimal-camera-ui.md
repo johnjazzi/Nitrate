@@ -189,5 +189,18 @@ The HTML uses a bundled, ungraded sample image, simulated capture timing and two
   tests, 1,631 Swift tests, iOS Debug/Release builds and whitespace check). Native
   control render fixtures were inspected. This is not hardware interaction approval.
 - Simulator launch verification was attempted but its tooling timed out; it is not
-  counted as a passing gate. Physical UI/gesture, orientation and VoiceOver acceptance
-  remain as listed above.
+  counted as a passing gate. Further delivery uses the physical iPhone only.
+- Startup integration: legacy DNG/JPEG history rows no longer enter the movie-only
+  cleanup sweep. A physical-device watchdog report identified main-thread path
+  canonicalization during that sweep as the splash-screen blocker. Explicit import
+  discards, photo retention and delivered-movie cleanup retain their existing paths.
+- Startup regression verification: 21 focused cleanup tests passed, including a
+  428-row legacy history, mixed movie/photo cleanup, and matching the cleanup
+  capability's case-sensitive `.mov` extension gate. The history regression failed
+  before the fix; the extension-boundary regression also failed before alignment.
+- Signed Debug `NitrateDev` was installed as `com.nitrate.app.dev` on the owner's
+  physical iPhone 18 Pro. Screenshots confirmed startup reaches the camera screen;
+  the process survived the previous watchdog deadline. Queue file size and
+  modification time were unchanged across the successful startup. Production
+  `com.nitrate.app` was not replaced.
+- Broader UI/gesture, orientation and VoiceOver acceptance remain as listed above.
