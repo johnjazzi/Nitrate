@@ -61,12 +61,11 @@ struct RecordingTimeLCD: View {
                 renderingActivity
             } else if isPhotoMode || photoFreeBytes != nil {
                 Text(capacityText)
-                    .font(NitrateTypography.font(size: 20)).monospacedDigit()
+                    .font(NitrateTypography.font(size: 12)).monospacedDigit()
                     .foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.6)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                remainingTime(fontSize: 20)
-                    .frame(maxHeight: .infinity)
+                remainingTime(fontSize: 12)
             }
             statusRow
         }
@@ -74,7 +73,7 @@ struct RecordingTimeLCD: View {
         // instead of a plate, inset surface or hairline divider.
         .padding(.horizontal, 2)
         .padding(.vertical, 2)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .shadow(color: .black.opacity(0.55), radius: 1.5, y: 1)
     }
 

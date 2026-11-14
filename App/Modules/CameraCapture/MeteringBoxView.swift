@@ -15,6 +15,7 @@ enum MeteringIndicatorPreferences {
 /// exposure drives the scene, solid while manual ISO does. Hidden during a take
 /// so it never draws over the recording.
 struct MeteringBoxView: View {
+    @Environment(\.cameraControlAccent) private var controlAccent
     /// Normalised (0–1) centre of the indicator in the preview's coordinate space.
     let point: CGPoint
     let isManual: Bool
@@ -30,7 +31,7 @@ struct MeteringBoxView: View {
             if isVisible {
                 Circle()
                     .strokeBorder(
-                        isManual ? Color.yellow.opacity(0.95) : Color.white.opacity(0.8),
+                        isManual ? controlAccent.opacity(0.95) : Color.white.opacity(0.8),
                         style: StrokeStyle(lineWidth: 1.5, dash: isManual ? [] : [6, 4])
                     )
                     .frame(width: diameter, height: diameter)

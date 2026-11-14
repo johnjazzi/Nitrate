@@ -78,6 +78,7 @@ enum CameraFrameRateControlPresentation {
 /// listens with a 44pt target and writes through the parent's single backend
 /// call. It is deliberately one component, used by the default in-frame stack.
 struct CameraFrameRateControl: View {
+    @Environment(\.cameraControlAccent) private var controlAccent
     /// Rates the session reports as available, in frames per second.
     let availableFPS: [Int]
     /// The rate actually in force for the next take.
@@ -117,7 +118,7 @@ struct CameraFrameRateControl: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
             }
-            .foregroundStyle(CameraFrameRateControlPresentation.faceColor(currentFPS: currentFPS))
+            .foregroundStyle(currentFPS == 24 ? .white.opacity(0.85) : controlAccent)
             .frame(maxWidth: .infinity, minHeight: CameraFrameRateControlPresentation.optionHeight)
         }
         .disabled(!canChange)

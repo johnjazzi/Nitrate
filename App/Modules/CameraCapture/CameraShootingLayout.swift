@@ -5,9 +5,8 @@ import SwiftUI
 /// otherwise. Exposure owns the height; neither its ruler nor its type is
 /// compressed to fit the LCD.
 ///
-/// The LCD takes the upper two thirds so a confirmed take and the remaining time
-/// read at a glance. The stock selector and the print gauge share the recessed
-/// well that fills the lower third.
+/// Stock and gauge sit beside the shutter; the quiet queue/remaining-time
+/// readout follows beneath them. Neither left-hand slot sets the bar height.
 struct CameraControlGeometry {
     static let leftWidth: CGFloat = 84
     static let exposureWidth: CGFloat = 84
@@ -41,17 +40,16 @@ struct CameraControlGeometry {
     }
 
     let lcd: CGRect
-    /// The recessed stock/gauge well — one slot for both controls.
+    /// One flat entry point for stock and gauge.
     let stock: CGRect
     let record: CGRect
     let exposure: CGRect
 
     init(width: CGFloat, height: CGFloat) {
-        let wellHeight = (height - Self.columnGap) / 3
-        let lcdHeight = height - Self.columnGap - wellHeight
-        lcd = CGRect(x: 0, y: 0, width: Self.leftWidth, height: lcdHeight)
-        stock = CGRect(x: 0, y: lcdHeight + Self.columnGap,
-                       width: Self.leftWidth, height: wellHeight)
+        let stockTop = max(48, (height - Self.recordSize) / 2)
+        stock = CGRect(x: 0, y: stockTop, width: Self.leftWidth, height: 44)
+        let lcdTop = stock.maxY + Self.columnGap
+        lcd = CGRect(x: 0, y: lcdTop, width: Self.leftWidth, height: max(44, height - lcdTop))
         record = CGRect(x: (width - Self.recordSize) / 2, y: (height - Self.recordSize) / 2,
                         width: Self.recordSize, height: Self.recordSize)
         exposure = CGRect(x: width - Self.exposureWidth, y: 0,

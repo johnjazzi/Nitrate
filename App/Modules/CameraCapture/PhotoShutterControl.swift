@@ -12,6 +12,7 @@ enum PhotoShutterRailStyle {
 
 /// Photo shutter ruler using the shared relative-drag interaction.
 struct PhotoShutterControl: View {
+    @Environment(\.cameraControlAccent) private var controlAccent
     let snapshot: PhotoExposureSnapshot
     let setDuration: (Double) -> Void
     let setLocked: (Bool) -> Void
@@ -51,7 +52,7 @@ struct PhotoShutterControl: View {
                     majorValues: Set(durations),
                     tickLabel: { PhotoShutterPresentation.label(for: $0) },
                     scale: .logarithmic(pointsPerStop: RulerScale.detentTravel * 3),
-                    ladder: durations, tint: .orange,
+                    ladder: durations, tint: controlAccent,
                     labelFontSize: PhotoShutterRailStyle.labelFontSize,
                     majorTickLength: PhotoShutterRailStyle.majorTickLength,
                     minorTickLength: PhotoShutterRailStyle.minorTickLength,
@@ -75,7 +76,7 @@ struct PhotoShutterControl: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(intent.shutterLocked ? Color.yellow : Color.orange)
+            .foregroundStyle(controlAccent.opacity(intent.shutterLocked ? 1 : 0.65))
             .accessibilityLabel("Shutter duration mode")
             .accessibilityValue(intent.shutterLocked ? "Lock" : "Float")
             .accessibilityIdentifier("photo.shutterLock")

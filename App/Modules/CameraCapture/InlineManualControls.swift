@@ -110,6 +110,7 @@ enum InlineFrameRateKeyPlacement {
 /// it lives at the bottom of the physical-left zoom column, so this right-hand
 /// stack keeps its three keys and its 140pt height.
 struct InlineManualControls: View {
+    @Environment(\.cameraControlAccent) private var controlAccent
     @Binding var manualFocus: Bool
     let apertureReadout: String
     let apertureStops: [Float]
@@ -145,7 +146,7 @@ struct InlineManualControls: View {
     private var focusButton: some View {
         Button(action: toggleFocus) {
             Text(InlineManualControlPresentation.focusTitle(manualFocus: manualFocus))
-                .foregroundStyle(manualFocus ? InlineManualControlPresentation.activeOrange
+                .foregroundStyle(manualFocus ? controlAccent
                                              : InlineManualControlPresentation.inactiveGrey)
                 .frame(maxWidth: .infinity, minHeight: 44)
         }
@@ -191,7 +192,8 @@ struct InlineManualControls: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
             }
-            .foregroundStyle(InlineManualControlPresentation.stabilizationColor(for: effectiveStabilization))
+            .foregroundStyle(effectiveStabilization == .off ? InlineManualControlPresentation.inactiveGrey
+                : controlAccent.opacity(InlineManualControlPresentation.stabilizationIntensity(effectiveStabilization)))
             .frame(maxWidth: .infinity, minHeight: 44)
         }
         .disabled(!stabilizationInteractive)

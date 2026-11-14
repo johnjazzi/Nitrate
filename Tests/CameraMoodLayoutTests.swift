@@ -92,7 +92,10 @@ struct CameraMoodLayoutTests {
     }
 
     @Test func exposureMeterComparesNeutralSceneOffsetAgainstLiveBiasInEveryMode() throws {
-        let meter = try controlBarSection(from: "ExposureIndicatorView(", to: "exposureSetting")
+        let screen = try source("App/ContentView.swift")
+        let start = try #require(screen.range(of: "ExposureIndicatorView("))
+        let end = try #require(screen.range(of: ".position(x: meter.midX", range: start.upperBound..<screen.endIndex))
+        let meter = String(screen[start.lowerBound..<end.lowerBound])
         #expect(meter.contains("meteredEV: cameraViewModel.liveExposureTargetOffset,"))
         #expect(meter.contains("targetEV: cameraViewModel.liveExposureBias,"))
         #expect(!meter.contains("isManualExposure ? 0"))

@@ -65,9 +65,13 @@ enum CameraModeRowLayout {
 
     /// Every visible mode's whole 44pt target fits inside `width`, so the whole
     /// row can be live.
-    static func fullStripFits(width: CGFloat, visibleCount: Int) -> Bool {
-        guard width.isFinite, width > 0, visibleCount > 0 else { return false }
-        return width >= CGFloat(visibleCount) * controlWidth
+    static func fullStripFits(width: CGFloat, visibleCount: Int, selectedIndex: Int = 0) -> Bool {
+        guard width.isFinite, width > 0, visibleCount > 0,
+              selectedIndex >= 0, selectedIndex < visibleCount else { return false }
+        // Centering the selected cell makes an end selection asymmetric. Two
+        // 44pt cells need 132pt, not 88pt, to keep the neighbor's full target.
+        let cellsToEdge = max(selectedIndex, visibleCount - selectedIndex - 1)
+        return width >= CGFloat(2 * cellsToEdge + 1) * controlWidth
     }
 
     /// Shifts the fixed-width strip so the selected letter — not the strip —
@@ -140,7 +144,7 @@ struct CameraModeCarousel: View {
 
     var body: some View {
         GeometryReader { proxy in
-            strip(compact: !fitsFullStrip(width: proxy.size.width))
+            strip(width: proxy.size.width)
                 .frame(width: proxy.size.width, height: proxy.size.height)
                 .clipped()
         }
@@ -157,22 +161,25 @@ struct CameraModeCarousel: View {
     /// slot. Narrow slots keep the centred target and degrade the neighbours to
     /// peeks rather than clipping a target in half.
     func isInteractive(_ mode: CameraMode, in width: CGFloat) -> Bool {
-        mode == selected
-            || CameraModeRowLayout.fullStripFits(width: width, visibleCount: visibleModes.count)
+        guard visibleModes.contains(mode), width.isFinite else { return false }
+        let centerOffset = CGFloat(abs(index(of: mode) - index(of: selected))) * Self.minimumControlWidth
+        return centerOffset + Self.minimumControlWidth / 2 <= width / 2
     }
 
     private func fitsFullStrip(width: CGFloat) -> Bool {
-        CameraModeRowLayout.fullStripFits(width: width, visibleCount: visibleModes.count)
+        CameraModeRowLayout.fullStripFits(width: width, visibleCount: visibleModes.count,
+                                         selectedIndex: index(of: selected))
     }
 
     /// One row of 44pt cells nudged so the selected letter lands on the slot's
     /// centre. In a compact slot only the centred letter is a control; the
     /// neighbours are drawn as peeks.
     @ViewBuilder
-    private func strip(compact: Bool) -> some View {
+    private func strip(width: CGFloat) -> some View {
+        let compact = !fitsFullStrip(width: width)
         let row = HStack(spacing: 0) {
             ForEach(visibleModes) { mode in
-                item(mode, interactive: !compact || mode == selected)
+                item(mode, interactive: isInteractive(mode, in: width))
             }
         }
         .fixedSize()

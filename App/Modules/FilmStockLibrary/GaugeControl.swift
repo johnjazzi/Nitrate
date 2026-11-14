@@ -12,6 +12,7 @@ import SwiftUI
 /// amount — the format's enlargement is what sets how far the light spreads. The
 /// info sheet says so; halation is the stock's, not the gauge's.
 struct GaugeControl: View {
+    @Environment(\.cameraControlAccent) private var controlAccent
     @Binding var gauge: PrintGauge
     var enlarged = false
     /// Sheet state is owned here so every caller gets the same explanation
@@ -30,7 +31,7 @@ struct GaugeControl: View {
                     Button { showsInfo = true } label: {
                         Image(systemName: "info.circle.fill")
                             .font(NitrateTypography.font(.footnote))
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(controlAccent)
                             .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
                     }
@@ -47,7 +48,7 @@ struct GaugeControl: View {
                             Text(Self.shortLabel(candidate))
                                 .font(NitrateTypography.font(.title3).monospacedDigit())
                                 .frame(maxWidth: .infinity, minHeight: 48)
-                                .background(gauge == candidate ? Color.white.opacity(0.2) : .clear,
+                                .background(gauge == candidate ? controlAccent.opacity(0.16) : .clear,
                                             in: RoundedRectangle(cornerRadius: 9))
                         }
                         .buttonStyle(.plain)

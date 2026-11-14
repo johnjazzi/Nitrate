@@ -12,6 +12,7 @@ import SwiftUI
 /// The caller owns the persisted preference and the resolved exposure, so the
 /// camera sheet and Develop read and write the same remembered value.
 struct PushPullControl: View {
+    @Environment(\.cameraControlAccent) private var controlAccent
     /// The exposure this render will apply.
     let resolved: PushPullExposure
     @Binding var isAutomatic: Bool
@@ -57,7 +58,6 @@ struct PushPullControl: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: enlarged ? 48 : 30)
                     .background(Capsule().fill(tint.opacity(0.16)))
-                    .overlay { Capsule().stroke(tint.opacity(0.6), lineWidth: 1) }
                     .contentShape(Capsule())
             }
             .frame(maxWidth: .infinity)
@@ -69,8 +69,7 @@ struct PushPullControl: View {
 
     private var tint: Color {
         let stops = resolved.stops.stops
-        if stops > 0 { return .orange }
-        if stops < 0 { return .blue }
+        if stops != 0 { return controlAccent }
         return .secondary
     }
 

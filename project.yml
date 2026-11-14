@@ -179,6 +179,8 @@ targets:
       - path: App/Modules/CameraCapture/CameraTopPanelLayout.swift
       - path: App/Modules/CameraCapture/CameraDesignFaces.swift
       - path: App/Modules/CameraCapture/CameraShootingLayout.swift
+      - path: App/Modules/CameraCapture/CameraMinimalLayout.swift
+      - path: App/Modules/CameraCapture/CameraControlAppearance.swift
       - path: App/Modules/CameraCapture/CameraLensFace.swift
       - path: App/Modules/CameraCapture/CameraRaisedButtonStyle.swift
       - path: App/Design/NitrateTypography.swift
@@ -379,6 +381,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraModeSelection.swift
       - path: App/Modules/CameraCapture/CameraModeCarousel.swift
       - path: App/Modules/CameraCapture/CameraModeStripGeometry.swift
+      - path: App/Modules/CameraCapture/ExposureOverlay.swift
       - path: App/Modules/CameraCapture/ExposureRescueControl.swift
       - path: App/AppIdentity.swift
       - path: App/SplashEdgeDetails.swift
@@ -465,6 +468,8 @@ targets:
       - path: App/Modules/CameraCapture/CameraTopPanelLayout.swift
       - path: App/Modules/CameraCapture/CameraDesignFaces.swift
       - path: App/Modules/CameraCapture/CameraShootingLayout.swift
+      - path: App/Modules/CameraCapture/CameraMinimalLayout.swift
+      - path: App/Modules/CameraCapture/CameraControlAppearance.swift
       - path: App/Modules/CameraCapture/CameraLensFace.swift
       - path: App/Modules/CameraCapture/CameraRaisedButtonStyle.swift
       - path: App/Design/NitrateTypography.swift

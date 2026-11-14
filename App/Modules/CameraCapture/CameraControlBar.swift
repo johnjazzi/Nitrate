@@ -8,6 +8,7 @@ import AVKit
 /// owns the shooting controls and remaining-recording-time readout.
 struct CameraControlBar: View {
     @Environment(\.cameraDeviceOrientation) private var orientation
+    @Environment(\.cameraControlAccent) private var controlAccent
     private let controlFaceSize: CGFloat = 38
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The persisted face choice. Resolved through `RecordButtonAppearance` so
@@ -58,10 +59,7 @@ struct CameraControlBar: View {
     /// The only thing the Develop centre action does. It never touches capture.
     var onDevelopRender: () -> Void = {}
     var isPhotoMode = false
-    /// The push/pull this take will be developed with: the stock's remembered
-    /// choice, resolved against the live meter when it is automatic. Nil hides the
-    /// badge, which is also what a neutral result does.
-    var pushPull: PushPullExposure? = nil
+
     var photoStatus: String? = nil
     var onPhotoCapture: () -> Void = {}
     var photoExposure: PhotoExposureSnapshot? = nil
@@ -122,19 +120,26 @@ struct CameraControlBar: View {
 
     // MARK: - Left selector row
 
-    /// Stock and gauge share the recessed well that fills the lower third of the
-    /// column. The 44pt frame keeps the stock control a full-size tap target
-    /// inside the well's own padding.
+    /// One flat stock/gauge entry, retaining the 44pt touch target and the
+    /// stock's identity colors. Remaining-time type sits below this entry.
     private var selectorRow: some View {
-        HStack(spacing: 4) {
-            stockControl(faceSize: controlFaceSize)
-                .frame(width: 44, height: 44)
-            if selectedStock != nil {
-                CameraGaugeLabel(gauge: selectedGauge,
-                                 rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
+        Button(action: onShowStockSheet) {
+            HStack(spacing: 4) {
+                stockControl(faceSize: controlFaceSize)
+                    .frame(width: 44, height: 44)
+                if selectedStock != nil {
+                    CameraGaugeLabel(gauge: selectedGauge,
+                                     rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
+                }
             }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
-        .cameraControlWell(horizontalPadding: 4)
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Stock and print gauge")
+        .accessibilityValue("\(selectedStock?.displayName ?? "Choose stock"), \(selectedGauge.displayName)")
+        .accessibilityHint("Choose stock, print gauge and push or pull processing")
         .overlay {
             StockSelectorHintOutline(isVisible: showsStockHint)
                 .allowsHitTesting(false)
@@ -152,15 +157,10 @@ struct CameraControlBar: View {
             if let stock = selectedStock {
                 stockChip(stock, faceSize: faceSize)
             } else {
-                Button {
-                    onShowStockSheet()
-                } label: {
-                    Image(systemName: "film").font(NitrateTypography.font(.title3))
+                Image(systemName: "film").font(NitrateTypography.font(.title3))
                     .foregroundStyle(.white)
                     .frame(width: faceSize, height: faceSize)
                     .frame(minWidth: 44, minHeight: 44)
-                }
-                .buttonStyle(CameraRaisedButtonStyle())
             }
         }
         .cameraRotatingControl()
@@ -170,36 +170,23 @@ struct CameraControlBar: View {
     /// Five horizontal slices fill the complete button face: 1,2,5 are primary;
     /// 3,4 are secondary.
     private func stockChip(_ stock: FilmStockConfig, faceSize: CGFloat) -> some View {
-        Button {
-            onShowStockSheet()
-        } label: {
-            CameraFilmStockFace(primary: stock.primaryColor, secondary: stock.secondaryColor,
-                                isoLight: "\(Int(currentISO))\(stock.lightType)", faceSize: faceSize)
-                .frame(minWidth: 44, minHeight: 44)
-        }
-        .buttonStyle(CameraRaisedButtonStyle(faceColor: stock.primaryColor))
+        CameraFilmStockFace(primary: stock.primaryColor, secondary: stock.secondaryColor,
+                            isoLight: "\(Int(currentISO))\(stock.lightType)", faceSize: faceSize)
+            .frame(minWidth: 44, minHeight: 44)
     }
 
     // MARK: - Exposure control (dual mode)
 
-    /// The live meter and setting share the compact 84pt column: 28pt meter,
-    /// 48pt ruler, and two 4pt rims. The footprint stays clear of centred REC
-    /// and the left queue/remaining-time column even on a 320pt-wide phone.
+    /// The setting keeps its trailing alignment and measured height. The live
+    /// meter is a separate non-sizing overlay at the bottom of the preview.
     private var exposureControl: some View {
         HStack(alignment: .top, spacing: 0) {
-            ExposureIndicatorView(
-                meteredEV: cameraViewModel.liveExposureTargetOffset,
-                targetEV: cameraViewModel.liveExposureBias,
-                isManual: cameraViewModel.isManualExposure,
-                isAvailable: cameraViewModel.hasExposureMeter,
-                trackHeight: 120
-            )
             exposureSetting
                 .frame(width: 48)
         }
+        .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.horizontal, 4)
         .padding(.vertical, 6)
-        .modifier(CameraInsetSurface())
         .contentShape(Rectangle())
         // Visible hold acknowledgement: a small spring expansion the instant the
         // finger lands, springing back on release or cancellation. Reduce Motion
@@ -298,7 +285,7 @@ struct CameraControlBar: View {
                     tickLabel: { "\(Int($0.rounded()))" },
                     scale: isoScale,
                     ladder: isoLadder,
-                    tint: .yellow,
+                    tint: controlAccent,
                     length: 120
                 )
                 // One stable handle for the control, the same way the photo
@@ -317,7 +304,7 @@ struct CameraControlBar: View {
                     range: evBiasSliderRange,
                     step: 0.1,
                     pointsPerStep: CGFloat(RulerScale.detentTravel),
-                    tint: .orange,
+                    tint: controlAccent,
                     length: 120
                 )
                 .disabled(!evRulerEnabled)
@@ -330,38 +317,15 @@ struct CameraControlBar: View {
         }
     }
 
-    /// The exposure column's footer: the lock while a take freezes exposure,
-    /// otherwise the push/pull this take will be developed with.
-    ///
-    /// Which of the two wins is the order they matter in: a frozen control is what
-    /// the operator is looking at right now, and the push/pull is a standing
-    /// decision that is still on screen before and after the take.
+    /// Keep the lock while exposure is frozen and reserve the same line at idle.
+    /// Push/pull is selected inside the stock modal, never on the camera bar.
     @ViewBuilder
     private var exposureFooter: some View {
         if !cameraViewModel.isExposureAdjustable {
             Image(systemName: "lock.fill").opacity(0.45)
-        } else if let pushPull, !pushPull.isNeutral {
-            pushPullBadge(pushPull.stops)
         } else {
             Text(" ")
         }
-    }
-
-    /// "PUSH +1" / "PULL 2" — the film's own word for the shift, so the exposure
-    /// column says which way the take is being deviated from the box speed.
-    private func pushPullBadge(_ stops: PushPullStops) -> some View {
-        HStack(spacing: 2) {
-            Text(stops.effectWord)
-            Text(stops.displayName)
-        }
-        .font(NitrateTypography.font(size: 9).monospacedDigit())
-        .lineLimit(1)
-        .minimumScaleFactor(0.6)
-        // Push adds light and grain, pull takes it away: the tint says which way
-        // at a glance, and the word says it again for anyone who cannot separate
-        // the two hues.
-        .foregroundStyle(stops.isPull ? Color.cyan.opacity(0.9) : Color.orange)
-        .accessibilityLabel("Film \(stops.effectName) \(abs(stops.stops)) stops")
     }
 
     /// "+0.0" / "-1.3" style auto-exposure bias readout.

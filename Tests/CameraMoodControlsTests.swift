@@ -78,20 +78,17 @@ struct CameraMoodControlsTests {
         #expect(bar.components(separatedBy: "LongPressGesture(minimumDuration:").count == 2)
     }
 
-    @Test func lcdSlotSitsAboveTheStockWellAndClearOfRecord() {
+    @Test func lcdSlotFollowsTheStockAndStaysClearOfRecord() {
         for screenWidth in screenWidths {
             for height in barHeights {
                 let width = screenWidth - 32
                 let geometry = CameraControlGeometry(width: width, height: height)
                 // Exposure still owns the shared height.
                 #expect(geometry.exposure.height == height)
-                // LCD is the upper slot; the stock/gauge well takes the lower third.
-                #expect(geometry.lcd.minY == 0)
-                #expect(abs(geometry.stock.maxY - height) < 0.001)
-                #expect(abs(geometry.lcd.height - 2 * geometry.stock.height) < 0.001)
-                #expect(abs(geometry.stock.minY - geometry.lcd.maxY - CameraControlGeometry.columnGap) < 0.001)
-                // The well must still host the 44pt stock control plus its frame.
-                #expect(geometry.stock.height >= 52)
+                // Remaining-time type follows the flat stock entry.
+                #expect(geometry.lcd.minY == geometry.stock.maxY + CameraControlGeometry.columnGap)
+                #expect(geometry.lcd.maxY <= height)
+                #expect(geometry.stock.height >= 44)
                 // REC stays screen-centred and never collides with the left column.
                 #expect(geometry.record.midX == width / 2)
                 for slot in [geometry.lcd, geometry.stock] {
@@ -198,8 +195,9 @@ struct CameraMoodControlsTests {
         let bar = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraControlBar.swift"),
                              encoding: .utf8)
         #expect(bar.contains("CameraShootingLayout()"))
-        // Stock and gauge share one recessed well.
-        #expect(bar.contains(".cameraControlWell("))
+        // Stock and gauge share one flat entry without a decorative well.
+        #expect(bar.contains("Button(action: onShowStockSheet)"))
+        #expect(!bar.contains(".cameraControlWell("))
         #expect(bar.contains("CameraGaugeLabel(gauge: selectedGauge,"))
         #expect(bar.components(separatedBy: "length: 120").count == 3, "The exposure rulers are untouched.")
         // The LCD acknowledges the accepted take before the writer confirms it.

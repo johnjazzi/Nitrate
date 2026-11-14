@@ -153,14 +153,14 @@ struct CameraDesignRenderTests {
                 let width = screenWidth - 32
                 let geometry = CameraControlGeometry(width: width, height: height)
                 #expect(geometry.exposure.height == height)
-                #expect(abs(geometry.lcd.height - 2 * geometry.stock.height) < 0.001)
-                #expect(geometry.stock.maxY == height)
-                #expect(geometry.lcd.minY == 0)
+                #expect(geometry.lcd.minY == geometry.stock.maxY + CameraControlGeometry.columnGap)
+                #expect(geometry.lcd.maxY <= height)
+                #expect(geometry.stock.minY >= 48)
                 #expect(geometry.record.midX == width / 2)
                 #expect(!geometry.stock.intersects(geometry.record))
                 #expect(!geometry.lcd.intersects(geometry.record))
                 #expect(!geometry.exposure.intersects(geometry.record))
-                #expect(geometry.stock.height >= 52)
+                #expect(geometry.stock.height >= 44)
                 for degrees in [0.0, 90.0, -90.0, 180.0] {
                     let face = CameraControlGeometry.faceSize(in: geometry.lcd.size, degrees: degrees)
                     let turned = CameraControlGeometry.faceSize(in: face, degrees: degrees)

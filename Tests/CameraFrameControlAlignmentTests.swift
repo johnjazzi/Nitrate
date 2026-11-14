@@ -78,15 +78,13 @@ struct CameraFrameControlAlignmentTests {
             #expect(geometry.exposure.minY == 0)
             #expect(geometry.exposure.height == barHeight)
             #expect(geometry.exposure.width == CameraControlGeometry.exposureWidth)
-            // LCD over the stock/gauge well, same 2:1 split and gap.
-            #expect(geometry.lcd.minY == 0)
-            #expect(abs(geometry.lcd.height - 2 * geometry.stock.height) < 0.001)
-            #expect(abs(geometry.stock.minY - geometry.lcd.maxY - CameraControlGeometry.columnGap) < 0.001)
-            #expect(abs(geometry.stock.maxY - barHeight) < 0.001)
-            // The left column keeps its width, so the 44pt stock control and the
-            // recessed well still fit.
+            // The stock is beside the shutter; remaining-time type follows it.
+            #expect(geometry.stock.height == 44)
+            #expect(geometry.stock.minY >= 48)
+            #expect(geometry.lcd.minY == geometry.stock.maxY + CameraControlGeometry.columnGap)
+            #expect(geometry.lcd.height >= 44)
+            #expect(geometry.lcd.maxY <= barHeight)
             #expect(geometry.lcd.maxX <= CameraControlGeometry.leftWidth)
-            #expect(geometry.stock.height >= 52)
         }
     }
 

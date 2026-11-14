@@ -65,14 +65,20 @@ struct MinimalCameraModeTests {
     /// half — the swipe and the accessibility adjustment still change mode.
     @Test func peekingNeighboursNeverPresentAHalfTarget() throws {
         #expect(CameraModeRowLayout.controlWidth == 44)
-        #expect(CameraModeRowLayout.fullStripFits(width: 96, visibleCount: 2),
-                "The narrowest production slot holds both two-mode targets.")
+        #expect(!CameraModeRowLayout.fullStripFits(width: 96, visibleCount: 2),
+                "Centering an end selection needs 132pt to fit the neighbor's full target.")
         #expect(!CameraModeRowLayout.fullStripFits(width: 96, visibleCount: 3))
-        #expect(CameraModeRowLayout.fullStripFits(width: 132, visibleCount: 3))
+        #expect(CameraModeRowLayout.fullStripFits(width: 132, visibleCount: 3, selectedIndex: 1))
 
         let twoModes = CameraModeCarousel(selected: .develop, enabled: true, onSelect: { _ in })
-        #expect(twoModes.isInteractive(.video, in: 96),
+        #expect(!twoModes.isInteractive(.video, in: 96))
+        #expect(twoModes.isInteractive(.video, in: 132),
                 "A fully visible neighbour stays a real tap target.")
+        let edgeSelection = CameraModeCarousel(selected: .develop, enabled: true, onSelect: { _ in },
+                                               photoAvailable: true)
+        #expect(edgeSelection.isInteractive(.video, in: 132))
+        #expect(!edgeSelection.isInteractive(.photo, in: 132))
+        #expect(edgeSelection.isInteractive(.photo, in: 220))
 
         let threeModes = CameraModeCarousel(selected: .video, enabled: true, onSelect: { _ in },
                                             photoAvailable: true)

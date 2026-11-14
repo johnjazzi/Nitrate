@@ -41,6 +41,10 @@ struct ContentView: View {
     /// default, so an install that never opens Settings behaves as before.
     @AppStorage(CameraHintPreferences.showsAdvisoryTipsKey)
     private var showsAdvisoryTips = CameraHintPreferences.defaultShowsAdvisoryTips
+    @AppStorage(CameraControlColorPreference.preferenceKey)
+    private var controlColorRaw = CameraControlColorPreference.followStock.rawValue
+    @AppStorage(CameraLensControlPosition.preferenceKey)
+    private var lensControlPositionRaw = CameraLensControlPosition.topRight.rawValue
     @State private var controlBounds: [String: CGRect] = [:]
     @State private var currentSourceURL: URL?
     /// The durable awaiting-stock entry created for the current take, if any.
@@ -146,9 +150,11 @@ struct ContentView: View {
         #if DEBUG
         debugEnabledBody
             .environment(\.cameraDeviceOrientation, orientation.deviceOrientation)
+            .environment(\.cameraControlAccent, controlAccent)
         #else
         shippingBody
             .environment(\.cameraDeviceOrientation, orientation.deviceOrientation)
+            .environment(\.cameraControlAccent, controlAccent)
         #endif
     }
 
@@ -186,6 +192,25 @@ struct ContentView: View {
                     controlBar(horizontalInset: controlBarHorizontalInset(in: geometry))
                         .padding(.bottom, 8)
                         .background(controlMeasurement("bottom"))
+                }
+
+                if !isDevelopMode, lensControlPosition == .aboveShutter,
+                   let row = lensRowRect(in: geometry) {
+                    CameraLensRow(availableLenses: availableLenses, selectedLens: selectedLens,
+                                  onSelectLens: selectLens)
+                        .disabled(!canSelectCameraLens)
+                        .opacity(canSelectCameraLens ? 1 : 0.4)
+                        .frame(width: row.width, height: row.height)
+                        .position(x: row.midX, y: row.midY)
+                }
+
+                if let meter = exposureMeterRect(in: geometry) {
+                    ExposureIndicatorView(meteredEV: cameraViewModel.liveExposureTargetOffset,
+                                          targetEV: cameraViewModel.liveExposureBias,
+                                          isManual: cameraViewModel.isManualExposure,
+                                          isAvailable: cameraViewModel.hasExposureMeter)
+                        .frame(width: meter.width, height: meter.height)
+                        .position(x: meter.midX, y: meter.midY)
                 }
 
                 if let bottom = controlBounds["bottom"],
@@ -353,10 +378,10 @@ struct ContentView: View {
                 // Preserved pinch behaviour: with Zoom Controls off the ruler
                 // still appears only while a pinch is live, in its original
                 // stationary slot above the shooting bar.
-                if pinchIsActive, !zoomControlsEnabled, let bottom = controlBounds["bottom"] {
+                if pinchIsActive, !zoomControlsEnabled, let slot = pinchRulerRect(in: geometry) {
                     FocalLengthRuler(millimeters: pinchFocalLength)
-                        .frame(width: max(0, geometry.size.width - 32))
-                        .position(x: geometry.size.width / 2, y: max(34, bottom.minY - 42))
+                        .frame(width: slot.width, height: slot.height)
+                        .position(x: slot.midX, y: slot.midY)
                 }
 
                 if !showFramedPreview, let top = controlBounds["top"] {
@@ -911,6 +936,15 @@ struct ContentView: View {
     /// Reserve the visible manual surface, not the full camera canvas, so the
     /// contextual rescue button can stay clear without resizing either surface.
     private func daylightRescueExclusion(in geometry: GeometryProxy) -> CGRect? {
+        let reserved = [exposureMeterRect(in: geometry), lensRowRect(in: geometry),
+                        pinchIsActive && !zoomControlsEnabled ? pinchRulerRect(in: geometry) : nil]
+            .compactMap { $0 }.reduce(CGRect.null) { $0.union($1) }
+        let manual = manualControlsExclusion(in: geometry)
+        let combined = manual.map { reserved.union($0) } ?? reserved
+        return combined.isNull ? nil : combined
+    }
+
+    private func manualControlsExclusion(in geometry: GeometryProxy) -> CGRect? {
         if legacyManualControlsEnabled {
             guard showManualControls,
                   let top = controlBounds["top"], let bottom = controlBounds["bottom"] else { return nil }
@@ -992,6 +1026,24 @@ struct ContentView: View {
         return boundedPreviewRect(in: geometry)
     }
 
+    private func lensRowRect(in geometry: GeometryProxy) -> CGRect? {
+        guard !isDevelopMode, lensControlPosition == .aboveShutter,
+              let bottom = controlBounds["bottom"] else { return nil }
+        return CameraMinimalLayout.lensRow(in: bottom, canvasWidth: geometry.size.width,
+                                          lensCount: availableLenses.count)
+    }
+
+    private func exposureMeterRect(in geometry: GeometryProxy) -> CGRect? {
+        guard let preview = frameRulerBounds(in: geometry) else { return nil }
+        return CameraMinimalLayout.exposureMeter(in: preview, above: lensRowRect(in: geometry))
+    }
+
+    private func pinchRulerRect(in geometry: GeometryProxy) -> CGRect? {
+        guard let preview = frameRulerBounds(in: geometry) else { return nil }
+        return CameraMinimalLayout.pinchRuler(in: preview,
+            avoiding: [exposureMeterRect(in: geometry), lensRowRect(in: geometry)].compactMap { $0 })
+    }
+
     /// Shared content area clear of the toolbar and shooting controls. Develop's
     /// import buttons must not inherit the immersive camera's full-bleed extent.
     private func boundedPreviewRect(in geometry: GeometryProxy) -> CGRect? {
@@ -1071,6 +1123,9 @@ struct ContentView: View {
             // landscape the slot stays hidden while the timer floats on the
             // physical edge. Either way the toolbar height never changes.
             lensMenu
+                .opacity(lensControlPosition == .topRight ? 1 : 0)
+                .accessibilityHidden(lensControlPosition != .topRight)
+                .disabled(lensControlPosition != .topRight)
                 .opacity(recordPresentation.showsLiveChrome ? 0 : 1)
                 .allowsHitTesting(!recordPresentation.showsLiveChrome)
                 .accessibilityHidden(recordPresentation.showsLiveChrome)
@@ -1156,7 +1211,7 @@ struct ContentView: View {
                 .cameraUpright()
                 .frame(width: 44, height: 44)
         }
-        .buttonStyle(CameraRoundButtonStyle(faceColor: manualControlsActive ? SettingsControlChrome.halationOrange : nil))
+        .buttonStyle(CameraRoundButtonStyle(faceColor: manualControlsActive ? controlAccent : nil))
         .accessibilityLabel("Manual controls")
         .accessibilityValue(manualControlsActive ? "Expanded" : "Collapsed")
 
@@ -1271,17 +1326,30 @@ struct ContentView: View {
                             onManageDaylight: canManageDaylightMode ? { showDaylightRescue = true } : nil)
     }
 
+    private var controlAccent: Color {
+        CameraControlColorPreference.resolved(controlColorRaw).color(lightType: selectedStock?.lightType)
+    }
+
+    private var lensControlPosition: CameraLensControlPosition {
+        CameraLensControlPosition.resolved(lensControlPositionRaw)
+    }
+
+    private var canSelectCameraLens: Bool {
+        !captureBusy && !cameraViewModel.isPhotoCaptureBusy
+            && !cameraViewModel.isSwitchingCameraLens && !cameraViewModel.isChangingFrameRate
+    }
+
     private var lensMenu: some View {
         CameraLensSelector(
             availableLenses: availableLenses,
             selectedLens: selectedLens,
             onSelectLens: selectLens
         )
-        .disabled(cameraViewModel.isPhotoCaptureBusy || cameraViewModel.isSwitchingCameraLens || cameraViewModel.isChangingFrameRate)
+        .disabled(!canSelectCameraLens)
     }
 
     private func selectLens(_ lens: CameraLens) {
-        guard lens != selectedLens else { return }
+        guard lens != selectedLens, canSelectCameraLens else { return }
         focusReadGeneration &+= 1
         let focusRequest = focusReadGeneration
         cameraViewModel.selectLens(lens) { error in
@@ -1374,9 +1442,7 @@ struct ContentView: View {
                                          pushPull: developPushPull)
             },
             isPhotoMode: isPhotoMode,
-            // The push/pull the exposure column reports: the shooting choice while
-            // shooting, and the panel's own resolved value while developing.
-            pushPull: isDevelopMode ? developPushPull : shootingPushPull,
+
             photoStatus: photoDeliveryStatus,
             onPhotoCapture: {
                 let gauge = selectedStock.flatMap { library.lastGauge(for: $0.stockId) } ?? .neutral

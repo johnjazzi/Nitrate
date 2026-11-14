@@ -160,6 +160,7 @@ enum ManualFocusStopEdit {
 /// never also drag the live focus, because the ordinary focus drag only reacts to
 /// real movement and stands down once a hold has been recognised.
 struct ManualFocusRuler: View {
+    @Environment(\.cameraControlAccent) private var controlAccent
     @Binding var lensPosition: Double
     let enabled: Bool
     /// Session-only stops. The default keeps every existing call site and the
@@ -198,7 +199,7 @@ struct ManualFocusRuler: View {
         VStack(spacing: 4) {
             Text("MF")
                 .font(NitrateTypography.font(size: 11))
-                .foregroundStyle(enabled ? Color.yellow : Color.gray)
+                .foregroundStyle(enabled ? controlAccent : Color.gray)
                 .frame(width: visualWidth)
                 .frame(maxWidth: .infinity, alignment: .trailing)
             GeometryReader { geometry in
@@ -275,7 +276,7 @@ struct ManualFocusRuler: View {
             deletionBands(in: size)
             stopMarkers(in: size)
             Rectangle()
-                .fill(enabled ? Color.yellow : Color.gray)
+                .fill(enabled ? controlAccent : Color.gray)
                 .frame(width: size.width, height: 2)
                 .position(x: size.width / 2,
                           y: ManualFocusRulerScale.indexFraction(lensPosition: lensPosition)
@@ -290,13 +291,13 @@ struct ManualFocusRuler: View {
             let y = CGFloat(ManualFocusRulerScale.indexFraction(lensPosition: stop.lensPosition)) * size.height
             let active = editingStopID == stop.id
             Rectangle()
-                .fill(active ? SettingsControlChrome.lightPurple : SettingsControlChrome.halationOrange)
+                .fill(active ? SettingsControlChrome.lightPurple : controlAccent)
                 .frame(width: max(0, size.width - 16), height: 2)
                 .opacity(0.9)
                 .position(x: max(0, size.width - 16) / 2, y: y)
             Text(ManualFocusStopEdit.label(index: index))
                 .font(NitrateTypography.font(size: 9))
-                .foregroundStyle(SettingsControlChrome.halationOrange)
+                .foregroundStyle(controlAccent)
                 .position(x: size.width - 8, y: y)
         }
     }
@@ -307,11 +308,11 @@ struct ManualFocusRuler: View {
         if editingStopID != nil {
             VStack(spacing: 0) {
                 Rectangle()
-                    .fill(SettingsControlChrome.halationOrange.opacity(0.28))
+                    .fill(controlAccent.opacity(0.28))
                     .frame(height: size.height * ManualFocusStopEdit.removalBand)
                 Spacer(minLength: 0)
                 Rectangle()
-                    .fill(SettingsControlChrome.halationOrange.opacity(0.28))
+                    .fill(controlAccent.opacity(0.28))
                     .frame(height: size.height * ManualFocusStopEdit.removalBand)
             }
             .allowsHitTesting(false)

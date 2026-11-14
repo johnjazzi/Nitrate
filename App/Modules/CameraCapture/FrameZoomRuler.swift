@@ -18,6 +18,7 @@ import SwiftUI
 /// the manual panel's hold keys, so release, drag-off and a revision change
 /// cancel the ramp identically.
 struct FrameZoomRuler: View {
+    @Environment(\.cameraControlAccent) private var controlAccent
     let millimeters: Double
     let enabled: Bool
     let revision: UInt64
@@ -92,11 +93,11 @@ struct FrameZoomRuler: View {
                 var index = Path()
                 index.move(to: CGPoint(x: 0, y: center))
                 index.addLine(to: CGPoint(x: size.width, y: center))
-                context.stroke(index, with: .color(.yellow), lineWidth: 2)
+                context.stroke(index, with: .color(controlAccent), lineWidth: 2)
             }
             Text(readout)
                 .font(NitrateTypography.font(size: 9))
-                .foregroundStyle(.yellow)
+                .foregroundStyle(controlAccent)
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
                 .padding(.horizontal, 3)

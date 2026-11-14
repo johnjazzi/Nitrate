@@ -23,12 +23,13 @@ enum FocalLengthRulerScale {
 /// The overlay does not participate in preview/control measurements.
 struct FocalLengthRuler: View {
     let millimeters: Double
+    @Environment(\.cameraControlAccent) private var controlAccent
 
     var body: some View {
         VStack(spacing: 3) {
             Text("\(Int(millimeters.rounded())) mm")
                 .font(NitrateTypography.font(size: 12))
-                .foregroundStyle(.yellow)
+                .foregroundStyle(controlAccent)
             Canvas { context, size in
                 for value in FocalLengthRulerScale.minorTicks {
                     let x = size.width / 2 + FocalLengthRulerScale.offset(millimeters: value, selected: millimeters)
@@ -52,7 +53,7 @@ struct FocalLengthRuler: View {
                 var index = Path()
                 index.move(to: CGPoint(x: size.width / 2, y: 0))
                 index.addLine(to: CGPoint(x: size.width / 2, y: 12))
-                context.stroke(index, with: .color(.yellow), lineWidth: 2)
+                context.stroke(index, with: .color(controlAccent), lineWidth: 2)
             }
             .frame(height: 28)
         }
