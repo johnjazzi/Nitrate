@@ -161,6 +161,9 @@ enum ManualFocusStopEdit {
 /// real movement and stands down once a hold has been recognised.
 struct ManualFocusRuler: View {
     @Environment(\.cameraControlAccent) private var controlAccent
+    /// Presentation only: Classic keeps the dark rail plate, Minimal draws the
+    /// ticks, the release bands and the index straight over the preview.
+    @Environment(\.cameraUIStyle) private var uiStyle
     @Binding var lensPosition: Double
     let enabled: Bool
     /// Session-only stops. The default keeps every existing call site and the
@@ -249,14 +252,17 @@ struct ManualFocusRuler: View {
 
     // MARK: - Marker rendering
 
-    /// The visibly drawn rail: the rounded background, its ticks, the release
-    /// bands, the session-stop markers and the live index. Authored at
-    /// `visualWidth` so it can be inset inside the wider 44pt hit column. A
-    /// disabled rail (autofocus selected) draws its index and label grey.
+    /// The visibly drawn rail: the ticks, the release bands, the session-stop
+    /// markers and the live index. Authored at `visualWidth` so it can be inset
+    /// inside the wider 44pt hit column. A disabled rail (autofocus selected)
+    /// draws its index and label grey.
+    ///
+    /// Classic keeps the dark rounded plate behind that ink, clipped to its
+    /// corners; Minimal draws no plate and lets one shadow hold the ink off the
+    /// footage. The tick positions, the marker offsets and every gesture are
+    /// unaffected by the style.
     private func rail(size: CGSize) -> some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(.black.opacity(0.45))
             Canvas { context, canvasSize in
                 for tick in stride(from: 0.0, through: 1.0, by: 0.1) {
                     let y = canvasSize.height * tick
@@ -282,6 +288,7 @@ struct ManualFocusRuler: View {
                           y: ManualFocusRulerScale.indexFraction(lensPosition: lensPosition)
                               * size.height)
         }
+        .modifier(ManualRulerFace(chrome: ManualControlChrome.face(uiStyle), cornerRadius: 8))
     }
 
     /// A thin orange line and its one-based label per stop, offset from the

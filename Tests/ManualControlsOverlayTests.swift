@@ -256,7 +256,10 @@ struct ManualControlsOverlayTests {
         }
         let surfaceSource = try source("App/Modules/CameraCapture/ManualControlsSurface.swift")
         #expect(surfaceSource.contains("Text(\"ZOOM\")"))
-        #expect(surfaceSource.contains(".foregroundStyle(zoomControlsEnabled.wrappedValue ? .orange : .white)"))
+        // The toggle reads the shared binding and paints live state; only the
+        // exact colour is style-dependent (accent in Minimal, orange in Classic).
+        #expect(surfaceSource.contains("foregroundStyle(zoomControlsEnabled.wrappedValue"))
+        #expect(surfaceSource.contains("isClassic ? Color.orange : controlAccent"))
         #expect(surfaceSource.contains("func toggleZoomControls() { zoomControlsEnabled.wrappedValue.toggle() }"))
         #expect(surfaceSource.contains("var zoomControlsEnabled: Binding<Bool> = .constant(false)"))
 

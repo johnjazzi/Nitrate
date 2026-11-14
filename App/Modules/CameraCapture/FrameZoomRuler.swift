@@ -17,8 +17,16 @@ import SwiftUI
 /// The arrows reuse `ZoomHoldControl`, the same begin/end/revision protocol as
 /// the manual panel's hold keys, so release, drag-off and a revision change
 /// cancel the ramp identically.
+///
+/// Only the chrome follows the camera UI style: Classic keeps the dark rail
+/// plate and the readout capsule, Minimal lets the ticks and the focal readout
+/// sit straight on the preview. The tick mapping, the log scale and the flag
+/// that makes the rail cosmetic are identical in both.
 struct FrameZoomRuler: View {
     @Environment(\.cameraControlAccent) private var controlAccent
+    /// Presentation only: Classic keeps the dark rail plate and readout capsule,
+    /// Minimal draws the ticks and readout straight over the preview.
+    @Environment(\.cameraUIStyle) private var uiStyle
     let millimeters: Double
     let enabled: Bool
     let revision: UInt64
@@ -62,7 +70,6 @@ struct FrameZoomRuler: View {
 
     private var rail: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 10).fill(.black.opacity(0.45))
             Canvas { context, size in
                 let center = size.height / 2
                 let range = FrameZoomRulerScale.resolvedRange(currentMM: millimeters,
@@ -102,13 +109,23 @@ struct FrameZoomRuler: View {
                 .minimumScaleFactor(0.5)
                 .padding(.horizontal, 3)
                 .padding(.vertical, 1)
-                .background(.black.opacity(0.65), in: Capsule())
+                .background { readoutBackdrop }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .modifier(ManualRulerFace(chrome: ManualControlChrome.face(uiStyle), cornerRadius: 10))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Zoom focal length")
         .accessibilityValue(readout)
+    }
+
+    private var readoutScrim: Double { ManualControlChrome.readoutScrim(uiStyle) }
+
+    /// Classic keeps the capsule that holds the focal readout clear of busy
+    /// footage; Minimal draws no scrim and relies on the rail face's shadow.
+    @ViewBuilder private var readoutBackdrop: some View {
+        if readoutScrim > 0 {
+            Capsule().fill(.black.opacity(readoutScrim))
+        }
     }
 
     /// A finite focal readout; non-finite — or implausibly large — input shows a

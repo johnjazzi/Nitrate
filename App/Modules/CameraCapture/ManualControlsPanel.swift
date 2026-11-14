@@ -1,6 +1,12 @@
 import SwiftUI
 
 /// Hardware bindings stay here; shared presentation never owns capture state.
+///
+/// Only the aperture face follows the camera UI style. Minimal reads an
+/// adjustable aperture in the app's semantic light purple and a fixed lens in the
+/// shared muted grey, so a control that cannot act never borrows the adjustable
+/// colour. Classic keeps the neutral white face it had before the preference.
+/// Both styles call the same single `cameraViewModel` write.
 struct ManualControlsPanel: View {
     let cameraViewModel: CameraViewModel
 
@@ -11,6 +17,7 @@ struct ManualControlsPanel: View {
     /// Live Zoom toggle shared with Settings: on shows the in-frame zoom ruler.
     var zoomControlsEnabled: Binding<Bool> = .constant(false)
     let onDismiss: () -> Void
+    @Environment(\.cameraUIStyle) private var uiStyle
 
     var body: some View {
         ManualControlsSurface(
@@ -58,6 +65,8 @@ struct ManualControlsPanel: View {
                 }
             } label: {
                 Text(cameraViewModel.selectedLensAperture.map { String(format: "f/%.1f", $0) } ?? "Hold")
+                    .foregroundStyle(uiStyle == .classic ? Color.white
+                                                         : SettingsControlChrome.lightPurple)
                     .frame(maxWidth: .infinity, minHeight: 44)
             }
             .accessibilityLabel("Aperture")
@@ -68,7 +77,10 @@ struct ManualControlsPanel: View {
                         (cameraViewModel.apertureIsVariable ? "Read only" : "Fixed"))
                     .font(NitrateTypography.font(size: 9))
             }
-            .foregroundStyle(.white.opacity(0.6))
+            // A fixed or read-only lens can never act, so Minimal paints it in
+            // the shared muted grey instead of the adjustable purple.
+            .foregroundStyle(uiStyle == .classic ? Color.white.opacity(0.6)
+                                                 : InlineManualControlPresentation.inactiveGrey)
             .accessibilityLabel("Aperture unavailable for adjustment")
         }
     }

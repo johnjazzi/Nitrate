@@ -30,6 +30,16 @@ enum InlineManualControlPresentation {
         return intensity == 0 ? inactiveGrey : activeOrange.opacity(intensity)
     }
 
+    /// The opacity the stabilization face paints. Off draws nothing (the caller
+    /// uses `inactiveGrey`). Classic keeps the per-mode intensity ramp so a
+    /// stronger mode reads brighter; Minimal paints any active mode at the full
+    /// resolved accent, because "on" is the state it reports, not a shade.
+    static func stabilizationOpacity(_ mode: CameraStabilizationMode,
+                                     style: CameraUIStyle) -> Double {
+        guard mode != .off else { return 0 }
+        return style == .classic ? stabilizationIntensity(mode) : 1
+    }
+
     /// The mode the control paints. A saved but unsupported preference shows as
     /// its effective Off fallback rather than as an active mode, so the palette
     /// never claims a mode the capability cannot deliver.
@@ -111,6 +121,10 @@ enum InlineFrameRateKeyPlacement {
 /// stack keeps its three keys and its 140pt height.
 struct InlineManualControls: View {
     @Environment(\.cameraControlAccent) private var controlAccent
+    /// Presentation only: the keys defer their plate to the shared
+    /// `CameraRaisedButtonStyle`, and only the stabilization face reads the style
+    /// for its opacity ramp.
+    @Environment(\.cameraUIStyle) private var uiStyle
     @Binding var manualFocus: Bool
     let apertureReadout: String
     let apertureStops: [Float]
@@ -193,7 +207,8 @@ struct InlineManualControls: View {
                     .minimumScaleFactor(0.6)
             }
             .foregroundStyle(effectiveStabilization == .off ? InlineManualControlPresentation.inactiveGrey
-                : controlAccent.opacity(InlineManualControlPresentation.stabilizationIntensity(effectiveStabilization)))
+                : controlAccent.opacity(InlineManualControlPresentation.stabilizationOpacity(
+                    effectiveStabilization, style: uiStyle)))
             .frame(maxWidth: .infinity, minHeight: 44)
         }
         .disabled(!stabilizationInteractive)
