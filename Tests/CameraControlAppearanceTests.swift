@@ -35,18 +35,41 @@ struct CameraControlAppearanceTests {
         #expect(CameraControlColorPreference.allCases == [.followStock, .orange, .green])
     }
 
-    @Test func lensPlacementDefaultsToTopRight() {
-        #expect(CameraLensControlPosition.defaultValue == .topRight)
+    @Test func lensPlacementDefaultsAboveTheShutter() {
+        // The approved placement is below the preview, above the shutter; only a
+        // stored choice, or the one-time migration, can keep a user on top right.
+        #expect(CameraLensControlPosition.defaultValue == .aboveShutter)
         #expect(CameraLensControlPosition.resolved("topRight") == .topRight)
         #expect(CameraLensControlPosition.resolved("aboveShutter") == .aboveShutter)
-        #expect(CameraLensControlPosition.resolved("") == .topRight)
-        #expect(CameraLensControlPosition.resolved("leftEdge") == .topRight)
+        #expect(CameraLensControlPosition.resolved("") == .aboveShutter)
+        #expect(CameraLensControlPosition.resolved("leftEdge") == .aboveShutter)
         #expect(CameraLensControlPosition.allCases == [.topRight, .aboveShutter])
     }
 
     @Test func choicesCarryTheirSettingsTitles() {
         #expect(CameraControlColorPreference.allCases.map(\.title) == ["Follow stock", "Orange", "Green"])
         #expect(CameraLensControlPosition.allCases.map(\.title) == ["Top right", "Above shutter"])
+    }
+
+    // MARK: - Exposure dial size
+
+    @Test func exposureDialSizeDefaultsSmallAndResolvesItsSizes() {
+        #expect(CameraExposureDialSize.preferenceKey == "camera.exposureDialSize")
+        #expect(CameraExposureDialSize.defaultValue == .small)
+        #expect(CameraExposureDialSize.resolved("small") == .small)
+        #expect(CameraExposureDialSize.resolved("large") == .large)
+        // Absent and unrecognised values take the small dial.
+        #expect(CameraExposureDialSize.resolved("") == .small)
+        #expect(CameraExposureDialSize.resolved("huge") == .small)
+        #expect(CameraExposureDialSize.resolved("LARGE") == .small)
+        #expect(CameraExposureDialSize.allCases.map(\.title) == ["Small", "Large"])
+        // Both rulers read these; only the drawn track differs.
+        #expect(CameraExposureDialSize.small.length == 84)
+        #expect(CameraExposureDialSize.small.width == 72)
+        #expect(CameraExposureDialSize.large.length == 120)
+        #expect(CameraExposureDialSize.large.width == 56)
+        #expect(CameraExposureDialSize.small.tickSpacing > 0)
+        #expect(CameraExposureDialSize.large.tickSpacing > CameraExposureDialSize.small.tickSpacing)
     }
 
     // MARK: - Accent resolution
@@ -131,12 +154,20 @@ struct CameraControlAppearanceTests {
 
     @Test func lensPlacementPersistsUnderItsOwnKey() throws {
         let defaults = try store("lensPosition")
-        #expect(CameraLensControlPosition.load(from: defaults) == .topRight,
-                "Top right is the migration default for existing users")
+        #expect(CameraLensControlPosition.load(from: defaults) == .aboveShutter,
+                "above the shutter is the placement for a fresh install")
 
         CameraLensControlPosition.aboveShutter.save(to: defaults)
         #expect(defaults.string(forKey: CameraLensControlPosition.preferenceKey) == "aboveShutter")
         #expect(CameraLensControlPosition.load(from: defaults) == .aboveShutter)
+
+        // A user who chose top right before the migration keeps it: the
+        // migration writes its own key and never rewrites this preference.
+        CameraLensControlPosition.topRight.save(to: defaults)
+        #expect(CameraLensControlPosition.load(from: defaults) == .topRight)
+        #expect(CameraLensControlPosition.belowPreviewMigrationKey
+            != CameraLensControlPosition.preferenceKey,
+            "the one-time migration must not share the preference's key")
     }
 
     @Test func theTwoPreferencesDoNotOverwriteEachOther() throws {
@@ -152,13 +183,13 @@ struct CameraControlAppearanceTests {
         defaults.set("not a choice", forKey: CameraControlColorPreference.preferenceKey)
         defaults.set("not a choice", forKey: CameraLensControlPosition.preferenceKey)
         #expect(CameraControlColorPreference.load(from: defaults) == .followStock)
-        #expect(CameraLensControlPosition.load(from: defaults) == .topRight)
+        #expect(CameraLensControlPosition.load(from: defaults) == .aboveShutter)
 
         // A value of the wrong type reads as absent, not as a crash.
         let mistyped = try store("mistyped")
         mistyped.set(3, forKey: CameraControlColorPreference.preferenceKey)
         mistyped.set(true, forKey: CameraLensControlPosition.preferenceKey)
         #expect(CameraControlColorPreference.load(from: mistyped) == .followStock)
-        #expect(CameraLensControlPosition.load(from: mistyped) == .topRight)
+        #expect(CameraLensControlPosition.load(from: mistyped) == .aboveShutter)
     }
 }

@@ -177,88 +177,168 @@ struct ExposureRescueButton: View {
     }
 }
 
-/// The rescue confirmation card. Normal mode offers the 60 fps switch; armed mode
-/// offers the return to 24 fps, so the active badge stays tappable even after the
-/// meter drops back below the threshold. Fixed, short content — no `ScrollView`,
-/// so it cannot be trapped by a scroll that never fits.
+/// Pure gates for the two non-frame-rate rescue options. Both read the owners
+/// that already exist — the push/pull ladder and the lens aperture capability —
+/// and neither invents a value: a pull is always the next real rung on the
+/// ladder, and an aperture target is always a stop the active lens reports.
+enum DaylightRescuePullPolicy {
+    /// The rung one step darker than `stops`, or nil when the ladder floor is
+    /// already reached. `floor` is the owner's own minimum (`PushPullStops`) and
+    /// must itself be negative: a non-negative request is a broken floor, not an
+    /// offer, so no destination is invented from it.
+    ///
+    /// The destination is a real pull even from a pushed or neutral take. Stops
+    /// are signed and the ladder runs -3...+2, so the next rung below `stops` is
+    /// `min(stops, 0) - 1` clamped to the floor. That makes PUSH +2 and PUSH +1
+    /// develop at -1 (a pull), neutral 0 develop at -1, and an existing -1 go to
+    /// -2 — one rung darker in the direction that actually recovers a bright take.
+    static func nextStops(after stops: Int, floor: Int) -> Int? {
+        guard floor < 0, stops > floor else { return nil }
+        return max(min(stops, 0) - 1, floor)
+    }
+
+    /// Concise row title for a destination rung, stated as a magnitude: a
+    /// destination of -2 reads "Pull 2 stops", never "Pull -2 stops".
+    static func title(forStops stops: Int) -> String {
+        let magnitude = abs(stops)
+        return "Pull \(magnitude) stop\(magnitude == 1 ? "" : "s")"
+    }
+}
+
+/// Aperture rescue targets the next *supported* higher f-number on the active
+/// variable-aperture lens. When the current iris is unknown, or the lens reports
+/// no higher rung, no destination exists and the option is not offered — no
+/// invented one-stop close, and no offer on fixed-aperture or front/tele lenses
+/// (their capability already reports empty stops).
+enum DaylightRescueAperturePolicy {
+    static func nextStop(after current: Float?, stops: [Float]) -> Float? {
+        guard let current, current.isFinite, current > 0 else { return nil }
+        return stops.filter { $0.isFinite && $0 > current + 0.001 }.min()
+    }
+
+    static func title(forStop stop: Float) -> String {
+        "Close to f/" + String(format: "%.1f", stop)
+    }
+}
+
+/// One compact row on the rescue card. `enabled == false` keeps the row visible
+/// with a one-line reason, so an unavailable option is explained rather than
+/// silently hidden — the meter may be overexposed while a take is draining.
+struct DaylightRescueOption: Equatable {
+    var title: String
+    var detail: String
+    var enabled: Bool
+}
+
+/// Builds the three option rows from the existing owners' facts. Pure, so the
+/// gating (which option is offered, and why one is refused) is regression-testable
+/// without a camera: the frame-rate row never gates the other two, and an absent
+/// aperture rung removes only the aperture row.
+enum DaylightRescuePresentation {
+    /// Frame-rate row. `available` is the device's 60 fps capability; `canChange`
+    /// is the live session's transition gate. Unavailable stays visible and
+    /// refused rather than disappearing, because the card is the only place the
+    /// operator learns why.
+    ///
+    /// Capability only gates *entering* 60 fps. Returning to 24 is always
+    /// possible on a session that is already armed, even if the capability read
+    /// has since gone false (a lens or format change), so an armed session is
+    /// never stranded in 60 fps. The `canChange` busy gate still wins on both legs.
+    static func sixty(armed: Bool, available: Bool, canChange: Bool) -> DaylightRescueOption {
+        if armed {
+            guard canChange else {
+                return DaylightRescueOption(title: "Return to 24 fps",
+                                            detail: "Busy — finish the take first", enabled: false)
+            }
+            return DaylightRescueOption(title: "Return to 24 fps",
+                                        detail: "Session-only mode off", enabled: true)
+        }
+        if !available {
+            return DaylightRescueOption(title: "60 fps", detail: "Not available on this camera",
+                                        enabled: false)
+        }
+        guard canChange else {
+            return DaylightRescueOption(title: "Use 60 fps", detail: "Busy — finish the take first",
+                                        enabled: false)
+        }
+        return DaylightRescueOption(title: "Use 60 fps", detail: "1/120 shutter · this session",
+                                    enabled: true)
+    }
+
+    /// Push/pull row. Development only: the take is already recorded, so the row
+    /// never claims it reduces incoming light or recovers clipped highlights.
+    static func pull(stockSelected: Bool, currentStops: Int?, floor: Int, busy: Bool) -> DaylightRescueOption {
+        let current = currentStops ?? 0
+        let next = DaylightRescuePullPolicy.nextStops(after: current, floor: floor)
+        let title = next.map(DaylightRescuePullPolicy.title(forStops:)) ?? "Maximum pull"
+        let detail = stockSelected ? "Develops darker · not a capture change" : "Select a stock first"
+        guard stockSelected, next != nil else {
+            return DaylightRescueOption(title: title, detail: detail, enabled: false)
+        }
+        if busy {
+            return DaylightRescueOption(title: title, detail: "Busy — finish the take first",
+                                        enabled: false)
+        }
+        return DaylightRescueOption(title: title, detail: detail, enabled: true)
+    }
+
+    /// Aperture row, or nil when the active lens offers no higher stop. The
+    /// canonical `setLensAperture` guard still owns the final refusal; the row is
+    /// pre-disabled while the device is busy.
+    static func aperture(nextStop: Float?, enabled: Bool) -> DaylightRescueOption? {
+        guard let nextStop else { return nil }
+        return DaylightRescueOption(title: DaylightRescueAperturePolicy.title(forStop: nextStop),
+                                    detail: enabled ? "Next take · preview keeps its iris"
+                                                    : "Busy — finish the take first",
+                                    enabled: enabled)
+    }
+}
+
+/// The rescue options card. Fixed, short content — no `ScrollView` and no
+/// editorial prose: each row states the action, the destination amount and, when
+/// refused, the one reason. Long-form explanation lives in Settings → About.
 ///
 /// It is rendered by `DaylightExposureRescueOverlay`, which dims the camera canvas
-/// behind it: this is an in-camera confirmation, not a page. The card reuses the
-/// same translucent face as the rest of the chrome so the preview still reads
-/// through, and its actions are deliberately wider and taller than the toolbar
-/// keys because they are read and tapped while watching a bright scene.
+/// behind it: this is an in-camera choice, not a page. The card reuses the same
+/// translucent face as the rest of the chrome so the preview still reads through,
+/// and its rows are deliberately taller than the toolbar keys because they are
+/// tapped while watching a bright scene.
 struct DaylightExposureRescueModal: View {
     /// True while the session-only 60 fps mode is active.
     var armed: Bool
-    /// False when the active device has no eligible 4K Apple Log 60 fps format.
-    var available: Bool
-    /// False while a take, lens change or mode transition blocks a switch.
-    var canChange: Bool
-    /// Confirm: `true` switches to 60 fps, `false` returns to 24 fps.
-    var onSelect: (Bool) -> Void
-    /// Dismiss without changing the mode.
+    var sixty: DaylightRescueOption
+    /// Nil when no stock is selected, or the ladder is already at its floor.
+    var pull: DaylightRescueOption
+    /// Nil when the active lens reports no higher supported f-number.
+    var aperture: DaylightRescueOption?
+    /// `true` arms 60 fps, `false` returns to 24 fps.
+    var onSixty: (Bool) -> Void
+    var onPull: () -> Void
+    var onAperture: () -> Void
     var onCancel: () -> Void
 
-    private var canConfirm: Bool {
-        DaylightExposureRescuePolicy.canConfirm(available: available, canChange: canChange)
-    }
-
-    private var blockedReason: String? {
-        if !available {
-            return "This device has no eligible 4K Apple Log 60 fps format. The mode stays unavailable."
-        }
-        if !canChange {
-            return "Finish the current take, lens change or mode transition before switching frame rate."
-        }
-        return nil
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(armed ? "Daylight 60 fps is on" : "24 fps or 60 fps?")
-                .font(NitrateTypography.font(size: 19))
+        VStack(alignment: .leading, spacing: 10) {
+            Text(armed ? "Too bright · 60 fps on" : "Too bright?")
+                .font(NitrateTypography.font(size: 18))
                 .foregroundStyle(.white)
 
-            if !armed {
-                Text("Films are shot at 24 fps (except The Hobbit, but we don't count that). "
-                     + "Over 100 years ago we found a perfect balance: 24 fps with a 180° shutter, "
-                     + "just enough blur to feel real and present.")
-                    .font(NitrateTypography.font(.footnote))
-                    .foregroundStyle(.white.opacity(0.88))
-                    .fixedSize(horizontal: false, vertical: true)
+            optionRow(sixty, tint: armed ? .orange : nil, action: { onSixty(!armed) })
+            optionRow(pull, tint: nil, action: onPull)
+            if let aperture {
+                optionRow(aperture, tint: nil, action: onAperture)
             }
 
-            Text("But this is an iPhone, and modern tech has given us highly sensitive sensors. "
-                 + "This mode sets 60 fps and drops the shutter to 1/120 — about 1.3 stops less light — "
-                 + "giving you the ability to shoot in daylight. An ND filter is the better answer "
-                 + "if you can use one.")
-                .font(NitrateTypography.font(.footnote))
-                .foregroundStyle(.white.opacity(0.88))
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("Session-only: it reverts to 24 fps when the camera session ends and is never saved.")
-                .font(NitrateTypography.font(.caption))
-                .foregroundStyle(.white.opacity(0.6))
-                .fixedSize(horizontal: false, vertical: true)
-
-            if let blockedReason {
-                Text(blockedReason)
-                    .font(NitrateTypography.font(.caption))
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+            Button(action: onCancel) {
+                Text(armed ? "Keep 60 fps" : "Cancel")
+                    .font(NitrateTypography.font(size: 13))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .frame(maxWidth: .infinity, minHeight: 34)
             }
-
-            HStack(spacing: 12) {
-                actionButton(armed ? "Keep 60 fps" : "Keep 24 fps", tint: nil, enabled: true,
-                             action: onCancel)
-                actionButton(armed ? "Return to 24 fps" : "Use 60 fps",
-                             tint: canConfirm ? .orange : nil, enabled: canConfirm,
-                             action: { onSelect(!armed) })
-            }
-            .frame(maxWidth: .infinity)
+            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 20)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
         .frame(maxWidth: 360)
         .background(cardFace)
         .overlay {
@@ -280,38 +360,48 @@ struct DaylightExposureRescueModal: View {
             }
     }
 
-    /// Deliberately larger than a 44pt toolbar key: wide horizontal padding so the
-    /// label is never crowded by the bevel, and a 52pt minimum height.
-    private func actionButton(_ title: String, tint: Color?, enabled: Bool,
-                              action: @escaping () -> Void) -> some View {
+    /// One action row: the label, the destination amount, and any refusal reason
+    /// on a second line. 50pt minimum height, wider than a 44pt toolbar key.
+    private func optionRow(_ option: DaylightRescueOption, tint: Color?,
+                           action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title)
-                .font(NitrateTypography.font(size: 15))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 14)
-                .frame(maxWidth: .infinity, minHeight: 52)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(option.title)
+                    .font(NitrateTypography.font(size: 15))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Text(option.detail)
+                    .font(NitrateTypography.font(size: 11))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .opacity(0.72)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
         }
         .buttonStyle(CameraRaisedButtonStyle(faceColor: tint, cornerRadius: 12))
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.5)
+        .disabled(!option.enabled)
+        .opacity(option.enabled ? 1 : 0.5)
     }
 }
 
-/// The rescue confirmation as it appears in the camera: a dim scrim over the live
-/// canvas with the card floating in the middle.
+/// The rescue card as it appears in the camera: a dim scrim over the live canvas
+/// with the card floating in the middle.
 ///
 /// This is an overlay on the camera canvas rather than a system sheet, so the
 /// framed preview and the shooting bar are never re-laid-out and the user keeps
 /// seeing the scene they are metering while they decide. Tapping outside the card
-/// dismisses it without changing the mode, which is the same outcome as the
-/// cancel action.
+/// dismisses it without changing anything, the same outcome as cancel.
 struct DaylightExposureRescueOverlay: View {
     var armed: Bool
-    var available: Bool
-    var canChange: Bool
-    var onSelect: (Bool) -> Void
+    var sixty: DaylightRescueOption
+    var pull: DaylightRescueOption
+    var aperture: DaylightRescueOption?
+    var onSixty: (Bool) -> Void
+    var onPull: () -> Void
+    var onAperture: () -> Void
     var onCancel: () -> Void
 
     var body: some View {
@@ -321,8 +411,9 @@ struct DaylightExposureRescueOverlay: View {
                 .onTapGesture(perform: onCancel)
                 .accessibilityHidden(true)
 
-            DaylightExposureRescueModal(armed: armed, available: available, canChange: canChange,
-                                        onSelect: onSelect, onCancel: onCancel)
+            DaylightExposureRescueModal(armed: armed, sixty: sixty, pull: pull, aperture: aperture,
+                                        onSixty: onSixty, onPull: onPull, onAperture: onAperture,
+                                        onCancel: onCancel)
                 .padding(.horizontal, 28)
         }
         .transition(.opacity)

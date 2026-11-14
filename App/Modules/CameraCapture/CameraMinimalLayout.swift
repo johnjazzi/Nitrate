@@ -9,19 +9,25 @@ enum CameraMinimalLayout {
 
     /// Compact choices share one 44pt-high strip, with unambiguous adjoining cells.
     static func lensCellWidth(style: CameraUIStyle) -> CGFloat {
-        style == .minimal ? lensFaceSize + lensFaceGap : lensHitSize
+        lensFaceSize + lensFaceGap
     }
 
 
     static func lensRow(in controls: CGRect, canvasWidth: CGFloat, lensCount: Int,
-                        style: CameraUIStyle = .minimal) -> CGRect? {
+                        style: CameraUIStyle = .minimal, previewBottom: CGFloat? = nil) -> CGRect? {
         guard lensCount > 0, lensCount <= 4, canvasWidth.isFinite,
-              controls.minY.isFinite, controls.minY >= lensHitSize + 8 else { return nil }
+              controls.minY.isFinite, controls.height.isFinite, controls.height > 8 else { return nil }
         let width = CGFloat(lensCount) * lensCellWidth(style: style)
         guard canvasWidth >= width + 16 else { return nil }
-        // Above the bar, never over the exposure column's hit area.
-        return CGRect(x: (canvasWidth - width) / 2, y: controls.minY - lensHitSize - 4,
-                      width: width, height: lensHitSize)
+        // Controls include 8pt bottom padding. Use the actual shutter's top,
+        // not the top of the whole shooting bar (which put lenses over footage).
+        let shutterTop = controls.minY + (controls.height - 8 - CameraControlGeometry.recordSize) / 2
+        let top = shutterTop - lensHitSize - 4
+        guard top >= 0 else { return nil }
+        if let previewBottom {
+            guard previewBottom.isFinite, top >= previewBottom + 2 else { return nil }
+        }
+        return CGRect(x: (canvasWidth - width) / 2, y: top, width: width, height: lensHitSize)
     }
 
     static func exposureMeter(in preview: CGRect, above lensRow: CGRect? = nil) -> CGRect? {

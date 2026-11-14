@@ -264,17 +264,11 @@ struct ManualFocusRuler: View {
     private func rail(size: CGSize) -> some View {
         ZStack {
             Canvas { context, canvasSize in
-                for tick in stride(from: 0.0, through: 1.0, by: 0.1) {
-                    let y = canvasSize.height * tick
+                for index in 0...10 {
+                    let y = canvasSize.height * CGFloat(index) / 10
+                    let tickLength: CGFloat = index.isMultiple(of: 5) ? 10 : 6
                     var path = Path()
-                    path.move(to: CGPoint(x: 0, y: y))
-                    path.addLine(to: CGPoint(x: 6, y: y))
-                    context.stroke(path, with: .color(.white.opacity(0.4)), lineWidth: 1)
-                }
-                for tick in stride(from: 0.0, through: 1.0, by: 0.5) {
-                    let y = canvasSize.height * tick
-                    var path = Path()
-                    path.move(to: CGPoint(x: canvasSize.width - 6, y: y))
+                    path.move(to: CGPoint(x: canvasSize.width - tickLength, y: y))
                     path.addLine(to: CGPoint(x: canvasSize.width, y: y))
                     context.stroke(path, with: .color(.white.opacity(0.4)), lineWidth: 1)
                 }

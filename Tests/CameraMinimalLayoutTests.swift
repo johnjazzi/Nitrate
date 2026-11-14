@@ -13,11 +13,23 @@ struct CameraMinimalLayoutTests {
             // 30pt faces on a 4pt gap: one 34pt cell each, in a 44pt-high strip.
             let cell = CameraMinimalLayout.lensCellWidth(style: .minimal)
             #expect(cell == CameraMinimalLayout.lensFaceSize + 4)
+            #expect(CameraMinimalLayout.lensCellWidth(style: .classic) == cell,
+                    "both finishes use the same compact cell")
             #expect(row.width == 4 * cell)
             #expect(row.height == CameraMinimalLayout.lensHitSize)
-            #expect(row.maxY < controls.minY)
+            // The row sits below the preview and above the shutter: its bottom
+            // edge is 4pt above the shutter's actual top, computed from the
+            // bar's real height and the REC size, not from the bar's top edge.
+            let shutterTop = controls.minY + (controls.height - 8 - CameraControlGeometry.recordSize) / 2
+            #expect(row.maxY + 4 == shutterTop)
             #expect(row.maxY <= controls.minY + shooting.record.minY)
-            #expect(!row.intersects(shooting.exposure.offsetBy(dx: controls.minX, dy: controls.minY)))
+            #expect(!row.intersects(shooting.record.offsetBy(dx: controls.minX, dy: controls.minY)))
+            // The strip now sits inside the bar's band, so its trailing edge has
+            // to clear the drawn exposure dial: the 72pt small ruler leaves 12pt
+            // of empty leading slot inside the 84pt column.
+            let slotLeading = CameraControlGeometry.exposureWidth - CameraExposureDialSize.small.width
+            #expect(row.maxX - controls.minX <= controls.width - CameraControlGeometry.exposureWidth + slotLeading,
+                    "the lens strip never reaches the drawn exposure dial")
             for index in 0..<3 {
                 let hit = CGRect(x: row.minX + CGFloat(index) * cell, y: row.minY,
                                  width: cell, height: row.height)
@@ -25,6 +37,26 @@ struct CameraMinimalLayoutTests {
                 #expect(hit.intersection(next).width == 0)
             }
         }
+    }
+
+    /// The row clears the preview by the 2pt guard and disappears rather than
+    /// shrinking or overlapping when the bar is too short to hold it.
+    @Test func lensRowClearsThePreviewAndHasBoundedFallbacks() throws {
+        let controls = CGRect(x: 16, y: 500, width: 358, height: 204)
+        let row = try #require(CameraMinimalLayout.lensRow(in: controls, canvasWidth: 390, lensCount: 4))
+        #expect(CameraMinimalLayout.lensRow(in: controls, canvasWidth: 390, lensCount: 4,
+                                            previewBottom: row.minY - 2) == row,
+                "2pt of preview clearance is enough")
+        #expect(CameraMinimalLayout.lensRow(in: controls, canvasWidth: 390, lensCount: 4,
+                                            previewBottom: row.minY - 1) == nil,
+                "the row is withheld rather than drawn over the preview")
+        #expect(CameraMinimalLayout.lensRow(in: CGRect(x: 0, y: 0, width: 390, height: 12),
+                                            canvasWidth: 390, lensCount: 4) == nil,
+                "a bar too short to seat the strip offers no row")
+        // The strip keeps the fixed 44pt target and never resizes the bar or the
+        // 84pt shutter it sits above.
+        #expect(CameraMinimalLayout.lensHitSize == 44)
+        #expect(CameraControlGeometry.recordSize == 84)
     }
 
     @Test func absentLensesAndUnusableBoundsDoNotCreateDeadControls() {
@@ -57,14 +89,34 @@ struct CameraMinimalLayoutTests {
         #expect(screen.contains("CameraLensRow(availableLenses: availableLenses, selectedLens: selectedLens,"))
         #expect(screen.contains("meteredEV: cameraViewModel.liveExposureTargetOffset,"))
         #expect(screen.contains("targetEV: cameraViewModel.liveExposureBias,"))
-        // The bar's own side meter belongs to Classic; Minimal paints the shared
-        // meter overlay, and its clusters sit in the borderless well.
-        #expect(bar.contains("exposureColumns.modifier(CameraInsetSurface())"))
-        #expect(bar.contains("exposureColumns.cameraWellBacking()"))
+        // The well is the bar's shared backing, not a per-style inset plate: both
+        // rulers seat in `cameraWellBacking` and the column adds none of its own.
+        let exposureSetting = try #require(bar.components(separatedBy: "private var exposureSetting: some View").last)
+        let exposureBody = try #require(exposureSetting.components(separatedBy: "private var exposureHeader").first)
+        #expect(exposureBody.components(separatedBy: ".cameraWellBacking()").count - 1 == 2,
+                "the ISO and EV rulers each seat in the shared well")
+        #expect(!bar.contains("CameraInsetSurface"),
+                "the well belongs to the shared backing, not a per-style inset plate")
         #expect(bar.contains(".gesture(stockEntryGesture)"))
         #expect(!bar.contains("pushPullBadge("))
-        #expect(screen.contains("PushPullControl(resolved: resolvedPushPull,"))
-        #expect(screen.contains("manualStops: $pushPullStops,"))
+        // The stock sheet's bottom row belongs to the shared compact picker:
+        // ContentView hands it the resolved push/pull and the persisted bindings
+        // and builds no pill of its own.
+        #expect(screen.contains("CompactStockPicker(stocks: stocks, selectedStockId: selectedStockIdBinding,"))
+        #expect(screen.contains("gauge: $gauge, resolvedPushPull: resolvedPushPull,"))
+        #expect(screen.contains("isAutomatic: $pushPullAutomatic, manualStops: $pushPullStops,"))
+        #expect(screen.contains("onPushPullChange: persistPreferences,"),
+                "the picker writes through the existing persistence callback")
+        #expect(!screen.contains("PushPullControl("),
+                "the pill is the picker's, never a second copy in the sheet")
+        let picker = try source("App/Modules/FilmStockLibrary/CompactStockPicker.swift")
+        #expect(picker.contains("PushPullControl(resolved: resolvedPushPull,"),
+                "the picker instantiates the canonical shared pill")
+        #expect(picker.contains("manualStops: $manualStops,"))
+        #expect(picker.contains("enlarged: true"),
+                "the sheet shows the enlarged pill, not the compact toolbar rung")
+        #expect(picker.contains("GaugeControl(gauge: $gauge, enlarged: true)"),
+                "the gauge is the shared control at the same enlarged size")
     }
 
     @Test func overlaysClearEachOtherWithoutGrowingTheShootingBar() throws {

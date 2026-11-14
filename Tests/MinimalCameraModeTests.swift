@@ -6,8 +6,8 @@ import Testing
 import UniformTypeIdentifiers
 
 /// Visual conventions of the minimal camera chrome: the mode row's one flat
-/// selection fill, the unboxed recording status and the unboxed remaining-time
-/// readout.
+/// selection fill on its centred carousel, the unboxed recording status and the
+/// unboxed queue/capacity face.
 ///
 /// These pins cover what the new presentation *draws*. Behaviour — capture
 /// phases, armed daylight 60, swipe thresholds, blocked-tap refusal, queue,
@@ -22,8 +22,8 @@ struct MinimalCameraModeTests {
     // MARK: - Mode row
 
     /// The selected mode is one centred letter on a flat, accent-matched dark
-    /// fill: no track, no ring, no raised face, and the fill is visibly smaller
-    /// than the invisible 44pt target it sits inside.
+    /// disc: no track, no ring, no raised face, and the disc is visibly smaller
+    /// than the row's 44pt touch height.
     @Test func theSelectedLetterSitsOnOneFlatDarkFillAndGrowsNoRing() throws {
         #expect(CameraModeCarousel.selectionFillSize < CameraModeCarousel.minimumControlWidth,
                 "The fill is the state; the 44pt target stays invisible.")
@@ -43,14 +43,17 @@ struct MinimalCameraModeTests {
                 let fill = points(matching: flatDarkFill, in: data, image: image)
                 #expect(fill.count > 300, "The selected letter sits on a painted flat dark fill at \(width)pt.")
                 let fillMidX = Double(fill.map(\.x).reduce(0, +)) / Double(fill.count)
-                // Minimal centres the whole compact group, so the fill is centred
-                // on its own cell — not on the slot unless the cell is the middle one.
+                // Minimal's carousel holds the selected letter on the slot's
+                // centre, so its disc is centred whatever the mode.
                 let modes = CameraMode.visibleModes
-                let cell = CameraModeRowLayout.compactCellRect(
-                    index: modes.firstIndex(of: active) ?? 0, slotWidth: width,
-                    visibleCount: modes.count)
-                #expect(abs(fillMidX - Double(cell.midX) * scale) <= 2 * scale,
-                        "The fill is centred behind the selected letter, not parked in a half.")
+                let selectedIndex = modes.firstIndex(of: active) ?? 0
+                let cell = CameraModeRowLayout.compactCellRect(index: selectedIndex,
+                                                               selectedIndex: selectedIndex,
+                                                               slotWidth: width)
+                #expect(abs(fillMidX - Double(width) / 2 * scale) <= 2 * scale,
+                        "The fill holds the slot's centre with the selected letter.")
+                #expect(abs(cell.midX - width / 2) <= 0.5,
+                        "The pure geometry centres the selected cell too.")
 
                 // Nothing bright is drawn just outside the fill's top arc: no
                 // ring, rim or second decorative face. (The caption band below
@@ -188,9 +191,20 @@ struct MinimalCameraModeTests {
             .frame(width: slot.width, height: slot.height), name: "minimal-lcd-long")
         #expect(digest(short) != digest(long), "The readout tracks the estimate instead of a fixed placeholder.")
 
+        // Low storage is no longer a glyph inside the face: the bar's shared
+        // queue-attention outline raises it over the same content, and the
+        // spoken value carries it. The LCD's own ink must therefore not change.
         let low = try render(RecordingTimeLCD(estimatedSeconds: 754, isStorageLow: true, queueStatus: idle)
             .frame(width: slot.width, height: slot.height), name: "minimal-lcd-low")
-        #expect(digest(low) != digest(short), "Low storage still shows its warning.")
+        #expect(digest(low) == digest(short),
+                "Low storage is the bar outline's cue; the face's content is unchanged.")
+        let bar = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraControlBar.swift"),
+                             encoding: .utf8)
+        #expect(bar.contains("if isStorageLow { snapshot.issues.insert(\"low-storage\") }"),
+                "Low storage still raises its warning — on the outline, not in the face.")
+        #expect(bar.contains("CameraQueueAttentionOutline(hasIssue: queueAttention.hasUnseenIssue,"))
+        #expect(bar.contains("\\(isStorageLow ? \"Low storage. \" : \"\")"),
+                "The warning stays spoken even though it paints no glyph.")
 
         // The render ring is still policy-driven: it animates only while a job is
         // in flight and Reduce Motion freezes it to a static arc.
@@ -273,13 +287,17 @@ struct MinimalCameraModeTests {
     }
 
     /// The flat selection fill: an opaque, dark, accent-matched surface.
+    /// The selection disc: dark, opaque and accent-tinted. The capsule behind
+    /// the group is neutral charcoal, so its tint separates the two.
     private func flatDarkFill(_ red: Int, _ green: Int, _ blue: Int, _ alpha: Int) -> Bool {
-        alpha > 200 && max(red, max(green, blue)) <= 90
+        let high = max(red, max(green, blue))
+        return alpha > 200 && high <= 90 && high - min(red, min(green, blue)) >= 3
     }
 
-    /// The dimmed neighbour letter.
+    /// The dimmed neighbour letter — over the preview or over the capsule, where
+    /// the composite is opaque rather than translucent.
     private func ghostInk(_ red: Int, _ green: Int, _ blue: Int, _ alpha: Int) -> Bool {
-        alpha > 25 && alpha < 150 && red > 40 && red < 160
+        alpha > 25 && red > 40 && red < 170
             && abs(red - green) < 6 && abs(green - blue) < 6
     }
 

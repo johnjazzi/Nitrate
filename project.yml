@@ -137,6 +137,7 @@ targets:
       - path: Tests/RecordButtonAppearanceRenderTests.swift
       - path: Tests/CameraFrameControlAlignmentTests.swift
       - path: Tests/DaylightExposureRescueTests.swift
+      - path: Tests/DaylightRescueOptionsTests.swift
       - path: App/Modules/CameraCapture/ExposureRescueControl.swift
       - path: Tests/CameraDesignRenderTests.swift
       - path: Tests/CameraUIStyleSurfaceTests.swift

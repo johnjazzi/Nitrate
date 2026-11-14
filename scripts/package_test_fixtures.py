@@ -63,6 +63,9 @@ FILE_FIXTURES: tuple[str, ...] = (
     "Resources/Shaders/diffusion.metal",
     "App/Modules/FilmStockLibrary/GaugeControl.swift",
     "App/Modules/FilmStockLibrary/PushPullControl.swift",
+    # The picker owns the gauge + push/pull bottom row and the stock chips; the
+    # stock-sheet and layout suites read it by repository-relative path.
+    "App/Modules/FilmStockLibrary/CompactStockPicker.swift",
     "Resources/gauges.json",
     "Resources/Shaders/hlg-input.h",
     "App/Resources/stocks.json",
@@ -127,6 +130,7 @@ FILE_FIXTURES: tuple[str, ...] = (
     "App/Modules/CameraCapture/ManualControlsPanel.swift",
     "App/Modules/CameraCapture/ManualControlsSurface.swift",
     "App/Modules/Purchase/PurchaseView.swift",
+    "App/Modules/Purchase/AboutView.swift",
     "App/Modules/Purchase/SettingsSelectionRow.swift",
     "App/Modules/RenderQueue/RenderQueueViewModel.swift",
     "App/Modules/RenderQueue/QueueReceiptViews.swift",

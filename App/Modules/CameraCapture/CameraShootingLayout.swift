@@ -46,17 +46,11 @@ struct CameraControlGeometry {
     let exposure: CGRect
 
     init(width: CGFloat, height: CGFloat, style: CameraUIStyle = .minimal) {
-        if style == .classic {
-            let wellHeight = (height - Self.columnGap) / 3
-            let lcdHeight = height - Self.columnGap - wellHeight
-            lcd = CGRect(x: 0, y: 0, width: Self.leftWidth, height: lcdHeight)
-            stock = CGRect(x: 0, y: lcdHeight + Self.columnGap, width: Self.leftWidth, height: wellHeight)
-        } else {
-            let stockTop = max(48, (height - Self.recordSize) / 2)
-            stock = CGRect(x: 0, y: stockTop, width: Self.leftWidth, height: 44)
-            let lcdTop = stock.maxY + Self.columnGap
-            lcd = CGRect(x: 0, y: lcdTop, width: Self.leftWidth, height: max(44, height - lcdTop))
-        }
+        // Both finishes share the compact arrangement; only well chrome differs.
+        let stockTop = max(48, (height - Self.recordSize) / 2)
+        stock = CGRect(x: 0, y: stockTop, width: Self.leftWidth, height: 44)
+        let lcdTop = stock.maxY + Self.columnGap
+        lcd = CGRect(x: 0, y: lcdTop, width: Self.leftWidth, height: max(44, height - lcdTop))
         record = CGRect(x: (width - Self.recordSize) / 2, y: (height - Self.recordSize) / 2,
                         width: Self.recordSize, height: Self.recordSize)
         exposure = CGRect(x: width - Self.exposureWidth, y: 0,

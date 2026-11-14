@@ -66,25 +66,36 @@ import Testing
         return rep
     }
 
-    /// Fraction of the sampled column that carries a dark, opaque face. The
-    /// columns sit inside the drawn rail but clear of the tick strokes, the
-    /// marker labels and the readout, so only a plate can darken them.
+    /// Fraction of the rail's own body that carries the plate.
+    ///
+    /// Two things are measured rather than assumed, because the old fixed
+    /// sampling silently measured something else:
+    ///  * the band is the rail's body — 20%…80% of the column. The two 44pt hold
+    ///    keys and their 6pt gaps sit at the ends of the column, carry their own
+    ///    face, and are transparent in Minimal; including them swapped plate
+    ///    pixels for key pixels and read 0.85 with the plate fully intact.
+    ///  * the authored ink is excluded — the tick strokes, the labels at 62% of
+    ///    the width and the accent index that crosses the whole rail. Those
+    ///    columns move whenever the tick layout moves, and counting them as
+    ///    "not plate" is what made the old thresholds read 0.853.
+    /// What is left is plate or preview, which is exactly the question this
+    /// suite asks; the accent index is asserted separately and stays painted.
     private func plateCoverage(_ rep: NSBitmapImageRep,
                                columns fractions: [Double] = [0.62, 0.70]) -> Double {
         let columns = fractions.map { Int(Double(rep.pixelsWide) * $0) }
-        let top = Int(Double(rep.pixelsHigh) * 0.12)
-        let bottom = Int(Double(rep.pixelsHigh) * 0.88)
-        var dark = 0
-        var total = 0
+        let top = Int(Double(rep.pixelsHigh) * 0.20)
+        let bottom = Int(Double(rep.pixelsHigh) * 0.80)
+        var plated = 0
+        var bare = 0
         for y in top..<bottom {
             for x in columns {
                 guard let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
-                total += 1
                 let brightness = (color.redComponent + color.greenComponent + color.blueComponent) / 3
-                if color.alphaComponent > 0.3, brightness < 0.25 { dark += 1 }
+                if brightness >= 0.25 { continue }
+                if color.alphaComponent > 0.3 { plated += 1 } else { bare += 1 }
             }
         }
-        return total == 0 ? 0 : Double(dark) / Double(total)
+        return plated + bare == 0 ? 0 : Double(plated) / Double(plated + bare)
     }
 
     private struct FocusRulerHarness: View {

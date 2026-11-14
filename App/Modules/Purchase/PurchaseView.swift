@@ -62,6 +62,8 @@ struct PurchaseView: View {
     /// value follows the selected stock's light type.
     @AppStorage(CameraRulerContrastPreference.preferenceKey)
     private var highContrastRulers = CameraRulerContrastPreference.defaultValue
+    @AppStorage(CameraExposureDialSize.preferenceKey)
+    private var exposureDialSizeRaw = CameraExposureDialSize.defaultValue.rawValue
     @AppStorage(CameraUIStyle.preferenceKey)
     private var cameraUIStyleRaw = CameraUIStyle.defaultValue.rawValue
     @AppStorage(CameraControlColorPreference.preferenceKey)
@@ -587,7 +589,7 @@ struct PurchaseView: View {
             SettingsControlRow(icon: "rectangle.3.group",
                                title: "Camera UI",
                                accessibilityTitle: "Camera UI",
-                               help: "Classic restores the raised controls and side meter. Minimal uses flat controls and a bottom meter. "
+                               help: "Both use the compact camera layout. Classic adds beveled wells; Minimal keeps the wells flat. "
                                    + "The camera and capture settings stay unchanged. Stop capture before switching.") {
                 SettingsSelectionRow(title: "Camera UI", valueText: cameraUIStyleBinding.wrappedValue.title) {
                     Picker("Camera UI", selection: cameraUIStyleBinding) {
@@ -596,6 +598,20 @@ struct PurchaseView: View {
                 }
                 .disabled(!canChangeCameraUIStyle())
                 .accessibilityIdentifier("settings.cameraUIStyle")
+            }
+
+            SettingsControlRow(icon: "slider.vertical.3",
+                               title: "Exposure dial size",
+                               accessibilityTitle: "Exposure dial size",
+                               help: "Small is wide and squat with closer bias ticks. Large uses the taller ruler. "
+                                   + "Independent of Classic or Minimal; does not change the exposure range.") {
+                SettingsSelectionRow(title: "Exposure dial size",
+                                     valueText: CameraExposureDialSize.resolved(exposureDialSizeRaw).title) {
+                    Picker("Exposure dial size", selection: $exposureDialSizeRaw) {
+                        ForEach(CameraExposureDialSize.allCases) { size in Text(size.title).tag(size.rawValue) }
+                    }
+                }
+                .accessibilityIdentifier("settings.exposureDialSize")
             }
 
             SettingsControlRow(icon: "paintpalette",
@@ -823,20 +839,30 @@ struct PurchaseView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
+    /// The About card is now a way in to a real page; the facts and the version
+    /// row live there, so this card carries one row with the same version line.
     private var appInfoSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("About")
                 .font(NitrateTypography.font(.headline))
 
-            VStack(alignment: .leading, spacing: 4) {
-                Label("Film emulation for iPhone video", systemImage: "movieclapper")
-                Label("Apple Log + Metal GPU pipeline", systemImage: "cpu")
-                Label("Kodak 250D / 5207 & 500T / 5219", systemImage: "film")
-                Label(AboutPresentation.versionLine(), systemImage: "number")
-                    .accessibilityIdentifier(AboutPresentation.versionRowID)
+            NavigationLink {
+                AboutView()
+            } label: {
+                HStack(spacing: 10) {
+                    Label("About Nitrate", systemImage: "info.circle")
+                    Spacer(minLength: 8)
+                    Text(AboutPresentation.versionLine())
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .font(NitrateTypography.font(.caption))
+                .contentShape(Rectangle())
             }
-            .font(NitrateTypography.font(.caption))
-            .foregroundStyle(.secondary)
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(AboutPresentation.versionRowID)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)

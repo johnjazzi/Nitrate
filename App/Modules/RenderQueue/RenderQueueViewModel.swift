@@ -24,6 +24,9 @@ final class RenderQueueViewModel {
     private var worker: Task<Void, Never>?
     private var renderer: PipelineRenderer?
     private var didInitialize = false
+    /// Presentation can baseline loaded history instead of announcing old jobs
+    /// as new failures. Initialization runs synchronously on the main actor.
+    var hasInitializedQueue: Bool { didInitialize }
     private var persistenceErrorMessage: String?
     private var loadErrorMessage: String?
     /// True while the queue is paused because a durable write failed. Rendering

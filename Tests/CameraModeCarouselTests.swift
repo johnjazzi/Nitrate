@@ -81,69 +81,99 @@ struct CameraModeCarouselRenderTests {
         }
     }
 
-    @Test func centresTheSelectedLetterWithItsCaptionBelowAndTheGhostBeside() throws {
+    /// Both finishes now draw the same compact row: the selected capital on its
+    /// 28pt disc at the slot's centre, its neighbour a 32pt pitch beside it, and
+    /// no word caption in either style. Classic's old 44pt cells with the
+    /// full-size caption are gone, so this pin renders both styles and requires
+    /// them to agree rather than describing a Classic-only treatment.
+    @Test func centresTheSelectedLetterOnTheCompactPitchWithoutACaption() throws {
         #expect(CameraModeCarousel.minimumControlWidth == 44,
                 "The centred selected target keeps the 44pt touch floor.")
-        var captionInk: [CameraMode: Int] = [:]
 
         for width: CGFloat in [narrowWidth, defaultWidth] {
             let centreInPoints = Double(width) / 2
             for active in CameraMode.visibleModes {
-                // Classic is the style with a caption under the capital, so this
-                // pin has to render Classic explicitly; Minimal is the default.
-                let image = try render(carousel(active: active)
+                let classicImage = try render(carousel(active: active)
                     .environment(\.cameraUIStyle, .classic), width: width,
+                                              name: "carousel-classic-\(active.rawValue)-\(Int(width))")
+                let image = try render(carousel(active: active)
+                    .environment(\.cameraUIStyle, .minimal), width: width,
                                        name: "carousel-centred-\(active.rawValue)-\(Int(width))")
                 #expect(image.height == Int(CameraModeCarousel.height * 2),
                         "The row keeps its fixed height at every width.")
-                let data = try pixels(image)
+                let data = try pixels(classicImage)
+                let minimalData = try pixels(image)
                 #expect(ink(data) > 400, "The mode letters must be visible at \(width)pt.")
 
                 // The active capital paints the accent and sits centred — not
-                // parked in a left or right half.
-                let letter = pixels(matching: accentInk, in: data, image: image)
+                // parked in a left or right half. Both finishes draw the same
+                // capitals; only the well's face behind them differs.
+                let letter = pixels(matching: accentInk, in: data, image: classicImage)
+                let minimalLetter = pixels(matching: accentInk, in: minimalData, image: image)
                 #expect(letter.count > 40, "The selected letter must paint the accent at \(width)pt.")
+                #expect(abs(letter.count - minimalLetter.count) <= 4,
+                        "Both finishes draw the same accent capital at \(width)pt.")
                 let letterMidX = Double(letter.map(\.x).reduce(0, +)) / Double(letter.count) / 2
                 #expect(abs(letterMidX - centreInPoints) <= 2,
                         "The selected letter is centred, not owned by a half.")
 
-                // Its lowercase caption is a band strictly below the capital.
-                let caption = pixels(matching: brightInk, in: data, image: image)
-                #expect(caption.count > 20, "The selected mode paints its lowercase caption at \(width)pt.")
-                let captionMidY = Double(caption.map(\.y).reduce(0, +)) / Double(max(caption.count, 1))
-                let letterMidY = Double(letter.map(\.y).reduce(0, +)) / Double(letter.count)
-                #expect(captionMidY > letterMidY + 8,
-                        "The caption sits below the capital.")
-                #expect(try #require(caption.map(\.y).min()) > #require(letter.map(\.y).max()))
-                let captionMidX = Double(caption.map(\.x).reduce(0, +)) / Double(caption.count) / 2
-                #expect(abs(captionMidX - centreInPoints) <= 2,
-                        "The caption is centered beneath the selected letter.")
-                captionInk[active, default: 0] += caption.count
+                // 28pt discs on a 4pt gap leave no room for a word: the shared
+                // label paints no caption. Measured on Minimal's charcoal well,
+                // where the only bright ink could be type.
+                let caption = pixels(matching: brightInk, in: minimalData, image: image)
+                #expect(caption.isEmpty,
+                        "The compact row prints no caption at \(width)pt.")
 
-                // The neighbour keeps only a ghosted letter, on the correct side:
-                // D always reads left of V.
+                // The neighbour keeps only a ghosted letter, on the correct side,
+                // one 32pt pitch away: D always reads left of V. Measured inside
+                // that neighbour's own cell on the flat Minimal face over an
+                // opaque ground: a 0.45-alpha ghost on a transparent ground is an
+                // almost-white no grey mask catches, and Classic's translucent
+                // material plus its inset rim flood the same grey band, so that
+                // mask averages the well's bevel with the glyph instead of
+                // reading one letter.
                 let letterTop = try #require(letter.map(\.y).min())
                 let letterBottom = try #require(letter.map(\.y).max())
-                let ghost = pixels(matching: dimInk, in: data, image: image)
+                let groundedImage = try render(carousel(active: active)
+                    .environment(\.cameraUIStyle, .minimal)
+                    .background(Color.black), width: width,
+                                               name: "carousel-grounded-\(active.rawValue)-\(Int(width))")
+                let groundedScale = Double(groundedImage.width) / Double(width)
+                let modes = CameraMode.visibleModes
+                let selectedIndex = try #require(modes.firstIndex(of: active))
+                let neighbourIndex = selectedIndex == 0 ? min(1, modes.count - 1) : selectedIndex - 1
+                let neighbourOffset = Double(CameraModeRowLayout.compactCellOffset(
+                    index: neighbourIndex, selectedIndex: selectedIndex))
+                let neighbourCentre = centreInPoints + neighbourOffset
+                // The neighbour's own cell, clipped where the strip clips it: the
+                // only place its capital can legitimately paint.
+                let cellReach = Double(CameraModeRowLayout.compactCellWidth) / 2
+                let viewportHalf = Double(min(width, CameraModeRowLayout.compactGroupWidth(
+                    visibleCount: modes.count))) / 2
+                let cellLow = neighbourCentre - cellReach
+                let cellHigh = min(neighbourCentre + cellReach, centreInPoints + viewportHalf)
+                let ghost = pixels(matching: ghostInk, in: try pixels(groundedImage), image: groundedImage)
                     .filter { $0.y >= letterTop && $0.y <= letterBottom }
-                #expect(!ghost.isEmpty)
-                let ghostMidX = Double(ghost.map(\.x).reduce(0, +)) / Double(max(ghost.count, 1)) / 2
-                #expect((34...40).contains(abs(ghostMidX - letterMidX)),
-                        "Keep the ghosted letter close while preserving 44pt touch targets.")
-                let ghostLeft = ghost.filter { $0.x < image.width / 2 }.count
-                let ghostRight = ghost.filter { $0.x >= image.width / 2 }.count
-                if active == .develop {
-                    #expect(ghostRight > ghostLeft, "Develop centred leaves the ghosted V to its right.")
-                } else {
-                    #expect(ghostLeft > ghostRight, "Video centred leaves the ghosted D to its left.")
-                }
+                    .filter {
+                        let x = Double($0.x) / groundedScale
+                        return (x - centreInPoints) * neighbourOffset > 0
+                            && x >= cellLow - 0.5 && x <= cellHigh + 0.5
+                    }
+                #expect(ghost.count > 20, "The neighbouring mode is still drawn inside its own cell.")
+                let ghostMidX = Double(ghost.map(\.x).reduce(0, +)) / Double(max(ghost.count, 1)) / groundedScale
+                #expect(ghostMidX >= cellLow - 1 && ghostMidX <= cellHigh + 1,
+                        "Ghost cell \(cellLow)...\(cellHigh)pt; centroid \(ghostMidX)pt.")
+                #expect((26...38).contains(abs(ghostMidX - letterMidX)),
+                        "The ghosted letter reads one 32pt pitch away (saw \(abs(ghostMidX - letterMidX))pt).")
+                #expect((ghostMidX - letterMidX).sign == neighbourOffset.sign,
+                        "The ghost sits on the correct side of the selection.")
+                // Classic still ghosts its neighbour; the pitch is measured on
+                // the face whose grey ink can only be a glyph.
+                #expect(!pixels(matching: dimInk, in: data, image: classicImage)
+                    .filter { $0.y >= letterTop && $0.y <= letterBottom }.isEmpty,
+                    "The classic row still shows its neighbouring mode.")
             }
         }
-
-        // Only the selected caption is painted, so the longer active word
-        // carries strictly more caption ink than the shorter one.
-        #expect(captionInk[.develop, default: 0] > captionInk[.video, default: 0],
-                "Only the selected lowercase caption is painted, so 'develop' outweighs 'video'.")
     }
 
     @Test func aDisabledRowDimsAndSwallowsSwipe() throws {
@@ -248,7 +278,14 @@ struct CameraModeCarouselRenderTests {
         alpha > 128 && red > 170 && green > 170 && blue > 170
     }
 
-    /// The ghosted neighbour: a dim, unaccented grey.
+    /// The ghosted neighbour: a dim, unaccented grey, with no alpha ceiling so a
+    /// capital composited over an opaque ground still counts whole.
+    private func ghostInk(_ red: Int, _ green: Int, _ blue: Int, _ alpha: Int) -> Bool {
+        alpha > 25 && red > 40 && red < 170
+            && abs(red - green) < 6 && abs(green - blue) < 6
+    }
+
+    /// The ghosted neighbour on a transparent ground: a dim, unaccented grey.
     private func dimInk(_ red: Int, _ green: Int, _ blue: Int, _ alpha: Int) -> Bool {
         alpha > 25 && alpha < 150 && red > 40 && red < 160
             && abs(red - green) < 6 && abs(green - blue) < 6

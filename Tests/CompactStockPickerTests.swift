@@ -78,6 +78,72 @@ struct CompactStockPickerTests {
         #expect(stacked > CompactStockPickerLayout.maximumContentHeight)
     }
 
+    // MARK: - Expanded state
+
+    /// The caller's reserved control stack and the row gap come out first: the
+    /// preview is what gets the remainder, never a share of the sheet. With
+    /// plenty of room that remainder *is* the preview's height.
+    @Test func thePreviewTakesTheRemainderAfterTheReservedControls() {
+        let reserved = CompactStockPickerLayout.sideBySideContentHeight
+        let split = CompactStockPickerLayout.expandedPreview(forAvailableHeight: 900,
+                                                             reservedContentHeight: reserved)
+        #expect(split.fits)
+        #expect(split.height == 900 - reserved - CompactStockPickerLayout.rowSpacing,
+                "The controls are reserved first; the preview gets everything else.")
+        #expect(split.height > reserved,
+                "A tall detent grows the preview, not the controls.")
+    }
+
+    /// Exactly at the floor the preview still fits: 448pt plus the reserved
+    /// stack plus the gap is the threshold, and it is inclusive.
+    @Test func atTheThresholdThePreviewRemainsAFullPlate() {
+        let reserved = CompactStockPickerLayout.sideBySideContentHeight
+        let threshold = reserved + CompactStockPickerLayout.rowSpacing
+            + CompactStockPickerLayout.preferredPreviewHeight
+        let split = CompactStockPickerLayout.expandedPreview(forAvailableHeight: threshold,
+                                                             reservedContentHeight: reserved)
+        #expect(split.fits, "At the threshold the plate is not cropped.")
+        #expect(split.height == CompactStockPickerLayout.preferredPreviewHeight)
+        #expect(CompactStockPickerLayout.preferredPreviewHeight == 448,
+                "448pt is the plate row plus its dots and disclaimer.")
+    }
+
+    /// Below the threshold the preview is held at its 448pt floor and the
+    /// picker scrolls: the bounded height is what the scroll view gets, so
+    /// neither a control nor the plate is cropped.
+    @Test func belowTheThresholdThePreviewIsHeldAtItsFloorAndScrolls() {
+        let reserved = CompactStockPickerLayout.sideBySideContentHeight
+        let split = CompactStockPickerLayout.expandedPreview(forAvailableHeight: reserved + 300,
+                                                             reservedContentHeight: reserved)
+        #expect(!split.fits, "Too little room for a usable plate means the picker scrolls.")
+        #expect(split.height == CompactStockPickerLayout.preferredPreviewHeight,
+                "The floor bounds the scroll height at 448pt instead of shrinking the plate.")
+    }
+
+    /// More height always grows the preview: the controls keep their measured
+    /// stack, so the extra room never moves the gauge or the pill.
+    @Test func moreHeightGrowsThePreviewAndNotTheControls() {
+        let reserved = CompactStockPickerLayout.sideBySideContentHeight
+        let short = CompactStockPickerLayout.expandedPreview(forAvailableHeight: 800,
+                                                             reservedContentHeight: reserved)
+        let tall = CompactStockPickerLayout.expandedPreview(forAvailableHeight: 940,
+                                                            reservedContentHeight: reserved)
+        #expect(short.fits && tall.fits)
+        #expect(tall.height - short.height == 140,
+                "The whole extra height goes to the preview.")
+    }
+
+    /// A caller that has scaled its chip row with Dynamic Type passes that
+    /// taller reservation in, and the preview gives up exactly that much.
+    @Test func aTallerReservedStackTakesItsRoomFromThePreview() {
+        let compact = CompactStockPickerLayout.expandedPreview(forAvailableHeight: 900,
+                                                               reservedContentHeight: 224)
+        let scaled = CompactStockPickerLayout.expandedPreview(forAvailableHeight: 900,
+                                                              reservedContentHeight: 300)
+        #expect(compact.height - scaled.height == 76,
+                "The reservation is the caller's, measured at the size the stack is laid out at.")
+    }
+
     // MARK: - The chip strip
 
     /// The shipped three video stocks are all visible at the compact width, so

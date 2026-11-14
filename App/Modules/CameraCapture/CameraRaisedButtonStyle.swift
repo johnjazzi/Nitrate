@@ -223,7 +223,10 @@ struct CameraWellFace: View {
                     .allowsHitTesting(false)
                 }
         } else {
-            shape.fill(Color.black.opacity(0.32))
+            // Charcoal, not black: a black fill disappears over dark footage.
+            // Kept translucent so the plate stays a hint over the image rather
+            // than a panel, and it still reads on a bright scene.
+            shape.fill(Color(white: 0.11).opacity(0.62))
         }
     }
 }
@@ -249,22 +252,22 @@ struct CameraControlWell: ViewModifier {
 /// The stock entry, the status LCD, the exposure column and the mode row are
 /// placed by the shooting bar and the mode strip, so their footprints are
 /// fixed. This only paints the shared fill behind them: no padding, no size
-/// change and no hit region. Classic draws nothing here — its plates own their
-/// own chrome.
+/// change and no hit region, so the plate hugs whatever ink it is given and the
+/// caller can put its flexible frame outside it. Both styles share this exact
+/// footprint: Classic adds the recessed bevel, Minimal keeps a borderless fill.
 struct CameraWellBacking: ViewModifier {
     var cornerRadius: CGFloat = CameraControlBorder.cornerRadius
-    /// Pulls the fill in from the face's edges without moving the face.
+    /// Pulls the fill in from the face's edges without moving the face, so a
+    /// plate around a 28pt disc need not be the height of the 44pt touch row.
     var verticalInset: CGFloat = 0
 
     @Environment(\.cameraUIStyle) private var uiStyle
 
     func body(content: Content) -> some View {
         content.background {
-            if uiStyle != .classic {
-                CameraWellFace(cornerRadius: cornerRadius)
-                    .padding(.vertical, verticalInset)
-                    .allowsHitTesting(false)
-            }
+            CameraWellFace(cornerRadius: cornerRadius)
+                .padding(.vertical, verticalInset)
+                .allowsHitTesting(false)
         }
     }
 }

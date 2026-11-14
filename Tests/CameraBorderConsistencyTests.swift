@@ -19,19 +19,40 @@ import Testing
                 #expect(!branch.contains(forbidden), "Minimal surfaces exclude \(forbidden); Classic may retain it")
             }
         }
-        // The well the Minimal clusters sit in is one flat fill: no rim, and no
-        // padding, so seating a face in it cannot move or resize that face.
-        #expect(source.contains("shape.fill(Color.black.opacity(0.32))"),
-                "The Minimal well is one flat neutral fill.")
+        // The well the Minimal clusters sit in is one flat charcoal fill: light
+        // enough to read on dark footage, and no rim or padding, so seating a
+        // face in it cannot move or resize that face.
+        #expect(source.contains("shape.fill(Color(white: 0.11).opacity(0.62))"),
+                "The Minimal well is one flat charcoal fill, not black on black.")
+        // Classic's well is the skeuomorphic plate — material body plus an inset
+        // dark-over-light rim — so both finishes seat the same faces, only the
+        // finish differs.
+        let wellFaceSource = try #require(source.components(separatedBy: "struct CameraWellFace: View").last)
+        let wellFace = try #require(wellFaceSource.components(separatedBy: "struct CameraControlWell: ViewModifier").first)
+        #expect(wellFace.contains(".ultraThinMaterial"),
+                "Classic keeps the translucent plate the well is known for.")
+        #expect(wellFace.contains("strokeBorder("),
+                "Classic keeps the inset bevel rim around the well.")
         let backing = try #require(source.components(separatedBy: "struct CameraWellBacking: ViewModifier").last)
-        #expect(!backing.contains(".padding(.horizontal") && !backing.contains(".frame("),
-                "The backing adds no padding and no size; only the shared fill.")
-        #expect(backing.contains("if uiStyle != .classic"),
-                "Classic draws nothing behind these faces; its plates own their chrome.")
+        #expect(!backing.contains(".frame("),
+                "The backing adds no size; only the shared fill.")
+        // Both finishes draw the shared plate: the padding and hit-testing
+        // exemptions live on the plate, never on the content it sits under.
+        #expect(backing.contains("CameraWellFace(cornerRadius: cornerRadius)"),
+                "The backing draws the one shared well face in both finishes.")
+        #expect(backing.contains(".padding(.vertical, verticalInset)"),
+                "Insets belong to the plate, never to the content it sits under.")
+        #expect(backing.contains(".allowsHitTesting(false)"),
+                "The plate never intercepts the face's hit region.")
+        #expect(!backing.contains("uiStyle != .classic"),
+                "Classic now shares the well; the finish is resolved inside CameraWellFace.")
         // Press state is a fill-opacity change on both faces, not a bevel.
-        #expect(source.components(separatedBy: "isPressed ? 0.66 : 0.5").count == 3,
+        // Two authored occurrences (the round face and the rectangular face), so
+        // `components` splits into three pieces: the count is one above the
+        // number of call sites and must stay that way.
+        #expect(source.components(separatedBy: "isPressed ? 0.66 : 0.5").count - 1 == 2,
                 "Round and rectangular faces darken slightly while pressed.")
-        #expect(source.components(separatedBy: "(faceColor ?? .clear).opacity(isPressed ? 0.42 : 0.28)").count == 3,
+        #expect(source.components(separatedBy: "(faceColor ?? .clear).opacity(isPressed ? 0.42 : 0.28)").count - 1 == 2,
                 "A tinted face is a restrained accent cast over the dark fill, not an accent plate.")
     }
 

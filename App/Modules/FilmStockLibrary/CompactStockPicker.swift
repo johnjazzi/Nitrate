@@ -1,14 +1,17 @@
 import CoreGraphics
 import Foundation
 
-/// Layout contract for the compact (minimal-style) stock picker.
+/// Layout contract for the stock picker's two height states.
 ///
-/// The compact picker is CONTENT, not a sheet: it drops the large sample
-/// preview entirely and stacks three quiet rows — a strip of coloured stock
-/// chips, the selected stock's name and metadata, then the print gauge and the
-/// push/pull pill side by side. At the compact content width (320pt, a 340–380pt
-/// detent minus its padding) the whole stack is 214pt, so it sits inside a
-/// short detent without a scroll view.
+/// The picker is CONTENT, not a sheet. Collapsed it stacks three quiet rows — a
+/// strip of coloured stock chips, the selected stock's name and metadata, then
+/// the print gauge and the push/pull pill side by side. At the compact content
+/// width (320pt, a 340–380pt detent minus its padding) the whole stack is 214pt,
+/// so it sits inside a short detent without a scroll view.
+///
+/// Expanded, the same stack stays exactly as it is and the stock sample preview
+/// is added above it, taking the height that is left over — never a share of the
+/// sheet, so a taller sheet grows the preview and not the controls.
 ///
 /// Kept free of SwiftUI so the split can be checked at every phone width
 /// without rendering — and so the file still compiles into the macOS render
@@ -103,12 +106,43 @@ enum CompactStockPickerLayout {
     /// The most the side-by-side content may occupy and still fit a compact
     /// detent without scrolling.
     static let maximumContentHeight: CGFloat = 260
+
+    // MARK: - Expanded state
+
+    /// The sample preview's own height at default type: the plate row (375) plus
+    /// its page dots and two-line disclaimer, with a little slack. The expanded
+    /// picker gives the preview this much or more, so the plate is never cropped
+    /// into a sliver; when the sheet has less room than this plus the controls,
+    /// the whole picker scrolls instead of either cropping a control or
+    /// squeezing the plate.
+    static let preferredPreviewHeight: CGFloat = 448
+
+    /// The expanded split: the preview takes everything left once the caller's
+    /// reserved control stack is taken out. The reservation is an ESTIMATE of
+    /// the stack at the current text size, not a measurement — it exists to
+    /// allocate the preview, and `fits` only reports whether that allocation
+    /// reached `preferredPreviewHeight`. It is not a clipping guarantee: the
+    /// expanded view always scrolls, so a stack that grows past the estimate
+    /// stays reachable instead of being cropped.
+    static func expandedPreview(forAvailableHeight height: CGFloat,
+                                reservedContentHeight: CGFloat) -> (height: CGFloat, fits: Bool) {
+        let remaining = height - reservedContentHeight - rowSpacing
+        return (height: max(remaining, preferredPreviewHeight),
+                fits: remaining >= preferredPreviewHeight)
+    }
 }
 
 #if os(iOS)
 import SwiftUI
 
-/// The minimal camera's compact stock picker, as content only.
+/// The stock picker, as content only, in two height states of one component.
+///
+/// Collapsed it is the minimal camera's short picker: a strip of coloured stock
+/// chips, the selected stock's name, then the enlarged print gauge and push/pull
+/// pill side by side. Expanded — the sheet's large detent — the SAME stack gains
+/// the stock sample preview above it and nothing else changes: same chips, same
+/// name, same two controls, same selection. Collapsing takes the preview away
+/// without touching the selection, the gauge, the push/pull rung or Auto.
 ///
 /// It owns no state. The stock list, the selected id, the gauge and the
 /// push/pull preference all belong to the parent sheet (`StockSheetView`), which
@@ -117,11 +151,6 @@ import SwiftUI
 /// it to the remembered gauge, ISO and push/pull. Gauge and push/pull are the
 /// shared `GaugeControl` and `PushPullControl` — not copies of them — so the
 /// ladder, the Auto state and the accessibility contract exist once.
-///
-/// There is no sample preview here: the classic sheet's large stock rendering is
-/// what this replaces. What is left is the stock's own colour (the shipped
-/// `CameraFilmStockFace`, with its ISO and light-type badge), the selected
-/// stock's name in the resolved control accent, and the two controls.
 ///
 /// Type is the operator's own: at accessibility sizes the controls stop sharing
 /// a row and the whole content moves into a scroll view, so nothing is clipped
@@ -137,6 +166,9 @@ struct CompactStockPicker: View {
     @Binding var manualStops: PushPullStops
     /// Called after a push/pull change so the parent persists the preference.
     var onPushPullChange: () -> Void
+    /// Whether the sheet is at its large detent. It reveals the sample preview
+    /// above the same stack; it never adds a second set of controls.
+    var expanded = false
 
     @Environment(\.cameraControlAccent) private var controlAccent
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -152,18 +184,66 @@ struct CompactStockPicker: View {
 
     var body: some View {
         Group {
-            if dynamicTypeSize.isAccessibilitySize {
-                ScrollView(.vertical) { content }
-                    .scrollBounceBehavior(.basedOnSize)
-                    .scrollIndicators(.hidden)
-            } else {
-                content
-            }
+            if expanded { expandedContent } else { compactContent }
         }
         .accessibilityIdentifier("stock.compactPicker")
     }
 
-    private var content: some View {
+    // MARK: - The two height states
+
+    /// Collapsed: the three quiet rows, no preview, no scroll at default type.
+    @ViewBuilder private var compactContent: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            ScrollView(.vertical) { controlStack }
+                .scrollBounceBehavior(.basedOnSize)
+                .scrollIndicators(.hidden)
+        } else {
+            controlStack
+        }
+    }
+
+    /// Expanded: the selected stock's sample above the same stack, always in a
+    /// vertical scroll view so the gauge and the pill stay reachable. The
+    /// preview is allocated what the reserved stack leaves over; that
+    /// reservation is an ESTIMATE of the stack at the current chip scale, not a
+    /// measurement of the laid-out controls, so it never proves they fit. When
+    /// larger type grows the real stack past the estimate the content scrolls
+    /// rather than cropping a control.
+    private var expandedContent: some View {
+        GeometryReader { proxy in
+            let gap = CompactStockPickerLayout.rowSpacing
+            // An estimate used only to size the preview's bounded frame. It
+            // makes no claim that the stack fits: the scroll view is what keeps
+            // the controls reachable.
+            let reserved = stockRowHeight + gap
+                + CompactStockPickerLayout.nameRowHeight + gap
+                + CompactStockPickerLayout.controlHeight
+            let split = CompactStockPickerLayout.expandedPreview(forAvailableHeight: proxy.size.height,
+                                                                reservedContentHeight: reserved)
+
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: gap) {
+                    preview.frame(height: split.height).clipped()
+                    controlStack
+                }
+                .frame(width: proxy.size.width, alignment: .leading)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .scrollIndicators(.hidden)
+        }
+    }
+
+    /// The selected stock at the live gauge and the resolved push/pull — the
+    /// same values the render will apply, read from the parent's one selection.
+    private var preview: some View {
+        StockSamplePreview(stock: selectedStock,
+                           gauge: gauge,
+                           pushPullStops: resolvedPushPull.stops.stops)
+            .frame(maxWidth: .infinity)
+    }
+
+    /// The one stack both states share: chips, selected name, gauge + push/pull.
+    private var controlStack: some View {
         VStack(alignment: .leading, spacing: CompactStockPickerLayout.rowSpacing) {
             stockRow
             selectionRow

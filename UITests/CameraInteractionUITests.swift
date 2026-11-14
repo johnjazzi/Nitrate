@@ -869,6 +869,9 @@ final class CameraInteractionUITests: XCTestCase {
         let compact = app.descendants(matching: .any).matching(identifier: "stock.compactPicker").firstMatch
         XCTAssertTrue(compact.waitForExistence(timeout: 10))
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "stock.gauge").firstMatch.exists)
+        let examplePhotos = app.descendants(matching: .any).matching(identifier: "stock.examplePhotos").firstMatch
+        XCTAssertFalse(examplePhotos.exists,
+                       "A tap opens the short picker: the sample preview stays away")
         let pushPull = app.buttons["stock.pushPull"]
         XCTAssertTrue(pushPull.isHittable)
         pushPull.tap()
@@ -876,14 +879,14 @@ final class CameraInteractionUITests: XCTestCase {
         app.navigationBars["Film Stock"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         attachEvidence(app, named: "minimal-compact-stock-gauge-processing")
         app.navigationBars["Film Stock"].buttons["Done"].tap()
-        // A held press asks for the full list with the sample preview, which the
-        // compact picker never shows.
+        // A held press opens the SAME picker at its large detent: the sample
+        // preview appears above the identical chips, gauge and push/pull.
         app.buttons["camera.stock"].press(forDuration: 1.0)
         XCTAssertTrue(app.navigationBars["Film Stock"].waitForExistence(timeout: 10))
-        XCTAssertFalse(compact.waitForExistence(timeout: 2),
-                       "A held press opens the full stock sheet, not the compact picker")
-        let carousel = app.descendants(matching: .any).matching(identifier: "stock.carousel").firstMatch
-        XCTAssertTrue(carousel.waitForExistence(timeout: 10))
+        XCTAssertTrue(compact.waitForExistence(timeout: 10),
+                      "A held press opens the same picker, not a second layout")
+        XCTAssertTrue(examplePhotos.waitForExistence(timeout: 10),
+                      "The large detent adds the sample preview above the same controls")
         attachEvidence(app, named: "minimal-full-stock-sheet")
         app.navigationBars["Film Stock"].buttons["Done"].tap()
         let manual = app.buttons["Manual controls"]
@@ -908,7 +911,12 @@ final class CameraInteractionUITests: XCTestCase {
         XCTAssertGreaterThan(meter.frame.height, meter.frame.width)
         app.buttons["camera.stock"].tap()
         XCTAssertTrue(app.navigationBars["Film Stock"].waitForExistence(timeout: 10))
-        XCTAssertFalse(compact.exists, "Classic keeps its original stock preview sheet")
+        // Classic gets the same picker at the same short detent; only the
+        // surrounding chrome differs, so the assertion is the same.
+        XCTAssertTrue(compact.waitForExistence(timeout: 10),
+                      "Classic opens the same stock picker")
+        XCTAssertFalse(examplePhotos.exists,
+                       "Classic's tap opens the short detent, preview away")
         attachEvidence(app, named: "classic-stock-sheet")
         app.navigationBars["Film Stock"].buttons["Done"].tap()
         _ = chooseCameraUIStyle(original, in: app)
@@ -925,7 +933,7 @@ final class CameraInteractionUITests: XCTestCase {
         XCTAssertTrue(picker.isHittable)
         let original = picker.value as? String ?? "Minimal"
         picker.tap()
-        let option = app.buttons[title].lastMatch
+        let option = app.buttons[title]
         XCTAssertTrue(option.waitForExistence(timeout: 5))
         option.tap()
         let committed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", title), object: picker)
@@ -951,6 +959,31 @@ final class CameraInteractionUITests: XCTestCase {
             .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
         waitUntilReady(app.buttons["camera.stock"], in: app, named: "ruler-contrast-committed")
         return previous
+    }
+
+    @MainActor func testVideoTelephotoToFrontTransitionThroughVisibleControls() throws {
+        continueAfterFailure = false
+        // Argument-domain placement only: the normal lens buttons and model path
+        // still own every transition. No capture or aperture override is applied.
+        let app = launchReadyCamera(arguments: ["--trace-aperture", "-camera.lensControlPosition", "aboveShutter"],
+                                    hideDiagnosticButtons: true)
+        selectVideo(in: app)
+        let telephoto = app.buttons["camera.lens.Tele"]
+        let front = app.buttons["camera.lens.Front"]
+        for _ in 0..<2 {
+            waitUntilReady(telephoto, in: app, named: "telephoto-transition-button")
+            telephoto.tap()
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "selected == true"), object: telephoto)], timeout: 20), .completed)
+            attachEvidence(app, named: "telephoto-before-front")
+            waitUntilReady(front, in: app, named: "front-transition-button")
+            front.tap()
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "selected == true"), object: front)], timeout: 20), .completed)
+            waitUntilReady(app.otherElements["camera.preview"], in: app, named: "front-preview-after-telephoto")
+            XCTAssertFalse(app.alerts.firstMatch.exists)
+            attachEvidence(app, named: "front-after-telephoto")
+        }
     }
 
     @MainActor private func launchReadyCamera(arguments: [String] = [],

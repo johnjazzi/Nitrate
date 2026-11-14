@@ -5,15 +5,18 @@ import SwiftUI
 import Testing
 import UniformTypeIdentifiers
 
-/// Classic presentation restored behind `cameraUIStyle`, and Minimal's compact
-/// status row.
+/// What each finish draws, and the shared surfaces underneath both.
 ///
-/// These pins cover what each style *draws*: Classic's old 44pt mode cells,
-/// letter and full-size caption, the old recessed LCD readout and the old status
-/// plate; Minimal's 28pt-cell / 32pt-pitch letter group, its named 16pt queue
-/// mark and its unboxed faces. Behaviour is deliberately shared, so the same
-/// suite re-asserts one swipe/availability/refusal/tap contract in both styles
-/// rather than describing a second interaction model.
+/// The approved camera UI is one compact presentation: both finishes run the
+/// same 28pt-disc / 32pt-pitch mode row with no caption, the same unboxed
+/// queue/capacity face in the shared well, and the same wells and plates. Only
+/// the well's face still differs — Classic keeps its bevel, Minimal its
+/// borderless fill — and the recording-status face keeps its Classic plate.
+/// Behaviour is deliberately shared, so the same suite re-asserts one
+/// swipe/availability/refusal/tap contract rather than describing a second
+/// interaction model. The assertions below therefore render the reachable path;
+/// the retired Classic letter-and-caption row and inset LCD plate are gone from
+/// the source and are not asserted as if they still existed.
 @MainActor
 struct CameraUIStyleStatusTests {
     /// The accent the appearance layer resolves for a daylight stock. Injected
@@ -41,65 +44,79 @@ struct CameraUIStyleStatusTests {
         latestResultCompleted: true, latestResultSavedToPhotos: false)
 
     // MARK: - Minimal mode row geometry
-    /// Minimal pulls D/V/P into one tight group: a 28pt disc on a 4pt gap, so
-    /// the visual cell is 32pt and the row is 92pt wide with three modes. The
-    /// row keeps its 44pt touch height, and every cell keeps a whole,
-    /// non-overlapping tap inside the slot.
-    @Test func minimalModeRowPacksA32ptPitchWithWholeNonOverlappingCells() throws {
+    // MARK: - Minimal mode row geometry
+    /// Minimal runs a real carousel: a 28pt disc on a 4pt gap, so one visual
+    /// cell is 32pt. The selected letter holds the slot's centre and the rest
+    /// ride the track beside it, so the row slides instead of re-centring a
+    /// group. The row keeps its 44pt touch height, and every cell keeps a whole,
+    /// non-overlapping 28pt tap while its disc fits the slot.
+    @Test func minimalModeRowKeepsTheSelectionCentredOnA32ptPitch() throws {
         #expect(CameraModeCarousel.height == 44, "Both styles keep the 44pt touch height.")
         #expect(CameraModeRowLayout.compactCellWidth == 28)
         #expect(CameraModeRowLayout.compactGap == 4)
         #expect(CameraModeRowLayout.compactPitch == 32,
-                "28pt disc + 4pt gap is the 32pt visual cell the user asked for.")
+                "28pt disc + 4pt gap is the 32pt pitch the carousel rides on.")
         #expect(CameraModeRowLayout.compactGroupWidth(visibleCount: 3) == 92)
         #expect(CameraModeRowLayout.compactGroupWidth(visibleCount: 2) == 60)
 
+        // The selected cell is the slot's centre; its neighbours ride the pitch.
+        #expect(CameraModeRowLayout.compactCellOffset(index: 1, selectedIndex: 1) == 0)
+        #expect(CameraModeRowLayout.compactCellOffset(index: 0, selectedIndex: 1) == -32)
+        #expect(CameraModeRowLayout.compactCellOffset(index: 2, selectedIndex: 1) == 32)
+
+        // The track slides one pitch per mode, which is what keeps the selected
+        // letter — not the group — on the centre.
+        #expect(CameraModeRowLayout.compactTrackOffset(selectedIndex: 1, visibleCount: 3) == 0)
+        #expect(CameraModeRowLayout.compactTrackOffset(selectedIndex: 0, visibleCount: 3) == 32)
+        #expect(CameraModeRowLayout.compactTrackOffset(selectedIndex: 2, visibleCount: 3) == -32)
+
         // Minimal's fill is exactly one cell, so the disc never widens the pitch.
-        #expect(CameraModeCarousel.selectionFillSize == CameraModeRowLayout.compactCellWidth)
         #expect(CameraModeCarousel.selectionFillSize == 28)
         #expect(CameraModeCarousel.minimumControlWidth == 44, "Classic's 44pt contract survives.")
 
-        // The 96pt strip floor fits the whole group; anything narrower does not,
-        // so the row can never offer a clipped compact target.
-        #expect(CameraModeRowLayout.compactGroupFits(width: 96, visibleCount: 3))
-        #expect(CameraModeRowLayout.compactGroupFits(width: 96, visibleCount: 2))
-        #expect(!CameraModeRowLayout.compactGroupFits(width: 80, visibleCount: 3))
-        #expect(!CameraModeRowLayout.compactGroupFits(width: 0, visibleCount: 3))
+        // At the 96pt floor a middle selection fits the whole row; an end
+        // selection keeps the centre and its first neighbour and ghosts the far
+        // one rather than clipping a live target.
+        #expect(CameraModeRowLayout.compactCarouselFits(width: 96, visibleCount: 3, selectedIndex: 1))
+        #expect(!CameraModeRowLayout.compactCarouselFits(width: 96, visibleCount: 3, selectedIndex: 0))
+        #expect(CameraModeRowLayout.compactCellFits(index: 1, selectedIndex: 0, slotWidth: 96),
+                "The first neighbour still fits whole at the floor.")
+        #expect(!CameraModeRowLayout.compactCellFits(index: 2, selectedIndex: 0, slotWidth: 96),
+                "The far neighbour would be clipped, so it is drawn, never tappable.")
+        #expect(!CameraModeRowLayout.compactCarouselFits(width: 0, visibleCount: 3, selectedIndex: 1))
+        #expect(CameraModeRowLayout.compactCarouselFits(width: 200, visibleCount: 3, selectedIndex: 0))
 
         for slot: CGFloat in [96, 200] {
-            for count in 2...3 {
-                let rects = (0..<count).map {
-                    CameraModeRowLayout.compactCellRect(index: $0, slotWidth: slot, visibleCount: count)
+            for selectedIndex in 0..<3 {
+                let rects = (0..<3).map {
+                    CameraModeRowLayout.compactCellRect(index: $0, selectedIndex: selectedIndex,
+                                                        slotWidth: slot)
                 }
+                #expect(abs(rects[selectedIndex].midX - slot / 2) <= 0.5,
+                        "The selected cell is the slot's centre, not a member of a centred group.")
                 for rect in rects {
                     #expect(rect.width == 28)
                     #expect(rect.height == CameraModeCarousel.height)
-                    #expect(rect.minX >= 0 && rect.maxX <= slot,
-                            "Every compact target stays whole inside the \(Int(slot))pt slot.")
                 }
-                for index in 0..<(count - 1) {
+                for index in 0..<2 {
                     #expect(rects[index].maxX <= rects[index + 1].minX,
-                            "Compact taps never overlap, so a tap is deterministic.")
+                            "A 32pt pitch never overlaps two taps.")
                     #expect(rects[index + 1].minX - rects[index].minX == 32)
                 }
-                let groupMin = rects[0].minX
-                let groupMax = rects[count - 1].maxX
-                #expect(abs((groupMin + groupMax) / 2 - slot / 2) <= 0.5,
-                        "The whole compact group is centred in its slot, not offset by a 44pt cell.")
+                for (index, rect) in rects.enumerated()
+                where CameraModeRowLayout.compactCellFits(index: index, selectedIndex: selectedIndex,
+                                                          slotWidth: slot) {
+                    #expect(rect.minX >= 0 && rect.maxX <= slot,
+                            "Every live target stays whole inside the \(Int(slot))pt slot.")
+                }
             }
         }
-
-        // Three cells at the 96pt floor: 2pt margins either side, no clipping.
-        let floorRects = (0..<3).map {
-            CameraModeRowLayout.compactCellRect(index: $0, slotWidth: 96, visibleCount: 3)
-        }
-        #expect(floorRects.map(\.minX) == [2, 34, 66])
     }
 
-    /// The drawn group matches the pure geometry: the selected letter sits on its
-    /// own 28pt disc, its neighbours read 32pt away, and nothing paints outside
-    /// the slot.
-    @Test func minimalModeRowDrawsTheCompactGroupCentredInItsSlot() throws {
+    /// The drawn carousel matches the pure geometry: the selected letter sits on
+    /// the centre disc, its neighbours read 32pt away, one capsule hugs the
+    /// group, and nothing paints outside the slot.
+    @Test func minimalModeRowDrawsTheSelectionCentredOnItsTrack() throws {
         let modes = CameraMode.visibleModes(photoAvailable: true)
         for slot: CGFloat in [96, 200] {
             for active in modes {
@@ -107,78 +124,64 @@ struct CameraUIStyleStatusTests {
                                                photoAvailable: true)
                 let data = try pixels(image)
                 let scale = Double(image.width) / Double(slot)
+                let selectedIndex = try #require(modes.firstIndex(of: active))
 
                 let letter = points(matching: accentInk, in: data, image: image)
                 #expect(letter.count > 40, "The selected accent letter paints at \(Int(slot))pt.")
                 let letterMidX = Double(letter.map(\.x).reduce(0, +)) / Double(letter.count)
+                #expect(abs(letterMidX - Double(slot) / 2 * scale) <= 2.5 * scale,
+                        "The selected letter holds the slot's centre at \(Int(slot))pt.")
 
                 // The disc behind it is one cell wide and centred on the letter.
                 let fill = points(matching: darkFill, in: data, image: image)
                 #expect(fill.count > 300, "Minimal keeps its flat selection disc.")
                 let fillMinX = try #require(fill.map(\.x).min())
                 let fillMaxX = try #require(fill.map(\.x).max())
-                let fillWidth = Double(fillMaxX - fillMinX) / scale
-                #expect(abs(fillWidth - 28) <= 2.5,
+                #expect(abs(Double(fillMaxX - fillMinX) / scale - 28) <= 2.5,
                         "The disc is 28pt wide, not a 44pt cell.")
-                let fillMidX = Double(fill.map(\.x).reduce(0, +)) / Double(fill.count)
-                #expect(abs(fillMidX - letterMidX) <= 2 * scale,
-                        "The disc stays behind the selected letter.")
 
-                // The selected cell's centre is where the pure geometry says.
-                let index = try #require(modes.firstIndex(of: active))
-                let cell = CameraModeRowLayout.compactCellRect(index: index, slotWidth: slot,
-                                                               visibleCount: 3)
-                #expect(abs(letterMidX - Double(cell.midX) * scale) <= 2.5 * scale,
-                        "The selected letter is drawn on its own compact cell.")
-                #expect(abs(fillMidX - Double(cell.midX) * scale) <= 2.5 * scale)
+                // When the whole track fits, one capsule hugs exactly the group
+                // and rides with the centred selection. An end selection on the
+                // 96pt floor is wider than the slot, so its far ghost and that
+                // end of the plate are clipped by the strip instead.
+                let allCellsFit = CameraModeRowLayout.compactCarouselFits(
+                    width: slot, visibleCount: modes.count, selectedIndex: selectedIndex)
+                if allCellsFit {
+                    let capsule = points(matching: wellFill, in: data, image: image)
+                    let capsuleMinX = try #require(capsule.map(\.x).min())
+                    let capsuleMaxX = try #require(capsule.map(\.x).max())
+                    let capsuleWidth = Double(capsuleMaxX - capsuleMinX) / scale
+                    #expect(abs(capsuleWidth - CameraModeRowLayout.compactGroupWidth(
+                        visibleCount: modes.count)) <= 3,
+                            "The capsule hugs the 92pt group (saw \(Int(capsuleWidth))pt).")
+                    #expect(abs(Double(capsuleMinX + capsuleMaxX) / 2 / scale - Double(slot) / 2) <= 3,
+                            "The capsule rides with the centred selection.")
+                    #expect(borderIsClear(data, image: image),
+                            "A fitting track clips nothing and paints nothing outside itself.")
+                }
 
-                // Neighbours are 32pt away — close, but still a cell apart, and
-                // never a 44pt slide.
+                // Neighbours sit a whole pitch away on the track.
                 let ghosts = points(matching: ghostInk, in: data, image: image)
                 #expect(!ghosts.isEmpty, "Minimal still shows its neighbouring modes.")
                 let distances = ghosts.map { abs(Double($0.x) - letterMidX) / scale }
                 let nearest = distances.min() ?? 0
-                let furthest = distances.max() ?? 0
-                // Three compact modes can put two neighbours on one side, so the
-                // group reads on one 32pt pitch: 32pt, then 64pt. Nothing lands
-                // between those cells, which is what separates this from the old
-                // 44pt cells (44pt, then 88pt).
                 #expect((22...40).contains(nearest),
                         "The nearest neighbour reads 32pt away (saw \(Int(nearest))pt).")
-                #expect(furthest <= 72,
-                        "Neighbours stay on the 32pt pitch (saw \(Int(furthest))pt).")
-                #expect(!distances.contains { (46...54).contains($0) },
-                        "No neighbour is painted between the 32pt and 64pt cells.")
-                // Sides are read from the selected cell's own edges: with three
-                // compact modes a neighbour can sit on the slot's centre line, so
-                // the slot's midpoint cannot tell a left neighbour from a right one.
-                let cellMinX = Double(cell.minX) * scale
-                let cellMaxX = Double(cell.maxX) * scale
-                if active == .develop {
-                    #expect(ghosts.allSatisfy { Double($0.x) >= cellMaxX - scale },
-                            "With D selected its neighbours are on the right.")
-                } else if active == .photo {
-                    #expect(ghosts.allSatisfy { Double($0.x) <= cellMinX + scale },
-                            "With P selected its neighbours are on the left.")
-                } else {
-                    #expect(ghosts.contains { Double($0.x) < cellMinX }
-                            && ghosts.contains { Double($0.x) > cellMaxX },
-                            "V keeps one neighbour on each side.")
-                }
+                #expect(distances.max() ?? 0 <= 72,
+                        "Neighbours stay on the 32pt pitch.")
 
-                #expect(borderIsClear(data, image: image),
-                        "The \(Int(slot))pt slot clips nothing and paints nothing outside itself.")
-                #expect(ink(data) > 400, "The compact group stays visible.")
+                #expect(ink(data) > 400, "The carousel stays visible.")
             }
         }
     }
 
-    // MARK: - Classic mode row
+    // MARK: - The one mode row
 
-    /// Classic restores the pre-minimal label: the 14pt letter with its
-    /// full-size 12pt caption beneath, no flat selection fill, and the same
-    /// centred letter with a ghosted neighbour in a 44pt cell.
-    @Test func classicModeRowRestoresTheOldLetterAndCaptionWithoutTheFlatFill() throws {
+    /// Both finishes now draw the same compact row: the selected capital on its
+    /// 28pt disc, the neighbour a 32pt pitch away, and no word caption. Classic's
+    /// pre-minimal letter-and-caption treatment is no longer reachable, so this
+    /// pin asserts the shipped path instead of a second Classic-only rendering.
+    @Test func bothFinishesDrawTheSameCompactModeRowWithoutACaption() throws {
         #expect(CameraModeCarousel.height == 44)
         #expect(CameraModeCarousel.minimumControlWidth == 44)
         #expect(CameraModeRowLayout.controlWidth == 44)
@@ -190,57 +193,80 @@ struct CameraUIStyleStatusTests {
             let classic = try pixels(classicImage)
             let minimal = try pixels(minimalImage)
 
-            // Minimal's one flat fill is what Classic does not restore.
-            #expect(points(matching: darkFill, in: minimal, image: minimalImage).count > 300,
-                    "Minimal keeps its flat selection fill.")
-            #expect(points(matching: darkFill, in: classic, image: classicImage).isEmpty,
-                    "Classic paints no selection fill, ring or track.")
+            // One row: the style no longer changes the carousel's letters — only
+            // the well's face behind them, which the backing suite pins.
+            let classicLetter = points(matching: accentInk, in: classic, image: classicImage)
+            let minimalLetter = points(matching: accentInk, in: minimal, image: minimalImage)
+            #expect(abs(classicLetter.count - minimalLetter.count) <= 4,
+                    "Both finishes draw the same accent capital for \(active.rawValue).")
+            #expect(points(matching: darkFill, in: classic, image: classicImage).count > 300,
+                    "The selected cell keeps its one flat selection disc in both finishes.")
 
             // The selected capital paints the shared accent and stays centred.
             let letter = points(matching: accentInk, in: classic, image: classicImage)
-            #expect(letter.count > 40, "The classic selected letter paints the accent.")
+            #expect(letter.count > 40, "The selected letter paints the accent.")
             let letterMidX = Double(letter.map(\.x).reduce(0, +)) / Double(letter.count) / 2
             #expect(abs(letterMidX - Double(width) / 2) <= 2,
-                    "The classic letter is centred, not parked in a half.")
+                    "The selected letter is centred, not parked in a half.")
 
-            // Its caption is a band below the letter and is painted at the old
-            // full size, so it carries visibly more ink than Minimal's quiet one.
-            let classicCaption = points(matching: brightInk, in: classic, image: classicImage)
-            let minimalCaption = points(matching: brightInk, in: minimal, image: minimalImage)
-            #expect(classicCaption.count > 20, "Classic paints the selected caption.")
-            let captionTop = try #require(classicCaption.map(\.y).min())
-            let letterBottom = try #require(letter.map(\.y).max())
-            #expect(captionTop > letterBottom,
-                    "The classic caption still sits below the capital.")
-            let classicCaptionMidX = Double(classicCaption.map(\.x).reduce(0, +))
-                / Double(classicCaption.count) / 2
-            #expect(abs(classicCaptionMidX - Double(width) / 2) <= 2,
-                    "The classic caption is centred beneath the letter.")
-            #expect(classicCaption.count > minimalCaption.count,
-                    "Classic names the selected mode; the compact Minimal row shows letters only.")
+            // A 28pt disc over a 4pt gap leaves no room for a word: the shared
+            // label paints no caption band. Measured on the borderless fill,
+            // where the only bright ink could be type — Classic's material plate
+            // is not a glyph.
+            #expect(points(matching: brightInk, in: minimal, image: minimalImage).isEmpty,
+                    "The compact row paints no caption.")
 
-            // The neighbour is still a ghosted letter on the correct side and
-            // keeps the same drawn pull inside its own 44pt cell.
+            // The neighbour is still a ghosted letter on the correct side, one
+            // 32pt pitch away on the shared track. Measured inside that
+            // neighbour's own cell on the flat Minimal face over an opaque
+            // ground: Classic's translucent material and its inset rim paint
+            // their own mid-greys across the whole plate, so a grey mask there
+            // cannot tell one glyph from the well's bevel — and the ghost on a
+            // transparent ground is a 0.45-alpha white no grey mask catches.
             let letterTop = try #require(letter.map(\.y).min())
-            let ghost = points(matching: ghostInk, in: classic, image: classicImage)
+            let letterBottom = try #require(letter.map(\.y).max())
+            let groundedImage = try renderCarousel(active: active, width: width, style: .minimal,
+                                                   grounded: true)
+            let groundedScale = Double(groundedImage.width) / Double(width)
+            let modes = CameraMode.visibleModes
+            let selectedIndex = try #require(modes.firstIndex(of: active))
+            let neighbourIndex = selectedIndex == 0 ? min(1, modes.count - 1) : selectedIndex - 1
+            let neighbourOffset = Double(CameraModeRowLayout.compactCellOffset(
+                index: neighbourIndex, selectedIndex: selectedIndex))
+            let neighbourCentre = Double(width) / 2 + neighbourOffset
+            // The neighbour's own cell, clipped where the strip clips it: the only
+            // place its capital can legitimately paint.
+            let cellReach = Double(CameraModeRowLayout.compactCellWidth) / 2
+            let viewportHalf = Double(min(width, CameraModeRowLayout.compactGroupWidth(
+                visibleCount: modes.count))) / 2
+            let cellLow = neighbourCentre - cellReach
+            let cellHigh = min(neighbourCentre + cellReach, Double(width) / 2 + viewportHalf)
+            let ghost = points(matching: ghostInk, in: try pixels(groundedImage), image: groundedImage)
                 .filter { $0.y >= letterTop && $0.y <= letterBottom }
-            #expect(!ghost.isEmpty, "Classic still shows the neighbouring mode.")
-            let ghostMidX = Double(ghost.map(\.x).reduce(0, +)) / Double(max(ghost.count, 1)) / 2
-            #expect((34...40).contains(abs(ghostMidX - letterMidX)),
-                    "Classic keeps the neighbour close without moving a 44pt target.")
-            if active == .develop {
-                #expect(ghost.filter { $0.x > classicImage.width / 2 }.count
-                        > ghost.filter { $0.x < classicImage.width / 2 }.count)
-            } else {
-                #expect(ghost.filter { $0.x < classicImage.width / 2 }.count
-                        > ghost.filter { $0.x > classicImage.width / 2 }.count)
-            }
+                .filter {
+                    let x = Double($0.x) / groundedScale
+                    return (x - Double(width) / 2) * neighbourOffset > 0
+                        && x >= cellLow - 0.5 && x <= cellHigh + 0.5
+                }
+            #expect(ghost.count > 20, "The neighbouring mode is still drawn inside its own cell.")
+            let ghostMidX = Double(ghost.map(\.x).reduce(0, +)) / Double(max(ghost.count, 1)) / groundedScale
+            #expect(ghostMidX >= cellLow - 1 && ghostMidX <= cellHigh + 1,
+                    "Ghost cell \(cellLow)...\(cellHigh)pt; centroid \(ghostMidX)pt.")
+            #expect((26...38).contains(abs(ghostMidX - letterMidX)),
+                    "The neighbour rides the 32pt pitch (saw \(abs(ghostMidX - letterMidX))pt).")
+            #expect((ghostMidX - letterMidX).sign == neighbourOffset.sign,
+                    "The ghost sits on the correct side of the selection.")
+            // Classic still ghosts its neighbour; only the pitch is measured on
+            // the face that lets a grey mask be glyph-only.
+            #expect(!points(matching: ghostInk, in: classic, image: classicImage)
+                .filter { $0.y >= letterTop && $0.y <= letterBottom }.isEmpty,
+                "The classic row still shows its neighbouring mode.")
         }
     }
 
-    /// Classic re-skins the row and nothing else: the same accepted swipe, the
-    /// same blocked tap that answers with a reason, and the same complete-44pt
-    /// target rule. A narrow slot degrades neighbours to peeks in both styles.
+    /// Neither finish re-skins the interaction: the same accepted swipe, the
+    /// same blocked tap that answers with a reason, and the same complete-target
+    /// rule. A narrow slot degrades neighbours to peeks in both styles.
     @Test func classicModeRowKeepsTheSharedSwipeAvailabilityAndCompleteTargets() throws {
         for style in [CameraUIStyle.classic, .minimal] {
             let live = CameraModeCarousel(selected: .develop, enabled: true, onSelect: { _ in })
@@ -255,8 +281,8 @@ struct CameraUIStyleStatusTests {
             #expect(blocked.resolvedTap(.video) == .refused(.video),
                     "A dimmed \(style.rawValue) letter answers a tap instead of ignoring it.")
 
-            // Classic's whole-target rule is untouched by the style, and stays
-            // the default contract Minimal reads through compactGroupFits.
+            // Classic's whole-target rule is untouched by the style; Minimal
+            // reads its own compactCellFits rule against the 28pt disc.
             #expect(!live.isInteractive(.video, in: 96))
             #expect(live.isInteractive(.video, in: 132))
             let three = CameraModeCarousel(selected: .video, enabled: true, onSelect: { _ in },
@@ -299,45 +325,53 @@ struct CameraUIStyleStatusTests {
 
     // MARK: - Remaining time
 
-    /// Classic restores the recessed LCD: the shared inset surface, the hairline
-    /// under the headline and the prominent 20pt readout. Minimal stays unboxed
-    /// quiet type.
-    @Test func classicRemainingTimeRestoresTheProminentReadoutOnTheInsetPlate() throws {
+    /// The LCD is one shared face in both finishes: no recessed plate, no
+    /// headline rule, no 20pt readout. The bar seats this same content in the
+    /// shared well, so Classic no longer draws a plate of its own — its
+    /// "restored" inset surface is gone from the source.
+    @Test func bothFinishesDrawTheOneSharedUnboxedLcdFace() throws {
         let classicImage = try render(lcd(.classic, queue: idleQueue), name: "classic-lcd-idle")
         let minimalImage = try render(lcd(.minimal, queue: idleQueue), name: "minimal-lcd-idle")
         let classic = try pixels(classicImage)
         let minimal = try pixels(minimalImage)
 
-        // Minimal paints only a soft shadow on the preview. Classic's plate is
-        // `.ultraThinMaterial`, which ImageRenderer cannot composite, so the
-        // plate is pinned at the source and the readout is measured below.
-        #expect(darkCoverage(minimal) < 0.08, "Minimal paints no plate over the preview.")
-        let lcdPlate = try source("App/Modules/CameraCapture/RecordingTimeLCD.swift")
-        #expect(lcdPlate.contains("modifier(CameraInsetSurface())"),
-                "Classic keeps the old recessed LCD plate.")
+        // The face paints no surface of its own; the bar's one well is the plate.
+        #expect(darkCoverage(minimal) < 0.08, "The face paints no plate over the preview.")
+        #expect(darkCoverage(classic) < 0.08, "Classic's plate is gone too; the well is the plate now.")
+        #expect(classic == minimal, "Both finishes draw the same LCD content.")
 
-        // The readout's own type size: Classic's old 20pt digits stand twice as
-        // tall as Minimal's quiet 12pt line. Measured as the tallest run of white
-        // in the face, left of the queue mark.
-        let classicRun = maxBrightRun(classic, image: classicImage, xTo: 0.6)
-        let minimalRun = maxBrightRun(minimal, image: minimalImage, xTo: 0.6)
-        #expect(classicRun > 0 && minimalRun > 0, "Both styles paint their readout.")
-        #expect(Double(classicRun) > Double(minimalRun) * 1.35,
-                "The classic readout stands a full 20pt line, Minimal's a quiet 12pt one.")
+        let lcdSource = try source("App/Modules/CameraCapture/RecordingTimeLCD.swift")
+        #expect(!lcdSource.contains("CameraInsetSurface"),
+                "The recessed LCD plate no longer exists; the bar's well replaced it.")
+        let bar = try source("App/Modules/CameraCapture/CameraControlBar.swift")
+        #expect(bar.contains(".cameraWellBacking(cornerRadius: 10)"),
+                "The bar seats the one face in the shared well.")
+
+        // The approved compact type: a 22pt mark over one 12pt line.
+        #expect(RecordingTimeLCD.queueGlyphSize == 22, "The mark is the approved 22pt glyph.")
+        #expect(RecordingTimeLCD.minimalReadoutSize == 12, "The readout is one 12pt line.")
+        #expect(maxBrightRun(classic, image: classicImage, xTo: 0.6) > 0,
+                "The face still paints its white readout.")
+        #expect(whiteInk(minimal) > 200, "The readout line paints.")
 
         // The real estimate is still painted, not an abbreviation.
         let longImage = try render(lcd(.classic, seconds: 3_600, queue: idleQueue), name: "classic-lcd-long")
         #expect(digest(classicImage) != digest(longImage),
-                "The classic readout tracks the estimate.")
+                "The shared readout tracks the estimate.")
     }
 
-    /// Minimal names the queue action: a 16pt glyph in clear white with an
-    /// explicit QUEUE label beside the count, where Classic keeps the original
-    /// 8pt mark and bare count. Neither style grows a second, glyph-sized tap:
-    /// the whole LCD stays the one >=44pt queue action.
-    @Test func minimalQueueMarkIsNamedAndSixteenPointsWhileTheWholeLCDStaysOneTarget() throws {
-        #expect(RecordingTimeLCD.queueGlyphSize == 16, "The Minimal queue glyph is 16pt.")
-        #expect(RecordingTimeLCD.queueCaption == "QUEUE", "The queue is named, not just drawn.")
+    /// One shared face: a 22pt queue mark over one 12pt capacity line —
+    /// hundredths of free space in Photo, hundredths of a minute in Video. No
+    /// QUEUE, FREE SPACE, REC LEFT or remaining-time caption is printed. The
+    /// take and the count ride the mark as small marks; success, failure and low
+    /// storage are drawn by the bar's outline over this same content, and are
+    /// spoken by the queue's accessibility value. Neither finish grows a second,
+    /// glyph-sized tap: the whole LCD stays the one >=44pt queue action.
+    @Test func theSharedFaceIsOneQueueMarkOverOneCapacityLine() throws {
+        #expect(RecordingTimeLCD.queueGlyphSize == 22,
+                "The approved mark is the 22pt queue glyph.")
+        #expect(RecordingTimeLCD.minimalReadoutSize == 12,
+                "The line under it is 12pt, for both media and both finishes.")
         #expect(RecordingTimeLCD.minimumTouchSize == 44,
                 "The LCD is never offered as a sub-44pt target.")
 
@@ -346,45 +380,90 @@ struct CameraUIStyleStatusTests {
         let classic = try pixels(classicImage)
         let minimal = try pixels(minimalImage)
 
-        // Both styles still paint their queue mark where the headline ends.
-        #expect(trailingInk(classic, image: classicImage) > 0, "Classic still paints its queue mark.")
-        #expect(trailingInk(minimal, image: minimalImage) > 0, "Minimal still paints its queue mark.")
+        // One face, both finishes: the style no longer re-skins the LCD, so the
+        // Classic 8pt mark and QUEUE word are gone rather than merely unused.
+        #expect(classic == minimal, "Both finishes draw the same queue/capacity face.")
 
-        // Minimal's mark is the top-aligned headline badge: its bright ink in the
-        // trailing sixth stands at least 11pt tall, which an 8pt glyph cannot do.
-        let badgeRun = maxBrightRun(minimal, image: minimalImage, xFrom: 0.6, yTo: 48)
-        #expect(badgeRun >= 13,
-                "The Minimal queue badge is drawn at 16pt, not the old 8pt mark (saw \(badgeRun)).")
+        // The mark and its one line are centred as one tight column: the mark's
+        // ink sits above the slot's middle, the single readout line below it.
+        let bright = points(matching: brightInk, in: minimal, image: minimalImage)
+        _ = try #require(bright.map(\.y).min(), "The shared face still paints its queue mark.")
+        _ = try #require(bright.map(\.y).max())
+        let middle = minimalImage.height / 2
+        #expect(bright.contains { $0.y < middle }, "The mark sits above the readout.")
+        #expect(bright.contains { $0.y > middle }, "The readout line sits below the mark.")
+        let brightMidX = Double(bright.map(\.x).reduce(0, +)) / Double(bright.count)
+        #expect(abs(brightMidX - Double(minimalImage.width) / 2) <= 5,
+                "The mark and its capacity line share the slot's centre.")
 
-        // The 16pt glyph and the QUEUE label are the Minimal branch only.
+        // The line itself: GB in Photo, minutes in Video, hundredths, floored.
+        let photo = RecordingTimeLCD(estimatedSeconds: 754, isStorageLow: false, queueStatus: idleQueue,
+                                     photoFreeBytes: 12_400_000_000, isPhotoMode: true)
+        #expect(photo.minimalReadoutText == "12.40 GB")
+        #expect(RecordingTimeLCD(estimatedSeconds: 754, isStorageLow: false,
+                                 queueStatus: idleQueue).minimalReadoutText == "12.56 min")
+        #expect(RecordingTimeLCD(estimatedSeconds: 30, isStorageLow: false,
+                                 queueStatus: idleQueue).minimalReadoutText == "0.50 min",
+                "A nearly full card reports the fraction it has, not a whole minute.")
+        #expect(RecordingTimeLCD(estimatedSeconds: nil, isStorageLow: false,
+                                 queueStatus: idleQueue).minimalReadoutText == "-- min")
+
+        // The capacity line tracks the medium; no caption is drawn beside it.
+        let generous = try render(lcd(.minimal, queue: idleQueue, photoFreeBytes: 97_300_000_000), name: "minimal-lcd-photo-high")
+        #expect(digest(generous) != digest(minimalImage),
+                "Photo capacity replaces the video minutes.")
+
+        // What the face builds: one shared presentation, exactly one text line
+        // and no caption word. The state is carried by marks and the outline.
         let lcdSource = try source("App/Modules/CameraCapture/RecordingTimeLCD.swift")
-        #expect(lcdSource.contains(".font(NitrateTypography.font(size: Self.queueGlyphSize))"),
-                "The glyph is sized from the pinned 16pt constant.")
-        #expect(lcdSource.contains("Text(Self.queueCaption)"),
-                "Minimal paints the QUEUE word, not just the mark.")
+        #expect(lcdSource.contains("private var presentation: some View { minimalFace }"),
+                "Both finishes present the one shared face.")
+        let faceStart = try #require(lcdSource.range(of: "private var minimalFace: some View"))
+        let faceEnd = try #require(lcdSource.range(of: "/// The queue glyph, or the render ring"))
+        let face = String(lcdSource[faceStart.lowerBound..<faceEnd.lowerBound])
+        #expect(face.components(separatedBy: "Text(").count == 2,
+                "The face prints exactly one readout line.")
+        for caption in ["QUEUE", "FREE SPACE", "REC LEFT", "RECORDING", "headlineText", "queueStatus.label"] {
+            #expect(!face.contains(caption),
+                    "The face paints no \(caption) word; its state is carried by marks.")
+        }
 
-        // The count is still painted, and still changes the face.
-        let idleImage = try render(lcd(.minimal, queue: idleQueue), name: "minimal-lcd-noqueue")
-        #expect(digest(minimalImage) != digest(idleImage),
-                "The queue count still changes the Minimal face.")
-
-        // Minimal fills its slot, so the one action covers the whole LCD.
-        #expect(minimalImage.width == 168 && minimalImage.height == 212,
-                "The Minimal face fills the 84x106pt slot instead of shrinking to its type.")
-
-        // Every queue/status semantic survives the bigger mark.
+        // Success and issue are the bar's outline over this same content, so the
+        // face's own ink is identical for saved, failed and low storage.
+        let idle = try render(lcd(.minimal, queue: idleQueue), name: "minimal-lcd-noqueue")
+        #expect(digest(minimalImage) != digest(idle),
+                "The queue count still changes the face.")
         let saved = try render(lcd(.minimal, queue: CameraStatusPresentation(
             outstandingCount: 0, pendingCount: 0, isProcessing: false,
             failedCount: 0, errorMessage: nil,
             latestResultCompleted: true, latestResultSavedToPhotos: true)),
             name: "minimal-lcd-saved")
-        #expect(greenInk(try pixels(saved)) > 0, "A saved render still shows its tick.")
-
+        #expect(digest(saved) == digest(idle),
+                "A saved render adds no glyph to the face; the shared outline says it.")
+        // `errorQueue` carries one outstanding render as well as the failure, and
+        // that outstanding render is a real, visible count mark on the face.
+        // Compare mark-for-mark at equal counts so the only difference left is
+        // the failure itself; the count keeps its own, separate meaning.
         let failed = try render(lcd(.minimal, queue: errorQueue), name: "minimal-lcd-failed")
-        #expect(redInk(try pixels(failed)) > 0, "A failed render still shows its error mark.")
-
+        let countOnly = try render(lcd(.minimal, queue: CameraStatusPresentation(
+            outstandingCount: 1, pendingCount: 0, isProcessing: false,
+            failedCount: 0, errorMessage: nil,
+            latestResultCompleted: true, latestResultSavedToPhotos: false)),
+            name: "minimal-lcd-count1")
+        #expect(digest(failed) == digest(countOnly),
+                "A failure adds no glyph: one outstanding render paints the same count mark with or without it.")
+        #expect(digest(failed) != digest(idle),
+                "The outstanding render in that fixture is what changes the face, not the failure.")
+        let failedIdle = try render(lcd(.minimal, queue: CameraStatusPresentation(
+            outstandingCount: 0, pendingCount: 0, isProcessing: false,
+            failedCount: 1, errorMessage: "Render failed",
+            latestResultCompleted: true, latestResultSavedToPhotos: false)),
+            name: "minimal-lcd-failed-empty")
+        #expect(digest(failedIdle) == digest(idle),
+                "A failure with an empty queue draws nothing inside the face.")
         let low = try render(lcd(.minimal, isStorageLow: true, queue: idleQueue), name: "minimal-lcd-low")
-        #expect(orangeInk(try pixels(low)) > 0, "Low storage still shows its warning.")
+        #expect(digest(low) == digest(idle),
+                "Low storage is the outline's cue, not a glyph in the face.")
 
         let live = try render(lcd(.minimal, queue: queued, isRecording: true), name: "minimal-lcd-live")
         #expect(redInk(try pixels(live)) > 0, "A confirmed take still paints its red tally.")
@@ -396,32 +475,76 @@ struct CameraUIStyleStatusTests {
         #expect(whiteInk(try pixels(rendering)) > 100, "Render activity still paints.")
     }
 
+
     /// The plate is presentation only: tally, stopping, queue, render activity,
-    /// photo capacity and storage warnings all keep their shared meaning.
-    @Test func classicReadoutKeepsEverySharedStatusSemantic() throws {
-        let idle = try render(lcd(.classic, queue: idleQueue), name: "classic-sem-idle")
+    /// photo capacity and storage warnings all keep their shared meaning in
+    /// *both* finishes, because there is only one face. The cue the face no
+    /// longer draws — success, failure and low storage — is asserted where it
+    /// now lives: the bar's queue-attention outline.
+    @Test func sharedReadoutKeepsEveryStatusSemanticInBothFinishes() throws {
+        for style in [CameraUIStyle.classic, .minimal] {
+            let idle = try render(lcd(style, queue: idleQueue), name: "\(style.rawValue)-sem-idle")
 
-        let live = try render(lcd(.classic, queue: idleQueue, isRecording: true), name: "classic-sem-live")
-        #expect(redInk(try pixels(live)) > 0, "A confirmed take keeps its red tally on the plate.")
+            let live = try render(lcd(style, queue: idleQueue, isRecording: true),
+                                  name: "\(style.rawValue)-sem-live")
+            #expect(redInk(try pixels(live)) > 0,
+                    "A confirmed take keeps its red tally in \(style.rawValue).")
 
-        let stopping = try render(lcd(.classic, queue: idleQueue, isRecording: true, isStopping: true),
-                                  name: "classic-sem-stopping")
-        #expect(redInk(try pixels(stopping)) == 0,
-                "A finalising take must not read as an active recording.")
-        #expect(digest(live) != digest(stopping))
+            let stopping = try render(lcd(style, queue: idleQueue, isRecording: true, isStopping: true),
+                                      name: "\(style.rawValue)-sem-stopping")
+            #expect(redInk(try pixels(stopping)) == 0,
+                    "A finalising take must not read as an active recording.")
+            #expect(digest(live) != digest(stopping))
 
-        let queuedImage = try render(lcd(.classic, queue: queued), name: "classic-sem-queued")
-        #expect(digest(queuedImage) != digest(idle), "The queue count still changes the face.")
+            let queuedImage = try render(lcd(style, queue: queued), name: "\(style.rawValue)-sem-queued")
+            #expect(digest(queuedImage) != digest(idle), "The queue count still changes the face.")
 
-        let rendering = try render(lcd(.classic, queue: renderingQueue), name: "classic-sem-rendering")
-        #expect(whiteInk(try pixels(rendering)) > 100, "Render activity still paints.")
+            let rendering = try render(lcd(style, queue: renderingQueue), name: "\(style.rawValue)-sem-rendering")
+            #expect(whiteInk(try pixels(rendering)) > 100, "Render activity still paints.")
 
-        let low = try render(lcd(.classic, isStorageLow: true, queue: idleQueue), name: "classic-sem-low")
-        #expect(digest(low) != digest(idle), "Low storage still shows its warning.")
+            let photo = try render(lcd(style, queue: idleQueue, photoFreeBytes: 12_400_000_000),
+                                   name: "\(style.rawValue)-sem-photo")
+            #expect(digest(photo) != digest(idle), "Photo mode still reports free space.")
 
-        let photo = try render(lcd(.classic, queue: idleQueue, photoFreeBytes: 12_400_000_000),
-                               name: "classic-sem-photo")
-        #expect(digest(photo) != digest(idle), "Photo mode still reports free space.")
+            // A success, a failure and low storage change nothing inside the
+            // face: one shared outline draws them over it.
+            let saved = try render(lcd(style, queue: CameraStatusPresentation(
+                outstandingCount: 0, pendingCount: 0, isProcessing: false,
+                failedCount: 0, errorMessage: nil,
+                latestResultCompleted: true, latestResultSavedToPhotos: true)),
+                name: "\(style.rawValue)-sem-saved")
+            #expect(digest(saved) == digest(idle), "Success is the outline's cue, not a face glyph.")
+            // `errorQueue` also carries one outstanding render, which the face
+            // legitimately draws as its count mark. Pin the failure semantics at
+            // equal counts, then prove an empty-queue failure adds no ink at all.
+            let failed = try render(lcd(style, queue: errorQueue), name: "\(style.rawValue)-sem-failed")
+            let countOnly = try render(lcd(style, queue: CameraStatusPresentation(
+                outstandingCount: 1, pendingCount: 0, isProcessing: false,
+                failedCount: 0, errorMessage: nil,
+                latestResultCompleted: true, latestResultSavedToPhotos: false)),
+                name: "\(style.rawValue)-sem-count1")
+            #expect(digest(failed) == digest(countOnly),
+                    "A failure adds no glyph in \(style.rawValue); the count mark is its own semantic.")
+            #expect(digest(failed) != digest(idle),
+                    "The outstanding render in that fixture is what changes the \(style.rawValue) face.")
+            let failedIdle = try render(lcd(style, queue: CameraStatusPresentation(
+                outstandingCount: 0, pendingCount: 0, isProcessing: false,
+                failedCount: 1, errorMessage: "Render failed",
+                latestResultCompleted: true, latestResultSavedToPhotos: false)),
+                name: "\(style.rawValue)-sem-failed-empty")
+            #expect(digest(failedIdle) == digest(idle),
+                    "A failure with an empty queue is the outline's cue too.")
+            let low = try render(lcd(style, isStorageLow: true, queue: idleQueue),
+                                 name: "\(style.rawValue)-sem-low")
+            #expect(digest(low) == digest(idle), "Low storage is the outline's cue, not a face glyph.")
+        }
+
+        // The one owner of those cues: the bar's outline, plus the spoken value.
+        let bar = try source("App/Modules/CameraCapture/CameraControlBar.swift")
+        #expect(bar.contains("CameraQueueAttentionOutline(hasIssue: queueAttention.hasUnseenIssue,"),
+                "The bar draws the issue/success border over the shared face.")
+        #expect(bar.contains("if isStorageLow { snapshot.issues.insert(\"low-storage\") }"),
+                "Low storage still raises its warning, on the outline.")
     }
 
     // MARK: - Recording status
@@ -525,13 +648,18 @@ struct CameraUIStyleStatusTests {
     }
 
     private func renderCarousel(active: CameraMode, width: CGFloat,
-                                style: CameraUIStyle, photoAvailable: Bool = false) throws -> CGImage {
-        let view = CameraModeCarousel(selected: active, enabled: true, onSelect: { _ in },
-                                      photoAvailable: photoAvailable)
+                                style: CameraUIStyle, photoAvailable: Bool = false,
+                                grounded: Bool = false) throws -> CGImage {
+        let row = CameraModeCarousel(selected: active, enabled: true, onSelect: { _ in },
+                                     photoAvailable: photoAvailable)
             .frame(width: width, height: CameraModeCarousel.height)
             .environment(\.cameraUIStyle, style)
             .environment(\.cameraControlAccent, accent)
-        return try render(view, name: "style-mode-\(style.rawValue)-\(active.rawValue)-\(Int(width))")
+        // An opaque ground so a 0.45-alpha glyph composites as mid-grey ink
+        // instead of an almost-transparent white that no grey mask can catch.
+        let view = grounded ? AnyView(row.background(Color.black)) : AnyView(row)
+        return try render(view,
+                          name: "style-mode-\(style.rawValue)-\(active.rawValue)-\(Int(width))\(grounded ? "-grounded" : "")")
     }
 
     /// Pixel centre of the slot, used to tell a left neighbour from a right one.
@@ -595,14 +723,25 @@ struct CameraUIStyleStatusTests {
         alpha > 128 && red > 150 && green > 60 && green < 210 && blue < 120 && red > blue + 60
     }
 
-    /// Minimal's flat selection fill: an opaque, dark, accent-matched disc.
+    /// Minimal's flat selection fill: an opaque, dark, accent-matched disc. The
+    /// capsule behind the whole group is neutral charcoal, so its tint tells the
+    /// two apart without either one losing its contrast.
     private func darkFill(_ red: Int, _ green: Int, _ blue: Int, _ alpha: Int) -> Bool {
-        alpha > 200 && max(red, max(green, blue)) <= 90
+        let high = max(red, max(green, blue))
+        return alpha > 200 && high <= 90 && high - min(red, min(green, blue)) >= 3
     }
 
-    /// The dimmed neighbour letter.
+    /// The capsule Minimal seats the whole mode group in: a neutral charcoal
+    /// plate, darker than the type it carries.
+    private func wellFill(_ red: Int, _ green: Int, _ blue: Int, _ alpha: Int) -> Bool {
+        alpha > 150 && max(red, max(green, blue)) <= 45
+            && abs(red - green) < 3 && abs(green - blue) < 3
+    }
+
+    /// The dimmed neighbour letter — over the preview or over the capsule, where
+    /// the composite is opaque instead of translucent.
     private func ghostInk(_ red: Int, _ green: Int, _ blue: Int, _ alpha: Int) -> Bool {
-        alpha > 25 && alpha < 150 && red > 40 && red < 160
+        alpha > 25 && red > 40 && red < 170
             && abs(red - green) < 6 && abs(green - blue) < 6
     }
 

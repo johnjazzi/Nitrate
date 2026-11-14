@@ -117,7 +117,8 @@ enum CameraLensControlPosition: String, CaseIterable, Identifiable, Sendable {
     static let preferenceKey = "camera.lensControlPosition"
 
     /// A missing or unrecognised value resolves here.
-    static let defaultValue: CameraLensControlPosition = .topRight
+    static let defaultValue: CameraLensControlPosition = .aboveShutter
+    static let belowPreviewMigrationKey = "camera.lensBelowPreviewPlacement.v1"
 
     static func resolved(_ raw: String) -> Self {
         Self(rawValue: raw) ?? defaultValue
@@ -173,20 +174,19 @@ enum CameraUIStyle: String, CaseIterable, Identifiable, Sendable {
 
 /// Which stock surface a press on the camera bar asks for.
 ///
-/// Minimal offers both: a tap opens the short picker (stock, gauge, processing)
-/// and a held press opens the full list with the sample preview. Classic has one
-/// stock sheet, so it answers every press with the full list. The choice is
-/// resolved before presentation, so the sheet never has to know the style.
-enum CameraStockEntry: String, CaseIterable, Sendable {
+/// Both finishes share the compact picker on tap and the full sample-preview
+/// list on hold. This is an entry choice, independent of the well finish.
+enum CameraStockEntry: String, CaseIterable, Identifiable, Sendable {
     case compact
     case full
+    var id: String { rawValue }
 
     /// How long a press has to be held to ask for the full list in Minimal.
     static let holdThreshold: TimeInterval = 0.5
 
-    /// Classic ignores what was asked for: its single sheet is the full list.
+    /// Both finishes preserve the requested entry; capture handoff can still ask for the full list.
     static func resolved(_ requested: Self, style: CameraUIStyle) -> Self {
-        style == .classic ? .full : requested
+        requested
     }
 
     /// Tap versus hold, resolved once so the bar and its tests agree.
@@ -257,4 +257,21 @@ extension EnvironmentValues {
         get { self[CameraControlAccentKey.self] }
         set { self[CameraControlAccentKey.self] = newValue }
     }
+}
+
+
+/// Independent of well finish; changing this never changes the metering range
+/// or camera state, and both sizes retain the same outer shooting-bar height.
+enum CameraExposureDialSize: String, CaseIterable, Identifiable, Sendable {
+    case small
+    case large
+
+    static let preferenceKey = "camera.exposureDialSize"
+    static let defaultValue: Self = .small
+    static func resolved(_ raw: String) -> Self { Self(rawValue: raw) ?? defaultValue }
+    var id: String { rawValue }
+    var title: String { self == .small ? "Small" : "Large" }
+    var length: CGFloat { self == .small ? 84 : 120 }
+    var width: CGFloat { self == .small ? 72 : 56 }
+    var tickSpacing: CGFloat { self == .small ? 8 : CGFloat(RulerScale.detentTravel) }
 }

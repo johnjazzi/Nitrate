@@ -143,7 +143,7 @@ struct CameraUIStyleSurfaceTests {
         #expect(surfaces.components(separatedBy: "if uiStyle == .classic").count == 5)
         for token in ["shape.fill(minimalBase)", "shape.fill(minimalTint)",
                       "shape.fill(Color.black.opacity(0.5))",
-                      "shape.fill(Color.black.opacity(0.32))"] {
+                      "shape.fill(Color(white: 0.11).opacity(0.62))"] {
             #expect(surfaces.contains(token),
                     "The minimal branch keeps its flat token: \(token)")
         }

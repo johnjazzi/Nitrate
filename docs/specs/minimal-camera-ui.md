@@ -1,6 +1,6 @@
 # Minimal camera UI
 
-**Status:** implemented on `feat/minimal-camera-ui`; native hands-on acceptance pending.
+**Status:** owner-approved on the physical iPhone; preparing the 0.9.0 minor release.
 **Scope:** camera presentation and appearance preferences only.
 **Reference:** `minimal-camera-ui/mockup.html` (self-contained interactive study).
 
@@ -20,7 +20,7 @@ Add a persisted **Lens control position** preference with two choices:
 - **Top right:** compact selector opening the available lens choices.
 - **Above shutter:** horizontal row for direct one-handed switching.
 
-Retain Top right as the migration default for existing users; Above shutter is the preferred layout demonstrated in the study. This default is an implementation recommendation rather than a separately tested native behavior.
+Above shutter is the final default. Existing installs adopt the below-preview placement once; subsequent Settings changes remain respected.
 
 ### P2 — Minimal controls
 
@@ -32,7 +32,7 @@ Do not change preview framing, capture/exposure behavior, available modes, stock
 
 ### Above shutter
 
-- One compact horizontal row centered above the shutter.
+- One compact horizontal row centered directly above the shutter and below the framed preview. Its placement uses the actual shutter top, not the top of the entire shooting bar; it does not resize the preview.
 - Reference labels: **13 · 24 · 96 · F**. F means front camera.
 - Numeric labels must come from the actual available lenses. Do not advertise unsupported focal lengths or synthesize missing hardware choices.
 - Visual circles approximately **30pt** in diameter. Follow-up spacing approval uses a **4pt visual gap**, with adjoining **34 × 44pt** touch cells in one compact strip; cells never overlap. Standard toolbar keys remain at least 44 × 44pt.
@@ -70,7 +70,7 @@ Use the approved **Beside the stock** treatment:
 - Display the gauge number immediately beside it, with **mm beneath the number**, not squeezed onto the same baseline.
 - Preserve the stock colors in both minimal camera treatments and in the picker choices. The appearance accent must not replace stock identity colors.
 - Stock and gauge form a clear entry point into the selection modal. Retain existing stock availability and selection behavior.
-- Keep remaining recording time below this group as a quiet type-only readout, not another bordered panel.
+- Keep the queue/capacity well below this group. Use one centered icon over a single two-decimal GB/minute readout, with internal padding and bounded text.
 
 ### Selection modal
 
@@ -79,7 +79,7 @@ The modal contains:
 2. Print gauge choices, sourced from the existing model.
 3. **Push / pull**, sourced from the existing processing controls.
 
-Push/pull is **inside the modal only**. Do not place an N/+1/−1 processing button beside the gauge on the shooting screen.
+The shooting screen shows a read-only push/pull amount beneath the gauge when processing is non-neutral. PUSH is yellow-orange, PULL is light purple, and neutral is hidden. Changing processing remains inside the stock selector; the main readout uses the same resolved render value, not another preference.
 
 Use the existing native push/pull range, increments, neutral label, persistence and rendering path. The HTML's example −2/−1/N/+1/+2 row demonstrates placement only; it is not authority to narrow or redefine native processing. Opening, closing or changing the modal's layout must not silently reset stock, gauge or push/pull.
 
@@ -88,7 +88,7 @@ Use the existing native push/pull range, increments, neutral label, persistence 
 - Minimal compact selector with the selected letter centered and neighboring available modes visible at the edges.
 - Use flat selection fill and the resolved accent; avoid a heavy track, nested rings or raised faces.
 - Support direct taps and the existing deliberate horizontal swipe behavior.
-- Keep a small mode-name label where needed for comprehension.
+- Keep visible letters only; accessibility supplies each full mode name.
 - Preserve the native visible-mode list. The mockup includes Photo for visual exploration; it does **not** authorize enabling a hidden or unavailable mode.
 - Selection must remain stable through switching and disabled/recording states. Do not change capture-mode ownership or bypass guards.
 
@@ -157,7 +157,7 @@ Stock identity colors, confirmed-recording red, semantic warnings/errors or rend
 - Check all supported orientations, safe areas, Dynamic Type and VoiceOver.
 - Verify 44pt minimum native hit targets, no overlapping lens targets and no controls covering the shutter.
 - Verify live measured exposure remains measured exposure and sits at the preview bottom.
-- Verify the stock chip retains its colors, mm sits beneath the gauge number and push/pull is reachable only within the modal.
+- Verify the stock chip retains its colors, mm sits beneath the gauge number, and the non-neutral processing readout uses the shared PUSH/PULL colors. Processing changes remain inside the selector.
 - Check color readability over bright/dark footage, recording transitions, lens transitions, front camera and unavailable states.
 - Confirm active daylight-rescue states remain visible and actionable where previously supported.
 - Verify the installed app identity; builds and HTML interactions alone are not proof of native behavior.
@@ -179,9 +179,11 @@ The HTML uses a bundled, ungraded sample image, simulated capture timing and two
 - Lens row, measured meter and transient pinch ruler are non-sizing canvas overlays.
   The bar retains its natural exposure-column height; overlay reservations also
   steer the daylight-rescue control away from them.
-- Stock and stacked gauge share one entry point. Push/pull remains within the modal;
-  both push and pull use the selected appearance accent, with direction stated by
-  their existing words and signed values rather than a second color preference.
+- Stock and stacked gauge share one entry point with 3pt of additional well padding.
+  A non-neutral push/pull readout sits beneath the gauge. PUSH is yellow-orange and
+  PULL is light purple in the main readout and both selector heights; neutral is
+  hidden on the shooting screen. The processing controls keep their original
+  preference and render owners.
 - The mode selector obeys the native visible-mode policy. Partially visible
   neighbors do not expose clipped touch targets; swipe and accessibility adjustment
   remain available in a narrow slot.
@@ -205,39 +207,74 @@ The HTML uses a bundled, ungraded sample image, simulated capture timing and two
   `com.nitrate.app` was not replaced.
 - Broader UI/gesture, orientation and VoiceOver acceptance remain as listed above.
 
-## 13. Runtime style and follow-up controls
+## 13. Final runtime styles and owner-approved refinements
 
-- Settings → Appearance offers **Camera UI: Classic / Minimal**. Minimal remains
-  the migration default; invalid values fall back to Minimal. Style changes only
-  presentation and are blocked throughout capture startup, recording, draining
-  and photo capture. Both styles share the current camera and all fixes.
-- Classic restores the raised controls, prominent LCD, stock well and side meter;
-  Minimal uses the short stock/gauge/push-pull picker without a sample preview.
-  Stock availability, remembered preferences and render submission stay on their
-  existing shared paths. Lens position, control color and record-button face stay
-  independent preferences. Push/pull remains inside the modal in both styles.
-- Minimal's direct lens strip uses 30pt circles with 4pt gaps, adjoining 34pt-wide
-  touch cells and a 44pt touch height. Its lens popout uses the same compact row.
-  The D/V/P group is also compact, with deterministic non-overlapping targets.
-- The stock entry carries two Minimal surfaces: a tap opens the compact stock,
-  gauge and push/pull picker, and a 0.5 s held press opens the full sheet with the
-  sample preview. Classic has one stock sheet, so every press opens the full one.
-  The press is timed by the entry itself rather than by a button's release, and
-  the surface is resolved against the style before the sheet is presented, so a
-  presented sheet can never swap its layout under the operator. VoiceOver keeps
-  one default action plus a named "Open full stock list" action.
-- The stock entry and gauge, the status/queue LCD, the exposure-bias column and
-  the D/V/P row are each seated in one shared Minimal well: a single translucent
-  neutral fill with no border, no rim and no material. The well is paint only —
-  no padding, no size change and no hit region — so it cannot move a control, a
-  target or the mode strip, and Classic keeps its own plates unchanged.
-- Minimal's queue affordance must be prominent enough to find independently of
-  the quiet remaining-time digits. Inline manual controls and rails use the same
-  flat presentation and resolved accent; capability purple and warning/REC red
-  remain semantic colors.
+These decisions supersede the earlier study where its original wording differs.
+
+- **Camera UI: Classic / Minimal** shares the compact geometry, camera, selection
+  state, live meter, recording guards and existing fixes. Minimal is the default
+  and unknown-value fallback. Classic adds beveled/material wells rather than
+  restoring the former expanded LCD, captions or side meter. Style changes remain
+  blocked during capture startup, recording, draining and photo capture.
+- Both finishes share the compact stock/gauge entry, 22pt centered queue icon,
+  padded capacity line, 30pt lens circles with 4pt gaps, and the D/V/P carousel.
+  The carousel uses 28pt discs on a 32pt pitch inside a fixed compact viewport;
+  only wholly visible cells expose live targets. Full names remain spoken.
+- **Stock entry:** one selector component has compact and expanded height states.
+  Tap opens it at 360pt; a 0.5s hold opens it expanded. Dragging up reveals the
+  existing stock sample preview above the same stock chips and enlarged gauge /
+  push-pull controls; dragging down hides the preview without resetting values.
+  Native sheet detents control expansion. One exclusive long-press/tap gesture
+  prevents a hold from also firing a short tap. A single item-based sheet owns
+  presentation; stock, gauge and processing preferences retain their shared owners.
+- **Lens placement:** Above shutter now means the gap below the framed preview,
+  directly above the shutter, without changing preview bounds. A one-time
+  preference migration adopts this layout on existing installs; Top right remains
+  an independent Settings option afterwards. Both routes use committed lens state.
+- **Exposure dial size: Small / Large** is an independent persisted Appearance
+  setting (`camera.exposureDialSize`), defaulting to Small. Small is 72pt wide by
+  84pt high, with 8pt bias-tick spacing; Large is 56pt wide by 120pt high with the
+  previous spacing. Both retain a 120pt outer slot, preserving preview/shutter
+  geometry. Auto bias has no redundant numeric header; manual ISO retains its
+  readout. The measured meter stays at the preview bottom in both finishes.
+- Stock/gauge, queue, exposure ruler and D/V/P each own one tightly wrapped well.
+  Minimal is borderless; Classic uses the shared beveled well face. Flexible
+  layout frames remain outside the backing. Queue content has its own horizontal
+  and vertical padding; the readout may scale within its bounded width rather
+  than forcing its digits outside the well.
+- **Capacity:** Photo shows `X.XX GB`; Video shows `X.XX min`. Hundredths are
+  truncated, never rounded up. Invalid/unavailable estimates show a placeholder.
+  Neither finish prints QUEUE, FREE SPACE or remaining-time captions.
+- **Queue results:** confirmed success scans the green border from top to bottom,
+  a brief full-border pop and a quick fade. A new error/warning latches a strongly
+  nonlinear red pulse until the queue is opened. Opening acknowledges the cue,
+  not the underlying job. Loaded history is baselined after queue initialization
+  and does not flash red merely on app launch. Reduce Motion replaces motion
+  with a steady cue; idle has no animation timeline.
+- Manual focus ticks sit on the right. Manual controls keep shared bindings and
+  actions, with flat or beveled presentation. Aperture capability purple,
+  confirmed-recording red and stock identity colors are retained.
 - **High-contrast rulers**, off by default, adds a darker translucent backing to
-  Minimal exposure, focus, zoom and shutter rulers for bright conditions. The
-  shared backdrop cannot resize controls, intercept gestures or alter pixels in
-  saved footage. Classic ignores the stored value; switching styles preserves it.
-- Follow-up implementation and device acceptance are in progress; the earlier
-  verification counts above refer to their recorded revisions, not this new tree.
+  Minimal exposure, focus, zoom and shutter rails for bright scenes. It does not
+  change layout, gestures, capture or delivered pixels; Classic preserves the
+  preference without applying the extra backing.
+- The owner approved these design changes on the physical iPhone. This is not a
+  claim of exhaustive orientation, accessibility or exposure calibration. Release
+  verification is recorded separately; historical counts above belong to their
+  original revisions.
+
+## 14. Related exposure correctness fix
+
+Video's shared idle preview previously used a free AE shutter while the take
+switched to its fixed 180-degree shutter. The release requests the same film
+shutter in the Video preview (1/48 at 24fps) with automatic or held ISO, separate
+from Photo's own exposure intent. Take-start ISO is converted from the metered
+shutter duration before EV compensation and hardware clamping. A numeric manual
+pin cannot be skipped just because its current number matches an active auto-ISO
+value. The existing sensor-underexposure/delivery-lift scheme, white-balance lock
+and LUT contracts are unchanged.
+
+Focused policy regressions and signed builds passed during implementation. A
+bright-scene physical preview/take comparison and the actual priority-mode
+capability of each camera remain separate hardware acceptance; minimum-ISO
+saturation cannot be fixed by inventing lower hardware gain or hiding overexposure.

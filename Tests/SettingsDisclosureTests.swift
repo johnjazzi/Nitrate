@@ -14,12 +14,23 @@ import Testing
     @Test func lcdUsesTheNeutralExposureSurfaceAndSelectorsAreCompact() throws {
         let source = try String(contentsOf: TestRepository.root.appendingPathComponent(
             "App/Modules/CameraCapture/RecordingTimeLCD.swift"), encoding: .utf8)
-        // Minimal's quiet 12pt readout survives; the recessed plate belongs to
-        // the Classic branch only.
-        #expect(source.contains("modifier(CameraInsetSurface())"),
-                "Classic restores the old recessed LCD plate.")
-        #expect(source.contains("remainingTime(fontSize: 12)"))
+        // The readout owns no plate at all: its quiet 12pt line survives and the
+        // well belongs to the bar's shared backing, shared by both finishes.
+        #expect(!source.contains("CameraInsetSurface"),
+                "the LCD draws no recessed plate of its own")
+        #expect(!source.contains("cameraWellBacking"),
+                "the well is the bar's, applied once around this face")
+        #expect(source.contains("static let minimalReadoutSize: CGFloat = 12"),
+                "the quiet 12pt readout survives")
+        #expect(source.contains(".font(NitrateTypography.font(size: Self.minimalReadoutSize))"))
         #expect(!source.contains("Color(red: 0.055, green: 0.14, blue: 0.105)"))
+        // One well, on the bar, and no accent plate in its place.
+        let bar = try String(contentsOf: TestRepository.root.appendingPathComponent(
+            "App/Modules/CameraCapture/CameraControlBar.swift"), encoding: .utf8)
+        #expect(bar.components(separatedBy: ".cameraWellBacking(cornerRadius: 10)").count - 1 == 1,
+                "the queue face is seated in exactly one shared well")
+        #expect(!bar.contains("CameraInsetSurface"),
+                "no accent plate replaces the shared well")
         #expect(CameraControlGeometry.leftWidth == 84)
         #expect(CameraControlGeometry.exposureWidth == 84)
     }

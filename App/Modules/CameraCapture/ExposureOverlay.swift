@@ -26,7 +26,7 @@ struct ExposureIndicatorView: View {
 
     var body: some View {
         Group {
-            if uiStyle == .classic { verticalMeter } else { horizontalMeter }
+            horizontalMeter
         }
         .cameraRulerBackdrop()
         .allowsHitTesting(false)

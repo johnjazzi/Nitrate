@@ -71,8 +71,13 @@ struct CameraDesignRenderTests {
 
     @MainActor @Test func rescueModalFitsItsButtonsAndWarningWithoutScrolling() throws {
         for (armed, available) in [(false, true), (true, true), (false, false)] {
-            let view = DaylightExposureRescueModal(armed: armed, available: available,
-                                                  canChange: true, onSelect: { _ in }, onCancel: {})
+            let view = DaylightExposureRescueModal(
+                armed: armed,
+                sixty: DaylightRescuePresentation.sixty(armed: armed, available: available, canChange: true),
+                pull: DaylightRescuePresentation.pull(stockSelected: true, currentStops: 0,
+                                                      floor: -3, busy: false),
+                aperture: DaylightRescuePresentation.aperture(nextStop: 2.8, enabled: true),
+                onSixty: { _ in }, onPull: {}, onAperture: {}, onCancel: {})
                 .frame(width: 320)
             let host = NSHostingView(rootView: view)
             #expect(host.fittingSize.height <= 480, "Warning and both actions must fit the floating card.")
@@ -100,8 +105,13 @@ struct CameraDesignRenderTests {
         let image = try render(
             ZStack {
                 preview
-                DaylightExposureRescueOverlay(armed: false, available: true, canChange: true,
-                                              onSelect: { _ in }, onCancel: {})
+                DaylightExposureRescueOverlay(
+                    armed: false,
+                    sixty: DaylightRescuePresentation.sixty(armed: false, available: true, canChange: true),
+                    pull: DaylightRescuePresentation.pull(stockSelected: true, currentStops: 0,
+                                                          floor: -3, busy: false),
+                    aperture: nil,
+                    onSixty: { _ in }, onPull: {}, onAperture: {}, onCancel: {})
             }
             .frame(width: size.width, height: size.height)
             .environment(\.colorScheme, scheme), name: "rescue-overlay-dimmed-\(appearance)", appearance: scheme)
