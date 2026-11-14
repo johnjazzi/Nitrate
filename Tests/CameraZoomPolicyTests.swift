@@ -126,6 +126,70 @@ struct CameraZoomPolicyTests {
         #expect(bounds.target(100) == 5)
     }
 
+    @Test func rampFactorAdvancesAtTheSelectedRate() throws {
+        let forward = try #require(CameraZoomPolicy.rampFactor(
+            initial: 1, rate: 0.25, elapsed: 1, direction: .in, minimum: 1, maximum: 5))
+        #expect(abs(forward - pow(2, 0.25)) < 1e-12)
+        let backward = try #require(CameraZoomPolicy.rampFactor(
+            initial: 5, rate: 0.25, elapsed: 1, direction: .out, minimum: 1, maximum: 5))
+        #expect(abs(backward - 5 * pow(2, -0.25)) < 1e-12)
+        let unchanged = try #require(CameraZoomPolicy.rampFactor(
+            initial: 2, rate: 0.25, elapsed: 0, direction: .in, minimum: 1, maximum: 5))
+        #expect(unchanged == 2)
+    }
+
+    @Test func rampFactorUsesMeasuredElapsedSoALateTickCatchesUp() throws {
+        // Four 100 ms ticks and one delayed 400 ms tick must land on the same
+        // factor: the step is derived from elapsed time, not tick count.
+        let stepped = try #require(CameraZoomPolicy.rampFactor(
+            initial: 2, rate: 0.25, elapsed: 0.4, direction: .in, minimum: 1, maximum: 5))
+        #expect(abs(stepped - 2 * pow(2, 0.1)) < 1e-12)
+        let quarterTick = try #require(CameraZoomPolicy.rampFactor(
+            initial: 2, rate: 0.25, elapsed: 0.1, direction: .in, minimum: 1, maximum: 5))
+        #expect(abs(quarterTick - 2 * pow(2, 0.025)) < 1e-12)
+    }
+
+    @Test func rampFactorClampsToBothEndpoints() throws {
+        let inward = try #require(CameraZoomPolicy.rampFactor(
+            initial: 1, rate: 0.25, elapsed: 1_000, direction: .in, minimum: 1, maximum: 5))
+        #expect(inward == 5)
+        let outward = try #require(CameraZoomPolicy.rampFactor(
+            initial: 4, rate: 0.25, elapsed: 1_000, direction: .out, minimum: 1, maximum: 5))
+        #expect(outward == 1)
+        let alreadyAtEnd = try #require(CameraZoomPolicy.rampFactor(
+            initial: 5, rate: 0.25, elapsed: 0.5, direction: .in, minimum: 1, maximum: 5))
+        #expect(alreadyAtEnd == 5)
+    }
+
+    @Test func rampFactorRejectsUnusableInput() {
+        for invalid: Double in [0, -1, .nan, .infinity, -.infinity] {
+            #expect(CameraZoomPolicy.rampFactor(initial: invalid, rate: 0.25, elapsed: 1,
+                                                direction: .in, minimum: 1, maximum: 5) == nil)
+            #expect(CameraZoomPolicy.rampFactor(initial: 1, rate: invalid, elapsed: 1,
+                                                direction: .in, minimum: 1, maximum: 5) == nil)
+            #expect(CameraZoomPolicy.rampFactor(initial: 1, rate: 0.25, elapsed: 1,
+                                                direction: .out, minimum: invalid, maximum: 5) == nil)
+        }
+        // A ramp's first tick may have zero elapsed time; it holds the initial
+        // factor. Only negative or non-finite elapsed values are unusable.
+        #expect(CameraZoomPolicy.rampFactor(initial: 2, rate: 0.25, elapsed: 0,
+                                            direction: .in, minimum: 1, maximum: 5) == 2)
+        for invalid: Double in [-1, .nan, .infinity, -.infinity] {
+            #expect(CameraZoomPolicy.rampFactor(initial: 1, rate: 0.25, elapsed: invalid,
+                                                direction: .in, minimum: 1, maximum: 5) == nil)
+        }
+        #expect(CameraZoomPolicy.rampFactor(initial: 1, rate: 0.25, elapsed: 1,
+                                            direction: .in, minimum: 2, maximum: 1) == nil)
+        #expect(CameraZoomPolicy.rampFactor(initial: 1, rate: 0, elapsed: 1,
+                                            direction: .in, minimum: 1, maximum: 5) == nil)
+    }
+
+    @Test func rampTickIsSixtyHertzAndSnapshotsPublishAtTenHertz() {
+        #expect(abs(CameraZoomPolicy.rampTickInterval - 1.0 / 60.0) < 1e-12)
+        #expect(abs(CameraZoomPolicy.rampPublishInterval - 0.1) < 1e-12)
+        #expect(CameraZoomPolicy.rampPublishInterval > CameraZoomPolicy.rampTickInterval)
+    }
+
     @Test func staleRevisionsCannotBeginOrStopNewRamp() {
         var state = CameraZoomRampLifecycle()
         state.cameraChanged()

@@ -65,7 +65,9 @@ enum TestRepository {
         "Tests/Fixtures/colorchecker-babelcolor-2006.json",
         "App/ContentView.swift",
         "App/Modules/FilmStockLibrary/GaugeControl.swift",
-        "App/Modules/FilmStockLibrary/PushPullControl.swift"
+        "App/Modules/FilmStockLibrary/PushPullControl.swift",
+        "App/Modules/Purchase/AboutView.swift",
+        "App/Modules/FilmStockLibrary/CompactStockPicker.swift"
     ]
 
     /// Diagnostic renders must not write into the source checkout or signed bundle.

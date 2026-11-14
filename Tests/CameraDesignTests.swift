@@ -22,7 +22,9 @@ struct CameraDesignTests {
         // The confirmation is a card with padded actions, not a cramped sheet row.
         let card = try source("App/Modules/CameraCapture/ExposureRescueControl.swift")
         #expect(card.contains("padding(.horizontal, 18)"))
-        #expect(card.contains("frame(maxWidth: .infinity, minHeight: 52)"))
+        #expect(card.contains("frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)"))
+        #expect(card.contains(".foregroundStyle(.white)"),
+                "Rescue actions keep light text on their dark card in both appearances.")
         #expect(card.contains("Color.black.opacity(0.55)"),
                 "The canvas behind the card must be dimmed, not replaced by an opaque page.")
         #expect(!screen.contains("daylight60UnavailableReason: Daylight60Control"))
@@ -114,10 +116,38 @@ struct CameraDesignTests {
     @Test func leftColumnSharesFullExposureHeightAndRealGauge() throws {
         let bar = try source("App/Modules/CameraCapture/CameraControlBar.swift")
         let screen = try source("App/ContentView.swift")
-        #expect(bar.contains("CameraShootingLayout()"))
-        #expect(bar.contains("CameraGaugeLabel(gauge: selectedGauge,"))
-        #expect(screen.contains("selectedGauge: selectedStock.flatMap { library.lastGauge(for: $0.stockId) } ?? .neutral"))
-        #expect(bar.components(separatedBy: "length: 120").count == 3)
+        #expect(bar.contains("CameraShootingLayout(style: uiStyle)"))
+        // The gauge is the shared `CameraGaugeLabel` face with its canonical
+        // one-argument initialiser: the column rotates the gauge and the
+        // push/pull readout together, so neither carries a rotation of its own.
+        #expect(bar.contains("CameraGaugeLabel(gauge: selectedGauge)"),
+                "the shared gauge face keeps its single-argument initialiser")
+        #expect(!bar.contains("CameraGaugeLabel(gauge: selectedGauge, rotationDegrees:"),
+                "the label is not forked to take a per-view rotation")
+        let gaugeLabel = try #require(bar.range(of: "CameraGaugeLabel(gauge: selectedGauge)"))
+        // Read only the selector slot that follows the label, so the assertion
+        // cannot be satisfied by a rotation somewhere else in the bar.
+        let slotEnd = try #require(bar[gaugeLabel.lowerBound...].range(of: "// MARK: - Stock selector"))
+        let readoutSlot = bar[gaugeLabel.lowerBound..<slotEnd.lowerBound]
+        #expect(readoutSlot.contains(".rotationEffect(.degrees(CameraGlyphRotation.degrees(for: orientation)))"),
+                "the parent turns the gauge and the push/pull readout as one unit")
+        #expect(screen.contains("selectedGauge: isDevelopMode ? developGauge"))
+        #expect(screen.contains(": selectedStock.flatMap { library.lastGauge(for: $0.stockId) } ?? .neutral"))
+        // Both rulers size from the persisted dial choice, never a literal
+        // length: Small is 84 x 72, Large 120 x 56.
+        #expect(bar.components(separatedBy: "length: exposureDialSize.length").count - 1 == 2,
+                "ISO and EV both read the persisted dial length")
+        #expect(bar.components(separatedBy: "width: exposureDialSize.width").count - 1 == 2,
+                "ISO and EV both read the persisted dial width")
+        #expect(!bar.contains("length: 120"), "no ruler hard-codes its length")
+        #expect(CameraExposureDialSize.small.length == 84)
+        #expect(CameraExposureDialSize.small.width == 72)
+        #expect(CameraExposureDialSize.large.length == 120)
+        #expect(CameraExposureDialSize.large.width == 56)
+        // The outer 120pt slot keeps the bar, and with it the preview, fixed
+        // whichever dial is chosen.
+        #expect(bar.components(separatedBy: ".frame(height: 120)").count - 1 == 2,
+                "both rulers keep the fixed 120pt outer slot")
         #expect(bar.contains("onShowQueueSheet"))
     }
 }

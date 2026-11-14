@@ -279,9 +279,12 @@ struct FrameRulerPlacementTests {
             let image = try bitmap(view, size: canvas)
             let scale = CGFloat(image.width) / canvas.width
             let bright = try ink(image) { $0.red > 0.75 && $0.green > 0.75 && $0.blue > 0.75 }
-            #expect(bright.filter { CGFloat($0.y) / scale < rect.minY + 44 }.count > 5,
+            // The hold arrows paint the live accent in Minimal, so visibility is
+            // read as ink over the black canvas rather than as white pixels.
+            let arrowInk = try ink(image) { max($0.red, max($0.green, $0.blue)) > 0.3 }
+            #expect(arrowInk.filter { CGFloat($0.y) / scale < rect.minY + 44 }.count > 5,
                     "the upper zoom arrow must remain visible")
-            #expect(bright.filter { CGFloat($0.y) / scale > rect.maxY - 44 }.count > 5,
+            #expect(arrowInk.filter { CGFloat($0.y) / scale > rect.maxY - 44 }.count > 5,
                     "the lower zoom arrow must remain visible")
             #expect(bright.filter {
                 let y = CGFloat($0.y) / scale

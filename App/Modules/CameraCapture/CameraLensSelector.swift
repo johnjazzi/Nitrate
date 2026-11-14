@@ -12,13 +12,15 @@ struct CameraLensSelector: View {
     /// Physical orientation, re-injected into the popout so its keys rotate the
     /// same way even if the popover does not inherit the presenter's values.
     @Environment(\.cameraDeviceOrientation) private var deviceOrientation
+    @Environment(\.cameraControlAccent) private var controlAccent
+    @Environment(\.cameraUIStyle) private var uiStyle
 
     var body: some View {
         Group {
             if availableLenses.isEmpty {
                 // Keep the current lens visible without offering a dead action.
                 triggerLabel
-                    .background(Circle().fill(.ultraThinMaterial))
+                    .background(Circle().fill(Color(white: 0.10)))
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Camera lens")
                     .accessibilityValue(title(selectedLens))
@@ -56,7 +58,26 @@ struct CameraLensSelector: View {
             .frame(width: 44, height: 44)
     }
 
+    @ViewBuilder
     private var lensWell: some View {
+        if uiStyle == .minimal {
+            CameraLensRow(availableLenses: availableLenses, selectedLens: selectedLens) { lens in
+                isPresented = false
+                onSelectLens(lens)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.black.opacity(0.9), in: Capsule())
+            .environment(\.cameraDeviceOrientation, deviceOrientation)
+            .environment(\.cameraControlAccent, controlAccent)
+            .environment(\.cameraUIStyle, uiStyle)
+            .accessibilityLabel("Available camera lenses")
+        } else {
+            classicLensWell.environment(\.cameraUIStyle, uiStyle)
+        }
+    }
+
+    private var classicLensWell: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 60), spacing: 8)], spacing: 8) {
             ForEach(availableLenses) { lens in
                 lensKey(lens)
@@ -72,6 +93,7 @@ struct CameraLensSelector: View {
         .frame(width: 180)
         .fixedSize(horizontal: false, vertical: true)
         .environment(\.cameraDeviceOrientation, deviceOrientation)
+        .environment(\.cameraControlAccent, controlAccent)
         .accessibilityLabel("Available camera lenses")
     }
 
@@ -84,10 +106,10 @@ struct CameraLensSelector: View {
             CameraLensFace(label: lens == .front ? "Front" : "\(lens.focalLengthMM)",
                            rotationDegrees: CameraGlyphRotation.degrees(for: deviceOrientation),
                            isSelected: isSelected)
-                .foregroundStyle(isSelected ? .black : .white)
+                .foregroundStyle(isSelected ? controlAccent : .white.opacity(0.65))
                 .frame(height: 44)
         }
-        .buttonStyle(CameraRaisedButtonStyle(faceColor: isSelected ? .white : nil))
+        .buttonStyle(CameraRaisedButtonStyle(faceColor: isSelected ? controlAccent.opacity(0.14) : nil))
         .accessibilityLabel(title(lens))
         .accessibilityHint(isSelected ? "Current camera lens" : "Switches camera lens and closes selector")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
@@ -95,5 +117,48 @@ struct CameraLensSelector: View {
 
     private func title(_ lens: CameraLens) -> String {
         lens == .front ? "Front" : "\(lens.focalLengthMM) mm"
+    }
+}
+
+/// Direct lens choices share the toolbar's committed selection and callback.
+/// Minimal uses 30pt faces with a 4pt visual gap in a 44pt-high touch strip.
+/// Each adjoining cell has one deterministic lens action; invisible targets never overlap.
+struct CameraLensRow: View {
+    let availableLenses: [CameraLens]
+    let selectedLens: CameraLens
+    let onSelectLens: (CameraLens) -> Void
+    @Environment(\.cameraControlAccent) private var controlAccent
+    @Environment(\.cameraUIStyle) private var uiStyle
+    @Environment(\.cameraDeviceOrientation) private var deviceOrientation
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(availableLenses.sorted {
+                ($0 == .front ? Int.max : $0.focalLengthMM) < ($1 == .front ? Int.max : $1.focalLengthMM)
+            }) { lens in
+                Button {
+                    guard lens != selectedLens else { return }
+                    onSelectLens(lens)
+                } label: {
+                    Text(lens == .front ? "F" : "\(lens.focalLengthMM)")
+                        .font(NitrateTypography.font(size: 12, relativeTo: .caption))
+                        .foregroundStyle(lens == selectedLens ? controlAccent : .white.opacity(0.65))
+                        .frame(width: CameraMinimalLayout.lensFaceSize, height: CameraMinimalLayout.lensFaceSize)
+                        .background(lens == selectedLens ? controlAccent.opacity(0.14) : Color(white: 0.08),
+                                    in: Circle())
+                        .rotationEffect(.degrees(CameraGlyphRotation.degrees(for: deviceOrientation)))
+                        .frame(width: CameraMinimalLayout.lensCellWidth(style: uiStyle),
+                               height: CameraMinimalLayout.lensHitSize)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(lens == .front ? "Front camera" : "\(lens.focalLengthMM) mm")
+                .accessibilityHint(lens == selectedLens ? "Current camera lens" : "Switches camera lens")
+                .accessibilityAddTraits(lens == selectedLens ? .isSelected : [])
+                .accessibilityIdentifier("camera.lens.\(lens.rawValue)")
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Camera lenses")
     }
 }

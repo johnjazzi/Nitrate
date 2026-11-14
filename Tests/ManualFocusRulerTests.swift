@@ -212,7 +212,7 @@ struct ManualFocusRulerTests {
         #expect(screen.contains("FrameRulerPlacementGeometry.rect("))
         #expect(screen.contains("ManualFocusRuler(lensPosition: $manualFocusPosition"))
         // Existing pinch behaviour is preserved when the zoom toggle is off.
-        #expect(screen.contains("if pinchIsActive, !zoomControlsEnabled, let bottom = controlBounds[\"bottom\"]"))
+        #expect(screen.contains("if pinchIsActive, !zoomControlsEnabled, let slot = pinchRulerRect(in: geometry)"))
     }
 
     // The layout worker owns ContentView; these assert the shared stop contract
@@ -314,7 +314,7 @@ struct ManualFocusRulerTests {
     // MARK: - Native render
 
     @MainActor @Test(arguments: [ColorScheme.light, .dark])
-    func realRulerRendersATickRailAndYellowIndex(_ scheme: ColorScheme) throws {
+    func realRulerRendersATickRailAndResolvedAccentIndex(_ scheme: ColorScheme) throws {
         @MainActor func bitmap<V: View>(_ view: V, size: CGSize) throws -> NSBitmapImageRep {
             let host = NSHostingView(rootView: view.environment(\.colorScheme, scheme))
             host.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
@@ -327,7 +327,7 @@ struct ManualFocusRulerTests {
 
         // Compare with the actual semantic yellow in the same appearance and
         // explicit color space, rather than assuming device RGB component values.
-        let reference = try bitmap(Color.yellow, size: CGSize(width: 8, height: 8))
+        let reference = try bitmap(CameraControlColorPreference.orangeAccent, size: CGSize(width: 8, height: 8))
         let expected = try #require(reference.colorAt(x: 4, y: 4)?.usingColorSpace(.sRGB))
         #expect(expected.alphaComponent > 0.95)
         #expect(expected.redComponent > expected.blueComponent + 0.2)
@@ -411,7 +411,7 @@ struct ManualFocusRulerTests {
         let screen = try source("App/ContentView.swift")
         #expect(screen.contains("private var manualControlsActive: Bool"))
         #expect(screen.contains("setInlineManualControlsShown(!showInlineManualControls)"))
-        #expect(screen.contains("faceColor: manualControlsActive ? SettingsControlChrome.halationOrange : nil"))
+        #expect(screen.contains("faceColor: manualControlsActive ? controlAccent : nil"))
         #expect(!screen.contains("faceColor: manualControlsActive ? .yellow : nil"))
         #expect(screen.contains(".accessibilityLabel(\"Manual controls\")"))
         #expect(screen.contains(".accessibilityValue(manualControlsActive ? \"Expanded\" : \"Collapsed\")"))
@@ -446,8 +446,8 @@ struct ManualFocusRulerTests {
         // than forcing the lens into manual focus.
         #expect(screen.contains("enabled: canUseManualFocusRuler && isManualFocus"))
         let ruler = try source("App/Modules/CameraCapture/ManualFocusRuler.swift")
-        #expect(ruler.contains("fill(enabled ? Color.yellow : Color.gray)"))
-        #expect(ruler.contains("foregroundStyle(enabled ? Color.yellow : Color.gray)"))
+        #expect(ruler.contains("fill(enabled ? controlAccent : Color.gray)"))
+        #expect(ruler.contains("foregroundStyle(enabled ? controlAccent : Color.gray)"))
     }
 
     /// The printed aperture is the operator's choice, falling back to the measured

@@ -45,13 +45,15 @@ struct PhotoShutterControlRenderTests {
 
     /// The rail behind the shutter ruler is the same dark translucent plate the
     /// manual focus and zoom rulers draw, not the light inset control surface.
+    /// The manual rails now take that plate from the shared style chrome, so the
+    /// shutter rail's own fill still has to match its classic value.
     @Test func shutterRailReusesTheManualRulerBackground() throws {
         let control = try String(contentsOf: TestRepository.root
             .appendingPathComponent("App/Modules/CameraCapture/PhotoShutterControl.swift"), encoding: .utf8)
         let focus = try String(contentsOf: TestRepository.root
             .appendingPathComponent("App/Modules/CameraCapture/ManualFocusRuler.swift"), encoding: .utf8)
-        #expect(focus.contains("RoundedRectangle(cornerRadius: 8)"))
-        #expect(focus.contains(".black.opacity(0.45)"))
+        #expect(focus.contains("ManualRulerFace(chrome: ManualControlChrome.face(uiStyle)"))
+        #expect(ManualControlChrome.classicFace.fillOpacity == 0.45)
         #expect(control.contains("cornerRadius: 8"))
         #expect(control.contains(".black.opacity(0.45)"))
         #expect(!control.contains("CameraInsetSurface()"))

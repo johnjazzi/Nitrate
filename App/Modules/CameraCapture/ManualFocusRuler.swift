@@ -160,6 +160,10 @@ enum ManualFocusStopEdit {
 /// never also drag the live focus, because the ordinary focus drag only reacts to
 /// real movement and stands down once a hold has been recognised.
 struct ManualFocusRuler: View {
+    @Environment(\.cameraControlAccent) private var controlAccent
+    /// Presentation only: Classic keeps the dark rail plate, Minimal draws the
+    /// ticks, the release bands and the index straight over the preview.
+    @Environment(\.cameraUIStyle) private var uiStyle
     @Binding var lensPosition: Double
     let enabled: Bool
     /// Session-only stops. The default keeps every existing call site and the
@@ -198,7 +202,7 @@ struct ManualFocusRuler: View {
         VStack(spacing: 4) {
             Text("MF")
                 .font(NitrateTypography.font(size: 11))
-                .foregroundStyle(enabled ? Color.yellow : Color.gray)
+                .foregroundStyle(enabled ? controlAccent : Color.gray)
                 .frame(width: visualWidth)
                 .frame(maxWidth: .infinity, alignment: .trailing)
             GeometryReader { geometry in
@@ -248,26 +252,23 @@ struct ManualFocusRuler: View {
 
     // MARK: - Marker rendering
 
-    /// The visibly drawn rail: the rounded background, its ticks, the release
-    /// bands, the session-stop markers and the live index. Authored at
-    /// `visualWidth` so it can be inset inside the wider 44pt hit column. A
-    /// disabled rail (autofocus selected) draws its index and label grey.
+    /// The visibly drawn rail: the ticks, the release bands, the session-stop
+    /// markers and the live index. Authored at `visualWidth` so it can be inset
+    /// inside the wider 44pt hit column. A disabled rail (autofocus selected)
+    /// draws its index and label grey.
+    ///
+    /// Classic keeps the dark rounded plate behind that ink, clipped to its
+    /// corners; Minimal draws no plate and lets one shadow hold the ink off the
+    /// footage. The tick positions, the marker offsets and every gesture are
+    /// unaffected by the style.
     private func rail(size: CGSize) -> some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(.black.opacity(0.45))
             Canvas { context, canvasSize in
-                for tick in stride(from: 0.0, through: 1.0, by: 0.1) {
-                    let y = canvasSize.height * tick
+                for index in 0...10 {
+                    let y = canvasSize.height * CGFloat(index) / 10
+                    let tickLength: CGFloat = index.isMultiple(of: 5) ? 10 : 6
                     var path = Path()
-                    path.move(to: CGPoint(x: 0, y: y))
-                    path.addLine(to: CGPoint(x: 6, y: y))
-                    context.stroke(path, with: .color(.white.opacity(0.4)), lineWidth: 1)
-                }
-                for tick in stride(from: 0.0, through: 1.0, by: 0.5) {
-                    let y = canvasSize.height * tick
-                    var path = Path()
-                    path.move(to: CGPoint(x: canvasSize.width - 6, y: y))
+                    path.move(to: CGPoint(x: canvasSize.width - tickLength, y: y))
                     path.addLine(to: CGPoint(x: canvasSize.width, y: y))
                     context.stroke(path, with: .color(.white.opacity(0.4)), lineWidth: 1)
                 }
@@ -275,12 +276,13 @@ struct ManualFocusRuler: View {
             deletionBands(in: size)
             stopMarkers(in: size)
             Rectangle()
-                .fill(enabled ? Color.yellow : Color.gray)
+                .fill(enabled ? controlAccent : Color.gray)
                 .frame(width: size.width, height: 2)
                 .position(x: size.width / 2,
                           y: ManualFocusRulerScale.indexFraction(lensPosition: lensPosition)
                               * size.height)
         }
+        .modifier(ManualRulerFace(chrome: ManualControlChrome.face(uiStyle), cornerRadius: 8))
     }
 
     /// A thin orange line and its one-based label per stop, offset from the
@@ -290,13 +292,13 @@ struct ManualFocusRuler: View {
             let y = CGFloat(ManualFocusRulerScale.indexFraction(lensPosition: stop.lensPosition)) * size.height
             let active = editingStopID == stop.id
             Rectangle()
-                .fill(active ? SettingsControlChrome.lightPurple : SettingsControlChrome.halationOrange)
+                .fill(active ? SettingsControlChrome.lightPurple : controlAccent)
                 .frame(width: max(0, size.width - 16), height: 2)
                 .opacity(0.9)
                 .position(x: max(0, size.width - 16) / 2, y: y)
             Text(ManualFocusStopEdit.label(index: index))
                 .font(NitrateTypography.font(size: 9))
-                .foregroundStyle(SettingsControlChrome.halationOrange)
+                .foregroundStyle(controlAccent)
                 .position(x: size.width - 8, y: y)
         }
     }
@@ -307,11 +309,11 @@ struct ManualFocusRuler: View {
         if editingStopID != nil {
             VStack(spacing: 0) {
                 Rectangle()
-                    .fill(SettingsControlChrome.halationOrange.opacity(0.28))
+                    .fill(controlAccent.opacity(0.28))
                     .frame(height: size.height * ManualFocusStopEdit.removalBand)
                 Spacer(minLength: 0)
                 Rectangle()
-                    .fill(SettingsControlChrome.halationOrange.opacity(0.28))
+                    .fill(controlAccent.opacity(0.28))
                     .frame(height: size.height * ManualFocusStopEdit.removalBand)
             }
             .allowsHitTesting(false)

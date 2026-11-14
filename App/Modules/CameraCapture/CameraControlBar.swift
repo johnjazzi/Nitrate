@@ -1,5 +1,6 @@
-import SwiftUI
 import AVKit
+import Foundation
+import SwiftUI
 
 /// Compact stock/status column, screen-centred REC, and persistent exposure controls.
 ///
@@ -8,6 +9,8 @@ import AVKit
 /// owns the shooting controls and remaining-recording-time readout.
 struct CameraControlBar: View {
     @Environment(\.cameraDeviceOrientation) private var orientation
+    @Environment(\.cameraControlAccent) private var controlAccent
+    @Environment(\.cameraUIStyle) private var uiStyle
     private let controlFaceSize: CGFloat = 38
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The persisted face choice. Resolved through `RecordButtonAppearance` so
@@ -15,6 +18,9 @@ struct CameraControlBar: View {
     /// default are used by the Settings picker.
     @AppStorage(RecordButtonAppearance.preferenceKey)
     private var recordButtonAppearance = RecordButtonAppearance.classic.rawValue
+    @AppStorage(CameraExposureDialSize.preferenceKey)
+    private var exposureDialSizeRaw = CameraExposureDialSize.defaultValue.rawValue
+    private var exposureDialSize: CameraExposureDialSize { .resolved(exposureDialSizeRaw) }
     /// True only while the exposure control is being held, whether or not the
     /// press has reached the long-press threshold. `LongPressGesture` feeds it
     /// through `.updating`, so the expanding acknowledgement starts during the
@@ -30,13 +36,20 @@ struct CameraControlBar: View {
     /// Generation-guarded so rapid taps cannot cross-wire the animation.
     @State private var isUnclicked = false
     @State private var pressGeneration = 0
+    /// Travel that turns a press into a cancelled one, so a drag never picks a
+    /// stock surface.
+    private static let stockPressMaximumTravel: CGFloat = 16
     let cameraViewModel: CameraViewModel
     let renderQueueViewModel: RenderQueueViewModel
     let selectedStock: FilmStockConfig?
     let currentISO: Float
     let selectedGauge: PrintGauge
+    /// The parent's resolved render value, not another processing preference.
+    let pushPull: PushPullExposure?
     let onShowQueueSheet: () -> Void
-    let onShowStockSheet: () -> Void
+    /// Minimal resolves a tap to its compact picker and a held press to the full
+    /// stock list; Classic always asks for the full list.
+    let onShowStockSheet: (CameraStockEntry) -> Void
     /// One brief outline around the whole stock-selector well, a discoverability
     /// hint only. It adds no layout or hit target: the ring is a non-hit-testing
     /// overlay and never repeats.
@@ -58,10 +71,9 @@ struct CameraControlBar: View {
     /// The only thing the Develop centre action does. It never touches capture.
     var onDevelopRender: () -> Void = {}
     var isPhotoMode = false
-    /// The push/pull this take will be developed with: the stock's remembered
-    /// choice, resolved against the live meter when it is automatic. Nil hides the
-    /// badge, which is also what a neutral result does.
-    var pushPull: PushPullExposure? = nil
+    var isQueuePresented = false
+    @State private var queueAttention = CameraQueueAttentionState()
+
     var photoStatus: String? = nil
     var onPhotoCapture: () -> Void = {}
     var photoExposure: PhotoExposureSnapshot? = nil
@@ -74,7 +86,7 @@ struct CameraControlBar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            CameraShootingLayout() {
+            CameraShootingLayout(style: uiStyle) {
                 selectorRow
                     .disabled(isDevelopMode && developIsBusy)
                     .opacity(isDevelopMode && developIsBusy ? 0.4 : 1)
@@ -118,29 +130,96 @@ struct CameraControlBar: View {
             if !enabled { hardwarePress.reset() }
         }
         .onChange(of: isPhotoMode) { _, _ in hardwarePress.reset() }
+        .onChange(of: queueAttentionSnapshot, initial: true) { previous, current in
+            queueAttention.receive(previous: previous, current: current, queueIsOpen: isQueuePresented)
+        }
+        .onChange(of: isQueuePresented) { _, opened in
+            if opened { queueAttention.acknowledge() }
+        }
+        .task(id: queueAttention.successAt) {
+            guard let started = queueAttention.successAt else { return }
+            try? await Task.sleep(for: .seconds(1.15))
+            guard !Task.isCancelled else { return }
+            queueAttention.expireSuccess(startedAt: started)
+        }
     }
 
     // MARK: - Left selector row
 
-    /// Stock and gauge share the recessed well that fills the lower third of the
-    /// column. The 44pt frame keeps the stock control a full-size tap target
-    /// inside the well's own padding.
+    /// One stock/gauge entry, retaining the 44pt touch target and the stock's
+    /// identity colors. A tap opens Minimal's compact picker and a held press
+    /// opens the full stock list; Classic has one sheet, so it answers both with
+    /// the full list. Remaining-time type sits below this entry.
     private var selectorRow: some View {
-        HStack(spacing: 4) {
-            stockControl(faceSize: controlFaceSize)
-                .frame(width: 44, height: 44)
-            if selectedStock != nil {
-                CameraGaugeLabel(gauge: selectedGauge,
-                                 rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
-            }
-        }
-        .cameraControlWell(horizontalPadding: 4)
+        selectorContents
+            .padding(3)
+            .cameraWellBacking()
+        // Give the face breathing room without moving the shooting controls.
         .overlay {
             StockSelectorHintOutline(isVisible: showsStockHint)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
+        .padding(-3)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .gesture(stockEntryGesture)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Stock and print gauge")
+        .accessibilityIdentifier("camera.stock")
+        .accessibilityValue("\(selectedStock?.displayName ?? "Choose stock"), \(selectedGauge.displayName), \(pushPull?.summary ?? "no stock processing")")
+        .accessibilityHint("Tap for the compact stock, gauge and processing picker, or hold for the full stock list")
+        // VoiceOver has no touch duration, so each surface keeps a named action.
+        .accessibilityAction { openStockEntry(.compact) }
+        .accessibilityAction(named: Text("Open full stock list")) { openStockEntry(.full) }
+    }
+
+    /// A recognized hold opens the preview immediately. Exclusivity prevents
+    /// its release from also firing the compact picker's tap action.
+    private var stockEntryGesture: some Gesture {
+        LongPressGesture(minimumDuration: CameraStockEntry.holdThreshold,
+                         maximumDistance: Self.stockPressMaximumTravel)
+            .exclusively(before: TapGesture())
+            .onEnded { result in
+                switch result {
+                case .first(let held):
+                    if held { openStockEntry(.full) }
+                case .second(_):
+                    openStockEntry(.compact)
+                }
+            }
+    }
+
+    private func openStockEntry(_ requested: CameraStockEntry) {
+        onShowStockSheet(CameraStockEntry.resolved(requested, style: uiStyle))
+    }
+
+    private var selectorContents: some View {
+        HStack(spacing: 4) {
+            stockControl(faceSize: controlFaceSize)
+                .frame(width: 44, height: 44)
+            if selectedStock != nil {
+                VStack(spacing: 0) {
+                    CameraGaugeLabel(gauge: selectedGauge)
+                    if let pushPull, !pushPull.isNeutral {
+                        Text("\(pushPull.stops.effectWord) \(pushPull.stops.displayName)")
+                            .font(NitrateTypography.font(size: 8).monospacedDigit())
+                            .foregroundStyle(pushPull.stops.processingTint)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .frame(width: 36, height: 12)
+                    }
+                }
+                // Turn the two readouts together, keeping their ink inside the slot.
+                .scaleEffect(abs(CameraGlyphRotation.degrees(for: orientation)) == 90 ? 0.9 : 1)
+                .rotationEffect(.degrees(CameraGlyphRotation.degrees(for: orientation)))
+                // 44pt stock + 4pt gap + 36pt readout = the existing 84pt slot.
+                .frame(width: 36, height: 44)
+            }
+        }
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
     }
 
     // MARK: - Stock selector
@@ -152,15 +231,10 @@ struct CameraControlBar: View {
             if let stock = selectedStock {
                 stockChip(stock, faceSize: faceSize)
             } else {
-                Button {
-                    onShowStockSheet()
-                } label: {
-                    Image(systemName: "film").font(NitrateTypography.font(.title3))
+                Image(systemName: "film").font(NitrateTypography.font(.title3))
                     .foregroundStyle(.white)
                     .frame(width: faceSize, height: faceSize)
                     .frame(minWidth: 44, minHeight: 44)
-                }
-                .buttonStyle(CameraRaisedButtonStyle())
             }
         }
         .cameraRotatingControl()
@@ -170,36 +244,18 @@ struct CameraControlBar: View {
     /// Five horizontal slices fill the complete button face: 1,2,5 are primary;
     /// 3,4 are secondary.
     private func stockChip(_ stock: FilmStockConfig, faceSize: CGFloat) -> some View {
-        Button {
-            onShowStockSheet()
-        } label: {
-            CameraFilmStockFace(primary: stock.primaryColor, secondary: stock.secondaryColor,
-                                isoLight: "\(Int(currentISO))\(stock.lightType)", faceSize: faceSize)
-                .frame(minWidth: 44, minHeight: 44)
-        }
-        .buttonStyle(CameraRaisedButtonStyle(faceColor: stock.primaryColor))
+        CameraFilmStockFace(primary: stock.primaryColor, secondary: stock.secondaryColor,
+                            isoLight: "\(Int(currentISO))\(stock.lightType)", faceSize: faceSize)
+            .frame(minWidth: 44, minHeight: 44)
     }
 
     // MARK: - Exposure control (dual mode)
 
-    /// The live meter and setting share the compact 84pt column: 28pt meter,
-    /// 48pt ruler, and two 4pt rims. The footprint stays clear of centred REC
-    /// and the left queue/remaining-time column even on a 320pt-wide phone.
+    /// The setting keeps its trailing alignment and measured height. The live
+    /// meter is a separate non-sizing overlay at the bottom of the preview.
     private var exposureControl: some View {
-        HStack(alignment: .top, spacing: 0) {
-            ExposureIndicatorView(
-                meteredEV: cameraViewModel.liveExposureTargetOffset,
-                targetEV: cameraViewModel.liveExposureBias,
-                isManual: cameraViewModel.isManualExposure,
-                isAvailable: cameraViewModel.hasExposureMeter,
-                trackHeight: 120
-            )
-            exposureSetting
-                .frame(width: 48)
-        }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 6)
-        .modifier(CameraInsetSurface())
+        exposureColumns
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         .contentShape(Rectangle())
         // Visible hold acknowledgement: a small spring expansion the instant the
         // finger lands, springing back on release or cancellation. Reduce Motion
@@ -264,6 +320,15 @@ struct CameraControlBar: View {
         }
     }
 
+    /// The column's own ink. Minimal lets it size itself (one 56pt ruler plus
+    /// its header and footer) so the shared well hugs it; Classic keeps filling
+    /// the slot under its inset plate, unchanged.
+    private var exposureColumns: some View {
+        exposureSetting
+            .frame(alignment: .trailing)
+        .padding(.vertical, 6)
+    }
+
     /// One setting, two modes. Auto drives the scene's auto-exposure target bias
     /// (EV); manual drives the ISO chooser. Long-press toggles between them.
     private var exposureHoldEnabled: Bool {
@@ -276,15 +341,16 @@ struct CameraControlBar: View {
         cameraViewModel.isExposureAdjustable && cameraViewModel.isExposureBiasAvailable
     }
 
+    /// Clip only the ruler's ink, inside the same continuous radius as its well.
+    /// The outer 120pt slot and the well's bevel remain unchanged.
+    private var exposureRulerClip: some Shape {
+        RoundedRectangle(cornerRadius: CameraControlBorder.cornerRadius, style: .continuous)
+            .inset(by: CameraControlBorder.lineWidth)
+    }
+
     private var exposureSetting: some View {
         VStack(spacing: 6) {
-            Text(exposureReadout)
-                .font(NitrateTypography.font(.caption2).monospacedDigit())
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .frame(height: 14)
-                .foregroundStyle(.white.opacity(0.9))
-                .cameraUpright()
+            exposureHeader
 
             if cameraViewModel.isManualExposure {
                 // Match EV's 12pt detents and tick geometry. Logarithmic ISO
@@ -298,30 +364,44 @@ struct CameraControlBar: View {
                     tickLabel: { "\(Int($0.rounded()))" },
                     scale: isoScale,
                     ladder: isoLadder,
-                    tint: .yellow,
-                    length: 120
+                    tint: controlAccent,
+                    length: exposureDialSize.length,
+                    width: exposureDialSize.width
                 )
                 // One stable handle for the control, the same way the photo
                 // shutter rail names its ruler: the ISO chooser is the control an
                 // operator drags, so a test (and VoiceOver) has to be able to find
                 // this one and not the EV ruler that shares the column.
+                .clipShape(exposureRulerClip)
+                .cameraWellBacking()
+                .frame(height: 120)
                 .accessibilityIdentifier("camera.isoRuler")
                 .accessibilityLabel("ISO")
                 .disabled(!cameraViewModel.isExposureAdjustable)
                 .opacity(cameraViewModel.isExposureAdjustable ? 1 : 0.4)
             } else {
-                // Ruler rather than a 1:1 slider: EV compensation needs
-                // repeatable 0.1 EV detents, with 12pt of travel per tick.
+                // Minimal uses a wider, shorter window with closer detents.
+                // The outer 120pt slot keeps the preview and other controls fixed.
                 RulerSlider(
                     value: evBiasBinding,
                     range: evBiasSliderRange,
                     step: 0.1,
-                    pointsPerStep: CGFloat(RulerScale.detentTravel),
-                    tint: .orange,
-                    length: 120
+                    pointsPerStep: exposureDialSize.tickSpacing,
+                    tint: controlAccent,
+                    length: exposureDialSize.length,
+                    width: exposureDialSize.width
                 )
                 .disabled(!evRulerEnabled)
                 .opacity(evRulerEnabled ? 1 : 0.4)
+                // Minimal prints no separate EV number above the ruler, so the
+                // ruler itself carries the control's identity and the full
+                // spoken value — the drawn index alone is not a spoken value.
+                .clipShape(exposureRulerClip)
+                .cameraWellBacking()
+                .accessibilityIdentifier("camera.evBiasRuler")
+                .accessibilityLabel("Exposure bias")
+                .accessibilityValue(evBiasSpokenValue)
+                .frame(height: 120)
             }
 
             // Keep the previous footer's exact font height without its words.
@@ -330,46 +410,49 @@ struct CameraControlBar: View {
         }
     }
 
-    /// The exposure column's footer: the lock while a take freezes exposure,
-    /// otherwise the push/pull this take will be developed with.
+    /// The readout above the ruler. Manual ISO keeps it in both styles: the
+    /// locked sensitivity is the value, and its ruler only indexes it.
     ///
-    /// Which of the two wins is the order they matter in: a frozen control is what
-    /// the operator is looking at right now, and the push/pull is a standing
-    /// decision that is still on screen before and after the take.
+    /// Minimal's auto EV drops the standalone number — the ruler's own drawn
+    /// index is the value — but the line stays in the layout, invisible and out
+    /// of the accessibility tree. That keeps the column's measured height, and
+    /// with it the shooting bar and the preview frame, exactly as it was.
+    private var exposureHeader: some View {
+        let showsNumbers = cameraViewModel.isManualExposure
+        return Text(exposureReadout)
+            .font(NitrateTypography.font(.caption2).monospacedDigit())
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .frame(height: 14)
+            .foregroundStyle(.white.opacity(0.9))
+            .cameraUpright()
+            .opacity(showsNumbers ? 1 : 0)
+            .accessibilityHidden(!showsNumbers)
+    }
+
+    /// Keep the lock while exposure is frozen and reserve the same line at idle.
+    /// Push/pull is selected inside the stock modal, never on the camera bar.
     @ViewBuilder
     private var exposureFooter: some View {
         if !cameraViewModel.isExposureAdjustable {
             Image(systemName: "lock.fill").opacity(0.45)
-        } else if let pushPull, !pushPull.isNeutral {
-            pushPullBadge(pushPull.stops)
         } else {
             Text(" ")
         }
     }
 
-    /// "PUSH +1" / "PULL 2" — the film's own word for the shift, so the exposure
-    /// column says which way the take is being deviated from the box speed.
-    private func pushPullBadge(_ stops: PushPullStops) -> some View {
-        HStack(spacing: 2) {
-            Text(stops.effectWord)
-            Text(stops.displayName)
-        }
-        .font(NitrateTypography.font(size: 9).monospacedDigit())
-        .lineLimit(1)
-        .minimumScaleFactor(0.6)
-        // Push adds light and grain, pull takes it away: the tint says which way
-        // at a glance, and the word says it again for anyone who cannot separate
-        // the two hues.
-        .foregroundStyle(stops.isPull ? Color.cyan.opacity(0.9) : Color.orange)
-        .accessibilityLabel("Film \(stops.effectName) \(abs(stops.stops)) stops")
-    }
-
-    /// "+0.0" / "-1.3" style auto-exposure bias readout.
+    /// "ISO 1234" / "+0.0" style readout.
     private var exposureReadout: String {
         if cameraViewModel.isManualExposure {
             return "ISO \(Int(cameraViewModel.liveISO))"
         }
         return String(format: "%+.1f", cameraViewModel.liveExposureBias)
+    }
+
+    /// The spoken bias, with its unit. The ruler's own value is a bare decimal,
+    /// which VoiceOver reads as a number with no meaning attached.
+    private var evBiasSpokenValue: String {
+        String(format: "%+.1f EV", cameraViewModel.liveExposureBias)
     }
 
     private var evBiasSliderRange: ClosedRange<Double> {
@@ -595,6 +678,28 @@ struct CameraControlBar: View {
         .accessibilityLabel("Render video")
     }
 
+    private var queueAttentionSnapshot: CameraQueueAttentionSnapshot {
+        var snapshot = CameraQueueAttentionSnapshot()
+        snapshot.isReady = renderQueueViewModel.hasInitializedQueue
+        for job in renderQueueViewModel.jobs {
+            if job.status == .pending || job.status == .processing { snapshot.workingIDs.insert(job.id) }
+            if job.status == .completed && job.outputSavedToPhotos == true {
+                snapshot.deliveredIDs.insert(job.id)
+            }
+            if job.status == .failed {
+                snapshot.issues.insert("failed:\(job.id):\(job.errorMessage ?? "")")
+            }
+            if let warning = job.cleanupWarning {
+                snapshot.issues.insert("cleanup:\(job.id):\(warning)")
+            }
+        }
+        if let message = renderQueueViewModel.rendererErrorMessage { snapshot.issues.insert("renderer:\(message)") }
+        if let message = renderQueueViewModel.renderingUnavailableMessage { snapshot.issues.insert("unavailable:\(message)") }
+        if renderQueueViewModel.isRenderPausedForAccess { snapshot.issues.insert("render-access-paused") }
+        if isStorageLow { snapshot.issues.insert("low-storage") }
+        return snapshot
+    }
+
     private var queueStatus: CameraStatusPresentation {
         let latest = renderQueueViewModel.currentSessionResults.first
         return CameraStatusPresentation(
@@ -614,18 +719,11 @@ struct CameraControlBar: View {
 
     private var storageIndicator: some View {
         CameraRotatingSlot(rotationDegrees: CameraGlyphRotation.degrees(for: orientation)) {
-            Button(action: onShowQueueSheet) {
-                RecordingTimeLCD(
-                    estimatedSeconds: estimatedRemainingSeconds,
-                    isStorageLow: isStorageLow,
-                    queueStatus: queueStatus,
-                    isRecording: recordPresentation.showsLiveChrome,
-                    isStopping: cameraViewModel.isStoppingRecording,
-                    photoFreeBytes: isPhotoMode && cameraViewModel.hasStorageSnapshot ? cameraViewModel.freeSpaceBytes : nil,
-                    isPhotoMode: isPhotoMode,
-                    isRenderingPhoto: renderQueueViewModel.currentJob?.isPhoto == true,
-                    isSavingPhoto: activePhotoRenderIsSaving
-                )
+            Button {
+                queueAttention.acknowledge()
+                onShowQueueSheet()
+            } label: {
+                queueFace
             }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
@@ -637,6 +735,33 @@ struct CameraControlBar: View {
         .accessibilityIdentifier("camera.queueLCD")
         .accessibilityHint("Tap for storage and render queue details, photo and video previews, sharing, and retry controls.")
         }
+    }
+
+    /// The queue/capacity face, seated in the Minimal well only.
+    ///
+    /// The well hugs the mark and its single readout line, and the flexible frame
+    /// outside both keeps the whole slot one queue tap. Classic keeps the LCD's
+    /// own inset plate at its own size, so its face is returned untouched.
+    @ViewBuilder
+    private var queueFace: some View {
+        let face = RecordingTimeLCD(
+            estimatedSeconds: estimatedRemainingSeconds,
+            isStorageLow: isStorageLow,
+            queueStatus: queueStatus,
+            isRecording: recordPresentation.showsLiveChrome,
+            isStopping: cameraViewModel.isStoppingRecording,
+            photoFreeBytes: isPhotoMode && cameraViewModel.hasStorageSnapshot ? cameraViewModel.freeSpaceBytes : nil,
+            isPhotoMode: isPhotoMode,
+            isRenderingPhoto: renderQueueViewModel.currentJob?.isPhoto == true,
+            isSavingPhoto: activePhotoRenderIsSaving
+        )
+        face
+            .cameraWellBacking(cornerRadius: 10)
+            .overlay {
+                CameraQueueAttentionOutline(hasIssue: queueAttention.hasUnseenIssue,
+                                            successAt: queueAttention.successAt)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var activePhotoRenderIsSaving: Bool {

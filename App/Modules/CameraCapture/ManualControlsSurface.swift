@@ -31,6 +31,55 @@ enum ManualControlsLayout {
     }
 }
 
+/// Presentation-only chrome for the faces the manual controls draw themselves.
+///
+/// The shared `CameraRaisedButtonStyle` already owns the key plates, so this type
+/// covers only what the manual stack paints in its own body: the hold-key face,
+/// the two in-frame ruler rails and the zoom readout scrim. Every value is a
+/// drawing constant — no control, action, ruler mapping or hit region reads it,
+/// so switching style can never change what a tap, drag or hold does.
+enum ManualControlChrome {
+    /// The plate a face draws and whether a shadow lifts it instead. A zero fill
+    /// draws no plate at all, so the preview shows through the face.
+    struct Face: Equatable, Sendable {
+        let fillOpacity: Double
+        let shadowRadius: Double
+
+        var drawsPlate: Bool { fillOpacity > 0 }
+        var castsShadow: Bool { shadowRadius > 0 }
+    }
+
+    /// Minimal is unboxed: no plate, one soft shadow for legibility on footage.
+    static let minimalFace = Face(fillOpacity: 0, shadowRadius: 2)
+
+    /// Classic keeps the pre-minimal face: a dark plate, no simulated depth.
+    static let classicFace = Face(fillOpacity: 0.45, shadowRadius: 0)
+
+    static func face(_ style: CameraUIStyle) -> Face {
+        style == .classic ? classicFace : minimalFace
+    }
+
+    /// How a hold key paints its glyph. Minimal reads live zoom state in the
+    /// resolved accent and an inert key in the shared muted grey; Classic keeps
+    /// the plain white glyph it always had.
+    enum GlyphTint: Equatable, Sendable {
+        case accent
+        case muted
+        case neutral
+    }
+
+    static func holdGlyph(_ style: CameraUIStyle, enabled: Bool) -> GlyphTint {
+        guard style != .classic else { return .neutral }
+        return enabled ? .accent : .muted
+    }
+
+    /// The scrim behind the zoom ruler's focal readout. Minimal lets the type sit
+    /// on its shadow alone; Classic keeps the capsule.
+    static func readoutScrim(_ style: CameraUIStyle) -> Double {
+        style == .classic ? 0.65 : 0
+    }
+}
+
 /// Shared production surface: native controls with no camera/session dependency.
 /// The enclosing overlay owns the single physical-orientation transform and the
 /// bounded face; this surface fits its controls inside that face with no scroll
@@ -60,8 +109,14 @@ struct ManualControlsSurface<Aperture: View>: View {
     @ViewBuilder var aperture: () -> Aperture
     @State private var showingHelp = false
     @Environment(\.manualControlsFaceSize) private var faceSize
+    /// Presentation only. Classic or Minimal changes the drawing, never the
+    /// bindings, guards or actions this panel calls.
+    @Environment(\.cameraUIStyle) private var uiStyle
+    @Environment(\.cameraControlAccent) private var controlAccent
     @AppStorage("camera.manualControlsLastEnabledStabilization")
     private var lastEnabledModeRaw = CameraStabilizationMode.standard.rawValue
+
+    private var isClassic: Bool { uiStyle == .classic }
 
     private var lastEnabledMode: CameraStabilizationMode {
         CameraStabilizationMode(rawValue: lastEnabledModeRaw) ?? .standard
@@ -111,7 +166,9 @@ struct ManualControlsSurface<Aperture: View>: View {
                                 .font(NitrateTypography.font(size: 9))
                                 .monospacedDigit()
                         }
-                        .foregroundStyle(zoomControlsEnabled.wrappedValue ? .orange : .white)
+                        .foregroundStyle(zoomControlsEnabled.wrappedValue
+                                         ? (isClassic ? Color.orange : controlAccent)
+                                         : .white)
                         .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .accessibilityLabel("Zoom controls")
@@ -219,6 +276,9 @@ struct ManualControlsSurface<Aperture: View>: View {
                 get: { stabilization.preferred != .off },
                 set: setStabilizationEnabled))
                 .labelsHidden().toggleStyle(.switch)
+                // Minimal paints an enabled stabilization switch in the resolved
+                // accent; Classic keeps the system switch tint it always had.
+                .tint(isClassic ? nil : controlAccent)
                 .frame(height: trackHeight)
                 .disabled(!canChangeStabilization || stabilization.capability.availableModes.count < 2)
             Menu {
@@ -290,6 +350,22 @@ struct ZoomHoldControl: View {
     let step: () -> Void
     @State private var heldRevision: UInt64?
     @State private var cancelledUntilRelease = false
+    /// Presentation only: the face and glyph tint differ, the begin/end/step
+    /// protocol and the 44pt target do not.
+    @Environment(\.cameraUIStyle) private var uiStyle
+    @Environment(\.cameraControlAccent) private var controlAccent
+
+    private var chrome: ManualControlChrome.Face { ManualControlChrome.face(uiStyle) }
+
+    /// Minimal reads live zoom state in the accent and a disabled key in grey;
+    /// Classic keeps the neutral white glyph.
+    private var glyphColor: Color {
+        switch ManualControlChrome.holdGlyph(uiStyle, enabled: enabled) {
+        case .accent: controlAccent
+        case .muted: InlineManualControlPresentation.inactiveGrey
+        case .neutral: .white
+        }
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -316,7 +392,8 @@ struct ZoomHoldControl: View {
                     })
         }
         .frame(width: 44, height: 44)
-        .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+        .foregroundStyle(glyphColor)
+        .modifier(ManualHoldKeyFace(chrome: chrome))
         .disabled(!enabled)
         .accessibilityElement()
         .accessibilityAddTraits(.isButton)
@@ -336,6 +413,49 @@ struct ZoomHoldControl: View {
     }
 }
 
+/// The hold key's face: a dark plate in Classic, nothing but one soft shadow in
+/// Minimal. The 44pt frame and the rectangle content shape belong to
+/// `ZoomHoldControl`, so the hit region is byte-identical in both styles.
+struct ManualHoldKeyFace: ViewModifier {
+    let chrome: ManualControlChrome.Face
+
+    func body(content: Content) -> some View {
+        if chrome.drawsPlate {
+            content
+                .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+        } else if chrome.castsShadow {
+            content.shadow(color: .black.opacity(0.55), radius: chrome.shadowRadius, y: 1)
+        } else {
+            content
+        }
+    }
+}
+
+/// The rail face both in-frame rulers share. Classic draws the dark rounded
+/// plate and clips the drawn rail to it; Minimal draws no plate and lets one
+/// shadow lift the ticks off the preview. Geometry, tick mapping and hit testing
+/// stay with the ruler.
+struct ManualRulerFace: ViewModifier {
+    let chrome: ManualControlChrome.Face
+    var cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        Group {
+            if chrome.drawsPlate {
+                let shape = RoundedRectangle(cornerRadius: cornerRadius)
+                content
+                    .background(shape.fill(.black.opacity(chrome.fillOpacity)))
+                    .clipShape(shape)
+            } else if chrome.castsShadow {
+                content.shadow(color: .black.opacity(0.6), radius: chrome.shadowRadius, y: 1)
+            } else {
+                content
+            }
+        }
+        .cameraRulerBackdrop(cornerRadius: cornerRadius)
+    }
+}
+
 /// Native Slider is horizontal in the upright landscape face. Only portrait
 /// turns its track; the complete panel then receives exactly one outer rotation.
 struct ManualControlTrack: View {
@@ -345,6 +465,10 @@ struct ManualControlTrack: View {
     let landscape: Bool
     let length: CGFloat
     let label: String
+    /// Presentation only: Minimal tints the track with the resolved accent so the
+    /// drawn value reads in the same colour as its state; Classic keeps white.
+    @Environment(\.cameraUIStyle) private var uiStyle
+    @Environment(\.cameraControlAccent) private var controlAccent
 
     var body: some View {
         Group {
@@ -358,7 +482,7 @@ struct ManualControlTrack: View {
                     .frame(width: 44, height: length)
             }
         }
-        .tint(.white)
+        .tint(uiStyle == .classic ? .white : controlAccent)
         .accessibilityLabel(label)
     }
 }

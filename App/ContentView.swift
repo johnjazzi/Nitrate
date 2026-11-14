@@ -11,7 +11,15 @@ struct ContentView: View {
     /// App-owned, so the launch counter and cue state live once per process.
     let stockSelectorHint: StockSelectorHintModel
 
-    @State private var showStockSheet = false
+    /// The sheet's identity IS its requested surface, so the first hold cannot
+    /// present a stale compact entry from a separate Boolean presentation.
+    @State private var stockEntry: CameraStockEntry?
+    private var showStockSheet: Bool { stockEntry != nil }
+    private var stockSheetPresented: Binding<Bool> {
+        Binding(get: { stockEntry != nil }, set: { shown in
+            if !shown { stockEntry = nil }
+        })
+    }
     @State private var showQueueSheet = false
     @State private var cameraMode = CameraModeSelection()
     /// A mode refusal the row's own gate cannot express (an unavailable shared idle
@@ -41,6 +49,16 @@ struct ContentView: View {
     /// default, so an install that never opens Settings behaves as before.
     @AppStorage(CameraHintPreferences.showsAdvisoryTipsKey)
     private var showsAdvisoryTips = CameraHintPreferences.defaultShowsAdvisoryTips
+    @AppStorage(CameraRulerContrastPreference.preferenceKey)
+    private var highContrastRulers = CameraRulerContrastPreference.defaultValue
+    @AppStorage(CameraUIStyle.preferenceKey)
+    private var cameraUIStyleRaw = CameraUIStyle.defaultValue.rawValue
+    @AppStorage(CameraControlColorPreference.preferenceKey)
+    private var controlColorRaw = CameraControlColorPreference.followStock.rawValue
+    @AppStorage(CameraLensControlPosition.preferenceKey)
+    private var lensControlPositionRaw = CameraLensControlPosition.defaultValue.rawValue
+    @AppStorage(CameraLensControlPosition.belowPreviewMigrationKey)
+    private var hasAppliedBelowPreviewLensPlacement = false
     @State private var controlBounds: [String: CGRect] = [:]
     @State private var currentSourceURL: URL?
     /// The durable awaiting-stock entry created for the current take, if any.
@@ -146,9 +164,15 @@ struct ContentView: View {
         #if DEBUG
         debugEnabledBody
             .environment(\.cameraDeviceOrientation, orientation.deviceOrientation)
+            .environment(\.cameraControlAccent, controlAccent)
+            .environment(\.cameraUIStyle, cameraUIStyle)
+            .environment(\.cameraRulerHighContrast, highContrastRulers)
         #else
         shippingBody
             .environment(\.cameraDeviceOrientation, orientation.deviceOrientation)
+            .environment(\.cameraControlAccent, controlAccent)
+            .environment(\.cameraUIStyle, cameraUIStyle)
+            .environment(\.cameraRulerHighContrast, highContrastRulers)
         #endif
     }
 
@@ -186,6 +210,25 @@ struct ContentView: View {
                     controlBar(horizontalInset: controlBarHorizontalInset(in: geometry))
                         .padding(.bottom, 8)
                         .background(controlMeasurement("bottom"))
+                }
+
+                if !isDevelopMode, lensControlPosition == .aboveShutter,
+                   let row = lensRowRect(in: geometry) {
+                    CameraLensRow(availableLenses: availableLenses, selectedLens: selectedLens,
+                                  onSelectLens: selectLens)
+                        .disabled(!canSelectCameraLens)
+                        .opacity(canSelectCameraLens ? 1 : 0.4)
+                        .frame(width: row.width, height: row.height)
+                        .position(x: row.midX, y: row.midY)
+                }
+
+                if let meter = exposureMeterRect(in: geometry) {
+                    ExposureIndicatorView(meteredEV: cameraViewModel.liveExposureTargetOffset,
+                                          targetEV: cameraViewModel.liveExposureBias,
+                                          isManual: cameraViewModel.isManualExposure,
+                                          isAvailable: cameraViewModel.hasExposureMeter)
+                        .frame(width: meter.width, height: meter.height)
+                        .position(x: meter.midX, y: meter.midY)
                 }
 
                 if let bottom = controlBounds["bottom"],
@@ -341,8 +384,10 @@ struct ContentView: View {
                    let rect = DaylightExposureRescueGeometry.buttonRect(
                     above: exposure, in: geometry.size, rotationDegrees: statusRotationDegrees,
                     excluding: daylightRescueExclusion(in: geometry)) {
+                    // Tappable even while the 60 fps row is refused: the pull
+                    // and aperture rows are independent of frame rate.
                     ExposureRescueButton(armed: cameraViewModel.sessionFrameRate == .daylight60,
-                                         enabled: cameraViewModel.canChangeSessionFrameRate,
+                                         enabled: true,
                                          action: { showDaylightRescue = true })
                         .frame(width: 92, height: 44)
                         .rotationEffect(.degrees(statusRotationDegrees))
@@ -353,10 +398,10 @@ struct ContentView: View {
                 // Preserved pinch behaviour: with Zoom Controls off the ruler
                 // still appears only while a pinch is live, in its original
                 // stationary slot above the shooting bar.
-                if pinchIsActive, !zoomControlsEnabled, let bottom = controlBounds["bottom"] {
+                if pinchIsActive, !zoomControlsEnabled, let slot = pinchRulerRect(in: geometry) {
                     FocalLengthRuler(millimeters: pinchFocalLength)
-                        .frame(width: max(0, geometry.size.width - 32))
-                        .position(x: geometry.size.width / 2, y: max(34, bottom.minY - 42))
+                        .frame(width: slot.width, height: slot.height)
+                        .position(x: slot.midX, y: slot.midY)
                 }
 
                 if !showFramedPreview, let top = controlBounds["top"] {
@@ -380,19 +425,57 @@ struct ContentView: View {
         // keep their exact geometry and the scene stays visible behind the dim.
         .overlay {
             if showDaylightRescue, !daylightRescueSuppressedByHighRate {
+                let armed = cameraViewModel.sessionFrameRate == .daylight60
+                let apertureStop = daylightRescueApertureStop
                 DaylightExposureRescueOverlay(
-                    armed: cameraViewModel.sessionFrameRate == .daylight60,
-                    available: cameraViewModel.supportsDaylight60,
-                    canChange: cameraViewModel.canChangeSessionFrameRate,
-                    onSelect: { enabled in
+                    armed: armed,
+                    sixty: DaylightRescuePresentation.sixty(
+                        armed: armed,
+                        available: cameraViewModel.supportsDaylight60,
+                        canChange: cameraViewModel.canChangeSessionFrameRate),
+                    pull: DaylightRescuePresentation.pull(
+                        stockSelected: selectedStock != nil,
+                        currentStops: daylightRescueCurrentPullStops,
+                        floor: PushPullStops.pullThree.rawValue,
+                        busy: daylightRescueBusy),
+                    aperture: DaylightRescuePresentation.aperture(
+                        nextStop: apertureStop,
+                        enabled: !daylightRescueBusy && cameraViewModel.canSelectAperture),
+                    onSixty: { enabled in
                         cameraViewModel.setDaylight60Enabled(enabled)
-                        withAnimation(.easeOut(duration: 0.18)) { showDaylightRescue = false }
+                        dismissDaylightRescue()
                     },
-                    onCancel: { withAnimation(.easeOut(duration: 0.18)) { showDaylightRescue = false } }
+                    onPull: {
+                        // The stock's own persisted preference is the single owner:
+                        // choosing the next darker rung turns auto off for this stock
+                        // exactly as the stock sheet does, and the render resolves it
+                        // through `lastPushPull(...).resolved(...)`. The busy gate is
+                        // re-checked here, because the card can be tapped a frame
+                        // after a take starts and the row's own gate is only a render.
+                        guard !daylightRescueBusy,
+                              let stock = selectedStock,
+                              let current = daylightRescueCurrentPullStops,
+                              let next = DaylightRescuePullPolicy.nextStops(
+                                after: current, floor: PushPullStops.pullThree.rawValue) else { return }
+                        library.setPushPull(PushPullPreference(isAutomatic: false,
+                                                               manualStops: PushPullStops.nearest(to: next)),
+                                            for: stock.stockId)
+                        dismissDaylightRescue()
+                    },
+                    onAperture: {
+                        // `setLensAperture` takes an optional where nil means Auto,
+                        // so a vanished destination (lens changed while the card was
+                        // up) must not be forwarded as "go back to Auto". The busy
+                        // gate is re-checked at submission, not just at render.
+                        guard !daylightRescueBusy, let apertureStop else { return }
+                        cameraViewModel.setLensAperture(apertureStop)
+                        dismissDaylightRescue()
+                    },
+                    onCancel: dismissDaylightRescue
                 )
             }
         }
-        .sheet(isPresented: $showStockSheet) { stockSheet }
+        .sheet(item: $stockEntry) { entry in stockSheet(entry: entry) }
         .sheet(isPresented: $showQueueSheet) { queueSheet }
         .sheet(isPresented: $showSettings, onDismiss: {
             cameraViewModel.applyCaptureFormatPreference()
@@ -404,7 +487,11 @@ struct ContentView: View {
                          legacyManualControlsEnabled: legacyManualControlsSetting,
                          cameraControlSupported: cameraViewModel.supportsCameraControl,
                          availableCaptureFormats: cameraViewModel.availableCaptureFormats,
-                         stockLibrary: library)
+                         stockLibrary: library,
+                         canChangeCameraUIStyle: {
+                             CameraUIStyle.canChange(captureBusy: captureBusy,
+                                                     photoCaptureBusy: cameraViewModel.isPhotoCaptureBusy)
+                         })
         }
         .onChange(of: cameraViewModel.lastRecordedURL) { _, newURL in
             guard let url = newURL else { return }
@@ -418,7 +505,9 @@ struct ContentView: View {
                 // sheet (Done/swipe), a second take, or a relaunch cannot strand it.
                 awaitingStockJobId = renderQueueViewModel.enqueueAwaitingStock(
                     sourceURL: url, capturePolicy: cameraViewModel.capturePolicy(for: url))
-                showStockSheet = true
+                // A take with no stock yet needs the full sheet: the compact
+                // picker never made the choice for the operator.
+                stockEntry = CameraStockEntry.resolved(.full, style: cameraUIStyle)
             }
         }
         .onChange(of: cameraViewModel.retainedOriginal) { _, newValue in
@@ -437,6 +526,12 @@ struct ContentView: View {
             flashRecordingFailure()
         }
         .onAppear {
+            if !hasAppliedBelowPreviewLensPlacement {
+                // Adopt the requested placement once on existing installs, while
+                // retaining the Settings choice for subsequent user changes.
+                lensControlPositionRaw = CameraLensControlPosition.aboveShutter.rawValue
+                hasAppliedBelowPreviewLensPlacement = true
+            }
             cameraViewModel.onPhotoCaptured = { source, stock, gauge, seed, crop in
                 renderQueueViewModel.enqueuePhoto(sourceURL: source, stockId: stock,
                     iso: cameraViewModel.photoExposureSnapshot?.iso ?? cameraViewModel.liveISO,
@@ -911,6 +1006,15 @@ struct ContentView: View {
     /// Reserve the visible manual surface, not the full camera canvas, so the
     /// contextual rescue button can stay clear without resizing either surface.
     private func daylightRescueExclusion(in geometry: GeometryProxy) -> CGRect? {
+        let reserved = [exposureMeterRect(in: geometry), lensRowRect(in: geometry),
+                        pinchIsActive && !zoomControlsEnabled ? pinchRulerRect(in: geometry) : nil]
+            .compactMap { $0 }.reduce(CGRect.null) { $0.union($1) }
+        let manual = manualControlsExclusion(in: geometry)
+        let combined = manual.map { reserved.union($0) } ?? reserved
+        return combined.isNull ? nil : combined
+    }
+
+    private func manualControlsExclusion(in geometry: GeometryProxy) -> CGRect? {
         if legacyManualControlsEnabled {
             guard showManualControls,
                   let top = controlBounds["top"], let bottom = controlBounds["bottom"] else { return nil }
@@ -992,6 +1096,26 @@ struct ContentView: View {
         return boundedPreviewRect(in: geometry)
     }
 
+    private func lensRowRect(in geometry: GeometryProxy) -> CGRect? {
+        guard !isDevelopMode, lensControlPosition == .aboveShutter,
+              let bottom = controlBounds["bottom"] else { return nil }
+        return CameraMinimalLayout.lensRow(in: bottom, canvasWidth: geometry.size.width,
+                                          lensCount: availableLenses.count, style: cameraUIStyle,
+                                          previewBottom: showFramedPreview ? previewRect(in: geometry).maxY : nil)
+    }
+
+    private func exposureMeterRect(in geometry: GeometryProxy) -> CGRect? {
+        guard !isDevelopMode,
+              let preview = frameRulerBounds(in: geometry) else { return nil }
+        return CameraMinimalLayout.exposureMeter(in: preview, above: lensRowRect(in: geometry))
+    }
+
+    private func pinchRulerRect(in geometry: GeometryProxy) -> CGRect? {
+        guard let preview = frameRulerBounds(in: geometry) else { return nil }
+        return CameraMinimalLayout.pinchRuler(in: preview,
+            avoiding: [exposureMeterRect(in: geometry), lensRowRect(in: geometry)].compactMap { $0 })
+    }
+
     /// Shared content area clear of the toolbar and shooting controls. Develop's
     /// import buttons must not inherit the immersive camera's full-bleed extent.
     private func boundedPreviewRect(in geometry: GeometryProxy) -> CGRect? {
@@ -1071,6 +1195,9 @@ struct ContentView: View {
             // landscape the slot stays hidden while the timer floats on the
             // physical edge. Either way the toolbar height never changes.
             lensMenu
+                .opacity(lensControlPosition == .topRight ? 1 : 0)
+                .accessibilityHidden(lensControlPosition != .topRight)
+                .disabled(lensControlPosition != .topRight)
                 .opacity(recordPresentation.showsLiveChrome ? 0 : 1)
                 .allowsHitTesting(!recordPresentation.showsLiveChrome)
                 .accessibilityHidden(recordPresentation.showsLiveChrome)
@@ -1135,6 +1262,8 @@ struct ContentView: View {
                 .frame(width: 44, height: 44)
         }
         .buttonStyle(CameraRoundButtonStyle())
+        .accessibilityLabel("Settings")
+        .accessibilityIdentifier("camera.settings")
     }
 
     private var manualButton: some View {
@@ -1156,7 +1285,7 @@ struct ContentView: View {
                 .cameraUpright()
                 .frame(width: 44, height: 44)
         }
-        .buttonStyle(CameraRoundButtonStyle(faceColor: manualControlsActive ? SettingsControlChrome.halationOrange : nil))
+        .buttonStyle(CameraRoundButtonStyle(faceColor: manualControlsActive ? controlAccent : nil))
         .accessibilityLabel("Manual controls")
         .accessibilityValue(manualControlsActive ? "Expanded" : "Collapsed")
 
@@ -1257,6 +1386,32 @@ struct ContentView: View {
             isAvailable: cameraViewModel.hasExposureMeter)
     }
 
+    /// The next supported aperture stop the rescue card can close to, or nil.
+    /// Reads the canonical capability gate and the lens' own reported ladder, so
+    /// a tele/front fixed lens — or a lens already at its widest — offers nothing.
+    private var daylightRescueApertureStop: Float? {
+        guard cameraViewModel.canSelectAperture, !cameraViewModel.isChangingFrameRate else { return nil }
+        return DaylightRescueAperturePolicy.nextStop(
+            after: CameraAperturePolicy.displayAperture(selected: cameraViewModel.selectedLensAperture,
+                                                        measured: cameraViewModel.liveAperture),
+            stops: cameraViewModel.apertureStops)
+    }
+
+    /// The rung this take would develop with, exactly as the exposure column and
+    /// the direct-render path resolve it. Nil without a selected stock.
+    private var daylightRescueCurrentPullStops: Int? {
+        guard selectedStock != nil else { return nil }
+        return shootingPushPull?.stops.stops ?? PushPullStops.none.rawValue
+    }
+
+    private var daylightRescueBusy: Bool {
+        captureBusy || cameraViewModel.isPhotoCaptureBusy
+    }
+
+    private func dismissDaylightRescue() {
+        withAnimation(.easeOut(duration: 0.18)) { showDaylightRescue = false }
+    }
+
     private var canManageDaylightMode: Bool {
         cameraViewModel.sessionFrameRate == .daylight60 && cameraViewModel.canChangeSessionFrameRate
     }
@@ -1271,17 +1426,32 @@ struct ContentView: View {
                             onManageDaylight: canManageDaylightMode ? { showDaylightRescue = true } : nil)
     }
 
+    private var cameraUIStyle: CameraUIStyle { CameraUIStyle.resolved(cameraUIStyleRaw) }
+
+    private var controlAccent: Color {
+        CameraControlColorPreference.resolved(controlColorRaw).color(lightType: selectedStock?.lightType)
+    }
+
+    private var lensControlPosition: CameraLensControlPosition {
+        CameraLensControlPosition.resolved(lensControlPositionRaw)
+    }
+
+    private var canSelectCameraLens: Bool {
+        !captureBusy && !cameraViewModel.isPhotoCaptureBusy
+            && !cameraViewModel.isSwitchingCameraLens && !cameraViewModel.isChangingFrameRate
+    }
+
     private var lensMenu: some View {
         CameraLensSelector(
             availableLenses: availableLenses,
             selectedLens: selectedLens,
             onSelectLens: selectLens
         )
-        .disabled(cameraViewModel.isPhotoCaptureBusy || cameraViewModel.isSwitchingCameraLens || cameraViewModel.isChangingFrameRate)
+        .disabled(!canSelectCameraLens)
     }
 
     private func selectLens(_ lens: CameraLens) {
-        guard lens != selectedLens else { return }
+        guard lens != selectedLens, canSelectCameraLens else { return }
         focusReadGeneration &+= 1
         let focusRequest = focusReadGeneration
         cameraViewModel.selectLens(lens) { error in
@@ -1354,12 +1524,14 @@ struct ContentView: View {
             renderQueueViewModel: renderQueueViewModel,
             selectedStock: selectedStock,
             currentISO: currentISO,
-            selectedGauge: selectedStock.flatMap { library.lastGauge(for: $0.stockId) } ?? .neutral,
+            selectedGauge: isDevelopMode ? developGauge
+                : selectedStock.flatMap { library.lastGauge(for: $0.stockId) } ?? .neutral,
+            pushPull: isDevelopMode ? (selectedStock == nil ? nil : developPushPull) : shootingPushPull,
             onShowQueueSheet: { showQueueSheet = true },
-            onShowStockSheet: {
+            onShowStockSheet: { entry in
                 // Opened directly (not from a fresh take): nothing to resume.
                 awaitingStockJobId = nil
-                showStockSheet = true
+                stockEntry = entry
             },
             showsStockHint: stockSelectorHint.isCueVisible,
             horizontalInset: horizontalInset,
@@ -1374,9 +1546,8 @@ struct ContentView: View {
                                          pushPull: developPushPull)
             },
             isPhotoMode: isPhotoMode,
-            // The push/pull the exposure column reports: the shooting choice while
-            // shooting, and the panel's own resolved value while developing.
-            pushPull: isDevelopMode ? developPushPull : shootingPushPull,
+            isQueuePresented: showQueueSheet,
+
             photoStatus: photoDeliveryStatus,
             onPhotoCapture: {
                 let gauge = selectedStock.flatMap { library.lastGauge(for: $0.stockId) } ?? .neutral
@@ -1736,14 +1907,14 @@ struct ContentView: View {
 
     // MARK: - Sheets
 
-    private var stockSheet: some View {
+    private func stockSheet(entry: CameraStockEntry) -> some View {
         StockSheetView(
             library: library,
             renderQueueViewModel: renderQueueViewModel,
             sourceURL: isDevelopMode ? nil : currentSourceURL,
             awaitingStockJobId: isDevelopMode ? nil : awaitingStockJobId,
             capturePolicy: isDevelopMode ? nil : currentSourceURL.flatMap { cameraViewModel.capturePolicy(for: $0) },
-            isPresented: $showStockSheet,
+            isPresented: stockSheetPresented,
             selectedStock: $selectedStock,
             currentISO: $currentISO,
             meteredOffsetEV: cameraViewModel.hasExposureMeter
@@ -1752,7 +1923,8 @@ struct ContentView: View {
             photoMode: cameraViewModel.isDevelopmentPhotoMode,
             appliedShutterSeconds: cameraViewModel.photoExposureSnapshot?.durationSeconds
                 ?? cameraViewModel.liveShutterSeconds,
-            lampAvailable: cameraViewModel.hasLamp
+            lampAvailable: cameraViewModel.hasLamp,
+            entry: entry
         )
     }
 
@@ -1815,7 +1987,13 @@ private struct StockSheetView: View {
     /// A camera with no lamp hides the cell entirely: a disabled lamp control
     /// would imply a hardware fault the operator cannot fix.
     var lampAvailable = false
+    /// The height the camera bar asked this presentation to open at: the short
+    /// picker on a tap, the large one with the sample preview on a hold. Already
+    /// resolved against the style; both heights stay reachable by dragging.
+    var entry: CameraStockEntry = .compact
 
+    @AppStorage(CameraControlColorPreference.preferenceKey)
+    private var controlColorRaw = CameraControlColorPreference.defaultValue.rawValue
     @State private var stocks: [FilmStockConfig] = []
     @State private var localSelection: FilmStockConfig?
     @State private var gauge: PrintGauge = .thirtyFiveMillimetre
@@ -1823,38 +2001,23 @@ private struct StockSheetView: View {
     /// the scene sits over target. Turning it off hands the ladder to the user.
     @State private var pushPullAutomatic = true
     @State private var pushPullStops: PushPullStops = .none
-    /// The lamp settings, read from and written straight to the one global store
-    /// so the camera records exactly what this sheet shows.
+
+    /// The detent the operator dragged to, once they have. Nil until then, so
+    /// the first presentation is the height the entry asked for instead of
+    /// flashing the other one and animating to it.
+    @State private var presentationOverride: CameraStockEntry?
 
     var body: some View {
         NavigationStack {
-            // Three stacked rows, no vertical scroll. The row heights come from
-            // the height the sheet actually has — half for the preview, a quarter
-            // each for the stock carousel and the gauge + push/pull row — so
-            // every control is on screen on a phone. The preview gives up height
-            // first if the sheet is short; the control rows never scroll away.
-            VStack(spacing: StockSheetLayout.rowSpacing) {
-                GeometryReader { proxy in
-                    let rows = StockSheetLayout.rows(forAvailableHeight: proxy.size.height)
-                    VStack(spacing: StockSheetLayout.rowSpacing) {
-                        StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge,
-                                            pushPullStops: resolvedPushPull.stops.stops)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: rows.preview)
-                            .clipped()
-
-                        if !stocks.isEmpty {
-                            stockCarousel.frame(height: rows.stocks)
-                        }
-
-                        if localSelection != nil {
-                            controlRow.frame(height: rows.controls)
-                        }
-                    }
-                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
-                }
-
-                sheetFooter
+            VStack(spacing: CompactStockPickerLayout.rowSpacing) {
+                CompactStockPicker(stocks: stocks, selectedStockId: selectedStockIdBinding,
+                                   gauge: $gauge, resolvedPushPull: resolvedPushPull,
+                                   isAutomatic: $pushPullAutomatic, manualStops: $pushPullStops,
+                                   onPushPullChange: persistPreferences,
+                                   expanded: isExpanded)
+                // Only the expanded state has room for the note under the
+                // controls; at the compact height it would crowd them.
+                if isExpanded { sheetFooter }
             }
             .padding()
             .navigationTitle("Film Stock")
@@ -1896,24 +2059,44 @@ private struct StockSheetView: View {
             .onChange(of: localSelection) { _, _ in persistPreferences() }
             .onChange(of: gauge) { _, _ in persistPreferences() }
         }
+        .environment(\.cameraControlAccent,
+                     CameraControlColorPreference.resolved(controlColorRaw).color(lightType: localSelection?.lightType))
+        // Both heights from either entry: a tap opens the short picker, a hold
+        // opens it with the sample preview, and a drag between the two reveals
+        // or hides that same preview without a second layout.
+        .presentationDetents([.height(360), .large], selection: detentSelection)
+        .presentationDragIndicator(.visible)
     }
 
-    // MARK: - Rows
+    // MARK: - Height state
 
-    /// The stock carousel, restored: centred stock cards that scroll sideways,
-    /// one tap to pick a stock. It writes through the same selection binding as
-    /// the sheet, so choosing a card still restores that stock's remembered
-    /// gauge and push/pull through `select`.
-    private var stockCarousel: some View {
-        StockCarousel(stocks: stocks, selectedStockId: selectedStockIdBinding)
-            .accessibilityIdentifier("stock.carousel")
-            .accessibilityLabel("Film stock")
-            .accessibilityValue(localSelection?.displayName ?? "None")
+    /// What this presentation resolved to: the entry the camera bar asked for,
+    /// until a drag picks the other detent.
+    private var resolvedEntry: CameraStockEntry { presentationOverride ?? entry }
+
+    /// Whether the sheet is showing its large state, and so whether the picker
+    /// reveals the sample preview above its controls.
+    private var isExpanded: Bool { resolvedEntry == .full }
+
+    /// The detents the sheet offers, read from the resolved entry. Only the
+    /// setter writes — and only to the override — so the initial detent is the
+    /// entry's own rather than something the sheet settles onto after appearing.
+    private var detentSelection: Binding<PresentationDetent> {
+        Binding(
+            get: { resolvedEntry == .full ? .large : .height(360) },
+            set: { newValue in
+                let target: CameraStockEntry = newValue == .large ? .full : .compact
+                guard target != resolvedEntry else { return }
+                presentationOverride = target
+            }
+        )
     }
 
-    /// The carousel and the sheet share one selection: the carousel writes the
-    /// id of the stock it centred through the binding, and the sheet resolves it
-    /// back to a config (ISO + remembered gauge).
+    // MARK: - Selection
+
+    /// The chips and the sheet share one selection: a chip writes the id of the
+    /// stock it shows through this binding, and the sheet resolves it back to a
+    /// config (ISO + remembered gauge + remembered push/pull).
     private var selectedStockIdBinding: Binding<String?> {
         Binding(
             get: { localSelection?.stockId },
@@ -1924,56 +2107,14 @@ private struct StockSheetView: View {
         )
     }
 
-    /// The bottom row: the print gauge on the left and the push/pull pill beside
-    /// it on the right. The gauge takes the larger share — four segments have to
-    /// stay legible — and the pill keeps its fixed fifth.
-    private var controlRow: some View {
-        GeometryReader { proxy in
-            let widths = StockSheetLayout.controlWidths(forAvailableWidth: proxy.size.width,
-                                                        includesFlash: false)
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
-                // Bottom-aligned: the pill has no caption, so it lines up with
-                // the segmented control rather than with the caption above it.
-                HStack(alignment: .bottom, spacing: StockSheetLayout.controlSpacing) {
-                    gaugeCell.frame(width: widths.gauge)
-                    pushPullPill.frame(width: widths.pushPull)
-                }
-                Spacer(minLength: 0)
-            }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-        }
-    }
-
-    /// Render, or the note that there is nothing to render yet. It keeps its own
-    /// compact row under the three, so the preview/stock/controls split always
-    /// gets the rest of the sheet.
+    /// Render, or the note that there is nothing to render yet. The expanded
+    /// state seats it under the controls; the compact height has no room for it.
     @ViewBuilder private var sheetFooter: some View {
         if sourceURL == nil, !selectionOnly {
             Text("Record a video to render.")
                 .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
         }
-    }
-
-    /// One cell: a short caption over its control, so the gauge keeps its label
-    /// in the shared bottom row.
-    private func controlCell<Content: View>(_ caption: String,
-                                            @ViewBuilder control: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(caption)
-                .font(NitrateTypography.font(.caption2))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            control()
-        }
-    }
-
-    /// The shared gauge control (caption, info sheet, segmented picker). Develop
-    /// presents the same view, so the two surfaces cannot drift apart.
-    private var gaugeCell: some View {
-        GaugeControl(gauge: $gauge)
     }
 
     /// Adopt a stock as the local selection. ISO follows the stock; the remembered
@@ -2018,15 +2159,6 @@ private struct StockSheetView: View {
         let remembered = stock.map { library.lastPushPull(for: $0.stockId) } ?? .standard
         pushPullAutomatic = remembered.isAutomatic
         pushPullStops = remembered.manualStops
-    }
-
-    /// The shared push/pull pill. Develop presents the same view, so the ladder,
-    /// the Auto entry and the accessibility contract exist once.
-    private var pushPullPill: some View {
-        PushPullControl(resolved: resolvedPushPull,
-                        isAutomatic: $pushPullAutomatic,
-                        manualStops: $pushPullStops,
-                        onChange: persistPreferences)
     }
 
     /// Commits the selected stock (and its push/pull) to the take. The sheet's

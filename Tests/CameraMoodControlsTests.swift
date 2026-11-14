@@ -27,6 +27,18 @@ struct CameraMoodControlsTests {
         #expect(!meter.contains("directionLabel(\"UNDER\")"))
         #expect(!meter.contains("Text(statusText)"))
         #expect(meter.contains(".accessibilityLabel("), "Retain nonvisual meter information")
+        // The ISO number above the ruler survives the simplification, and it is
+        // now the only case that prints one: Minimal's auto EV drops its
+        // standalone number in both finishes, because the ruler's own drawn
+        // index is the value. The line stays in the layout, invisible and out of
+        // the accessibility tree, so the column's measured height does not move.
+        #expect(bar.contains("let showsNumbers = cameraViewModel.isManualExposure"),
+                "Only the manual ISO keeps a number above its ruler, in both styles.")
+        #expect(bar.contains(".opacity(showsNumbers ? 1 : 0)"))
+        #expect(bar.contains(".accessibilityHidden(!showsNumbers)"),
+                "The hidden auto line must leave the accessibility tree too.")
+        #expect(bar.contains(".accessibilityIdentifier(\"camera.evBiasRuler\")"))
+        #expect(bar.contains(".accessibilityValue(evBiasSpokenValue)"))
     }
 
     @Test func exposureLongPressHasVisibleProgressAsWellAsCommittedHaptics() throws {
@@ -75,23 +87,28 @@ struct CameraMoodControlsTests {
         let measured = try #require(well.range(of: ".background {"))
         #expect(scale.lowerBound < measured.lowerBound,
                 "Measure the unscaled well so the rescue anchor does not move during a hold")
-        #expect(bar.components(separatedBy: "LongPressGesture(minimumDuration:").count == 2)
+        // The bar now carries two long presses — the stock entry's hold for the
+        // full list and this exposure lock — so the count is scoped to the
+        // control that owns it instead of the whole file.
+        #expect(well.components(separatedBy: "LongPressGesture(minimumDuration:").count == 2,
+                "The exposure well owns exactly one long press.")
+        #expect(!setting.contains("LongPressGesture"),
+                "The ruler beneath the well never grows a second long press.")
+        #expect(bar.contains("LongPressGesture(minimumDuration: CameraStockEntry.holdThreshold"),
+                "The other long press is the stock entry's hold, not a second exposure path.")
     }
 
-    @Test func lcdSlotSitsAboveTheStockWellAndClearOfRecord() {
+    @Test func lcdSlotFollowsTheStockAndStaysClearOfRecord() {
         for screenWidth in screenWidths {
             for height in barHeights {
                 let width = screenWidth - 32
                 let geometry = CameraControlGeometry(width: width, height: height)
                 // Exposure still owns the shared height.
                 #expect(geometry.exposure.height == height)
-                // LCD is the upper slot; the stock/gauge well takes the lower third.
-                #expect(geometry.lcd.minY == 0)
-                #expect(abs(geometry.stock.maxY - height) < 0.001)
-                #expect(abs(geometry.lcd.height - 2 * geometry.stock.height) < 0.001)
-                #expect(abs(geometry.stock.minY - geometry.lcd.maxY - CameraControlGeometry.columnGap) < 0.001)
-                // The well must still host the 44pt stock control plus its frame.
-                #expect(geometry.stock.height >= 52)
+                // Remaining-time type follows the flat stock entry.
+                #expect(geometry.lcd.minY == geometry.stock.maxY + CameraControlGeometry.columnGap)
+                #expect(geometry.lcd.maxY <= height)
+                #expect(geometry.stock.height >= 44)
                 // REC stays screen-centred and never collides with the left column.
                 #expect(geometry.record.midX == width / 2)
                 for slot in [geometry.lcd, geometry.stock] {
@@ -158,7 +175,12 @@ struct CameraMoodControlsTests {
                 "A finalising take falls back to the plain face, never the recording headline.")
     }
 
-    @MainActor @Test func photoLCDShowsFreeCapacityInsteadOfVideoDuration() throws {
+    /// Both finishes report free space in Photo, and both now print it on the
+    /// same one capacity line — `12.50 GB`, hundredths floored — because the LCD
+    /// is one shared face. Classic's captioned plate readout is gone: the
+    /// one-decimal `capacityText` accessor below is legacy surface with no
+    /// drawing path left, kept only so its formatted value stays pinned.
+    @MainActor @Test func photoLCDPrintsFreeSpaceInBothStyles() throws {
         let idle = CameraStatusPresentation(outstandingCount: 0, pendingCount: 0, isProcessing: false,
             failedCount: 0, errorMessage: nil, latestResultCompleted: false, latestResultSavedToPhotos: nil)
         let slot = CameraControlGeometry(width: 288, height: 168).lcd.size
@@ -168,9 +190,23 @@ struct CameraMoodControlsTests {
             photoFreeBytes: 97_300_000_000)
         #expect(low.capacityText == "12.5 GB")
         #expect(high.capacityText == "97.3 GB")
-        #expect(pixelsDigest(try render(lcdFrame(low, slot: slot), name: "photo-lcd-low")) !=
-                pixelsDigest(try render(lcdFrame(high, slot: slot), name: "photo-lcd-high")),
-                "Visible capacity must change with free bytes, not stay on Video remaining time.")
+        #expect(low.minimalReadoutText == "12.50 GB", "The shared line prints hundredths, floored.")
+        #expect(high.minimalReadoutText == "97.30 GB")
+
+        func digest(_ lcd: RecordingTimeLCD, _ style: CameraUIStyle) throws -> Int {
+            try pixelsDigest(try render(lcdFrame(lcd.environment(\.cameraUIStyle, style), slot: slot),
+                                        name: "photo-lcd-\(style.rawValue)-\(lcd.capacityText)"))
+        }
+        let minimalLow = try digest(low, .minimal)
+        let minimalHigh = try digest(high, .minimal)
+        let classicLow = try digest(low, .classic)
+        let classicHigh = try digest(high, .classic)
+        #expect(minimalLow != minimalHigh,
+                "Minimal's capacity line still changes with free bytes.")
+        #expect(classicLow != classicHigh,
+                "Classic prints the same capacity line, and it still changes with free bytes.")
+        #expect(classicLow == minimalLow && classicHigh == minimalHigh,
+                "Both finishes draw the same LCD face; the style no longer re-skins it.")
     }
 
     @MainActor @Test func photoRenderingOwnsTheLCDEvenWhenCapacityIsAvailable() {
@@ -197,14 +233,59 @@ struct CameraMoodControlsTests {
     @Test func barOwnsTheWellRecordingStateAndTheLockHapticOnce() throws {
         let bar = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraControlBar.swift"),
                              encoding: .utf8)
-        #expect(bar.contains("CameraShootingLayout()"))
-        // Stock and gauge share one recessed well.
-        #expect(bar.contains(".cameraControlWell("))
-        #expect(bar.contains("CameraGaugeLabel(gauge: selectedGauge,"))
-        #expect(bar.components(separatedBy: "length: 120").count == 3, "The exposure rulers are untouched.")
+        #expect(bar.contains("CameraShootingLayout(style: uiStyle)"))
+        // Stock and gauge share one entry. A tap opens the compact picker and a
+        // held press the full list in both finishes — the bar names the two
+        // destinations directly and hands the request to `CameraStockEntry`, so
+        // the entry times its own press instead of using a Button, which would
+        // fire once on release whatever happened.
+        #expect(bar.contains(".gesture(stockEntryGesture)"))
+        #expect(bar.contains(".exclusively(before: TapGesture())"),
+                "Exclusivity is what stops a recognized hold also firing the tap action.")
+        #expect(bar.contains("if held { openStockEntry(.full) }"),
+                "A hold opens the full list straight away, without waiting for release.")
+        #expect(bar.contains("case .second(_):"),
+                "Only the tap reaches the compact, item-based picker.")
+        #expect(bar.contains("openStockEntry(.compact)"))
+        #expect(bar.contains("CameraStockEntry.resolved(requested, style: uiStyle)"),
+                "The style no longer rewrites a requested entry; resolution preserves it.")
+        #expect(!bar.contains("CameraStockEntry.destination("),
+                "The bar times the real gesture; it does not re-derive a destination from a duration.")
+        #expect(!bar.contains("Button(action: onShowStockSheet)"))
+        // Both finishes seat the cluster in the shared well; the plate's face is
+        // the only difference (Classic keeps its bevel). The 3pt pad gives the
+        // face breathing room and the matching negative pad keeps it from
+        // growing the slot.
+        #expect(bar.contains("selectorContents\n            .padding(3)\n            .cameraWellBacking()"),
+                "The cluster sits in the shared well on a 3pt pad.")
+        #expect(bar.contains(".padding(-3)\n        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)"),
+                "The negative pad cancels the inset, so the well never resizes the slot.")
+        #expect(bar.contains("CameraGaugeLabel(gauge: selectedGauge)"),
+                "The gauge label is the readout under the stock face.")
+        // The processing readout is hidden while the exposure is neutral, and
+        // takes the shared processing tint — push one colour, pull the other —
+        // rather than a control-accent colour of its own.
+        #expect(bar.contains("if let pushPull, !pushPull.isNeutral {"),
+                "A neutral exposure adds no badge: there is nothing being processed.")
+        #expect(bar.contains("pushPull.stops.processingTint"),
+                "The badge reads the one shared processing tint.")
+        #expect(!bar.contains("CameraPushPullTint"),
+                "No second copy of the processing colours on the camera bar.")
+        // Both rulers read the shared dial-size preference, and the 120pt outer
+        // slot keeps the preview and the shooting bar fixed.
+        #expect(bar.components(separatedBy: "length: exposureDialSize.length").count == 3,
+                "The exposure rulers are untouched: they take their window from the shared size.")
+        #expect(bar.components(separatedBy: "width: exposureDialSize.width").count == 3)
+        #expect(bar.components(separatedBy: ".frame(height: 120)").count == 3,
+                "The 120pt outer slot is unchanged whatever dial size is chosen.")
         // The LCD acknowledges the accepted take before the writer confirms it.
         #expect(bar.contains("isRecording: recordPresentation.showsLiveChrome"))
         #expect(bar.contains("isStopping: cameraViewModel.isStoppingRecording"))
+        // Success and issue content is the same inside the LCD, because one
+        // shared outline draws it over the face.
+        #expect(bar.contains("CameraQueueAttentionOutline(hasIssue: queueAttention.hasUnseenIssue,"))
+        #expect(bar.contains("if isStorageLow { snapshot.issues.insert(\"low-storage\") }"),
+                "Low storage is a queue issue, carried by the outline and the spoken value.")
         // Queue/storage access survives an active take.
         #expect(bar.contains("onShowQueueSheet"))
         // One acknowledgement, keyed to the committed mode, so neither the long
@@ -217,7 +298,7 @@ struct CameraMoodControlsTests {
 
     // MARK: - Helpers
 
-    private func lcdFrame(_ lcd: RecordingTimeLCD, slot: CGSize) -> some View {
+    private func lcdFrame<Content: View>(_ lcd: Content, slot: CGSize) -> some View {
         lcd
             .frame(width: slot.width, height: slot.height)
             .padding(4)

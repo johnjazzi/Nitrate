@@ -24,6 +24,9 @@ final class RenderQueueViewModel {
     private var worker: Task<Void, Never>?
     private var renderer: PipelineRenderer?
     private var didInitialize = false
+    /// Presentation can baseline loaded history instead of announcing old jobs
+    /// as new failures. Initialization runs synchronously on the main actor.
+    var hasInitializedQueue: Bool { didInitialize }
     private var persistenceErrorMessage: String?
     private var loadErrorMessage: String?
     /// True while the queue is paused because a durable write failed. Rendering
@@ -708,6 +711,11 @@ final class RenderQueueViewModel {
         // Photo history plays the retained JPEG; never unlink its original DNG.
         if job.isDiscardingImport { return true }
         guard job.isPhoto != true else { return false }
+        // Legacy still records predate isPhoto. Movie cleanup cannot own DNG/JPEG
+        // files, so never re-sweep those delivered rows or rewrite their history.
+        let hasMovieCleanupCandidate = job.sourceURL.pathExtension == "mov" ||
+            job.outputURL?.pathExtension == "mov"
+        guard hasMovieCleanupCandidate else { return false }
         guard job.status == .completed, job.receipt != nil,
               job.mediaCleanupCompleted != true else { return false }
         if job.originalOnly == true, job.isImportedVideo != true { return job.sourceSavedToPhotos == true }

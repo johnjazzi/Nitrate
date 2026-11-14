@@ -51,9 +51,128 @@ enum CameraModeRowTap: Equatable {
     }
 }
 
-/// The selected mode stays centered, with its title below and ghosted neighbors.
-/// Slots below 132pt use swipes and accessibility adjustment for the neighbor,
-/// preserving the centered 44pt target. The parent owns the selection.
+/// How the row spends a given slot width. A 44pt letter is a control only while
+/// its whole target fits inside the slot; a neighbour whose target would be cut
+/// is a decorative peek, so the row never offers a half tap area. Pure, so the
+/// rule is exercised without rendering.
+///
+/// The 44pt members here are Classic's geometry and remain the default contract.
+/// Minimal runs a real carousel on the same slot: one 28pt disc per visible mode
+/// on a 4pt gap, so the letters read 32pt apart while the selected letter holds
+/// the slot's centre and its neighbours ride the track beside it.
+enum CameraModeRowLayout {
+    /// One honest mode target, in points. Also the fixed width of a strip cell.
+    static let controlWidth: CGFloat = 44
+
+    /// How far a letter is pulled in toward the selection so the peeking modes
+    /// read as one group. It moves no live target — only the drawn glyph.
+    static let peekInset: CGFloat = 6
+
+    /// Minimal's drawn cell: one 28pt disc. It is also the cell's tap width, so
+    /// a compact tap is a 28x44pt column — the row keeps its 44pt touch height.
+    static let compactCellWidth: CGFloat = 28
+
+    /// Visible space between two compact discs. 28pt disc + 4pt gap = a 32pt
+    /// pitch, which keeps D/V/P reading as one group instead of a blob.
+    static let compactGap: CGFloat = 4
+
+    /// Centre-to-centre distance of two compact cells: 32pt.
+    static var compactPitch: CGFloat { compactCellWidth + compactGap }
+
+    /// Width of the whole compact group: n discs and n-1 gaps. Three modes need
+    /// 92pt, so the group fits the 96pt floor the camera strip geometry allows.
+    static func compactGroupWidth(visibleCount: Int) -> CGFloat {
+        guard visibleCount > 0 else { return 0 }
+        return CGFloat(visibleCount) * compactCellWidth + CGFloat(visibleCount - 1) * compactGap
+    }
+
+    /// Signed distance of one cell from the slot's centre, measured on the
+    /// 32pt pitch. The selected cell is exactly zero, which is what keeps the
+    /// selected letter centred instead of sliding the whole group.
+    static func compactCellOffset(index: Int, selectedIndex: Int) -> CGFloat {
+        (CGFloat(index) - CGFloat(selectedIndex)) * compactPitch
+    }
+
+    /// A compact cell is a live target only while its whole 28pt width sits
+    /// inside the slot. Anything further out is a ghost: drawn, never tappable.
+    static func compactCellFits(index: Int, selectedIndex: Int, slotWidth: CGFloat) -> Bool {
+        guard slotWidth.isFinite, slotWidth > 0 else { return false }
+        return abs(compactCellOffset(index: index, selectedIndex: selectedIndex))
+            + compactCellWidth / 2 <= slotWidth / 2
+    }
+
+    /// Every visible cell fits whole, so the row can offer one tap per mode. A
+    /// narrower slot degrades to the announced, adjustable element instead of
+    /// clipping a live target in half.
+    static func compactCarouselFits(width: CGFloat, visibleCount: Int, selectedIndex: Int) -> Bool {
+        guard width.isFinite, width > 0, visibleCount > 0 else { return false }
+        return (0..<visibleCount).allSatisfy {
+            compactCellFits(index: $0, selectedIndex: selectedIndex, slotWidth: width)
+        }
+    }
+
+    /// One compact cell's rect inside the slot, measured from its leading edge.
+    /// The selected cell is centred; every other cell sits a whole 32pt pitch
+    /// away, so no rect overlaps its neighbour.
+    static func compactCellRect(index: Int, selectedIndex: Int, slotWidth: CGFloat) -> CGRect {
+        guard slotWidth.isFinite else { return .zero }
+        return CGRect(x: slotWidth / 2 + compactCellOffset(index: index, selectedIndex: selectedIndex)
+                        - compactCellWidth / 2,
+                      y: 0,
+                      width: compactCellWidth,
+                      height: CameraModeCarousel.height)
+    }
+
+    /// Track travel that lands the selected cell on the slot's centre. The row
+    /// is laid out centred and then slid by this much, so selection animates the
+    /// track rather than redrawing the group in place.
+    static func compactTrackOffset(selectedIndex: Int, visibleCount: Int) -> CGFloat {
+        guard visibleCount > 0 else { return 0 }
+        let index = CGFloat(min(max(selectedIndex, 0), visibleCount - 1))
+        return (CGFloat(visibleCount - 1) / 2 - index) * compactPitch
+    }
+
+    /// Every visible mode's whole 44pt target fits inside `width`, so the whole
+    /// row can be live.
+    static func fullStripFits(width: CGFloat, visibleCount: Int, selectedIndex: Int = 0) -> Bool {
+        guard width.isFinite, width > 0, visibleCount > 0,
+              selectedIndex >= 0, selectedIndex < visibleCount else { return false }
+        // Centering the selected cell makes an end selection asymmetric. Two
+        // 44pt cells need 132pt, not 88pt, to keep the neighbor's full target.
+        let cellsToEdge = max(selectedIndex, visibleCount - selectedIndex - 1)
+        return width >= CGFloat(2 * cellsToEdge + 1) * controlWidth
+    }
+
+    /// Shifts the fixed-width strip so the selected letter — not the strip —
+    /// lands on the slot's centre. One 44pt cell per visible mode.
+    static func centeringOffset(selectedIndex: Int, visibleCount: Int) -> CGFloat {
+        guard visibleCount > 0 else { return 0 }
+        let index = CGFloat(min(max(selectedIndex, 0), visibleCount - 1))
+        return (CGFloat(visibleCount - 1) - 2 * index) * (controlWidth / 2)
+    }
+
+    /// The drawn pull of one letter toward the selection. Zero for the selected
+    /// mode, so the accent letter stays exactly centred.
+    static func letterOffset(index: Int, selectedIndex: Int) -> CGFloat {
+        index == selectedIndex ? 0 : (index < selectedIndex ? peekInset : -peekInset)
+    }
+}
+
+/// Classic keeps the selected letter centred. Minimal runs a real D/V/P carousel
+/// on the same contract: the selected letter sits on one flat dark disc at the
+/// slot's centre and its neighbours ride a single 32pt pitch beside it, so the
+/// track slides when the selection changes instead of the group re-centring.
+/// Classic restores the pre-minimal treatment — 44pt cells, a larger
+/// accent-coloured letter with its full-size caption beneath and ghosted
+/// neighbours — without the flat selection fill. The parent owns the selection.
+///
+/// Both styles share one interaction contract: every letter offered as a control
+/// keeps a whole target, and no target is ever offered half off the slot. Minimal
+/// keeps the row's 44pt touch height and gives each compact cell its own
+/// non-overlapping 28x44pt tap while its whole disc fits the slot; a further
+/// neighbour is a drawn ghost. Swipe, accessibility adjustment, refusal and
+/// availability are identical in both, so no second interaction model exists to
+/// drift.
 struct CameraModeCarousel: View {
     let selected: CameraMode
     let enabled: Bool
@@ -66,19 +185,30 @@ struct CameraModeCarousel: View {
     private var visibleModes: [CameraMode] { CameraMode.visibleModes(photoAvailable: photoAvailable) }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The one resolved control accent shared with the rest of the camera
+    /// chrome. The appearance layer owns its value and its fallback, so the row
+    /// never invents a colour of its own.
+    @Environment(\.cameraControlAccent) private var controlAccent: Color
+    /// Classic or Minimal presentation only. Selection, availability, refusal
+    /// and swipe behaviour are identical in both, so no second selection state
+    /// exists to drift.
+    @Environment(\.cameraUIStyle) private var uiStyle
+
+    private var isClassic: Bool { uiStyle == .classic }
 
     /// Fixed row height. Keeps the row from resizing as the active label
     /// changes, and is itself the minimum touch height.
     static let height: CGFloat = 44
 
     /// The selected target's fixed width — the touch floor it never shrinks
-    /// below. Also one control's share of the centred pair.
+    /// below.
     static let minimumControlWidth: CGFloat = 44
 
-    /// The narrowest width that shows the centred 44pt target and a full
-    /// adjacent 44pt neighbour without overlap: 2 × (44/2 + 44) = 132pt. Below
-    /// it the row uses the compact fallback.
-    static let compactThreshold: CGFloat = minimumControlWidth * 3
+    /// The flat dark fill behind the selected letter. Deliberately smaller than
+    /// the 44pt classic target: the target is invisible, the fill is the state.
+    /// It is exactly one Minimal cell wide, so the fill is the disc and the
+    /// 32pt pitch is never widened by decoration.
+    static let selectionFillSize: CGFloat = CameraModeRowLayout.compactCellWidth
 
     private let labelPadding: CGFloat = 3
     /// How far the caption may scale down before it truncates.
@@ -97,7 +227,7 @@ struct CameraModeCarousel: View {
 
     var body: some View {
         GeometryReader { proxy in
-            strip(compact: proxy.size.width < Self.compactThreshold)
+            strip(width: proxy.size.width)
                 .frame(width: proxy.size.width, height: proxy.size.height)
                 .clipped()
         }
@@ -110,55 +240,104 @@ struct CameraModeCarousel: View {
 
     // MARK: - Layout
 
-    @ViewBuilder
-    private func strip(compact: Bool) -> some View {
-        if compact {
-            compactStrip
-        } else {
-            fullStrip
-        }
+    /// Classic's rule, and the row's default 44pt contract: a letter is a live
+    /// control only while its entire 44pt target fits in the slot. Narrow slots
+    /// keep the centred target and degrade the neighbours to peeks rather than
+    /// clipping a target in half. Minimal reads its own `compactCellFits` rule
+    /// against the 28pt cell instead.
+    func isInteractive(_ mode: CameraMode, in width: CGFloat) -> Bool {
+        guard visibleModes.contains(mode), width.isFinite else { return false }
+        let centerOffset = CGFloat(abs(index(of: mode) - index(of: selected))) * Self.minimumControlWidth
+        return centerOffset + Self.minimumControlWidth / 2 <= width / 2
     }
 
-    /// The centred target with a full, live neighbour immediately beside it.
-    /// The pair is nudged off its own centre so the *selected* target lands on
-    /// the row's centre.
-    private var fullStrip: some View {
-        HStack(spacing: 0) {
+    private func fitsFullStrip(width: CGFloat) -> Bool {
+        CameraModeRowLayout.fullStripFits(width: width, visibleCount: visibleModes.count,
+                                         selectedIndex: index(of: selected))
+    }
+
+    /// One row per style. Classic keeps its 44pt cells nudged so the selected
+    /// letter lands on the slot's centre; Minimal centres its whole 28pt-cell
+    /// group and never offsets a cell, so no letter is pushed off the slot.
+    @ViewBuilder
+    private func strip(width: CGFloat) -> some View {
+        compactStrip(width: width)
+    }
+
+    /// Classic: one row of 44pt cells nudged so the selected letter lands on the
+    /// slot's centre. In a compact slot only the centred letter is a control;
+    /// the neighbours are drawn as peeks.
+    @ViewBuilder
+    private func classicStrip(width: CGFloat) -> some View {
+        let compact = !fitsFullStrip(width: width)
+        let row = HStack(spacing: 0) {
             ForEach(visibleModes) { mode in
-                item(mode, interactive: true)
+                item(mode, interactive: isInteractive(mode, in: width))
             }
         }
         .fixedSize()
         .offset(x: centeringOffset)
-    }
 
-    /// The compact fallback: the centred target stays live, the neighbour is a
-    /// decorative ghost, and the adjustment action still moves the selection.
-    private var compactStrip: some View {
-        ZStack {
-            item(neighbour, interactive: true)
-                .offset(x: selected == .develop ? Self.minimumControlWidth : -Self.minimumControlWidth)
-            item(selected, interactive: true)
+        if compact {
+            // One announced, adjustable element — the peeks are decoration and
+            // the swipe/adjust action owns the neighbour.
+            row
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(selected.voiceLabel)
+                .accessibilityIdentifier(selected.accessibilityIdentifier)
+                .accessibilityAddTraits(.isSelected)
+                .accessibilityHint(enabled ? "" : "Unavailable right now")
+                .accessibilityAdjustableAction(adjust)
+        } else {
+            row
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(selected.voiceLabel)
-        .accessibilityIdentifier(selected.accessibilityIdentifier)
-        .accessibilityAddTraits(.isSelected)
-        .accessibilityAdjustableAction(adjust)
     }
 
-    /// Shifts the centred pair so the selected mode — the leading half when
-    /// Develop is selected, the trailing half when Video is — lands on centre.
-    /// The whole block slides as the selection changes, animating both letters.
+    /// A fixed, tightly wrapped viewport; only the letters move. Wholly visible
+    /// neighbours remain tappable at either end, while clipped ghosts never get
+    /// live targets. The selected letter stays at the centre on a 32pt pitch.
+    @ViewBuilder
+    private func compactStrip(width: CGFloat) -> some View {
+        let selectedIndex = index(of: selected)
+        let viewportWidth = width.isFinite
+            ? max(0, min(width, CameraModeRowLayout.compactGroupWidth(visibleCount: visibleModes.count))) : 0
+        let selectedFits = CameraModeRowLayout.compactCellFits(index: selectedIndex,
+                                                               selectedIndex: selectedIndex,
+                                                               slotWidth: viewportWidth)
+        let row = HStack(spacing: CameraModeRowLayout.compactGap) {
+            ForEach(visibleModes) { mode in
+                compactItem(mode, interactive: CameraModeRowLayout.compactCellFits(
+                    index: index(of: mode), selectedIndex: selectedIndex, slotWidth: viewportWidth))
+            }
+        }
+        .fixedSize()
+        .offset(x: CameraModeRowLayout.compactTrackOffset(selectedIndex: selectedIndex,
+                                                          visibleCount: visibleModes.count))
+        .frame(width: viewportWidth, height: Self.height)
+        .clipped()
+        .cameraWellBacking(cornerRadius: 16, verticalInset: 6)
+        .frame(width: width, height: Self.height)
+
+        if selectedFits {
+            row.accessibilityElement(children: .contain)
+        } else {
+            row
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(selected.voiceLabel)
+                .accessibilityIdentifier(selected.accessibilityIdentifier)
+                .accessibilityAddTraits(.isSelected)
+                .accessibilityHint(enabled ? "" : "Unavailable right now")
+                .accessibilityAdjustableAction(adjust)
+        }
+    }
+
     private var centeringOffset: CGFloat {
-        let index = CGFloat(visibleModes.firstIndex(of: selected) ?? 0)
-        return (CGFloat(visibleModes.count - 1) - 2 * index) * (Self.minimumControlWidth / 2)
+        CameraModeRowLayout.centeringOffset(selectedIndex: index(of: selected),
+                                            visibleCount: visibleModes.count)
     }
 
-    /// The other visible mode, drawn as the ghosted neighbour.
-    private var neighbour: CameraMode {
-        guard let index = visibleModes.firstIndex(of: selected) else { return selected }
-        return visibleModes[index > 0 ? index - 1 : min(index + 1, visibleModes.count - 1)]
+    private func index(of mode: CameraMode) -> Int {
+        visibleModes.firstIndex(of: mode) ?? 0
     }
 
     private func adjust(_ direction: AccessibilityAdjustmentDirection) {
@@ -174,60 +353,126 @@ struct CameraModeCarousel: View {
 
     // MARK: - Items
 
-    /// One mode control. When `interactive` it is a live, labelled button; when
-    /// not it is a decorative ghost that is never hit-testable or announced.
+    /// One Classic mode control: a 44pt cell. When `interactive` it is a live,
+    /// labelled button; when not it is a decorative peek that is never
+    /// hit-testable or announced.
     private func item(_ mode: CameraMode, interactive: Bool) -> some View {
         let face = GeometryReader { geometry in
             let quarterTurn = abs(rotationDegrees).truncatingRemainder(dividingBy: 180) == 90
             let faceWidth = quarterTurn ? geometry.size.height : geometry.size.width
             let faceHeight = quarterTurn ? geometry.size.width : geometry.size.height
-            label(mode)
+            classicLabel(mode)
                 .padding(.horizontal, labelPadding)
                 .frame(width: faceWidth, height: faceHeight)
                 .rotationEffect(.degrees(rotationDegrees))
                 .frame(width: geometry.size.width, height: geometry.size.height)
-                // Bring the ghost inward without moving either 44pt touch target.
-                .offset(x: mode == selected ? 0 : (mode == .develop ? 6 : -6))
+                // Bring a peeking letter inward without moving either 44pt
+                // touch target; the selected letter is never moved.
+                .offset(x: CameraModeRowLayout.letterOffset(index: index(of: mode),
+                                                            selectedIndex: index(of: selected)))
         }
         .frame(width: Self.minimumControlWidth, height: Self.height)
         .contentShape(Rectangle())
 
         return Group {
             if interactive {
-                Button {
-                    switch resolvedTap(mode) {
-                    case let .select(mode): onSelect(mode)
-                    case let .refused(mode): onBlockedSelect?(mode)
-                    }
-                } label: {
-                    face
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(mode.voiceLabel)
-                .accessibilityIdentifier(mode.accessibilityIdentifier)
-                // The row stays tappable when blocked so the refusal can be
-                // spoken; say the row is unavailable rather than "dimmed".
-                .accessibilityHint(enabled ? "" : "Unavailable right now")
-                .accessibilityAddTraits(mode == selected ? .isSelected : [])
+                modeButton(mode, face: face)
             } else {
                 face.accessibilityHidden(true)
             }
         }
     }
 
-    /// Keep both caption bands laid out so selection never changes row height.
-    private func label(_ mode: CameraMode) -> some View {
+    /// One Minimal mode control: a 28pt-wide cell on the row's 44pt height. Each
+    /// cell is its own tap, so the compact group offers deterministic,
+    /// non-overlapping buttons instead of one wide target.
+    private func compactItem(_ mode: CameraMode, interactive: Bool) -> some View {
+        let face = GeometryReader { geometry in
+            let quarterTurn = abs(rotationDegrees).truncatingRemainder(dividingBy: 180) == 90
+            let faceWidth = quarterTurn ? geometry.size.height : geometry.size.width
+            let faceHeight = quarterTurn ? geometry.size.width : geometry.size.height
+            compactLabel(mode)
+                .frame(width: faceWidth, height: faceHeight)
+                .rotationEffect(.degrees(rotationDegrees))
+                .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+        .frame(width: CameraModeRowLayout.compactCellWidth, height: Self.height)
+        .contentShape(Rectangle())
+
+        return Group {
+            if interactive {
+                modeButton(mode, face: face)
+            } else {
+                face.accessibilityHidden(true)
+            }
+        }
+    }
+
+    /// The one button contract for both styles: same action, same refusal, same
+    /// label, identifier, hint and selected trait.
+    private func modeButton(_ mode: CameraMode, face: some View) -> some View {
+        Button {
+            switch resolvedTap(mode) {
+            case let .select(mode): onSelect(mode)
+            case let .refused(mode): onBlockedSelect?(mode)
+            }
+        } label: {
+            face
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(mode.voiceLabel)
+        .accessibilityIdentifier(mode.accessibilityIdentifier)
+        // The row stays tappable when blocked so the refusal can be spoken; say
+        // the row is unavailable rather than "dimmed".
+        .accessibilityHint(enabled ? "" : "Unavailable right now")
+        .accessibilityAddTraits(mode == selected ? .isSelected : [])
+    }
+
+    /// Classic: the bare 14pt letter over its full-size 12pt caption — the old
+    /// treatment, with no fill, ring or track, and both caption bands laid out
+    /// so selection never changes row height.
+    private func classicLabel(_ mode: CameraMode) -> some View {
         let isActive = mode == selected
         return VStack(spacing: 0) {
             Text(mode.letter)
                 .font(NitrateTypography.font(size: 14, relativeTo: .headline))
-                .foregroundColor(isActive ? .orange : Color.white.opacity(0.45))
+                .foregroundColor(isActive ? controlAccent : Color.white.opacity(0.45))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             Text(mode.title)
                 .font(NitrateTypography.font(size: 12, relativeTo: .subheadline))
                 .foregroundColor(Color.white.opacity(isActive ? 0.9 : 0))
                 .lineLimit(1)
                 .minimumScaleFactor(minimumScale)
         }
+    }
+
+    /// Minimal: the letter alone on its flat dark disc. At a 32pt pitch there is
+    /// no honest room for a word caption — it would shrink below legibility and
+    /// paint past the slot — so the selected mode reads through the accent
+    /// letter and its disc. The spoken name is unchanged (see `modeButton`).
+    private func compactLabel(_ mode: CameraMode) -> some View {
+        let isActive = mode == selected
+        return ZStack {
+            if isActive { selectionFill }
+            Text(mode.letter)
+                .font(NitrateTypography.font(size: 14, relativeTo: .headline))
+                .foregroundColor(isActive ? controlAccent : Color.white.opacity(0.45))
+                // Large Dynamic Type must not grow the cell past the row.
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(width: Self.selectionFillSize, height: Self.selectionFillSize)
+    }
+
+    /// A flat, accent-matched dark fill — no stroke, gradient, shadow or nested
+    /// ring. The accent at low opacity over charcoal resolves to a dark olive
+    /// for green and a dark warm neutral for orange, so the fill follows the one
+    /// shared accent without a second preference.
+    private var selectionFill: some View {
+        Circle()
+            .fill(Color(white: 0.10))
+            .overlay { Circle().fill(controlAccent.opacity(0.18)) }
     }
 
     // MARK: - Swipe

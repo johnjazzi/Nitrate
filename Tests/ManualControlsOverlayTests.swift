@@ -256,7 +256,10 @@ struct ManualControlsOverlayTests {
         }
         let surfaceSource = try source("App/Modules/CameraCapture/ManualControlsSurface.swift")
         #expect(surfaceSource.contains("Text(\"ZOOM\")"))
-        #expect(surfaceSource.contains(".foregroundStyle(zoomControlsEnabled.wrappedValue ? .orange : .white)"))
+        // The toggle reads the shared binding and paints live state; only the
+        // exact colour is style-dependent (accent in Minimal, orange in Classic).
+        #expect(surfaceSource.contains("foregroundStyle(zoomControlsEnabled.wrappedValue"))
+        #expect(surfaceSource.contains("isClassic ? Color.orange : controlAccent"))
         #expect(surfaceSource.contains("func toggleZoomControls() { zoomControlsEnabled.wrappedValue.toggle() }"))
         #expect(surfaceSource.contains("var zoomControlsEnabled: Binding<Bool> = .constant(false)"))
 
@@ -390,7 +393,9 @@ struct ManualControlsOverlayTests {
     @MainActor @Test func landscapeNativeSliderHasHorizontalUprightAxis() throws {
         let track = ManualControlTrack(value: .constant(0.6), range: 0...1, step: 0.01,
                                        landscape: true, length: 56, label: "Focus")
-        let image = try bitmap(track.padding(12), size: CGSize(width: 184, height: 80))
+        // Classic keeps the neutral white track this axis pin reads.
+        let image = try bitmap(track.environment(\.cameraUIStyle, .classic).padding(12),
+                               size: CGSize(width: 184, height: 80))
         let ink = try whiteInk(image)
         let xs = ink.map(\.x), ys = ink.map(\.y)
         let width = try #require(xs.max()) - #require(xs.min())

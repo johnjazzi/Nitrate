@@ -170,15 +170,18 @@ struct DaylightCapturePolicyLedgerTests {
         #expect(ledger.policies.isEmpty)
     }
 
-    @Test func sharedIdlePreservesOnlyExplicitExposureHolds() {
+    @Test func sharedIdleHoldsTheFilmShutterWithOnlyExplicitISOHolds() {
         let isoHolds: [Float?] = [nil, 800]
         let shutterHolds: [Double?] = [nil, 1.0 / 250.0]
         for rate in CameraFrameRate.allCases {
             for iso in isoHolds {
                 for duration in shutterHolds {
                     let idle = VideoExposureContract.idle(frameRate: rate, isManualExposure: iso != nil,
-                        manualISO: iso ?? 400, bias: -1.2, heldDuration: duration)
-                    #expect(idle.durationSeconds == duration)
+                        manualISO: iso, bias: -1.2, heldDuration: duration)
+                    // Every rate holds its own 180° shutter, whatever duration
+                    // Photo's controller happened to carry.
+                    #expect(idle.durationSeconds == rate.filmShutterDuration.seconds)
+                    #expect(idle.holdsFixedShutter)
                     #expect(idle.lockedISO == iso)
                     #expect(idle.exposureBias == -1.2)
                 }
@@ -186,10 +189,13 @@ struct DaylightCapturePolicyLedgerTests {
         }
     }
 
-    @Test func heldISODoesNotAlsoAcquireARecordingShutter() {
+    @Test func heldISOAlsoCarriesTheModeFilmShutter() {
         let manual = VideoExposureContract.idle(frameRate: .standard24, isManualExposure: true,
                                                 manualISO: 800, bias: 0)
         #expect(manual.lockedISO == 800)
-        #expect(manual.durationSeconds == nil)
+        #expect(manual.durationSeconds == 1.0 / 48.0)
+        let high = VideoExposureContract.idle(frameRate: .high120, isManualExposure: true,
+                                              manualISO: 800, bias: 0)
+        #expect(high.durationSeconds == 1.0 / 240.0)
     }
 }

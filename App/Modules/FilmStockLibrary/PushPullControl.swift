@@ -1,6 +1,15 @@
 #if os(iOS)
 import SwiftUI
 
+extension PushPullStops {
+    /// Processing colors are independent of the stock's control accent.
+    var processingTint: Color {
+        guard self != .none else { return .secondary }
+        return isPull ? Color(red: 0.78, green: 0.60, blue: 1.0)
+            : Color(red: 1.0, green: 0.74, blue: 0.30)
+    }
+}
+
 /// The push/pull control, shared by the stock sheet and the Develop panel.
 ///
 /// Closed, the pill reads the effective stops as a single word — PUSH, PULL or
@@ -57,7 +66,6 @@ struct PushPullControl: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: enlarged ? 48 : 30)
                     .background(Capsule().fill(tint.opacity(0.16)))
-                    .overlay { Capsule().stroke(tint.opacity(0.6), lineWidth: 1) }
                     .contentShape(Capsule())
             }
             .frame(maxWidth: .infinity)
@@ -67,12 +75,7 @@ struct PushPullControl: View {
         .accessibilityValue(accessibilityValue)
     }
 
-    private var tint: Color {
-        let stops = resolved.stops.stops
-        if stops > 0 { return .orange }
-        if stops < 0 { return .blue }
-        return .secondary
-    }
+    private var tint: Color { resolved.stops.processingTint }
 
     private var accessibilityValue: String {
         let effect = resolved.isNeutral

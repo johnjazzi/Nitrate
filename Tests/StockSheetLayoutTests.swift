@@ -3,11 +3,11 @@ import CoreText
 import Foundation
 import Testing
 
-/// The stock sheet's contract: three stacked rows that fill the sheet — the
-/// example preview on three quarters of the height, then the stock carousel and
-/// the gauge + push/pull row sharing the last quarter. The rows are
-/// arithmetic shares of the height the sheet has, not intrinsic sizes, so the
-/// controls are never pushed below the fold or into a scroll.
+/// The stock sheet's arithmetic: the rows that fill a sheet and the split of its
+/// bottom row, still exposed as pure geometry (`StockSheetLayout`,
+/// `StockCarouselMetrics`) even though the live sheet now seats one
+/// `CompactStockPicker` at both detents. The view contracts themselves live in
+/// the tests below, read from the picker the sheet actually draws.
 struct StockSheetLayoutTests {
     // Heights are the content area of the stock sheet on a phone (its 16pt
     // padding and the fixed Render row already taken out): a short sheet through
@@ -179,48 +179,98 @@ struct StockSheetLayoutTests {
         #expect(StockCarouselMetrics.cardHeight(forAvailableHeight: 400) == StockCarouselMetrics.maximumCardHeight)
     }
 
-    // MARK: - The view actually stacks them
+    // MARK: - The view: one picker at both heights
 
-    @Test func theSheetStacksPreviewThenStockThenControls() throws {
+    /// The live sheet is not three arithmetic rows any more: both entries seat
+    /// the same `CompactStockPicker`, and the detent only decides whether that
+    /// picker reveals the sample preview above its one control stack.
+    @Test func theSheetPresentsOnePickerAtBothHeights() throws {
         let body = try sheetBody()
-        #expect(!body.contains("ScrollView(.vertical)"),
-                "A vertical ScrollView is what hid the push/pull picker below the fold.")
-        let preview = try #require(body.range(of: "frame(height: rows.preview)"))
-        let stocks = try #require(body.range(of: "stockCarousel.frame(height: rows.stocks)"))
-        let controls = try #require(body.range(of: "controlRow.frame(height: rows.controls)"))
-        #expect(preview.lowerBound < stocks.lowerBound && stocks.lowerBound < controls.lowerBound,
-                "The rows must be preview, then the stock carousel, then the gauge and push/pull.")
-        #expect(body.contains("StockSheetLayout.rows(forAvailableHeight: proxy.size.height)"),
-                "The heights must come from the sheet's real height, not from intrinsic sizes.")
+        #expect(body.components(separatedBy: "CompactStockPicker(stocks: stocks").count == 2,
+                "The picker is seated once, not as a compact layout and a second full one.")
+        #expect(body.contains("expanded: isExpanded"),
+                "The large detent reveals the preview inside the same picker.")
+        #expect(body.contains("if isExpanded { sheetFooter }"),
+                "Only the expanded state has room for the note under the controls.")
+        #expect(!body.contains("classicContents"), "The removed full-only stack must not come back.")
+        #expect(!body.contains("stockCarousel"), "The removed carousel row must not come back.")
+        #expect(!body.contains("controlRow"), "The removed sheet-level control row must not come back.")
+        #expect(body.contains(".presentationDetents([.height(360), .large], selection: detentSelection)"),
+                "Both heights stay reachable from either entry, and the entry picks the first one.")
+        #expect(!body.contains("presentationDetents(entry =="),
+                "A single-detent sheet is what made one entry the only reachable height.")
     }
 
-    @Test func theStockIsACarouselAgainRatherThanADropdown() throws {
+    /// The first presentation is the entry's own height; a drag afterwards is
+    /// the only thing that writes the override, and it writes nothing else.
+    @Test func theEntrySetsTheFirstDetentAndOnlyADragOverridesIt() throws {
         let body = try sheetBody()
-        #expect(!body.contains("stockCell"), "The stock dropdown cell must be gone.")
-        #expect(!body.contains("chevron.down"), "A dropdown chevron means the old selector is back.")
-        #expect(!body.contains("accessibilityIdentifier(\"stock.selection\")"),
+        #expect(body.contains("private var resolvedEntry: CameraStockEntry { presentationOverride ?? entry }"),
+                "Until a drag, the resolved entry is exactly what the bar asked for.")
+        #expect(body.contains("private var isExpanded: Bool { resolvedEntry == .full }"))
+        #expect(body.contains("get: { resolvedEntry == .full ? .large : .height(360) }"),
+                "Both detents map back onto the two entries.")
+        let setter = try detentSetterBody()
+        #expect(setter.contains("presentationOverride = target"))
+        #expect(setter.contains("guard target != resolvedEntry else { return }"),
+                "Settling onto the current detent must not write state.")
+        #expect(body.components(separatedBy: "presentationOverride = ").count == 2,
+                "Only the detent setter writes the override — never onAppear, never a preference.")
+    }
+
+    /// Appearing keeps the remembered stock state and never resizes the sheet;
+    /// dismissing commits the gauge and push/pull back to the stock.
+    @Test func appearingLeavesTheHeightAloneAndTheSelectionSurvives() throws {
+        let body = try sheetBody()
+        let appear = try section(from: ".onAppear {", to: ".onDisappear {", in: body)
+        #expect(!appear.contains("presentationOverride"),
+                "The sheet must not settle onto a height after appearing.")
+        #expect(!appear.contains("presentationDetents"))
+        #expect(appear.contains("stocks = library.videoStocks()"),
+                "The picker's chips are fed from the catalogue on first appearance.")
+        #expect(appear.contains("library.lastGauge(for:"), "The stock's remembered gauge is restored.")
+        #expect(appear.contains("restorePushPull(for: localSelection)"),
+                "The remembered push/pull is restored with the same selection.")
+        #expect(appear.contains("currentISO = localSelection?.defaultISO"))
+        let disappear = try section(from: ".onDisappear {", to: ".onChange(of: localSelection)", in: body)
+        #expect(disappear.contains("library.setGauge(gauge, for: stock.stockId)"),
+                "Collapsing or dismissing keeps the gauge the operator dialled in.")
+        #expect(disappear.contains("library.setPushPull(pushPullPreference, for: stock.stockId)"),
+                "Collapsing or dismissing keeps the push/pull rung and Auto.")
+    }
+
+    @Test func theCatalogueIsAChipStripInsideThePicker() throws {
+        let picker = try pickerSource()
+        #expect(!picker.contains("chevron.down"), "A dropdown chevron means the old selector is back.")
+        #expect(!picker.contains("accessibilityIdentifier(\"stock.selection\")"),
                 "The dropdown's identifier goes with the dropdown.")
-        #expect(body.contains("StockCarousel(stocks: stocks, selectedStockId: selectedStockIdBinding)"),
-                "The old stock carousel is what presents the catalogue.")
-        #expect(body.contains("accessibilityIdentifier(\"stock.carousel\")"),
-                "UI tests need a stable identifier for the carousel.")
-        #expect(body.contains("accessibilityIdentifier(\"stock.gauge\")"),
-                "The gauge identifier stays as it was.")
+        #expect(picker.contains("accessibilityIdentifier(\"stock.compactPicker\")"),
+                "UI tests need one stable identifier for both heights of the picker.")
+        #expect(picker.contains("ForEach(stocks, id: \\.stockId)"),
+                "Every stock is a chip in the strip, at both heights.")
+        #expect(picker.contains("accessibilityIdentifier(\"stock.choice.\\(stock.stockId)\")"),
+                "Each chip stays individually addressable.")
+        #expect(picker.contains("selectedStockId = stock.stockId"),
+                "A chip tap writes the one selection and nothing else.")
+        #expect(picker.contains("if expanded { expandedContent } else { compactContent }"),
+                "One component, two height states — not two controls trees.")
     }
 
-    @Test func theGaugeAndThePillsShareTheBottomRow() throws {
-        let row = try controlRowBody()
-        #expect(row.contains("gaugeCell.frame(width: widths.gauge)"),
-                "The gauge is the left cell of the bottom row.")
-        #expect(row.contains("pushPullPill.frame(width: widths.pushPull)"),
-                "The pill keeps its fixed fifth beside the gauge.")
-        #expect(!row.contains("flashPill"),
-                "The lamp lives in the top bar now, not in the sheet's bottom row.")
-        #expect(row.contains("includesFlash: false"),
-                "Two cells, so the width split reserves no gap for a lamp key that is not here.")
-        #expect(row.contains("StockSheetLayout.controlWidths(forAvailableWidth:"),
-                "The bottom row splits the width arithmetically.")
-        #expect(!row.contains("stockCell"), "Stock is in its own row now, not in the bottom one.")
+    @Test func theGaugeAndThePillShareTheBottomRow() throws {
+        let picker = try pickerSource()
+        #expect(picker.contains("GaugeControl(gauge: $gauge, enlarged: true)"),
+                "The gauge is the shared enlarged control, not a sheet-local copy.")
+        #expect(picker.contains("PushPullControl(resolved: resolvedPushPull,"),
+                "The pill is the shared component, fed the exposure the render will apply.")
+        #expect(picker.contains(".frame(width: CompactStockPickerLayout.pushPullWidth)"),
+                "The pill keeps its fixed slot beside the gauge.")
+        #expect(picker.contains("maxWidth: CompactStockPickerLayout.preferredGaugeWidth"),
+                "The gauge flexes up to its preferred share and no further.")
+        #expect(picker.contains("spacing: CompactStockPickerLayout.controlSpacing"))
+        #expect(!picker.contains("flashPill"),
+                "The lamp lives in the top bar now, not in the picker's bottom row.")
+        #expect(!picker.contains("includesFlash"),
+                "The picker's row is two cells, so it reserves no gap for a lamp key.")
     }
 
     @Test func theLampKeyLivesInTheTopBarAndTicksOnEveryPress() throws {
@@ -254,32 +304,63 @@ struct StockSheetLayoutTests {
     }
 
     @Test func pushPullKeepsItsLadderAndItsAutoEntry() throws {
-        let body = try sheetBody()
-        #expect(body.contains("accessibilityIdentifier(\"stock.pushPull\")"),
+        let pill = try pushPullSource()
+        #expect(pill.contains("accessibilityIdentifier(\"stock.pushPull\")"),
                 "UI tests need a stable identifier for the push/pull control.")
-        #expect(!body.contains("Toggle(isOn: $pushPullAutomatic)"),
+        #expect(!pill.contains("Toggle(isOn:"),
                 "The auto/manual choice lives in the menu, not in a second control.")
-        #expect(body.contains("Auto from the meter"),
-                "Auto must remain reachable from the menu.")
-        #expect(body.contains("ForEach(PushPullStops.allCases)"),
+        #expect(pill.contains("Auto from the meter"),
+                "Auto must remain reachable from the menu, and stay distinct from a manual 0.")
+        #expect(pill.contains("ForEach(PushPullStops.allCases)"),
                 "The -3..+2 ladder stays: every rung is still offered.")
-        #expect(!body.contains("Text(\"Push / Pull\")"),
+        #expect(!pill.contains("Text(\"Push / Pull\")"),
                 "The removed Push / Pull headline must not come back.")
-        #expect(!body.contains("pushPullBadge"),
+        #expect(!pill.contains("pushPullBadge"),
                 "The removed badge must not come back.")
+        // The picker hands the pill the exposure the render will apply, so Auto
+        // tracks the meter instead of reading a second, stale copy.
+        let picker = try pickerSource()
+        #expect(picker.contains("PushPullControl(resolved: resolvedPushPull,"))
+        let surface = try pickerSourceAndSheet()
+        #expect(surface.contains("pushPullPreference.resolved(meteredOffsetEV: meteredOffsetEV)"),
+                "The resolved exposure is the one the render applies, read against the live meter.")
     }
 
     @Test func theClosedPillIsOneWordInItsFixedSlot() throws {
-        let body = try sheetBody()
+        let pill = try pushPullSource()
         // The shared component reads the exposure its caller resolved, so auto
         // still tracks the meter.
-        #expect(body.contains("resolved.stops.effectWord"),
+        #expect(pill.contains("resolved.stops.effectWord"),
                 "The pill must read the effective stops, so auto tracks the meter.")
-        #expect(body.contains("pushPullPill.frame(width: widths.pushPull)"),
-                "The pill keeps its fixed fifth of the row instead of sizing to the word.")
+        #expect(pill.contains(".accessibilityIdentifier(\"stock.pushPull\")"),
+                "The pill keeps its identifier in the shared component.")
+        let picker = try pickerSource()
+        #expect(picker.contains("PushPullControl(resolved: resolvedPushPull,"),
+                "The picker passes the live resolved exposure, never a stores-only value.")
+        #expect(picker.contains(".frame(width: CompactStockPickerLayout.pushPullWidth)"),
+                "The pill keeps its fixed slot instead of sizing to the word.")
     }
 
     // MARK: - Source helpers
+
+    /// The picker is the one surface both heights draw, so its controls and
+    /// identifiers are read from its own file.
+    private func pickerSource() throws -> String {
+        try String(contentsOf: TestRepository.url(for: "App/Modules/FilmStockLibrary/CompactStockPicker.swift"),
+                   encoding: .utf8)
+    }
+
+    /// The shared pill owns the ladder, the Auto rung and its identifier.
+    private func pushPullSource() throws -> String {
+        try String(contentsOf: TestRepository.url(for: "App/Modules/FilmStockLibrary/PushPullControl.swift"),
+                   encoding: .utf8)
+    }
+
+    /// The sheet plus the picker: the sheet resolves the exposure, the picker
+    /// draws it.
+    private func pickerSourceAndSheet() throws -> String {
+        try sheetBody() + "\n" + (try pickerSource())
+    }
 
     /// The gauge and push/pull surfaces are shared components now, so their
     /// identifiers, menu and labels live in their own files. The contract is
@@ -300,10 +381,14 @@ struct StockSheetLayoutTests {
         return String(source[sheet.lowerBound...])
     }
 
-    private func controlRowBody() throws -> String {
+    private func detentSetterBody() throws -> String {
         let body = try sheetBody()
-        let start = try #require(body.range(of: "private var controlRow"))
-        let end = try #require(body.range(of: "private var sheetFooter"))
-        return String(body[start.lowerBound..<end.lowerBound])
+        return try section(from: "private var detentSelection", to: "// MARK: - Selection", in: body)
+    }
+
+    private func section(from start: String, to end: String, in body: String) throws -> String {
+        let lower = try #require(body.range(of: start))
+        let upper = try #require(body.range(of: end, range: lower.upperBound..<body.endIndex))
+        return String(body[lower.upperBound..<upper.lowerBound])
     }
 }

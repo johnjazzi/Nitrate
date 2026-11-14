@@ -22,6 +22,8 @@ struct PurchaseView: View {
     /// Supplied by the active camera owner at the current session rate.
     var availableCaptureFormats: [CaptureFormat] = []
     var stockLibrary: FilmStockLibrary? = nil
+    /// Reads the live camera owner again when the picker commits a choice.
+    var canChangeCameraUIStyle: () -> Bool = { true }
     @State private var pricingExpanded = false
     @State private var legalExpanded = false
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
@@ -55,6 +57,21 @@ struct PurchaseView: View {
     /// failures, storage warnings and live status are never affected.
     @AppStorage(CameraHintPreferences.showsAdvisoryTipsKey)
     private var showsAdvisoryTips = CameraHintPreferences.defaultShowsAdvisoryTips
+    /// The camera's control accent. Stored as its raw string so the camera screen
+    /// resolves the same value this picker writes; an absent or unrecognised
+    /// value follows the selected stock's light type.
+    @AppStorage(CameraRulerContrastPreference.preferenceKey)
+    private var highContrastRulers = CameraRulerContrastPreference.defaultValue
+    @AppStorage(CameraExposureDialSize.preferenceKey)
+    private var exposureDialSizeRaw = CameraExposureDialSize.defaultValue.rawValue
+    @AppStorage(CameraUIStyle.preferenceKey)
+    private var cameraUIStyleRaw = CameraUIStyle.defaultValue.rawValue
+    @AppStorage(CameraControlColorPreference.preferenceKey)
+    private var cameraControlColor = CameraControlColorPreference.defaultValue.rawValue
+    /// Where the shooting screen places the lens controls. Presentation only: the
+    /// committed lens, zoom and camera stay whatever they already are.
+    @AppStorage(CameraLensControlPosition.preferenceKey)
+    private var lensControlPosition = CameraLensControlPosition.defaultValue.rawValue
 #if DEBUG
     @AppStorage(DebugControlPreferences.showsDebugButtonKey) private var showsDebugButton = true
     @AppStorage(DebugControlPreferences.showsFaultButtonKey) private var showsFaultButton = true
@@ -75,6 +92,9 @@ struct PurchaseView: View {
 
                         // Preview mode
                         previewModeSection
+                        // Camera appearance: the control accent and where the
+                        // lens controls sit. Presentation only.
+                        appearanceSection
                         filmStocksSection
                         exportSection
 
@@ -534,6 +554,112 @@ struct PurchaseView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
+    /// The stored control colour and lens placement, resolved for the pickers.
+    /// Both resolve an absent or unrecognised value the same way the camera
+    /// screen does, so the row never shows a choice the camera would not use.
+    private var cameraUIStyleBinding: Binding<CameraUIStyle> {
+        Binding(get: { CameraUIStyle.resolved(cameraUIStyleRaw) }, set: { style in
+            guard canChangeCameraUIStyle() else { return }
+            cameraUIStyleRaw = style.rawValue
+        })
+    }
+
+    private var controlColorBinding: Binding<CameraControlColorPreference> {
+        Binding(get: { CameraControlColorPreference.resolved(cameraControlColor) },
+                set: { cameraControlColor = $0.rawValue })
+    }
+
+    private var lensControlPositionBinding: Binding<CameraLensControlPosition> {
+        Binding(get: { CameraLensControlPosition.resolved(lensControlPosition) },
+                set: { lensControlPosition = $0.rawValue })
+    }
+
+    /// Appearance choices for the shooting screen. Both are presentation only:
+    /// neither resets the committed lens, zoom, stock or capture behaviour, and
+    /// neither recolours stock identity colours, recording red or warnings.
+    private var appearanceSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Appearance")
+                .font(NitrateTypography.font(.headline))
+
+            Text("Style, accent and layout for the camera controls.")
+                .font(NitrateTypography.font(.caption))
+                .foregroundStyle(.secondary)
+
+            SettingsControlRow(icon: "rectangle.3.group",
+                               title: "Camera UI",
+                               accessibilityTitle: "Camera UI",
+                               help: "Both use the compact camera layout. Classic adds beveled wells; Minimal keeps the wells flat. "
+                                   + "The camera and capture settings stay unchanged. Stop capture before switching.") {
+                SettingsSelectionRow(title: "Camera UI", valueText: cameraUIStyleBinding.wrappedValue.title) {
+                    Picker("Camera UI", selection: cameraUIStyleBinding) {
+                        ForEach(CameraUIStyle.allCases) { style in Text(style.title).tag(style) }
+                    }
+                }
+                .disabled(!canChangeCameraUIStyle())
+                .accessibilityIdentifier("settings.cameraUIStyle")
+            }
+
+            SettingsControlRow(icon: "slider.vertical.3",
+                               title: "Exposure dial size",
+                               accessibilityTitle: "Exposure dial size",
+                               help: "Small is wide and squat with closer bias ticks. Large uses the taller ruler. "
+                                   + "Independent of Classic or Minimal; does not change the exposure range.") {
+                SettingsSelectionRow(title: "Exposure dial size",
+                                     valueText: CameraExposureDialSize.resolved(exposureDialSizeRaw).title) {
+                    Picker("Exposure dial size", selection: $exposureDialSizeRaw) {
+                        ForEach(CameraExposureDialSize.allCases) { size in Text(size.title).tag(size.rawValue) }
+                    }
+                }
+                .accessibilityIdentifier("settings.exposureDialSize")
+            }
+
+            SettingsControlRow(icon: "paintpalette",
+                               title: "Control color",
+                               accessibilityTitle: "Control color",
+                               help: "Sets the accent on selected camera controls. Follow stock uses "
+                                   + "halation orange for daylight stocks and green for tungsten stocks. "
+                                   + "Orange and green stay fixed whatever stock is loaded.") {
+                SettingsSelectionRow(title: "Control color",
+                                     valueText: controlColorBinding.wrappedValue.title) {
+                    Picker("Control color", selection: controlColorBinding) {
+                        ForEach(CameraControlColorPreference.allCases) { preference in
+                            Text(preference.title).tag(preference)
+                        }
+                    }
+                }
+            }
+
+            SettingsToggleRow(icon: "circle.lefthalf.filled",
+                              title: "High-contrast rulers",
+                              accessibilityTitle: "High-contrast rulers",
+                              help: "Adds a darker translucent backing behind Minimal rulers for bright scenes. "
+                                  + "Classic is unchanged. This does not alter exposure or footage.",
+                              isOn: $highContrastRulers)
+                .disabled(CameraUIStyle.resolved(cameraUIStyleRaw) != .minimal)
+                .accessibilityIdentifier("settings.highContrastRulers")
+
+            SettingsControlRow(icon: "circle.grid.2x1",
+                               title: "Lens control position",
+                               accessibilityTitle: "Lens control position",
+                               help: "Places the lens selector at the top right, or in a row above the "
+                                   + "shutter for one-handed switching. The selected lens is unchanged.") {
+                SettingsSelectionRow(title: "Lens control position",
+                                     valueText: lensControlPositionBinding.wrappedValue.title) {
+                    Picker("Lens control position", selection: lensControlPositionBinding) {
+                        ForEach(CameraLensControlPosition.allCases) { position in
+                            Text(position.title).tag(position)
+                        }
+                    }
+                }
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
     /// Display name for the preview monitor mode. `CameraPreviewMode` carries no
     /// title (the display text lives in the picker), so the chip resolves it here
     /// rather than editing the camera-capture enum.
@@ -713,20 +839,30 @@ struct PurchaseView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
+    /// The About card is now a way in to a real page; the facts and the version
+    /// row live there, so this card carries one row with the same version line.
     private var appInfoSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("About")
                 .font(NitrateTypography.font(.headline))
 
-            VStack(alignment: .leading, spacing: 4) {
-                Label("Film emulation for iPhone video", systemImage: "movieclapper")
-                Label("Apple Log + Metal GPU pipeline", systemImage: "cpu")
-                Label("Kodak 250D / 5207 & 500T / 5219", systemImage: "film")
-                Label(AboutPresentation.versionLine(), systemImage: "number")
-                    .accessibilityIdentifier(AboutPresentation.versionRowID)
+            NavigationLink {
+                AboutView()
+            } label: {
+                HStack(spacing: 10) {
+                    Label("About Nitrate", systemImage: "info.circle")
+                    Spacer(minLength: 8)
+                    Text(AboutPresentation.versionLine())
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .font(NitrateTypography.font(.caption))
+                .contentShape(Rectangle())
             }
-            .font(NitrateTypography.font(.caption))
-            .foregroundStyle(.secondary)
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(AboutPresentation.versionRowID)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)

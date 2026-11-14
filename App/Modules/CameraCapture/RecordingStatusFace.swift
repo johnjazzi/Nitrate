@@ -88,40 +88,70 @@ struct RecordingStatusFace: View {
             + rateSpokenSuffix
     }
 
+    /// Presentation only: the shared presentation, text, tint and spoken value
+    /// above drive both styles.
+    @Environment(\.cameraUIStyle) private var uiStyle
+
+    private var isClassic: Bool { uiStyle == .classic }
+
+    /// Minimal is unboxed status: a small mark and concise type sitting directly
+    /// over the preview, with only a soft shadow for contrast. Classic restores
+    /// the old measured badge — the same content on the raised dark plate with
+    /// its hairline rim. The fixed 112x40 footprint (and its quarter-turned
+    /// swap) is identical in both, because the toolbar and the physical edge
+    /// overlay both measure this face.
     var body: some View {
-        VStack(spacing: 2) {
-            // The armed idle badge carries no recording mark and no timer: both
-            // stay exclusive to a confirmed take (mood contract).
-            if !isArmedIdleBadge {
-                HStack(spacing: 6) {
-                    statusMark.frame(width: 10, height: 10)
-                    Text(text)
-                        .font(NitrateTypography.font(size: 12).monospacedDigit())
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                }
+        content
+            .foregroundStyle(displayTint)
+            .modifier(RecordingStatusFaceChrome(isClassic: isClassic))
+            .rotationEffect(.degrees(rotationDegrees))
+            .frame(width: abs(rotationDegrees) == 90 ? 40 : 112,
+                   height: abs(rotationDegrees) == 90 ? 112 : 40)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Recording status")
+            .accessibilityValue(spokenStatus)
+            .onTapGesture { onManageDaylight?() }
+            .accessibilityAddTraits(onManageDaylight == nil ? [] : .isButton)
+            .accessibilityHint(onManageDaylight == nil ? "" : "Manage temporary 60fps mode or return to 24fps")
+            .accessibilityAction { onManageDaylight?() }
+            .allowsHitTesting(onManageDaylight != nil)
+    }
+
+    @ViewBuilder private var content: some View {
+        // The armed idle badge carries no recording mark and no timer: both stay
+        // exclusive to a confirmed take (mood contract). Minimal states the state
+        // and rate in words, because it has no plate to make an empty badge
+        // noticeable; Classic keeps the original empty plate, whose visible 112x40
+        // surface is already the off-ramp.
+        if isArmedIdleBadge {
+            if isClassic {
+                Color.clear
+            } else {
+                Text(modeStatusLabel)
+                    .font(NitrateTypography.font(size: 11, relativeTo: .caption))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
+        } else {
             // No mode/rate text here. The badge sits high and gets clipped by the
             // sensor housing while recording, and only errors and warnings are
             // allowed to put words on screen during a take.
+            HStack(spacing: 6) {
+                statusMark.frame(width: markSize, height: markSize)
+                Text(text)
+                    .font(NitrateTypography.font(size: 12).monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
         }
-        .foregroundStyle(displayTint)
-        .frame(width: 112, height: 40)
-        .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 10))
-        .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.15), lineWidth: 1) }
-        .rotationEffect(.degrees(rotationDegrees))
-        .frame(width: abs(rotationDegrees) == 90 ? 40 : 112,
-               height: abs(rotationDegrees) == 90 ? 112 : 40)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Recording status")
-        .accessibilityValue(spokenStatus)
-        .contentShape(RoundedRectangle(cornerRadius: 10))
-        .onTapGesture { onManageDaylight?() }
-        .accessibilityAddTraits(onManageDaylight == nil ? [] : .isButton)
-        .accessibilityHint(onManageDaylight == nil ? "" : "Manage temporary 60fps mode or return to 24fps")
-        .accessibilityAction { onManageDaylight?() }
-        .allowsHitTesting(onManageDaylight != nil)
     }
+
+    /// Small enough to read as a status mark rather than a bead of hardware.
+    static let markSize: CGFloat = 7
+
+    /// Classic restores the old mark's fuller 10pt measurement; Minimal keeps
+    /// the tiny unboxed dot.
+    private var markSize: CGFloat { isClassic ? 10 : Self.markSize }
 
     /// Daylight 60 keeps its established wording; any other armed rate states
     /// its own number so the spoken value matches what is actually running.
@@ -137,6 +167,30 @@ struct RecordingStatusFace: View {
         case .starting: Circle().strokeBorder(lineWidth: 2)
         case .recording: Circle().fill()
         case .stopping: RoundedRectangle(cornerRadius: 1).fill()
+        }
+    }
+}
+
+/// The one measured 112x40 face, dressed for its style. Classic puts the shared
+/// content back on the old dark plate with its rims; Minimal leaves it on the
+/// preview with a soft shadow. Neither style owns any status state.
+private struct RecordingStatusFaceChrome: ViewModifier {
+    let isClassic: Bool
+
+    func body(content: Content) -> some View {
+        if isClassic {
+            content
+                .frame(width: 112, height: 40)
+                .background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 10))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.15), lineWidth: 1)
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 10))
+        } else {
+            content
+                .shadow(color: .black.opacity(0.6), radius: 2, y: 1)
+                .frame(width: 112, height: 40)
+                .contentShape(Rectangle())
         }
     }
 }

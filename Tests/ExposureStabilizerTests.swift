@@ -208,4 +208,95 @@ struct ExposureStabilizerTests {
         #expect(ExposureStabilizer.correctedISO(heldISO: 0, meteredOffsetEV: 0,
                                                 minimum: 25, maximum: 6400) == nil)
     }
+
+    // MARK: - Shutter-matched ISO
+
+    @Test func shutterMatchedIsoConvertsTheWholeExposureToTheFilmShutter() throws {
+        // The reported bug: a bright scene meters ISO 800 at 1/480, and the take
+        // starts at 1/48. Copying the ISO alone collects ten times the light;
+        // the normalized ISO holds the same exposure.
+        let iso = try #require(ExposureStabilizer.shutterMatchedISO(
+            meteredISO: 800, meteredDuration: 1.0 / 480.0, targetDuration: 1.0 / 48.0,
+            meteredOffsetEV: 0, targetEV: 0, minimum: 25, maximum: 6400))
+        #expect(abs(iso - 80) < 0.001)
+        #expect(abs(iso - 800 * (1.0 / 480.0) / (1.0 / 48.0)) < 0.001)
+
+        // The other direction: a dim scene meters ISO 100 at 1/24 and the take
+        // holds 1/48, so the gain doubles.
+        let dim = try #require(ExposureStabilizer.shutterMatchedISO(
+            meteredISO: 100, meteredDuration: 1.0 / 24.0, targetDuration: 1.0 / 48.0,
+            meteredOffsetEV: 0, targetEV: 0, minimum: 25, maximum: 6400))
+        #expect(abs(dim - 200) < 0.001)
+
+        // An unchanged shutter is a no-op.
+        #expect(ExposureStabilizer.shutterMatchedISO(
+            meteredISO: 400, meteredDuration: 1.0 / 48.0, targetDuration: 1.0 / 48.0,
+            meteredOffsetEV: -1, targetEV: -1, minimum: 25, maximum: 6400) == 400)
+    }
+
+    @Test func shutterMatchedIsoAppliesTheNeutralOffsetOnce() throws {
+        // Installed bias is part of the neutral offset, so a converged meter at
+        // an installed -1 EV target asks for no extra compensation: the scene is
+        // already where the operator put it.
+        #expect(ExposureStabilizer.shutterMatchedISO(
+            meteredISO: 400, meteredDuration: 1.0 / 48.0, targetDuration: 1.0 / 48.0,
+            meteredOffsetEV: -1, targetEV: -1, minimum: 25, maximum: 6400) == 400)
+        // The operator asks for a stop more: the ISO doubles, once.
+        #expect(ExposureStabilizer.shutterMatchedISO(
+            meteredISO: 400, meteredDuration: 1.0 / 48.0, targetDuration: 1.0 / 48.0,
+            meteredOffsetEV: -1, targetEV: 0, minimum: 25, maximum: 6400) == 800)
+        // A residual metering error is corrected from the scene, not compounded:
+        // the truncated scene cut exposure, so the offset corrects back toward
+        // the target and the duration conversion still applies.
+        let iso = try #require(ExposureStabilizer.shutterMatchedISO(
+            meteredISO: 800, meteredDuration: 1.0 / 480.0, targetDuration: 1.0 / 48.0,
+            meteredOffsetEV: -2, targetEV: -1, minimum: 25, maximum: 6400))
+        #expect(abs(iso - 160) < 0.001)
+    }
+
+    @Test func shutterMatchedIsoClampsAfterTheAdjustment() {
+        // Normalization first, clamp second: a reading that would overflow at the
+        // metered duration still lands at the format's ceiling for the take.
+        #expect(ExposureStabilizer.shutterMatchedISO(
+            meteredISO: 6400, meteredDuration: 1.0 / 24.0, targetDuration: 1.0 / 48.0,
+            meteredOffsetEV: 0, targetEV: 3, minimum: 25, maximum: 6400) == 6400)
+        #expect(ExposureStabilizer.shutterMatchedISO(
+            meteredISO: 25, meteredDuration: 1.0 / 480.0, targetDuration: 1.0 / 48.0,
+            meteredOffsetEV: 0, targetEV: -3, minimum: 25, maximum: 6400) == 25)
+        // A clamp is still a real brightness change; it is never reported as the
+        // unclamped value.
+        #expect(ExposureStabilizer.shutterMatchedISO(
+            meteredISO: 100, meteredDuration: 1.0 / 24.0, targetDuration: 1.0 / 48.0,
+            meteredOffsetEV: 0, targetEV: 0, minimum: 25, maximum: 150) == 150)
+    }
+
+    @Test func shutterMatchedIsoRejectsUnusableInputs() {
+        // Durations.
+        for duration: Double in [.nan, .infinity, 0, -1.0 / 48.0] {
+            #expect(ExposureStabilizer.shutterMatchedISO(
+                meteredISO: 400, meteredDuration: duration, targetDuration: 1.0 / 48.0,
+                meteredOffsetEV: 0, targetEV: 0, minimum: 25, maximum: 6400) == nil)
+            #expect(ExposureStabilizer.shutterMatchedISO(
+                meteredISO: 400, meteredDuration: 1.0 / 48.0, targetDuration: duration,
+                meteredOffsetEV: 0, targetEV: 0, minimum: 25, maximum: 6400) == nil)
+        }
+        // ISO, offsets, and bounds.
+        for iso: Float in [.nan, .infinity, 0, -400] {
+            #expect(ExposureStabilizer.shutterMatchedISO(
+                meteredISO: iso, meteredDuration: 1.0 / 48.0, targetDuration: 1.0 / 48.0,
+                meteredOffsetEV: 0, targetEV: 0, minimum: 25, maximum: 6400) == nil)
+        }
+        #expect(ExposureStabilizer.shutterMatchedISO(
+            meteredISO: 400, meteredDuration: 1.0 / 48.0, targetDuration: 1.0 / 48.0,
+            meteredOffsetEV: .nan, targetEV: 0, minimum: 25, maximum: 6400) == nil)
+        #expect(ExposureStabilizer.shutterMatchedISO(
+            meteredISO: 400, meteredDuration: 1.0 / 48.0, targetDuration: 1.0 / 48.0,
+            meteredOffsetEV: 0, targetEV: .infinity, minimum: 25, maximum: 6400) == nil)
+        #expect(ExposureStabilizer.shutterMatchedISO(
+            meteredISO: 400, meteredDuration: 1.0 / 48.0, targetDuration: 1.0 / 48.0,
+            meteredOffsetEV: 0, targetEV: 0, minimum: 6400, maximum: 25) == nil)
+        #expect(ExposureStabilizer.shutterMatchedISO(
+            meteredISO: 400, meteredDuration: 1.0 / 48.0, targetDuration: 1.0 / 48.0,
+            meteredOffsetEV: 0, targetEV: 0, minimum: 0, maximum: 6400) == nil)
+    }
 }

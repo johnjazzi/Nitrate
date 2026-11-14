@@ -109,15 +109,21 @@ import Testing
         // Each of the short exclusive choices uses the compact value button, and
         // each keeps its semantic native picker at the call site (so the choices
         // stay reachable and the selected one is checked).
-        #expect(source.components(separatedBy: "SettingsSelectionRow(title:").count - 1 == 7)
-        for title in ["Recording Indicator", "Record button", "Rendered File Size",
-                      "Capture Format", "Delivery Framing", "Camera Control",
-                      "Ramp Length"] {
+        let titles = ["Recording Indicator", "Record button", "Camera Control",
+                      "Camera UI", "Exposure dial size", "Control color",
+                      "Lens control position", "Capture Format", "Delivery Framing",
+                      "Rendered File Size", "Ramp Length"]
+        #expect(source.components(separatedBy: "SettingsSelectionRow(title:").count - 1 == titles.count)
+        for title in titles {
             #expect(source.contains("SettingsSelectionRow(title: \"\(title)\""),
                     "\(title) must use the compact value button")
             #expect(source.contains("Picker(\"\(title)\""),
                     "\(title) must keep its native picker for the menu semantics")
         }
+        // The dial-size row is a real choice, persisted under its own key.
+        #expect(source.contains("@AppStorage(CameraExposureDialSize.preferenceKey)"))
+        #expect(source.contains("ForEach(CameraExposureDialSize.allCases)"),
+                "the dial-size menu lists both sizes")
         // The two binary settings keep native switches, not a value button.
         #expect(source.components(separatedBy: "Toggle(title, isOn: $isOn)").count - 1 == 1)
         #expect(!source.contains(#"Toggle("Save Original Video to Photos""#))

@@ -948,6 +948,40 @@ enum ExposureStabilizer {
         return min(max(heldISO * powf(2, targetEV - meteredOffsetEV), minimum), maximum)
     }
 
+    /// The ISO that keeps a metered exposure's brightness when the shutter is
+    /// moved to the fixed film duration.
+    ///
+    /// Exposure is `ISO * t / N²`, so moving the duration from `meteredDuration`
+    /// to `targetDuration` changes the light by `meteredDuration /
+    /// targetDuration` and is answered in gain: `ISO * meteredDuration /
+    /// targetDuration`. The operator's compensation is then applied once from
+    /// the scene, `2^(targetEV - meteredOffsetEV)`.
+    ///
+    /// `meteredOffsetEV` is the NEUTRAL scene offset (raw device offset +
+    /// installed bias), never the raw device value: the meter's target already
+    /// contains the installed bias, and subtracting it is what keeps the result
+    /// the same whether the compensation is carried by the target bias or by the
+    /// ISO. Clamping happens AFTER the normalization so a saturated ISO reports
+    /// the exposure it really delivers instead of a value that would have fit at
+    /// the metered duration.
+    ///
+    /// Returns nil when an input is unusable, so the caller holds instead of
+    /// inventing an exposure.
+    static func shutterMatchedISO(meteredISO: Float, meteredDuration: Double, targetDuration: Double,
+                                  meteredOffsetEV: Float, targetEV: Float,
+                                  minimum: Float, maximum: Float) -> Float? {
+        guard meteredISO.isFinite, meteredISO > 0,
+              meteredDuration.isFinite, meteredDuration > 0,
+              targetDuration.isFinite, targetDuration > 0,
+              meteredOffsetEV.isFinite, targetEV.isFinite,
+              minimum.isFinite, maximum.isFinite,
+              minimum > 0, minimum <= maximum else { return nil }
+        let matched = Double(meteredISO) * (meteredDuration / targetDuration)
+            * pow(2.0, Double(targetEV - meteredOffsetEV))
+        guard matched.isFinite, matched > 0 else { return nil }
+        return min(max(Float(matched), minimum), maximum)
+    }
+
     /// Apply only the user's EV delta to the currently held scene exposure.
     /// This is not a fresh meter reading: using the original metered ISO would
     /// discard scene corrections, and applying the full EV would compound it.

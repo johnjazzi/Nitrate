@@ -2,14 +2,38 @@ import Foundation
 import Testing
 
 struct StockPreviewTests {
-    @Test func stockPickerShowsTheLivePlatePreviewAboveTheCarousel() throws {
-        let source = try String(contentsOf: TestRepository.url(for: "App/ContentView.swift"), encoding: .utf8)
-        let sheet = try #require(source.range(of: "private struct StockSheetView"))
-        let body = String(source[sheet.lowerBound...])
-        #expect(body.contains("StockSamplePreview(stock:"),
-                "The stock picker must show the plate preview, not only stock swatches.")
-        #expect(!body.contains("StockSamplePhoto("),
+    /// The preview belongs to the one picker both detents draw. Compact it is
+    /// absent; expanded it sits above the same control stack, at the live gauge
+    /// and the resolved push/pull.
+    @Test func thePickerShowsTheLivePlatePreviewAboveItsControls() throws {
+        let picker = try String(contentsOf: TestRepository.url(for: "App/Modules/FilmStockLibrary/CompactStockPicker.swift"),
+                                encoding: .utf8)
+        #expect(picker.contains("StockSamplePreview(stock:"),
+                "The expanded picker must show the plate preview, not only stock swatches.")
+        #expect(!picker.contains("StockSamplePhoto("),
                 "Graded stills were replaced by plates graded at display time.")
+        let preview = try #require(picker.range(of: "private var preview: some View"))
+        let stack = try #require(picker.range(of: "private var controlStack: some View"))
+        #expect(preview.lowerBound < stack.lowerBound,
+                "The preview is above the one control stack, never beside a second set of controls.")
+        // Expanded seats the preview then the same stack; compact draws the
+        // stack alone, so the preview cannot appear at the short detent.
+        let expanded = try #require(picker.range(of: "private var expandedContent"))
+        let body = String(picker[expanded.lowerBound...])
+        let plate = try #require(body.range(of: "preview.frame(height: split.height)"))
+        let controls = try #require(body.range(of: "controlStack"))
+        #expect(plate.lowerBound < controls.lowerBound)
+        let compactStart = try #require(picker.range(of: "private var compactContent")).lowerBound
+        let compactEnd = try #require(picker.range(of: "/// Expanded: the selected stock's sample")).lowerBound
+        let compact = String(picker[compactStart..<compactEnd])
+        #expect(!compact.contains("preview"),
+                "The compact height shows no sample preview at all.")
+        // The values are the render's: the selected stock's own gauge and the
+        // exposure the sheet resolved from the live meter.
+        #expect(picker.contains("gauge: gauge") && picker.contains("pushPullStops: resolvedPushPull.stops.stops"),
+                "The preview must read the live gauge and the resolved push/pull.")
+        #expect(!picker.contains("pushPullStops: manualStops"),
+                "The preview must not read the stored rung directly: Auto resolves against the meter.")
     }
 
     @Test func thePreviewAppliesTheStocksCubeRatherThanAShippedGrade() throws {

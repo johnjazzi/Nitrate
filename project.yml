@@ -22,7 +22,7 @@ settings:
     # release. The build number is deliberately NOT maintained here: Xcode Cloud
     # supplies its own increasing build number to anything distributed, and a
     # hand-incremented second counter only ever drifted from it.
-    MARKETING_VERSION: "0.8.7"
+    MARKETING_VERSION: "0.9.0"
     INFOPLIST_KEY_CFBundleDisplayName: Nitrate
     INFOPLIST_KEY_NSCameraUsageDescription: "Nitrate needs camera access to capture Apple Log video for film stock processing."
     INFOPLIST_KEY_NSMicrophoneUsageDescription: "Nitrate records audio to accompany your film clips."
@@ -137,8 +137,13 @@ targets:
       - path: Tests/RecordButtonAppearanceRenderTests.swift
       - path: Tests/CameraFrameControlAlignmentTests.swift
       - path: Tests/DaylightExposureRescueTests.swift
+      - path: Tests/DaylightRescueOptionsTests.swift
       - path: App/Modules/CameraCapture/ExposureRescueControl.swift
       - path: Tests/CameraDesignRenderTests.swift
+      - path: Tests/CameraUIStyleSurfaceTests.swift
+      - path: Tests/CameraUIStyleStatusTests.swift
+      - path: Tests/CameraUIStyleManualTests.swift
+      - path: Tests/CameraRulerContrastTests.swift
       - path: Tests/ManualControlsOverlayTests.swift
       - path: Tests/CameraZoomPolicyTests.swift
       - path: Tests/CameraFocalZoomPolicyTests.swift
@@ -179,6 +184,8 @@ targets:
       - path: App/Modules/CameraCapture/CameraTopPanelLayout.swift
       - path: App/Modules/CameraCapture/CameraDesignFaces.swift
       - path: App/Modules/CameraCapture/CameraShootingLayout.swift
+      - path: App/Modules/CameraCapture/CameraMinimalLayout.swift
+      - path: App/Modules/CameraCapture/CameraControlAppearance.swift
       - path: App/Modules/CameraCapture/CameraLensFace.swift
       - path: App/Modules/CameraCapture/CameraRaisedButtonStyle.swift
       - path: App/Design/NitrateTypography.swift
@@ -379,6 +386,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraModeSelection.swift
       - path: App/Modules/CameraCapture/CameraModeCarousel.swift
       - path: App/Modules/CameraCapture/CameraModeStripGeometry.swift
+      - path: App/Modules/CameraCapture/ExposureOverlay.swift
       - path: App/Modules/CameraCapture/ExposureRescueControl.swift
       - path: App/AppIdentity.swift
       - path: App/SplashEdgeDetails.swift
@@ -465,6 +473,8 @@ targets:
       - path: App/Modules/CameraCapture/CameraTopPanelLayout.swift
       - path: App/Modules/CameraCapture/CameraDesignFaces.swift
       - path: App/Modules/CameraCapture/CameraShootingLayout.swift
+      - path: App/Modules/CameraCapture/CameraMinimalLayout.swift
+      - path: App/Modules/CameraCapture/CameraControlAppearance.swift
       - path: App/Modules/CameraCapture/CameraLensFace.swift
       - path: App/Modules/CameraCapture/CameraRaisedButtonStyle.swift
       - path: App/Design/NitrateTypography.swift

@@ -67,3 +67,50 @@ struct CameraStatusPresentation {
         return Int(seconds.rounded(.down))
     }
 }
+
+
+/// Presentation-only event identities. No queue jobs, delivery or retry state
+/// is mutated when the shooting-screen notification is acknowledged.
+struct CameraQueueAttentionSnapshot: Equatable {
+    var isReady = false
+    var workingIDs: Set<UUID> = []
+    var deliveredIDs: Set<UUID> = []
+    var issues: Set<String> = []
+}
+
+struct CameraQueueAttentionState {
+    private var initialized = false
+    private(set) var hasUnseenIssue = false
+    private(set) var successAt: Date?
+
+    mutating func receive(previous: CameraQueueAttentionSnapshot, current: CameraQueueAttentionSnapshot,
+                          queueIsOpen: Bool) {
+        guard current.isReady else { return }
+        guard initialized else {
+            // Loaded failures/warnings are history, not new notifications. Keep
+            // them in the queue, but do not flash red merely for opening the app.
+            initialized = true
+            return
+        }
+        guard !queueIsOpen else { acknowledge(); return }
+        if !current.issues.subtracting(previous.issues).isEmpty {
+            hasUnseenIssue = true
+            successAt = nil
+        }
+        // Loaded history is not a newly successful render. Only work observed
+        // pending/processing can produce a green completion cue.
+        if initialized, !hasUnseenIssue,
+           !current.deliveredIDs.intersection(previous.workingIDs).isEmpty {
+            successAt = .now
+        }
+    }
+
+    mutating func acknowledge() {
+        hasUnseenIssue = false
+        successAt = nil
+    }
+
+    mutating func expireSuccess(startedAt: Date) {
+        if successAt == startedAt { successAt = nil }
+    }
+}
