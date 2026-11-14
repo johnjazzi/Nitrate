@@ -7,6 +7,17 @@
 
 This document specifies the compact contact-sheet history surface only. It does not authorize replacing the existing Develop workflow, queue persistence, rendering, Photos delivery, or metadata model.
 
+## Approved interaction decisions
+
+- Use one shared History component in compact and full native sheet states, as with the stock/gauge selector. Expansion shows more rows of the same contact sheet plus full queue details; it does not add a large selected-receipt preview above the grid.
+- Compact mode shows a small active-work strip. Expanded mode exposes existing processing, queued, awaiting-stock, retry, stock-assignment, and access/persistence controls.
+- Tap opens the 2×2 actions panel. Hold and the Preview action use the same local preview: the actual retained photo, or the first frame of the retained rendered video. Do not autoplay video.
+- Keep persisted receipt thumbnails as the grid posters. Reading the local video's first frame occurs only when its preview is opened; it is not a second thumbnail store or a replacement receipt pipeline. No Photos read-back.
+- Hidden receipts use the same action tile changing from Hide to Show. Restoring visibility changes no queue job or media state.
+- Apply the same History component to Minimal and Classic, respecting the existing shared appearance environment. Do not rename Develop, Dark room, or Lab in this PR.
+
+These explicit choices supersede the tentative gesture and full-video-playback alternatives below. Native media ownership and availability checks remain authoritative.
+
 ## 1. Goal
 
 Replace the current conventional History list/grid presentation with a compact, camera-native contact sheet that opens over the Minimal camera UI.
