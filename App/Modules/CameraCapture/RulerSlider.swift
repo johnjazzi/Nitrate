@@ -115,6 +115,7 @@ struct RulerSlider: View {
         }
         .frame(width: orientation == .horizontal ? length : width,
                height: orientation == .horizontal ? width : length)
+        .cameraRulerBackdrop()
         .contentShape(Rectangle())
         .gesture(dragGesture)
         .sensoryFeedback(.selection, trigger: feedbackTrigger)

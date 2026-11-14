@@ -10,14 +10,18 @@ struct CameraMinimalLayoutTests {
             let controls = CGRect(x: 16, y: 500, width: width - 32, height: 204)
             let row = try #require(CameraMinimalLayout.lensRow(in: controls, canvasWidth: width, lensCount: 4))
             let shooting = CameraControlGeometry(width: controls.width, height: controls.height - 8)
-            #expect(abs(row.midX - CGFloat(width) / 2) < 0.001)
-            #expect(row.width == 4 * CameraMinimalLayout.lensHitSize)
+            // 30pt faces on a 4pt gap: one 34pt cell each, in a 44pt-high strip.
+            let cell = CameraMinimalLayout.lensCellWidth(style: .minimal)
+            #expect(cell == CameraMinimalLayout.lensFaceSize + 4)
+            #expect(row.width == 4 * cell)
+            #expect(row.height == CameraMinimalLayout.lensHitSize)
             #expect(row.maxY < controls.minY)
             #expect(row.maxY <= controls.minY + shooting.record.minY)
             #expect(!row.intersects(shooting.exposure.offsetBy(dx: controls.minX, dy: controls.minY)))
             for index in 0..<3 {
-                let hit = CGRect(x: row.minX + CGFloat(index) * 44, y: row.minY, width: 44, height: 44)
-                let next = hit.offsetBy(dx: 44, dy: 0)
+                let hit = CGRect(x: row.minX + CGFloat(index) * cell, y: row.minY,
+                                 width: cell, height: row.height)
+                let next = hit.offsetBy(dx: cell, dy: 0)
                 #expect(hit.intersection(next).width == 0)
             }
         }
@@ -26,7 +30,8 @@ struct CameraMinimalLayoutTests {
     @Test func absentLensesAndUnusableBoundsDoNotCreateDeadControls() {
         let controls = CGRect(x: 0, y: 500, width: 390, height: 204)
         #expect(CameraMinimalLayout.lensRow(in: controls, canvasWidth: 390, lensCount: 0) == nil)
-        #expect(CameraMinimalLayout.lensRow(in: controls, canvasWidth: 160, lensCount: 4) == nil)
+        // 4 x 34pt cells plus a 16pt margin is 152pt, so a 150pt canvas has no row.
+        #expect(CameraMinimalLayout.lensRow(in: controls, canvasWidth: 150, lensCount: 4) == nil)
         #expect(CameraMinimalLayout.lensRow(in: controls, canvasWidth: .nan, lensCount: 4) == nil)
     }
 
@@ -52,8 +57,11 @@ struct CameraMinimalLayoutTests {
         #expect(screen.contains("CameraLensRow(availableLenses: availableLenses, selectedLens: selectedLens,"))
         #expect(screen.contains("meteredEV: cameraViewModel.liveExposureTargetOffset,"))
         #expect(screen.contains("targetEV: cameraViewModel.liveExposureBias,"))
-        #expect(!bar.contains("ExposureIndicatorView("))
-        #expect(bar.contains("Button(action: onShowStockSheet)"))
+        // The bar's own side meter belongs to Classic; Minimal paints the shared
+        // meter overlay, and its clusters sit in the borderless well.
+        #expect(bar.contains("exposureColumns.modifier(CameraInsetSurface())"))
+        #expect(bar.contains("exposureColumns.cameraWellBacking()"))
+        #expect(bar.contains(".gesture(stockEntryGesture)"))
         #expect(!bar.contains("pushPullBadge("))
         #expect(screen.contains("PushPullControl(resolved: resolvedPushPull,"))
         #expect(screen.contains("manualStops: $pushPullStops,"))

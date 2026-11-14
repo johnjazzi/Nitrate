@@ -15,11 +15,12 @@ enum RecordingTimeLCDFocus: Equatable, Sendable {
     }
 }
 
-/// Minimal is quiet type over the preview: no surface, box or rim, with a 16pt
-/// queue glyph named QUEUE so the queue stays legible at a glance. Classic
-/// restores the old recessed LCD — the shared inset surface, the hairline under
-/// the headline, the bare 8pt queue glyph and the prominent 20pt readout centred
-/// in the plate. In both the entire face is the one queue action: the glyph and
+/// Minimal is quiet type: this face paints no surface, box or rim of its own, with
+/// a 16pt queue glyph named QUEUE so the queue stays legible at a glance. The
+/// shooting bar seats the whole face in the shared Minimal well, so the plate is
+/// drawn once by the bar and not again here. Classic restores the old recessed
+/// LCD — the shared inset surface, the hairline under the headline, the bare 8pt
+/// queue glyph and the prominent 20pt readout centred in the plate. In both the entire face is the one queue action: the glyph and
 /// its label are decoration, so the LCD never grows a second, smaller target and
 /// its touch area never drops below `minimumTouchSize`.
 ///
@@ -197,7 +198,11 @@ struct RecordingTimeLCD: View {
         } else {
             HStack(spacing: 2) {
                 Image(systemName: "list.bullet")
-                    .font(.system(size: Self.queueGlyphSize, weight: .semibold))
+                    // The symbol is sized by the same type scale as the app's
+                    // text; no system font family is introduced for it, and no
+                    // weight override (a custom family cannot re-weight, so the
+                    // descriptor warning that produced was pure log noise).
+                    .font(NitrateTypography.font(size: Self.queueGlyphSize))
                     .foregroundStyle(.white)
                 VStack(alignment: .leading, spacing: 0) {
                     if let count = queueStatus.countText {

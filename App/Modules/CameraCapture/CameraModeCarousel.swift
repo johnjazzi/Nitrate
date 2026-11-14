@@ -282,6 +282,11 @@ struct CameraModeCarousel: View {
                 compactItem(mode, interactive: allCellsFit)
             }
         }
+        // Minimal seats the D/V/P group in the same borderless well as the other
+        // camera clusters. The vertical inset keeps the fill off the row's full
+        // 44pt touch height, and the frame after it keeps the slot's geometry, so
+        // neither the well nor the discs move a cell or its target.
+        .cameraWellBacking(cornerRadius: 10, verticalInset: 4)
         .frame(width: width, height: Self.height)
 
         if allCellsFit {

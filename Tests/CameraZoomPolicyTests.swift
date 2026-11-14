@@ -167,10 +167,16 @@ struct CameraZoomPolicyTests {
                                                 direction: .in, minimum: 1, maximum: 5) == nil)
             #expect(CameraZoomPolicy.rampFactor(initial: 1, rate: invalid, elapsed: 1,
                                                 direction: .in, minimum: 1, maximum: 5) == nil)
-            #expect(CameraZoomPolicy.rampFactor(initial: 1, rate: 0.25, elapsed: invalid,
-                                                direction: .in, minimum: 1, maximum: 5) == nil)
             #expect(CameraZoomPolicy.rampFactor(initial: 1, rate: 0.25, elapsed: 1,
                                                 direction: .out, minimum: invalid, maximum: 5) == nil)
+        }
+        // A ramp's first tick may have zero elapsed time; it holds the initial
+        // factor. Only negative or non-finite elapsed values are unusable.
+        #expect(CameraZoomPolicy.rampFactor(initial: 2, rate: 0.25, elapsed: 0,
+                                            direction: .in, minimum: 1, maximum: 5) == 2)
+        for invalid: Double in [-1, .nan, .infinity, -.infinity] {
+            #expect(CameraZoomPolicy.rampFactor(initial: 1, rate: 0.25, elapsed: invalid,
+                                                direction: .in, minimum: 1, maximum: 5) == nil)
         }
         #expect(CameraZoomPolicy.rampFactor(initial: 1, rate: 0.25, elapsed: 1,
                                             direction: .in, minimum: 2, maximum: 1) == nil)

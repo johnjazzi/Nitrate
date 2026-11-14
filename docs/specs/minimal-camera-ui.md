@@ -35,7 +35,7 @@ Do not change preview framing, capture/exposure behavior, available modes, stock
 - One compact horizontal row centered above the shutter.
 - Reference labels: **13 · 24 · 96 · F**. F means front camera.
 - Numeric labels must come from the actual available lenses. Do not advertise unsupported focal lengths or synthesize missing hardware choices.
-- Visual circles approximately **30pt** in diameter, with **44 × 44pt minimum hit targets**. Space the hit targets without overlap; do not shrink accessibility targets to match the visible circles.
+- Visual circles approximately **30pt** in diameter. Follow-up spacing approval uses a **4pt visual gap**, with adjoining **34 × 44pt** touch cells in one compact strip; cells never overlap. Standard toolbar keys remain at least 44 × 44pt.
 - Selected lens uses the resolved accent and a subtle dark fill. Inactive labels remain neutral and quiet.
 - Keep the row stable when selection changes; it must not resize the preview or move the shutter.
 
@@ -204,3 +204,40 @@ The HTML uses a bundled, ungraded sample image, simulated capture timing and two
   modification time were unchanged across the successful startup. Production
   `com.nitrate.app` was not replaced.
 - Broader UI/gesture, orientation and VoiceOver acceptance remain as listed above.
+
+## 13. Runtime style and follow-up controls
+
+- Settings → Appearance offers **Camera UI: Classic / Minimal**. Minimal remains
+  the migration default; invalid values fall back to Minimal. Style changes only
+  presentation and are blocked throughout capture startup, recording, draining
+  and photo capture. Both styles share the current camera and all fixes.
+- Classic restores the raised controls, prominent LCD, stock well and side meter;
+  Minimal uses the short stock/gauge/push-pull picker without a sample preview.
+  Stock availability, remembered preferences and render submission stay on their
+  existing shared paths. Lens position, control color and record-button face stay
+  independent preferences. Push/pull remains inside the modal in both styles.
+- Minimal's direct lens strip uses 30pt circles with 4pt gaps, adjoining 34pt-wide
+  touch cells and a 44pt touch height. Its lens popout uses the same compact row.
+  The D/V/P group is also compact, with deterministic non-overlapping targets.
+- The stock entry carries two Minimal surfaces: a tap opens the compact stock,
+  gauge and push/pull picker, and a 0.5 s held press opens the full sheet with the
+  sample preview. Classic has one stock sheet, so every press opens the full one.
+  The press is timed by the entry itself rather than by a button's release, and
+  the surface is resolved against the style before the sheet is presented, so a
+  presented sheet can never swap its layout under the operator. VoiceOver keeps
+  one default action plus a named "Open full stock list" action.
+- The stock entry and gauge, the status/queue LCD, the exposure-bias column and
+  the D/V/P row are each seated in one shared Minimal well: a single translucent
+  neutral fill with no border, no rim and no material. The well is paint only —
+  no padding, no size change and no hit region — so it cannot move a control, a
+  target or the mode strip, and Classic keeps its own plates unchanged.
+- Minimal's queue affordance must be prominent enough to find independently of
+  the quiet remaining-time digits. Inline manual controls and rails use the same
+  flat presentation and resolved accent; capability purple and warning/REC red
+  remain semantic colors.
+- **High-contrast rulers**, off by default, adds a darker translucent backing to
+  Minimal exposure, focus, zoom and shutter rulers for bright conditions. The
+  shared backdrop cannot resize controls, intercept gestures or alter pixels in
+  saved footage. Classic ignores the stored value; switching styles preserves it.
+- Follow-up implementation and device acceptance are in progress; the earlier
+  verification counts above refer to their recorded revisions, not this new tree.

@@ -10,14 +10,24 @@ import Testing
     @Test func sharedSurfacesStayFlatWithoutMaterialRimOrShadow() throws {
         let source = try String(contentsOf: TestRepository.root.appendingPathComponent(
             "App/Modules/CameraCapture/CameraRaisedButtonStyle.swift"), encoding: .utf8)
-        #expect(!source.contains("ultraThinMaterial"),
-                "A flat face cannot blur the preview behind it.")
-        #expect(!source.contains("LinearGradient"),
-                "No rim or bevel gradients.")
-        #expect(!source.contains(".shadow("),
-                "No simulated depth on the flat faces.")
-        #expect(!source.contains("strokeBorder("),
-                "Shared surfaces draw no border; the REC ring owns the one hairline.")
+        let minimalBranches = source.components(separatedBy: "} else {").dropFirst()
+            .map { $0.components(separatedBy: "\n        }")[0] }
+        #expect(minimalBranches.count == 4,
+                "Round, raised, inset and well faces each retain a Minimal branch")
+        for branch in minimalBranches {
+            for forbidden in ["ultraThinMaterial", "LinearGradient", ".shadow(", "strokeBorder("] {
+                #expect(!branch.contains(forbidden), "Minimal surfaces exclude \(forbidden); Classic may retain it")
+            }
+        }
+        // The well the Minimal clusters sit in is one flat fill: no rim, and no
+        // padding, so seating a face in it cannot move or resize that face.
+        #expect(source.contains("shape.fill(Color.black.opacity(0.32))"),
+                "The Minimal well is one flat neutral fill.")
+        let backing = try #require(source.components(separatedBy: "struct CameraWellBacking: ViewModifier").last)
+        #expect(!backing.contains(".padding(.horizontal") && !backing.contains(".frame("),
+                "The backing adds no padding and no size; only the shared fill.")
+        #expect(backing.contains("if uiStyle != .classic"),
+                "Classic draws nothing behind these faces; its plates own their chrome.")
         // Press state is a fill-opacity change on both faces, not a bevel.
         #expect(source.components(separatedBy: "isPressed ? 0.66 : 0.5").count == 3,
                 "Round and rectangular faces darken slightly while pressed.")

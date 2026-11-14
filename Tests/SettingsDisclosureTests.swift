@@ -14,7 +14,10 @@ import Testing
     @Test func lcdUsesTheNeutralExposureSurfaceAndSelectorsAreCompact() throws {
         let source = try String(contentsOf: TestRepository.root.appendingPathComponent(
             "App/Modules/CameraCapture/RecordingTimeLCD.swift"), encoding: .utf8)
-        #expect(!source.contains("CameraInsetSurface"))
+        // Minimal's quiet 12pt readout survives; the recessed plate belongs to
+        // the Classic branch only.
+        #expect(source.contains("modifier(CameraInsetSurface())"),
+                "Classic restores the old recessed LCD plate.")
         #expect(source.contains("remainingTime(fontSize: 12)"))
         #expect(!source.contains("Color(red: 0.055, green: 0.14, blue: 0.105)"))
         #expect(CameraControlGeometry.leftWidth == 84)

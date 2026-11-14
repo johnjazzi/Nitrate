@@ -194,10 +194,16 @@ struct CameraMoodControlsTests {
     @Test func barOwnsTheWellRecordingStateAndTheLockHapticOnce() throws {
         let bar = try String(contentsOf: TestRepository.url(for: "App/Modules/CameraCapture/CameraControlBar.swift"),
                              encoding: .utf8)
-        #expect(bar.contains("CameraShootingLayout()"))
-        // Stock and gauge share one flat entry without a decorative well.
-        #expect(bar.contains("Button(action: onShowStockSheet)"))
-        #expect(!bar.contains(".cameraControlWell("))
+        #expect(bar.contains("CameraShootingLayout(style: uiStyle)"))
+        // Stock and gauge share one entry. A tap opens the compact picker and a
+        // held press the full list, so the entry times its own press instead of
+        // using a Button, which would fire once on release whatever happened.
+        #expect(bar.contains(".gesture(stockEntryGesture)"))
+        #expect(bar.contains("CameraStockEntry.destination("))
+        #expect(!bar.contains("Button(action: onShowStockSheet)"))
+        // Minimal seats the cluster in the shared borderless well; Classic keeps
+        // its padded plate.
+        #expect(bar.contains("selectorContents.cameraWellBacking()"))
         #expect(bar.contains("CameraGaugeLabel(gauge: selectedGauge,"))
         #expect(bar.components(separatedBy: "length: 120").count == 3, "The exposure rulers are untouched.")
         // The LCD acknowledges the accepted take before the writer confirms it.

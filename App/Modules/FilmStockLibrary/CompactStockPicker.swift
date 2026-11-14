@@ -252,10 +252,10 @@ struct CompactStockPicker: View {
                 GaugeControl(gauge: $gauge, enlarged: true)
                     .frame(maxWidth: CompactStockPickerLayout.preferredGaugeWidth,
                            alignment: .leading)
-                Spacer(minLength: 0)
                 pushPullControl
                     .frame(width: CompactStockPickerLayout.pushPullWidth)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

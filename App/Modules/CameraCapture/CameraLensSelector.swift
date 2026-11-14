@@ -13,6 +13,7 @@ struct CameraLensSelector: View {
     /// same way even if the popover does not inherit the presenter's values.
     @Environment(\.cameraDeviceOrientation) private var deviceOrientation
     @Environment(\.cameraControlAccent) private var controlAccent
+    @Environment(\.cameraUIStyle) private var uiStyle
 
     var body: some View {
         Group {
@@ -57,7 +58,26 @@ struct CameraLensSelector: View {
             .frame(width: 44, height: 44)
     }
 
+    @ViewBuilder
     private var lensWell: some View {
+        if uiStyle == .minimal {
+            CameraLensRow(availableLenses: availableLenses, selectedLens: selectedLens) { lens in
+                isPresented = false
+                onSelectLens(lens)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.black.opacity(0.9), in: Capsule())
+            .environment(\.cameraDeviceOrientation, deviceOrientation)
+            .environment(\.cameraControlAccent, controlAccent)
+            .environment(\.cameraUIStyle, uiStyle)
+            .accessibilityLabel("Available camera lenses")
+        } else {
+            classicLensWell.environment(\.cameraUIStyle, uiStyle)
+        }
+    }
+
+    private var classicLensWell: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 60), spacing: 8)], spacing: 8) {
             ForEach(availableLenses) { lens in
                 lensKey(lens)
@@ -101,12 +121,14 @@ struct CameraLensSelector: View {
 }
 
 /// Direct lens choices share the toolbar's committed selection and callback.
-/// Only the face is 30pt; neighboring 44pt hit rectangles never overlap.
+/// Minimal uses 30pt faces with a 4pt visual gap in a 44pt-high touch strip.
+/// Each adjoining cell has one deterministic lens action; invisible targets never overlap.
 struct CameraLensRow: View {
     let availableLenses: [CameraLens]
     let selectedLens: CameraLens
     let onSelectLens: (CameraLens) -> Void
     @Environment(\.cameraControlAccent) private var controlAccent
+    @Environment(\.cameraUIStyle) private var uiStyle
     @Environment(\.cameraDeviceOrientation) private var deviceOrientation
 
     var body: some View {
@@ -125,7 +147,8 @@ struct CameraLensRow: View {
                         .background(lens == selectedLens ? controlAccent.opacity(0.14) : Color(white: 0.08),
                                     in: Circle())
                         .rotationEffect(.degrees(CameraGlyphRotation.degrees(for: deviceOrientation)))
-                        .frame(width: CameraMinimalLayout.lensHitSize, height: CameraMinimalLayout.lensHitSize)
+                        .frame(width: CameraMinimalLayout.lensCellWidth(style: uiStyle),
+                               height: CameraMinimalLayout.lensHitSize)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)

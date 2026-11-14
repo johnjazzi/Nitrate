@@ -139,6 +139,10 @@ targets:
       - path: Tests/DaylightExposureRescueTests.swift
       - path: App/Modules/CameraCapture/ExposureRescueControl.swift
       - path: Tests/CameraDesignRenderTests.swift
+      - path: Tests/CameraUIStyleSurfaceTests.swift
+      - path: Tests/CameraUIStyleStatusTests.swift
+      - path: Tests/CameraUIStyleManualTests.swift
+      - path: Tests/CameraRulerContrastTests.swift
       - path: Tests/ManualControlsOverlayTests.swift
       - path: Tests/CameraZoomPolicyTests.swift
       - path: Tests/CameraFocalZoomPolicyTests.swift

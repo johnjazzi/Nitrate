@@ -8,6 +8,7 @@ struct ExposureIndicatorView: View {
     let isManual: Bool
     let isAvailable: Bool
     @Environment(\.cameraControlAccent) private var controlAccent
+    @Environment(\.cameraUIStyle) private var uiStyle
 
     private var hasReading: Bool {
         isAvailable && meteredEV.isFinite && targetEV.isFinite
@@ -24,6 +25,20 @@ struct ExposureIndicatorView: View {
     }
 
     var body: some View {
+        Group {
+            if uiStyle == .classic { verticalMeter } else { horizontalMeter }
+        }
+        .cameraRulerBackdrop()
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("camera.measuredExposure")
+        .accessibilityLabel("\(isManual ? "Manual" : "Auto") exposure \(statusText.lowercased())")
+        .accessibilityValue(hasReading
+            ? String(format: "metered %+.2f EV, target %+.2f EV", meteredEV, targetEV)
+            : "Live exposure meter unavailable")
+    }
+
+    private var horizontalMeter: some View {
         VStack(spacing: 4) {
             Text(hasReading ? String(format: "%+.1f", meteredEV) : "—")
                 .font(NitrateTypography.font(size: 11).monospacedDigit())
@@ -35,13 +50,42 @@ struct ExposureIndicatorView: View {
             track.frame(height: 14)
         }
         .shadow(color: .black.opacity(0.8), radius: 2, y: 1)
-        .allowsHitTesting(false)
-        .accessibilityElement(children: .ignore)
-        .accessibilityIdentifier("camera.measuredExposure")
-        .accessibilityLabel("\(isManual ? "Manual" : "Auto") exposure \(statusText.lowercased())")
-        .accessibilityValue(hasReading
-            ? String(format: "metered %+.2f EV, target %+.2f EV", meteredEV, targetEV)
-            : "Live exposure meter unavailable")
+    }
+
+    private var verticalMeter: some View {
+        VStack(spacing: 6) {
+            Text(hasReading ? String(format: "%+.1f", meteredEV) : "—")
+                .font(NitrateTypography.font(size: 10).monospacedDigit())
+                .foregroundStyle(hasReading ? controlAccent : .white.opacity(0.5))
+#if os(iOS)
+                .cameraUpright()
+#endif
+                .frame(height: 14)
+            GeometryReader { geometry in
+                let height = geometry.size.height
+                ZStack {
+                    Capsule().fill(.white.opacity(0.12))
+                        .overlay(Capsule().stroke(.white.opacity(0.25), lineWidth: 1))
+                    Rectangle().fill(.white.opacity(0.35)).frame(width: 7, height: 1)
+                    if hasReading {
+                        RoundedRectangle(cornerRadius: 2).fill(controlAccent.opacity(0.4))
+                            .frame(width: 12, height: 10)
+                            .position(x: 6, y: markerY(targetEV, inset: 5, height: height))
+                        Circle().fill(controlAccent)
+                            .overlay(Circle().stroke(.black.opacity(0.4), lineWidth: 1))
+                            .frame(width: 10, height: 10)
+                            .position(x: 6, y: markerY(meteredEV, inset: 5, height: height))
+                    }
+                }
+            }
+            .frame(width: 12, height: 120)
+        }
+        .frame(width: 28)
+    }
+
+    private func markerY(_ ev: Float, inset: CGFloat, height: CGFloat) -> CGFloat {
+        let position = (1 - CGFloat(ExposureIndicatorPolicy.position(ev: ev))) * height
+        return min(max(position, inset), max(inset, height - inset))
     }
 
     private var track: some View {

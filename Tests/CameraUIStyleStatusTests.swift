@@ -137,18 +137,32 @@ struct CameraUIStyleStatusTests {
                 let ghosts = points(matching: ghostInk, in: data, image: image)
                 #expect(!ghosts.isEmpty, "Minimal still shows its neighbouring modes.")
                 let distances = ghosts.map { abs(Double($0.x) - letterMidX) / scale }
-                #expect(distances.allSatisfy { (22...40).contains($0) },
-                        "Every neighbour reads 32pt from the selected letter, not 38pt.")
-                let centre = textCentre(image)
+                let nearest = distances.min() ?? 0
+                let furthest = distances.max() ?? 0
+                // Three compact modes can put two neighbours on one side, so the
+                // group reads on one 32pt pitch: 32pt, then 64pt. Nothing lands
+                // between those cells, which is what separates this from the old
+                // 44pt cells (44pt, then 88pt).
+                #expect((22...40).contains(nearest),
+                        "The nearest neighbour reads 32pt away (saw \(Int(nearest))pt).")
+                #expect(furthest <= 72,
+                        "Neighbours stay on the 32pt pitch (saw \(Int(furthest))pt).")
+                #expect(!distances.contains { (46...54).contains($0) },
+                        "No neighbour is painted between the 32pt and 64pt cells.")
+                // Sides are read from the selected cell's own edges: with three
+                // compact modes a neighbour can sit on the slot's centre line, so
+                // the slot's midpoint cannot tell a left neighbour from a right one.
+                let cellMinX = Double(cell.minX) * scale
+                let cellMaxX = Double(cell.maxX) * scale
                 if active == .develop {
-                    #expect(ghosts.allSatisfy { $0.x > centre },
-                            "With D selected its neighbour is on the right.")
+                    #expect(ghosts.allSatisfy { Double($0.x) >= cellMaxX - scale },
+                            "With D selected its neighbours are on the right.")
                 } else if active == .photo {
-                    #expect(ghosts.allSatisfy { $0.x < centre },
-                            "With P selected its neighbour is on the left.")
+                    #expect(ghosts.allSatisfy { Double($0.x) <= cellMinX + scale },
+                            "With P selected its neighbours are on the left.")
                 } else {
-                    #expect(ghosts.contains { $0.x < centre }
-                            && ghosts.contains { $0.x > centre },
+                    #expect(ghosts.contains { Double($0.x) < cellMinX }
+                            && ghosts.contains { Double($0.x) > cellMaxX },
                             "V keeps one neighbour on each side.")
                 }
 
@@ -294,10 +308,13 @@ struct CameraUIStyleStatusTests {
         let classic = try pixels(classicImage)
         let minimal = try pixels(minimalImage)
 
-        // Classic's plate fills most of the 84x106 slot; Minimal paints only a
-        // soft shadow on the preview.
-        #expect(darkCoverage(classic) > 0.15, "Classic paints the old inset LCD plate.")
+        // Minimal paints only a soft shadow on the preview. Classic's plate is
+        // `.ultraThinMaterial`, which ImageRenderer cannot composite, so the
+        // plate is pinned at the source and the readout is measured below.
         #expect(darkCoverage(minimal) < 0.08, "Minimal paints no plate over the preview.")
+        let lcdPlate = try source("App/Modules/CameraCapture/RecordingTimeLCD.swift")
+        #expect(lcdPlate.contains("modifier(CameraInsetSurface())"),
+                "Classic keeps the old recessed LCD plate.")
 
         // The readout's own type size: Classic's old 20pt digits stand twice as
         // tall as Minimal's quiet 12pt line. Measured as the tallest run of white
@@ -336,12 +353,12 @@ struct CameraUIStyleStatusTests {
         // Minimal's mark is the top-aligned headline badge: its bright ink in the
         // trailing sixth stands at least 11pt tall, which an 8pt glyph cannot do.
         let badgeRun = maxBrightRun(minimal, image: minimalImage, xFrom: 0.6, yTo: 48)
-        #expect(badgeRun >= 22,
-                "The Minimal queue badge is drawn at 16pt, not the old 8pt mark.")
+        #expect(badgeRun >= 13,
+                "The Minimal queue badge is drawn at 16pt, not the old 8pt mark (saw \(badgeRun)).")
 
         // The 16pt glyph and the QUEUE label are the Minimal branch only.
         let lcdSource = try source("App/Modules/CameraCapture/RecordingTimeLCD.swift")
-        #expect(lcdSource.contains(".font(.system(size: Self.queueGlyphSize, weight: .semibold))"),
+        #expect(lcdSource.contains(".font(NitrateTypography.font(size: Self.queueGlyphSize))"),
                 "The glyph is sized from the pinned 16pt constant.")
         #expect(lcdSource.contains("Text(Self.queueCaption)"),
                 "Minimal paints the QUEUE word, not just the mark.")

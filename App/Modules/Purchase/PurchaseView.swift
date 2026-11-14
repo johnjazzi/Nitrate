@@ -22,6 +22,8 @@ struct PurchaseView: View {
     /// Supplied by the active camera owner at the current session rate.
     var availableCaptureFormats: [CaptureFormat] = []
     var stockLibrary: FilmStockLibrary? = nil
+    /// Reads the live camera owner again when the picker commits a choice.
+    var canChangeCameraUIStyle: () -> Bool = { true }
     @State private var pricingExpanded = false
     @State private var legalExpanded = false
     @AppStorage(RecordingIndicatorStyle.preferenceKey) private var recordingIndicatorStyle = RecordingIndicatorStyle.red.rawValue
@@ -58,6 +60,10 @@ struct PurchaseView: View {
     /// The camera's control accent. Stored as its raw string so the camera screen
     /// resolves the same value this picker writes; an absent or unrecognised
     /// value follows the selected stock's light type.
+    @AppStorage(CameraRulerContrastPreference.preferenceKey)
+    private var highContrastRulers = CameraRulerContrastPreference.defaultValue
+    @AppStorage(CameraUIStyle.preferenceKey)
+    private var cameraUIStyleRaw = CameraUIStyle.defaultValue.rawValue
     @AppStorage(CameraControlColorPreference.preferenceKey)
     private var cameraControlColor = CameraControlColorPreference.defaultValue.rawValue
     /// Where the shooting screen places the lens controls. Presentation only: the
@@ -549,6 +555,13 @@ struct PurchaseView: View {
     /// The stored control colour and lens placement, resolved for the pickers.
     /// Both resolve an absent or unrecognised value the same way the camera
     /// screen does, so the row never shows a choice the camera would not use.
+    private var cameraUIStyleBinding: Binding<CameraUIStyle> {
+        Binding(get: { CameraUIStyle.resolved(cameraUIStyleRaw) }, set: { style in
+            guard canChangeCameraUIStyle() else { return }
+            cameraUIStyleRaw = style.rawValue
+        })
+    }
+
     private var controlColorBinding: Binding<CameraControlColorPreference> {
         Binding(get: { CameraControlColorPreference.resolved(cameraControlColor) },
                 set: { cameraControlColor = $0.rawValue })
@@ -567,9 +580,23 @@ struct PurchaseView: View {
             Text("Appearance")
                 .font(NitrateTypography.font(.headline))
 
-            Text("Accent and layout for the camera controls.")
+            Text("Style, accent and layout for the camera controls.")
                 .font(NitrateTypography.font(.caption))
                 .foregroundStyle(.secondary)
+
+            SettingsControlRow(icon: "rectangle.3.group",
+                               title: "Camera UI",
+                               accessibilityTitle: "Camera UI",
+                               help: "Classic restores the raised controls and side meter. Minimal uses flat controls and a bottom meter. "
+                                   + "The camera and capture settings stay unchanged. Stop capture before switching.") {
+                SettingsSelectionRow(title: "Camera UI", valueText: cameraUIStyleBinding.wrappedValue.title) {
+                    Picker("Camera UI", selection: cameraUIStyleBinding) {
+                        ForEach(CameraUIStyle.allCases) { style in Text(style.title).tag(style) }
+                    }
+                }
+                .disabled(!canChangeCameraUIStyle())
+                .accessibilityIdentifier("settings.cameraUIStyle")
+            }
 
             SettingsControlRow(icon: "paintpalette",
                                title: "Control color",
@@ -586,6 +613,15 @@ struct PurchaseView: View {
                     }
                 }
             }
+
+            SettingsToggleRow(icon: "circle.lefthalf.filled",
+                              title: "High-contrast rulers",
+                              accessibilityTitle: "High-contrast rulers",
+                              help: "Adds a darker translucent backing behind Minimal rulers for bright scenes. "
+                                  + "Classic is unchanged. This does not alter exposure or footage.",
+                              isOn: $highContrastRulers)
+                .disabled(CameraUIStyle.resolved(cameraUIStyleRaw) != .minimal)
+                .accessibilityIdentifier("settings.highContrastRulers")
 
             SettingsControlRow(icon: "circle.grid.2x1",
                                title: "Lens control position",

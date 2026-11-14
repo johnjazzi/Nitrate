@@ -12,6 +12,9 @@ struct ContentView: View {
     let stockSelectorHint: StockSelectorHintModel
 
     @State private var showStockSheet = false
+    /// Which stock surface the bar's press asked for. Resolved there, so the
+    /// sheet only draws the choice it is given.
+    @State private var stockEntry: CameraStockEntry = .compact
     @State private var showQueueSheet = false
     @State private var cameraMode = CameraModeSelection()
     /// A mode refusal the row's own gate cannot express (an unavailable shared idle
@@ -41,6 +44,10 @@ struct ContentView: View {
     /// default, so an install that never opens Settings behaves as before.
     @AppStorage(CameraHintPreferences.showsAdvisoryTipsKey)
     private var showsAdvisoryTips = CameraHintPreferences.defaultShowsAdvisoryTips
+    @AppStorage(CameraRulerContrastPreference.preferenceKey)
+    private var highContrastRulers = CameraRulerContrastPreference.defaultValue
+    @AppStorage(CameraUIStyle.preferenceKey)
+    private var cameraUIStyleRaw = CameraUIStyle.defaultValue.rawValue
     @AppStorage(CameraControlColorPreference.preferenceKey)
     private var controlColorRaw = CameraControlColorPreference.followStock.rawValue
     @AppStorage(CameraLensControlPosition.preferenceKey)
@@ -151,10 +158,14 @@ struct ContentView: View {
         debugEnabledBody
             .environment(\.cameraDeviceOrientation, orientation.deviceOrientation)
             .environment(\.cameraControlAccent, controlAccent)
+            .environment(\.cameraUIStyle, cameraUIStyle)
+            .environment(\.cameraRulerHighContrast, highContrastRulers)
         #else
         shippingBody
             .environment(\.cameraDeviceOrientation, orientation.deviceOrientation)
             .environment(\.cameraControlAccent, controlAccent)
+            .environment(\.cameraUIStyle, cameraUIStyle)
+            .environment(\.cameraRulerHighContrast, highContrastRulers)
         #endif
     }
 
@@ -429,7 +440,11 @@ struct ContentView: View {
                          legacyManualControlsEnabled: legacyManualControlsSetting,
                          cameraControlSupported: cameraViewModel.supportsCameraControl,
                          availableCaptureFormats: cameraViewModel.availableCaptureFormats,
-                         stockLibrary: library)
+                         stockLibrary: library,
+                         canChangeCameraUIStyle: {
+                             CameraUIStyle.canChange(captureBusy: captureBusy,
+                                                     photoCaptureBusy: cameraViewModel.isPhotoCaptureBusy)
+                         })
         }
         .onChange(of: cameraViewModel.lastRecordedURL) { _, newURL in
             guard let url = newURL else { return }
@@ -443,6 +458,9 @@ struct ContentView: View {
                 // sheet (Done/swipe), a second take, or a relaunch cannot strand it.
                 awaitingStockJobId = renderQueueViewModel.enqueueAwaitingStock(
                     sourceURL: url, capturePolicy: cameraViewModel.capturePolicy(for: url))
+                // A take with no stock yet needs the full sheet: the compact
+                // picker never made the choice for the operator.
+                stockEntry = CameraStockEntry.resolved(.full, style: cameraUIStyle)
                 showStockSheet = true
             }
         }
@@ -1030,11 +1048,12 @@ struct ContentView: View {
         guard !isDevelopMode, lensControlPosition == .aboveShutter,
               let bottom = controlBounds["bottom"] else { return nil }
         return CameraMinimalLayout.lensRow(in: bottom, canvasWidth: geometry.size.width,
-                                          lensCount: availableLenses.count)
+                                          lensCount: availableLenses.count, style: cameraUIStyle)
     }
 
     private func exposureMeterRect(in geometry: GeometryProxy) -> CGRect? {
-        guard let preview = frameRulerBounds(in: geometry) else { return nil }
+        guard cameraUIStyle == .minimal, !isDevelopMode,
+              let preview = frameRulerBounds(in: geometry) else { return nil }
         return CameraMinimalLayout.exposureMeter(in: preview, above: lensRowRect(in: geometry))
     }
 
@@ -1190,6 +1209,8 @@ struct ContentView: View {
                 .frame(width: 44, height: 44)
         }
         .buttonStyle(CameraRoundButtonStyle())
+        .accessibilityLabel("Settings")
+        .accessibilityIdentifier("camera.settings")
     }
 
     private var manualButton: some View {
@@ -1326,6 +1347,8 @@ struct ContentView: View {
                             onManageDaylight: canManageDaylightMode ? { showDaylightRescue = true } : nil)
     }
 
+    private var cameraUIStyle: CameraUIStyle { CameraUIStyle.resolved(cameraUIStyleRaw) }
+
     private var controlAccent: Color {
         CameraControlColorPreference.resolved(controlColorRaw).color(lightType: selectedStock?.lightType)
     }
@@ -1424,9 +1447,10 @@ struct ContentView: View {
             currentISO: currentISO,
             selectedGauge: selectedStock.flatMap { library.lastGauge(for: $0.stockId) } ?? .neutral,
             onShowQueueSheet: { showQueueSheet = true },
-            onShowStockSheet: {
+            onShowStockSheet: { entry in
                 // Opened directly (not from a fresh take): nothing to resume.
                 awaitingStockJobId = nil
+                stockEntry = entry
                 showStockSheet = true
             },
             showsStockHint: stockSelectorHint.isCueVisible,
@@ -1818,7 +1842,8 @@ struct ContentView: View {
             photoMode: cameraViewModel.isDevelopmentPhotoMode,
             appliedShutterSeconds: cameraViewModel.photoExposureSnapshot?.durationSeconds
                 ?? cameraViewModel.liveShutterSeconds,
-            lampAvailable: cameraViewModel.hasLamp
+            lampAvailable: cameraViewModel.hasLamp,
+            entry: stockEntry
         )
     }
 
@@ -1881,7 +1906,13 @@ private struct StockSheetView: View {
     /// A camera with no lamp hides the cell entirely: a disabled lamp control
     /// would imply a hardware fault the operator cannot fix.
     var lampAvailable = false
+    /// The surface the camera bar asked for: Minimal's compact picker, or the
+    /// full sheet with the sample preview. Already resolved against the style, so
+    /// this view draws the choice it is given and nothing else.
+    var entry: CameraStockEntry = .compact
 
+    @AppStorage(CameraControlColorPreference.preferenceKey)
+    private var controlColorRaw = CameraControlColorPreference.defaultValue.rawValue
     @State private var stocks: [FilmStockConfig] = []
     @State private var localSelection: FilmStockConfig?
     @State private var gauge: PrintGauge = .thirtyFiveMillimetre
@@ -1894,33 +1925,15 @@ private struct StockSheetView: View {
 
     var body: some View {
         NavigationStack {
-            // Three stacked rows, no vertical scroll. The row heights come from
-            // the height the sheet actually has — half for the preview, a quarter
-            // each for the stock carousel and the gauge + push/pull row — so
-            // every control is on screen on a phone. The preview gives up height
-            // first if the sheet is short; the control rows never scroll away.
-            VStack(spacing: StockSheetLayout.rowSpacing) {
-                GeometryReader { proxy in
-                    let rows = StockSheetLayout.rows(forAvailableHeight: proxy.size.height)
-                    VStack(spacing: StockSheetLayout.rowSpacing) {
-                        StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge,
-                                            pushPullStops: resolvedPushPull.stops.stops)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: rows.preview)
-                            .clipped()
-
-                        if !stocks.isEmpty {
-                            stockCarousel.frame(height: rows.stocks)
-                        }
-
-                        if localSelection != nil {
-                            controlRow.frame(height: rows.controls)
-                        }
-                    }
-                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+            Group {
+                if entry == .compact {
+                    CompactStockPicker(stocks: stocks, selectedStockId: selectedStockIdBinding,
+                                       gauge: $gauge, resolvedPushPull: resolvedPushPull,
+                                       isAutomatic: $pushPullAutomatic, manualStops: $pushPullStops,
+                                       onPushPullChange: persistPreferences)
+                } else {
+                    classicContents
                 }
-
-                sheetFooter
             }
             .padding()
             .navigationTitle("Film Stock")
@@ -1961,6 +1974,36 @@ private struct StockSheetView: View {
             }
             .onChange(of: localSelection) { _, _ in persistPreferences() }
             .onChange(of: gauge) { _, _ in persistPreferences() }
+        }
+        .environment(\.cameraControlAccent,
+                     CameraControlColorPreference.resolved(controlColorRaw).color(lightType: localSelection?.lightType))
+        .presentationDetents(entry == .compact ? [.height(360), .large] : [.large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private var classicContents: some View {
+        VStack(spacing: StockSheetLayout.rowSpacing) {
+            GeometryReader { proxy in
+                let rows = StockSheetLayout.rows(forAvailableHeight: proxy.size.height)
+                VStack(spacing: StockSheetLayout.rowSpacing) {
+                    StockSamplePreview(stock: localSelection ?? stocks.first, gauge: gauge,
+                                        pushPullStops: resolvedPushPull.stops.stops)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: rows.preview)
+                        .clipped()
+
+                    if !stocks.isEmpty {
+                        stockCarousel.frame(height: rows.stocks)
+                    }
+
+                    if localSelection != nil {
+                        controlRow.frame(height: rows.controls)
+                    }
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+            }
+
+            sheetFooter
         }
     }
 

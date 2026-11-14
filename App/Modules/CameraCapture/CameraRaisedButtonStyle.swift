@@ -192,27 +192,22 @@ struct CameraInsetSurface: ViewModifier {
     }
 }
 
-/// A plate that groups related controls. It keeps the existing padding and hit
-/// region in both styles; only the simulated hardware differs.
+/// The plate a well paints. One definition, shared by the padded control well
+/// and by the borderless backing the Minimal clusters sit in.
 ///
-/// `.minimal` (the default) is a flat neutral fill. `.classic` restores the
-/// translucent raised plate with its inset dark-over-light rim.
-struct CameraControlWell: ViewModifier {
+/// `.minimal` (the default) is one flat neutral fill with no rim, material or
+/// shadow. `.classic` restores the translucent raised plate with its inset
+/// dark-over-light rim.
+struct CameraWellFace: View {
     var cornerRadius: CGFloat = CameraControlBorder.cornerRadius
-    var horizontalPadding: CGFloat = 6
 
     @Environment(\.cameraUIStyle) private var uiStyle
 
-    func body(content: Content) -> some View {
+    var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         if uiStyle == .classic {
-            content
-                .padding(.horizontal, horizontalPadding)
-                .padding(.vertical, 5)
-                .background {
-                    shape.fill(.ultraThinMaterial)
-                        .overlay { shape.fill(Color.black.opacity(0.18)) }
-                }
+            shape.fill(.ultraThinMaterial)
+                .overlay { shape.fill(Color.black.opacity(0.18)) }
                 .overlay {
                     // The outer rim is inset: dark above, light below. The keys
                     // inside retain their raised bevels.
@@ -227,13 +222,49 @@ struct CameraControlWell: ViewModifier {
                     )
                     .allowsHitTesting(false)
                 }
-                .contentShape(shape)
         } else {
-            content
-                .padding(.horizontal, horizontalPadding)
-                .padding(.vertical, 5)
-                .background { shape.fill(Color.black.opacity(0.32)) }
-                .contentShape(shape)
+            shape.fill(Color.black.opacity(0.32))
+        }
+    }
+}
+
+/// A plate that groups related controls. It keeps the existing padding and hit
+/// region in both styles; only the simulated hardware differs.
+struct CameraControlWell: ViewModifier {
+    var cornerRadius: CGFloat = CameraControlBorder.cornerRadius
+    var horizontalPadding: CGFloat = 6
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return content
+            .padding(.horizontal, horizontalPadding)
+            .padding(.vertical, 5)
+            .background { CameraWellFace(cornerRadius: cornerRadius) }
+            .contentShape(shape)
+    }
+}
+
+/// Minimal's borderless well behind a face that already fills its slot.
+///
+/// The stock entry, the status LCD, the exposure column and the mode row are
+/// placed by the shooting bar and the mode strip, so their footprints are
+/// fixed. This only paints the shared fill behind them: no padding, no size
+/// change and no hit region. Classic draws nothing here — its plates own their
+/// own chrome.
+struct CameraWellBacking: ViewModifier {
+    var cornerRadius: CGFloat = CameraControlBorder.cornerRadius
+    /// Pulls the fill in from the face's edges without moving the face.
+    var verticalInset: CGFloat = 0
+
+    @Environment(\.cameraUIStyle) private var uiStyle
+
+    func body(content: Content) -> some View {
+        content.background {
+            if uiStyle != .classic {
+                CameraWellFace(cornerRadius: cornerRadius)
+                    .padding(.vertical, verticalInset)
+                    .allowsHitTesting(false)
+            }
         }
     }
 }
@@ -242,5 +273,11 @@ extension View {
     /// Wrap a cluster of controls in the control plate.
     func cameraControlWell(cornerRadius: CGFloat = CameraControlBorder.cornerRadius, horizontalPadding: CGFloat = 6) -> some View {
         modifier(CameraControlWell(cornerRadius: cornerRadius, horizontalPadding: horizontalPadding))
+    }
+
+    /// Seat a face that already fills its slot in the shared Minimal well.
+    func cameraWellBacking(cornerRadius: CGFloat = CameraControlBorder.cornerRadius,
+                           verticalInset: CGFloat = 0) -> some View {
+        modifier(CameraWellBacking(cornerRadius: cornerRadius, verticalInset: verticalInset))
     }
 }

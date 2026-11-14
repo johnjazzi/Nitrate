@@ -5,12 +5,19 @@ import CoreGraphics
 enum CameraMinimalLayout {
     static let lensFaceSize: CGFloat = 30
     static let lensHitSize: CGFloat = 44
+    static let lensFaceGap: CGFloat = 4
+
+    /// Compact choices share one 44pt-high strip, with unambiguous adjoining cells.
+    static func lensCellWidth(style: CameraUIStyle) -> CGFloat {
+        style == .minimal ? lensFaceSize + lensFaceGap : lensHitSize
+    }
 
 
-    static func lensRow(in controls: CGRect, canvasWidth: CGFloat, lensCount: Int) -> CGRect? {
+    static func lensRow(in controls: CGRect, canvasWidth: CGFloat, lensCount: Int,
+                        style: CameraUIStyle = .minimal) -> CGRect? {
         guard lensCount > 0, lensCount <= 4, canvasWidth.isFinite,
               controls.minY.isFinite, controls.minY >= lensHitSize + 8 else { return nil }
-        let width = CGFloat(lensCount) * lensHitSize
+        let width = CGFloat(lensCount) * lensCellWidth(style: style)
         guard canvasWidth >= width + 16 else { return nil }
         // Above the bar, never over the exposure column's hit area.
         return CGRect(x: (canvasWidth - width) / 2, y: controls.minY - lensHitSize - 4,

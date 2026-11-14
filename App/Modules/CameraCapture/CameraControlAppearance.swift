@@ -143,6 +143,97 @@ enum CameraLensControlPosition: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Presentation only: never replaces the camera view or its state owners.
+/// Minimal preserves the current interface for existing installs and unknown values.
+enum CameraUIStyle: String, CaseIterable, Identifiable, Sendable {
+    case classic
+    case minimal
+
+    static let preferenceKey = "camera.uiStyle"
+    static let defaultValue: Self = .minimal
+
+    var id: String { rawValue }
+    var title: String { self == .classic ? "Classic" : "Minimal" }
+
+    static func resolved(_ raw: String) -> Self { Self(rawValue: raw) ?? defaultValue }
+
+    static func load(from defaults: UserDefaults = .standard) -> Self {
+        resolved(defaults.string(forKey: preferenceKey) ?? "")
+    }
+
+    func save(to defaults: UserDefaults = .standard) {
+        defaults.set(rawValue, forKey: Self.preferenceKey)
+    }
+
+    /// Starting and draining a take count as capture busy, not just confirmed REC.
+    static func canChange(captureBusy: Bool, photoCaptureBusy: Bool) -> Bool {
+        !captureBusy && !photoCaptureBusy
+    }
+}
+
+/// Which stock surface a press on the camera bar asks for.
+///
+/// Minimal offers both: a tap opens the short picker (stock, gauge, processing)
+/// and a held press opens the full list with the sample preview. Classic has one
+/// stock sheet, so it answers every press with the full list. The choice is
+/// resolved before presentation, so the sheet never has to know the style.
+enum CameraStockEntry: String, CaseIterable, Sendable {
+    case compact
+    case full
+
+    /// How long a press has to be held to ask for the full list in Minimal.
+    static let holdThreshold: TimeInterval = 0.5
+
+    /// Classic ignores what was asked for: its single sheet is the full list.
+    static func resolved(_ requested: Self, style: CameraUIStyle) -> Self {
+        style == .classic ? .full : requested
+    }
+
+    /// Tap versus hold, resolved once so the bar and its tests agree.
+    static func destination(style: CameraUIStyle, pressDuration: TimeInterval) -> Self {
+        resolved(pressDuration >= holdThreshold ? .full : .compact, style: style)
+    }
+}
+
+/// Independent presentation preference; no metering or image-pipeline input.
+enum CameraRulerContrastPreference {
+    static let preferenceKey = "camera.highContrastRulers"
+    static let defaultValue = false
+
+    static func backdropOpacity(style: CameraUIStyle, enabled: Bool) -> Double {
+        style == .minimal && enabled ? 0.72 : 0
+    }
+}
+
+private struct CameraRulerHighContrastKey: EnvironmentKey {
+    static let defaultValue = CameraRulerContrastPreference.defaultValue
+}
+
+/// Shared by the exposure, focus, zoom and shutter rails; never changes layout.
+private struct CameraRulerBackdrop: ViewModifier {
+    @Environment(\.cameraUIStyle) private var style
+    @Environment(\.cameraRulerHighContrast) private var highContrast
+    var cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        content.background {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(.black.opacity(CameraRulerContrastPreference.backdropOpacity(style: style, enabled: highContrast)))
+                .allowsHitTesting(false)
+        }
+    }
+}
+
+extension View {
+    func cameraRulerBackdrop(cornerRadius: CGFloat = 8) -> some View {
+        modifier(CameraRulerBackdrop(cornerRadius: cornerRadius))
+    }
+}
+
+private struct CameraUIStyleKey: EnvironmentKey {
+    static let defaultValue: CameraUIStyle = .defaultValue
+}
+
 /// The resolved accent, handed down by the camera screen so every control and
 /// selection surface paints one colour resolved in one place.
 private struct CameraControlAccentKey: EnvironmentKey {
@@ -150,6 +241,16 @@ private struct CameraControlAccentKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
+    var cameraRulerHighContrast: Bool {
+        get { self[CameraRulerHighContrastKey.self] }
+        set { self[CameraRulerHighContrastKey.self] = newValue }
+    }
+
+    var cameraUIStyle: CameraUIStyle {
+        get { self[CameraUIStyleKey.self] }
+        set { self[CameraUIStyleKey.self] = newValue }
+    }
+
     /// Orange until the camera screen resolves the persisted preference and the
     /// committed stock's light type.
     var cameraControlAccent: Color {

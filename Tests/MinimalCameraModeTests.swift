@@ -43,7 +43,13 @@ struct MinimalCameraModeTests {
                 let fill = points(matching: flatDarkFill, in: data, image: image)
                 #expect(fill.count > 300, "The selected letter sits on a painted flat dark fill at \(width)pt.")
                 let fillMidX = Double(fill.map(\.x).reduce(0, +)) / Double(fill.count)
-                #expect(abs(fillMidX - Double(image.width) / 2) <= 2 * scale,
+                // Minimal centres the whole compact group, so the fill is centred
+                // on its own cell — not on the slot unless the cell is the middle one.
+                let modes = CameraMode.visibleModes
+                let cell = CameraModeRowLayout.compactCellRect(
+                    index: modes.firstIndex(of: active) ?? 0, slotWidth: width,
+                    visibleCount: modes.count)
+                #expect(abs(fillMidX - Double(cell.midX) * scale) <= 2 * scale,
                         "The fill is centred behind the selected letter, not parked in a half.")
 
                 // Nothing bright is drawn just outside the fill's top arc: no

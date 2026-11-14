@@ -89,7 +89,10 @@ struct CameraModeCarouselRenderTests {
         for width: CGFloat in [narrowWidth, defaultWidth] {
             let centreInPoints = Double(width) / 2
             for active in CameraMode.visibleModes {
-                let image = try render(carousel(active: active), width: width,
+                // Classic is the style with a caption under the capital, so this
+                // pin has to render Classic explicitly; Minimal is the default.
+                let image = try render(carousel(active: active)
+                    .environment(\.cameraUIStyle, .classic), width: width,
                                        name: "carousel-centred-\(active.rawValue)-\(Int(width))")
                 #expect(image.height == Int(CameraModeCarousel.height * 2),
                         "The row keeps its fixed height at every width.")

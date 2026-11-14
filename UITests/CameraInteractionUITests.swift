@@ -856,6 +856,103 @@ final class CameraInteractionUITests: XCTestCase {
 
     // MARK: - Real-app launch, permissions and evidence
 
+    @MainActor func testCameraUIStylesAndCompactStockPicker() throws {
+        continueAfterFailure = false
+        let app = launchReadyCamera(hideDiagnosticButtons: true)
+        let original = chooseCameraUIStyle("Minimal", in: app)
+        let preview = app.otherElements["camera.preview"]
+        let initialFrame = preview.frame
+        let meter = app.descendants(matching: .any).matching(identifier: "camera.measuredExposure").firstMatch
+        XCTAssertTrue(meter.waitForExistence(timeout: 10))
+        XCTAssertGreaterThan(meter.frame.width, meter.frame.height)
+        app.buttons["camera.stock"].tap()
+        let compact = app.descendants(matching: .any).matching(identifier: "stock.compactPicker").firstMatch
+        XCTAssertTrue(compact.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "stock.gauge").firstMatch.exists)
+        let pushPull = app.buttons["stock.pushPull"]
+        XCTAssertTrue(pushPull.isHittable)
+        pushPull.tap()
+        XCTAssertTrue(app.buttons["Auto"].waitForExistence(timeout: 5))
+        app.navigationBars["Film Stock"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        attachEvidence(app, named: "minimal-compact-stock-gauge-processing")
+        app.navigationBars["Film Stock"].buttons["Done"].tap()
+        // A held press asks for the full list with the sample preview, which the
+        // compact picker never shows.
+        app.buttons["camera.stock"].press(forDuration: 1.0)
+        XCTAssertTrue(app.navigationBars["Film Stock"].waitForExistence(timeout: 10))
+        XCTAssertFalse(compact.waitForExistence(timeout: 2),
+                       "A held press opens the full stock sheet, not the compact picker")
+        let carousel = app.descendants(matching: .any).matching(identifier: "stock.carousel").firstMatch
+        XCTAssertTrue(carousel.waitForExistence(timeout: 10))
+        attachEvidence(app, named: "minimal-full-stock-sheet")
+        app.navigationBars["Film Stock"].buttons["Done"].tap()
+        let manual = app.buttons["Manual controls"]
+        manual.tap()
+        XCTAssertTrue(app.buttons["Manual focus"].waitForExistence(timeout: 10))
+        let previousContrast = setHighContrastRulers(true, in: app)
+        attachEvidence(app, named: "minimal-high-contrast-rulers")
+        _ = setHighContrastRulers(previousContrast, in: app)
+        attachEvidence(app, named: "minimal-compact-controls")
+        manual.tap()
+        _ = chooseCameraUIStyle("Classic", in: app)
+        XCTAssertTrue(meter.waitForExistence(timeout: 10))
+        XCTAssertGreaterThan(meter.frame.height, meter.frame.width)
+        XCTAssertEqual(preview.frame.width, initialFrame.width, accuracy: 1)
+        XCTAssertEqual(preview.frame.height, initialFrame.height, accuracy: 1)
+        attachEvidence(app, named: "classic-camera-controls")
+        // No launch override for camera.uiStyle: this checks real persistence.
+        app.terminate()
+        app.launch()
+        waitUntilReady(app.buttons["camera.stock"], in: app, named: "classic-relaunch-ready")
+        XCTAssertTrue(meter.waitForExistence(timeout: 10))
+        XCTAssertGreaterThan(meter.frame.height, meter.frame.width)
+        app.buttons["camera.stock"].tap()
+        XCTAssertTrue(app.navigationBars["Film Stock"].waitForExistence(timeout: 10))
+        XCTAssertFalse(compact.exists, "Classic keeps its original stock preview sheet")
+        attachEvidence(app, named: "classic-stock-sheet")
+        app.navigationBars["Film Stock"].buttons["Done"].tap()
+        _ = chooseCameraUIStyle(original, in: app)
+    }
+
+    /// Drive the real Settings menu, never a launch override for the UI style.
+    @MainActor private func chooseCameraUIStyle(_ title: String, in app: XCUIApplication) -> String {
+        let settings = app.buttons["camera.settings"]
+        waitUntilReady(settings, in: app, named: "camera-settings-ready")
+        settings.tap()
+        let picker = app.buttons["settings.cameraUIStyle"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 10))
+        for _ in 0..<8 where !picker.isHittable { app.swipeUp() }
+        XCTAssertTrue(picker.isHittable)
+        let original = picker.value as? String ?? "Minimal"
+        picker.tap()
+        let option = app.buttons[title].lastMatch
+        XCTAssertTrue(option.waitForExistence(timeout: 5))
+        option.tap()
+        let committed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", title), object: picker)
+        XCTAssertEqual(XCTWaiter.wait(for: [committed], timeout: 5), .completed)
+        let header = app.navigationBars["Settings"]
+        header.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+        waitUntilReady(app.buttons["camera.stock"], in: app, named: "camera-style-committed")
+        return original
+    }
+
+    @MainActor private func setHighContrastRulers(_ enabled: Bool, in app: XCUIApplication) -> Bool {
+        app.buttons["camera.settings"].tap()
+        let toggle = app.switches["High-contrast rulers"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        for _ in 0..<8 where !toggle.isHittable { app.swipeUp() }
+        XCTAssertTrue(toggle.isEnabled && toggle.isHittable)
+        let previous = toggle.value as? String == "1"
+        if previous != enabled { toggle.tap() }
+        XCTAssertEqual(toggle.value as? String, enabled ? "1" : "0")
+        let header = app.navigationBars["Settings"]
+        header.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+        waitUntilReady(app.buttons["camera.stock"], in: app, named: "ruler-contrast-committed")
+        return previous
+    }
+
     @MainActor private func launchReadyCamera(arguments: [String] = [],
                                               hideDiagnosticButtons: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()

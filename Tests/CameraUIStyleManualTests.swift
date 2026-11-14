@@ -128,8 +128,9 @@ import Testing
 
         // The zoom rail carries tick labels at 62% of its width and a centred
         // readout, so the plate columns sit to the right of both.
-        #expect(plateCoverage(classic, columns: [0.86, 0.92]) > 0.9,
-                "Classic keeps the dark zoom rail plate.")
+        let classicCoverage = plateCoverage(classic, columns: [0.86, 0.92])
+        #expect(classicCoverage > 0.9,
+                "Classic keeps the dark zoom rail plate (saw \(classicCoverage)).")
         #expect(plateCoverage(minimal, columns: [0.86, 0.92]) < 0.05,
                 "Minimal draws the zoom ticks straight over the preview.")
 

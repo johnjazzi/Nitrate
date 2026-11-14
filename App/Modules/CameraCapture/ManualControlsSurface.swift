@@ -440,16 +440,19 @@ struct ManualRulerFace: ViewModifier {
     var cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
-        if chrome.drawsPlate {
-            let shape = RoundedRectangle(cornerRadius: cornerRadius)
-            content
-                .background(shape.fill(.black.opacity(chrome.fillOpacity)))
-                .clipShape(shape)
-        } else if chrome.castsShadow {
-            content.shadow(color: .black.opacity(0.6), radius: chrome.shadowRadius, y: 1)
-        } else {
-            content
+        Group {
+            if chrome.drawsPlate {
+                let shape = RoundedRectangle(cornerRadius: cornerRadius)
+                content
+                    .background(shape.fill(.black.opacity(chrome.fillOpacity)))
+                    .clipShape(shape)
+            } else if chrome.castsShadow {
+                content.shadow(color: .black.opacity(0.6), radius: chrome.shadowRadius, y: 1)
+            } else {
+                content
+            }
         }
+        .cameraRulerBackdrop(cornerRadius: cornerRadius)
     }
 }
 

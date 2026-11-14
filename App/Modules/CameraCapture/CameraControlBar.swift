@@ -1,5 +1,6 @@
-import SwiftUI
 import AVKit
+import Foundation
+import SwiftUI
 
 /// Compact stock/status column, screen-centred REC, and persistent exposure controls.
 ///
@@ -9,6 +10,7 @@ import AVKit
 struct CameraControlBar: View {
     @Environment(\.cameraDeviceOrientation) private var orientation
     @Environment(\.cameraControlAccent) private var controlAccent
+    @Environment(\.cameraUIStyle) private var uiStyle
     private let controlFaceSize: CGFloat = 38
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The persisted face choice. Resolved through `RecordButtonAppearance` so
@@ -31,13 +33,22 @@ struct CameraControlBar: View {
     /// Generation-guarded so rapid taps cannot cross-wire the animation.
     @State private var isUnclicked = false
     @State private var pressGeneration = 0
+    /// Press-time of the stock entry's current touch, cleared on release. The
+    /// entry times its own press because a Button fires on release whatever
+    /// happened during it, and a hold has to mean a different sheet.
+    @State private var stockPressBegan: Date?
+    /// Travel that turns a press into a cancelled one, so a drag never picks a
+    /// stock surface.
+    private static let stockPressMaximumTravel: CGFloat = 16
     let cameraViewModel: CameraViewModel
     let renderQueueViewModel: RenderQueueViewModel
     let selectedStock: FilmStockConfig?
     let currentISO: Float
     let selectedGauge: PrintGauge
     let onShowQueueSheet: () -> Void
-    let onShowStockSheet: () -> Void
+    /// Minimal resolves a tap to its compact picker and a held press to the full
+    /// stock list; Classic always asks for the full list.
+    let onShowStockSheet: (CameraStockEntry) -> Void
     /// One brief outline around the whole stock-selector well, a discoverability
     /// hint only. It adds no layout or hit target: the ring is a non-hit-testing
     /// overlay and never repeats.
@@ -72,7 +83,7 @@ struct CameraControlBar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            CameraShootingLayout() {
+            CameraShootingLayout(style: uiStyle) {
                 selectorRow
                     .disabled(isDevelopMode && developIsBusy)
                     .opacity(isDevelopMode && developIsBusy ? 0.4 : 1)
@@ -120,32 +131,73 @@ struct CameraControlBar: View {
 
     // MARK: - Left selector row
 
-    /// One flat stock/gauge entry, retaining the 44pt touch target and the
-    /// stock's identity colors. Remaining-time type sits below this entry.
+    /// One stock/gauge entry, retaining the 44pt touch target and the stock's
+    /// identity colors. A tap opens Minimal's compact picker and a held press
+    /// opens the full stock list; Classic has one sheet, so it answers both with
+    /// the full list. Remaining-time type sits below this entry.
     private var selectorRow: some View {
-        Button(action: onShowStockSheet) {
-            HStack(spacing: 4) {
-                stockControl(faceSize: controlFaceSize)
-                    .frame(width: 44, height: 44)
-                if selectedStock != nil {
-                    CameraGaugeLabel(gauge: selectedGauge,
-                                     rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
-                }
+        Group {
+            if uiStyle == .classic {
+                selectorContents.cameraControlWell(horizontalPadding: 4)
+            } else {
+                selectorContents.cameraWellBacking()
             }
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Stock and print gauge")
-        .accessibilityValue("\(selectedStock?.displayName ?? "Choose stock"), \(selectedGauge.displayName)")
-        .accessibilityHint("Choose stock, print gauge and push or pull processing")
+        // The outline hugs what the entry draws; the frame after it only widens
+        // the touch area, so the cue never grows into a standing box.
         .overlay {
             StockSelectorHintOutline(isVisible: showsStockHint)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .gesture(stockEntryGesture)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Stock and print gauge")
+        .accessibilityIdentifier("camera.stock")
+        .accessibilityValue("\(selectedStock?.displayName ?? "Choose stock"), \(selectedGauge.displayName)")
+        .accessibilityHint(uiStyle == .classic
+            ? "Choose stock, print gauge and push or pull processing"
+            : "Tap for the compact stock, gauge and processing picker, or hold for the full stock list")
+        // VoiceOver has no touch duration, so each surface keeps a named action.
+        .accessibilityAction { openStockEntry(.compact) }
+        .accessibilityAction(named: Text("Open full stock list")) { openStockEntry(.full) }
+    }
+
+    /// The gesture owns the duration: nothing is committed while the finger is
+    /// down, so a hold cannot drop its release onto the sheet it opens.
+    private var stockEntryGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { _ in
+                if stockPressBegan == nil { stockPressBegan = .now }
+            }
+            .onEnded { value in
+                let began = stockPressBegan ?? .now
+                stockPressBegan = nil
+                guard abs(value.translation.width) < Self.stockPressMaximumTravel,
+                      abs(value.translation.height) < Self.stockPressMaximumTravel else { return }
+                openStockEntry(CameraStockEntry.destination(
+                    style: uiStyle, pressDuration: Date.now.timeIntervalSince(began)))
+            }
+    }
+
+    private func openStockEntry(_ requested: CameraStockEntry) {
+        onShowStockSheet(CameraStockEntry.resolved(requested, style: uiStyle))
+    }
+
+    private var selectorContents: some View {
+        HStack(spacing: 4) {
+            stockControl(faceSize: controlFaceSize)
+                .frame(width: 44, height: 44)
+            if selectedStock != nil {
+                CameraGaugeLabel(gauge: selectedGauge,
+                                 rotationDegrees: CameraGlyphRotation.degrees(for: orientation))
+            }
+        }
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
     }
 
     // MARK: - Stock selector
@@ -180,13 +232,13 @@ struct CameraControlBar: View {
     /// The setting keeps its trailing alignment and measured height. The live
     /// meter is a separate non-sizing overlay at the bottom of the preview.
     private var exposureControl: some View {
-        HStack(alignment: .top, spacing: 0) {
-            exposureSetting
-                .frame(width: 48)
+        Group {
+            if uiStyle == .classic {
+                exposureColumns.modifier(CameraInsetSurface())
+            } else {
+                exposureColumns.cameraWellBacking()
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .padding(.horizontal, 4)
-        .padding(.vertical, 6)
         .contentShape(Rectangle())
         // Visible hold acknowledgement: a small spring expansion the instant the
         // finger lands, springing back on release or cancellation. Reduce Motion
@@ -249,6 +301,21 @@ struct CameraControlBar: View {
             }
             .allowsHitTesting(false)
         }
+    }
+
+    private var exposureColumns: some View {
+        HStack(alignment: .top, spacing: 0) {
+            if uiStyle == .classic {
+                ExposureIndicatorView(meteredEV: cameraViewModel.liveExposureTargetOffset,
+                                      targetEV: cameraViewModel.liveExposureBias,
+                                      isManual: cameraViewModel.isManualExposure,
+                                      isAvailable: cameraViewModel.hasExposureMeter)
+            }
+            exposureSetting.frame(width: 48)
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
     }
 
     /// One setting, two modes. Auto drives the scene's auto-exposure target bias
@@ -590,6 +657,9 @@ struct CameraControlBar: View {
                     isRenderingPhoto: renderQueueViewModel.currentJob?.isPhoto == true,
                     isSavingPhoto: activePhotoRenderIsSaving
                 )
+                // Minimal seats the whole queue/remaining-time face in one
+                // shared well; Classic keeps the LCD's own inset plate.
+                .cameraWellBacking(cornerRadius: 10)
             }
         .buttonStyle(.plain)
         .contentShape(Rectangle())

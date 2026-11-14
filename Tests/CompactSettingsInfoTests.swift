@@ -109,10 +109,11 @@ import Testing
         // Each of the short exclusive choices uses the compact value button, and
         // each keeps its semantic native picker at the call site (so the choices
         // stay reachable and the selected one is checked).
-        #expect(source.components(separatedBy: "SettingsSelectionRow(title:").count - 1 == 9)
-        for title in ["Recording Indicator", "Record button", "Rendered File Size",
+        let titles = ["Recording Indicator", "Record button", "Rendered File Size",
                       "Capture Format", "Delivery Framing", "Camera Control",
-                      "Ramp Length", "Control color", "Lens control position"] {
+                      "Ramp Length", "Camera UI", "Control color", "Lens control position"]
+        #expect(source.components(separatedBy: "SettingsSelectionRow(title:").count - 1 == titles.count)
+        for title in titles {
             #expect(source.contains("SettingsSelectionRow(title: \"\(title)\""),
                     "\(title) must use the compact value button")
             #expect(source.contains("Picker(\"\(title)\""),

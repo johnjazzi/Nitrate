@@ -138,8 +138,8 @@ struct CameraUIStyleSurfaceTests {
     /// minimal branch keeps the flat tokens the border contract pins.
     @Test func everySurfaceReadsTheStyleAndMinimalKeepsItsTokens() throws {
         let surfaces = try source("App/Modules/CameraCapture/CameraRaisedButtonStyle.swift")
-        #expect(surfaces.components(separatedBy: "@Environment(\\.cameraUIStyle)").count == 5,
-                "The four shared surfaces all read the injected style.")
+        #expect(surfaces.components(separatedBy: "@Environment(\\.cameraUIStyle)").count == 6,
+                "The four shared surfaces and the two well faces all read the injected style.")
         #expect(surfaces.components(separatedBy: "if uiStyle == .classic").count == 5)
         for token in ["shape.fill(minimalBase)", "shape.fill(minimalTint)",
                       "shape.fill(Color.black.opacity(0.5))",
