@@ -48,17 +48,50 @@ struct IdleExposureContract: Equatable, Sendable {
     /// Nil leaves ISO metering automatically; a value pins the operator's ISO.
     let lockedISO: Float?
     let exposureBias: Float
+
+    /// True when the shutter is a real held duration rather than left to the
+    /// device's own auto exposure. Video's idle always holds one.
+    var holdsFixedShutter: Bool { durationSeconds != nil }
 }
 
-/// Shared idle retains explicit operator holds only. The recording start path
-/// separately owns its 180° shutter; changing UI modes never installs it.
+/// The shutter Video's shared idle preview holds, and the ISO behind it.
+///
+/// Video owns its 180° film shutter in the idle preview for the same reason the
+/// take does: a preview judged on a free continuous-AE shutter is metered at a
+/// duration the take never records. The take starts at `filmShutterDuration`
+/// with whatever ISO that scene needed, so the idle preview has to hold the very
+/// same duration or the two exposures disagree — the reported bug was a bright,
+/// meter-at-zero preview recording an overexposed take, because the preview's
+/// shutter was short (so its ISO was low) and the take then read that ISO at
+/// 1/48 and collected several stops more light.
+///
+/// `heldDuration` is deliberately ignored. It used to be passed through from
+/// Photo's controller, which is what leaked the still's rail into Video (and
+/// left the idle preview on a free shutter whenever nothing was held). Photo's
+/// own idle never acquires this shutter: the film standard is a Video mode fact,
+/// not a Photo hold.
 enum VideoExposureContract {
     static func idle(frameRate: CameraFrameRate, isManualExposure: Bool,
-                     manualISO: Float, bias: Float, heldDuration: Double? = nil) -> IdleExposureContract {
-        IdleExposureContract(durationSeconds: heldDuration,
+                     manualISO: Float?, bias: Float, heldDuration: Double? = nil) -> IdleExposureContract {
+        IdleExposureContract(durationSeconds: frameRate.filmShutterDuration.seconds,
                              lockedISO: isManualExposure ? manualISO : nil,
                              exposureBias: bias)
     }
+}
+
+/// Which shooting mode currently owns the shared idle device's exposure.
+///
+/// The view model's shooting mode is only a UI flag; this is the exposure
+/// consequence of it, held once in the session so every reinstall (first
+/// startup, a take returning to idle, a lens change, recovery, a frame-rate
+/// change) can restore the right intent — and so entering one mode cannot leave
+/// the other's hold installed behind it.
+enum SharedIdleExposureOwner: Equatable, Sendable {
+    /// Video holds its mode's film shutter with auto ISO or the operator's ISO.
+    case video
+    /// Photo holds only what the operator explicitly held: native auto exposure
+    /// otherwise, never Video's film shutter.
+    case photo
 }
 
 /// Mirrors `CameraStabilizationPolicy.canChange`: a frame-rate change is only

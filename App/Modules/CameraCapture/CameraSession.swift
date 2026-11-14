@@ -302,6 +302,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
     private var sharedVideoManualISO: Float?
     private var sharedVideoAperture: Float?
     private var sharedVideoZoom: Double = 1
+    /// Which shooting mode owns the shared idle device's exposure. Video is the
+    /// default: every session starts there.
+    private var sharedPreviewOwner: SharedIdleExposureOwner = .video
     private struct SharedVideoRequest: Sendable {
         let epoch: UInt64
         let url: URL
@@ -693,42 +696,108 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Hand the shared idle device's exposure to the shooting mode that owns it.
+    ///
+    /// The view model's mode is a UI flag; this is where it becomes a device
+    /// intent. Video holds its mode's film shutter (auto ISO, or the operator's
+    /// ISO) so the preview the operator judges is the exposure the take starts
+    /// from. Photo holds nothing Video installed: clearing the Video intent
+    /// re-applies Photo's own stored intent, which native auto exposure satisfies
+    /// when the operator has not held anything.
+    ///
+    /// Refusals are reported, never swallowed: a format that cannot hold the
+    /// combination leaves the device on the exposure it already had rather than
+    /// silently falling back to a free shutter.
+    func setSharedIdleExposureOwner(_ owner: SharedIdleExposureOwner) {
+        sessionQueue.async { [weak self] in
+            self?.setSharedIdleExposureOwnerOnQueue(owner)
+        }
+    }
+
+    /// MUST run on `sessionQueue`.
+    private func setSharedIdleExposureOwnerOnQueue(_ owner: SharedIdleExposureOwner) {
+        guard sharedPreviewOwner != owner else { return }
+        sharedPreviewOwner = owner
+        applySharedIdleExposureOwner()
+    }
+
+    /// Video's idle intent for the current mode. Nil only when the contract has
+    /// no fixed shutter, which `VideoExposureContract.idle` never produces.
+    private func videoPreviewIntent() -> DevelopmentPhotoController.VideoPreviewIntent? {
+        let idle = VideoExposureContract.idle(frameRate: frameRate,
+            isManualExposure: sharedVideoManualISO != nil,
+            manualISO: sharedVideoManualISO, bias: exposureBiasEV, heldDuration: nil)
+        guard let duration = idle.durationSeconds else { return nil }
+        return .init(durationSeconds: duration, manualISO: idle.lockedISO, ev: idle.exposureBias)
+    }
+
+    /// Install the owning mode's intent on the live controller. MUST run on
+    /// `sessionQueue`. A device transition in flight re-installs the controller,
+    /// which applies the same owner in `startDevelopmentPhotoController`.
+    private func applySharedIdleExposureOwner() {
+        guard sharedIdleEnabled, let controller = developmentPhotoController,
+              developmentPhotoExitCompletion == nil,
+              !sharedDeviceTransitionInFlight else { return }
+        do {
+            switch sharedPreviewOwner {
+            case .video:
+                if let intent = videoPreviewIntent() { try controller.applyVideoPreviewIntent(intent) }
+            case .photo:
+                try controller.clearVideoPreviewIntent()
+            }
+        } catch { reportDevelopmentPhotoError(error) }
+    }
+
     /// A deferred Video intent must still be visible: the operator is watching
     /// the shared idle camera, so the ISO/EV they just chose is mirrored onto it
     /// at once. Record re-applies the same value on the Log graph, so the preview
     /// never disagrees with the take, and the control stops feeling dead.
-    /// Hand the shared exposure controls (ISO, compensation) to the Photo
-    /// controller while Photo owns the shared idle device.
     ///
-    /// Deliberately *not* mirrored: the shutter. Video's 180° film standard is a
-    /// video rule, and the Photo controller is the same object the Photo shutter
-    /// rail writes to — re-imposing 1/48s here (which an EV change, an ISO change
-    /// and the AE lock all used to do) silently re-pinned the rail under the
-    /// operator, so raising the compensation could never shorten the shutter and
-    /// the frame stayed pinned at the film standard. The controller keeps its own
-    /// shutter lock, whatever that is: held if the rail holds it, free if not.
-    private func mirrorSharedExposureIntent(iso: Float?) {
-        guard let controller = developmentPhotoController,
+    /// The mirrored intent is Video's own: the mode's film shutter from
+    /// `frameRate`, never whatever duration Photo's controller happens to hold.
+    /// Passing the controller's duration through is exactly the leak that left
+    /// the preview on a free shutter and the take overexposed.
+    private func mirrorSharedExposureIntent() {
+        guard sharedPreviewOwner == .video,
+              let controller = developmentPhotoController,
               developmentPhotoExitCompletion == nil,
-              !sharedDeviceTransitionInFlight else { return }
-        let current = controller.intentSnapshot
+              !sharedDeviceTransitionInFlight,
+              let intent = videoPreviewIntent() else { return }
         do {
-            let idle = VideoExposureContract.idle(frameRate: frameRate, isManualExposure: iso != nil,
-                manualISO: iso ?? 0, bias: exposureBiasEV, heldDuration: current.duration)
-            try controller.restoreIntent(.init(iso: idle.lockedISO, duration: idle.durationSeconds,
-                                               ev: idle.exposureBias, aperture: current.aperture))
-        } catch { reportDevelopmentPhotoError(error) }
+            try controller.applyVideoPreviewIntent(intent)
+            // The retarget writes the shared persisted EV. Photo's stored intent
+            // carries the same preference, so hand it over here too — only on
+            // this retarget, never on plain mode entry, which would erase an EV
+            // the operator set in Photo and left untouched.
+            try controller.setEV(exposureBiasEV)
+        }
+        catch { reportDevelopmentPhotoError(error) }
     }
 
+    /// The ISO a take starts at, normalized from the exposure the device is
+    /// actually metering.
+    ///
+    /// The idle preview and the take can be metered at different durations (the
+    /// preview at the still profile's, the take at the film shutter), so copying
+    /// the metered ISO directly changes the exposure by the duration ratio. This
+    /// converts the whole exposure, not just the gain, and applies the operator's
+    /// EV once from the neutral offset. The caller runs it after the startup bias
+    /// has acknowledged and the meter has had its acquisition window.
     private func sharedRecordingISO(for device: AVCaptureDevice) -> Float {
         if let sharedVideoManualISO { return sharedVideoManualISO }
-        // Keep Video's existing EV/ISO metering policy, independent of Photo's
-        // lock and compensation intent. The final start setter owns its ACK.
-        switch ExposureStabilizer.decide(meteredISO: device.iso, ev: exposureBiasEV, current: nil,
-            minimum: device.activeFormat.minISO, maximum: device.activeFormat.maxISO) {
-        case .apply(let iso): return iso
-        case .hold: return device.iso
+        let format = device.activeFormat
+        if let iso = ExposureStabilizer.shutterMatchedISO(
+            meteredISO: device.iso, meteredDuration: device.exposureDuration.seconds,
+            targetDuration: filmShutterDuration.seconds,
+            meteredOffsetEV: PhotoExposureSnapshot.neutralMeteringOffset(
+                rawOffset: device.exposureTargetOffset, installedBias: device.exposureTargetBias),
+            targetEV: exposureBiasEV, minimum: format.minISO, maximum: format.maxISO) {
+            return iso
         }
+        // No usable reading: hold the gain the device metered rather than invent
+        // one. Any residual duration mismatch is reported by the meter, not
+        // hidden behind a made-up ISO.
+        return min(max(device.iso, format.minISO), format.maxISO)
     }
 
     private func returnToSharedIdleIfNeeded() {
@@ -2822,7 +2891,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             if self.sharedIdleEnabled { self.sharedVideoManualISO = iso }
             if self.defersVideoExposureWrites {
                 self.traceVideoExposure("iso-deferred-to-photo")
-                self.mirrorSharedExposureIntent(iso: iso)
+                self.mirrorSharedExposureIntent()
                 if let completion { DispatchQueue.main.async { completion(nil) } }
                 return
             }
@@ -2857,7 +2926,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             if self.sharedIdleEnabled { self.sharedVideoManualISO = nil }
             if self.defersVideoExposureWrites {
                 self.traceVideoExposure("auto-deferred-to-photo")
-                self.mirrorSharedExposureIntent(iso: nil)
+                self.mirrorSharedExposureIntent()
                 if let completion { DispatchQueue.main.async { completion(nil) } }
                 return
             }
@@ -2888,7 +2957,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             if self.sharedIdleEnabled { self.sharedVideoManualISO = self.activeDevice?.iso }
             if self.defersVideoExposureWrites {
                 self.traceVideoExposure("ae-lock-deferred-to-photo")
-                self.mirrorSharedExposureIntent(iso: self.sharedVideoManualISO)
+                self.mirrorSharedExposureIntent()
                 if let completion { DispatchQueue.main.async { completion(nil) } }
                 return
             }
@@ -2945,7 +3014,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
             guard self.exposureBiasEV != clamped else { return }
             self.exposureBiasEV = clamped
             if self.defersVideoExposureWrites {
-                self.mirrorSharedExposureIntent(iso: self.sharedVideoManualISO)
+                self.mirrorSharedExposureIntent()
                 return
             }
             guard !self.isRecordingOrPending else { return }
@@ -3121,23 +3190,28 @@ final class CameraSession: NSObject, @unchecked Sendable {
                   !self.isRecordingOrPending,
                   let device = self.activeDevice else { return }
             let latestEV = self.exposureBiasEV
-            let meteredISO = device.iso
-            let iso: Float
-            switch ExposureStabilizer.decide(
-                meteredISO: meteredISO, ev: latestEV, current: self.pinnedExposure,
-                minimum: device.activeFormat.minISO, maximum: device.activeFormat.maxISO
-            ) {
-            case .apply(let target):
-                iso = target
-            case .hold:
-                // Re-freeze the previous pin instead of leaving the device in
-                // the auto-exposure state the re-meter briefly entered.
-                let held = self.pinnedExposure?.iso ?? device.iso
-                guard held.isFinite, held > 0 else {
-                    self.reportCameraError(CameraError.exposureMeterUnavailable)
-                    return
-                }
-                iso = held
+            let neutral = PhotoExposureSnapshot.neutralMeteringOffset(
+                rawOffset: device.exposureTargetOffset, installedBias: device.exposureTargetBias)
+            let format = device.activeFormat
+            // The meter has been running in full auto exposure, so the device's
+            // ISO belongs to the duration IT chose, not to the film shutter the
+            // pin is about to install. Convert the whole exposure across the
+            // duration change: copying the ISO alone changed the take's
+            // brightness by the duration ratio, which is the reported
+            // preview-bright / take-overexposed bug on the native path.
+            func matchedISO(targetEV: Float) -> Float? {
+                ExposureStabilizer.shutterMatchedISO(
+                    meteredISO: device.iso, meteredDuration: device.exposureDuration.seconds,
+                    targetDuration: duration.seconds, meteredOffsetEV: neutral,
+                    targetEV: targetEV, minimum: format.minISO, maximum: format.maxISO)
+            }
+            // The pin records the scene ISO at the film shutter, before
+            // compensation, so its retarget/echo/deadband arithmetic stays in one
+            // coordinate; the written ISO carries the operator's EV once.
+            guard let sceneISO = matchedISO(targetEV: neutral),
+                  let iso = matchedISO(targetEV: latestEV) else {
+                self.reportCameraError(CameraError.exposureMeterUnavailable)
+                return
             }
             do {
                 try self.setExposureLocked(iso: iso, shutter: duration,
@@ -3146,17 +3220,18 @@ final class CameraSession: NSObject, @unchecked Sendable {
                 self.reportCameraError(error)
                 return
             }
-            self.pinnedExposure = ExposureStabilizer.Pin(iso: iso, ev: latestEV, meteredISO: meteredISO)
+            self.pinnedExposure = ExposureStabilizer.Pin(iso: iso, ev: latestEV, meteredISO: sceneISO)
             // The pin is the whole exposure story for a take: the compensation lives
             // in the ratio between the ISO the camera metered and the ISO we hold,
             // with the camera's own target left neutral. One line per pin says
             // whether that stop is really installed — no readout can, because the
             // readout sums the two mechanisms into one number.
-            let compensation = log2(iso / max(meteredISO, 1))
-            self.traceVideoExposure("pin-applied meteredISO=\(meteredISO) heldISO=\(iso) "
+            let compensation = log2(iso / max(sceneISO, 1))
+            self.traceVideoExposure("pin-applied meteredISO=\(sceneISO) heldISO=\(iso) "
                 + "compensation=\(String(format: "%.2f", compensation)) "
                 + "targetEV=\(latestEV) deviceBias=\(device.exposureTargetBias) "
-                + "offset=\(device.exposureTargetOffset)")
+                + "offset=\(device.exposureTargetOffset) meteredDuration=\(device.exposureDuration.seconds) "
+                + "targetDuration=\(duration.seconds)")
         }
     }
 
@@ -3282,6 +3357,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
                     finish(CameraError.unsupportedFrameRateError(for: mode)); return
                 }
                 self.frameRate = mode
+                // The preview holds the mode's shutter, so the new rate's 180°
+                // shutter has to reach the shared idle device before the
+                // completion says the change landed.
+                self.applySharedIdleExposureOwner()
                 finish(nil)
                 return
             }
@@ -3374,6 +3453,9 @@ final class CameraSession: NSObject, @unchecked Sendable {
         }
         if defersVideoDeviceWrites {
             frameRate = .standard24
+            // Same reason as the armed transition: the preview's held shutter is
+            // a mode fact and has to follow the reset back to 24 fps.
+            applySharedIdleExposureOwner()
         } else if isConfigured, activeDevice != nil {
             if let error = applyFrameRateMode(.standard24) {
                 // Keep the reset pending. A failed reset must never admit a new
@@ -4297,24 +4379,41 @@ final class CameraSession: NSObject, @unchecked Sendable {
         developmentPhotoController = controller
         try controller.start()
         developmentPhotoDirectory = directory
-        if let sharedPhotoIntent { try controller.restoreIntent(sharedPhotoIntent) }
-        // First entry in a session: the shared exposure controls (a held ISO, the
-        // EV compensation) come over from Video, the shutter does not — Photo's
-        // idle exposure is the device's own auto exposure with that compensation
-        // applied.
+        // The owner decides the idle exposure. Photo's own stored intent is
+        // restored first, then Video's hold is installed over it when Video owns
+        // the preview; neither is ever written through the other's channel.
         //
-        // Applied here rather than through `mirrorSharedExposureIntent`: that path
-        // is written for an established graph and refuses while a device
-        // transition is in flight, which is exactly when this install runs. It
-        // therefore never reached the controller on the first install of a
-        // session, and the idle preview sat on the camera's own target bias (0)
-        // until the operator touched the EV control.
+        // Applied here rather than through `applySharedIdleExposureOwner`/`mirror
+        // SharedExposureIntent`: those paths are written for an established graph
+        // and refuse while a device transition is in flight, which is exactly when
+        // this install runs. It therefore never reached the controller on the
+        // first install of a session, and the idle preview sat on the camera's own
+        // target bias (0) until the operator touched the EV control.
+        if let sharedPhotoIntent { try controller.restoreIntent(sharedPhotoIntent) }
         else {
-            let idle = VideoExposureContract.idle(frameRate: frameRate,
-                isManualExposure: sharedVideoManualISO != nil, manualISO: sharedVideoManualISO ?? 0,
-                bias: exposureBiasEV)
-            try controller.restoreIntent(.init(iso: idle.lockedISO, duration: idle.durationSeconds,
-                                               ev: idle.exposureBias, aperture: nil))
+            // Seed Photo's independent intent with the existing initial ISO/EV,
+            // even when Video is the first owner. Video's overlay must not leave
+            // Photo's first entry at a different house exposure.
+            try controller.restoreIntent(.init(iso: sharedVideoManualISO, duration: nil,
+                                               ev: exposureBiasEV, aperture: nil))
+        }
+        switch sharedPreviewOwner {
+        case .video:
+            // Best effort, and deliberately non-fatal: a format that cannot hold
+            // the film shutter must not cost the operator the camera. The take
+            // normalizes its own ISO from whatever the device is metering, so a
+            // refused preview intent leaves preview and take agreeing rather than
+            // failing the install.
+            if let intent = videoPreviewIntent() {
+                do { try controller.applyVideoPreviewIntent(intent) }
+                catch { reportDevelopmentPhotoError(error) }
+            }
+        case .photo:
+            // Photo's idle is the device's own auto exposure with the operator's
+            // compensation. It inherits Video's held ISO and EV on a first entry,
+            // exactly as before, but never Video's film shutter.
+            do { try controller.clearVideoPreviewIntent() }
+            catch { reportDevelopmentPhotoError(error) }
         }
     }
 
@@ -4373,6 +4472,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
         completion: @escaping @MainActor @Sendable (Result<Void, Error>) -> Void) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            // The session-level mode entry owns the exposure consequence too, so
+            // the Debug smoke path and the shared idle path cannot disagree about
+            // which intent the idle device is holding.
+            self.setSharedIdleExposureOwnerOnQueue(enabled ? .photo : .video)
             if !enabled {
 #if DEBUG
                 self.exitDevelopmentPhotoOnQueue(completion: completion)

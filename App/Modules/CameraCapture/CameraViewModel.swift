@@ -1467,6 +1467,12 @@ final class CameraViewModel {
             UIApplication.shared.isIdleTimerDisabled = true
         }
         isDevelopmentPhotoMode = enabled
+        // The mode is a UI flag here, but it is an exposure fact on the shared
+        // idle device: Video holds its film shutter for the preview, Photo holds
+        // only what the operator held. Without this the idle preview kept Video's
+        // fixed shutter in Photo (and a free shutter in Video) while the take
+        // used the other one.
+        session.setSharedIdleExposureOwner(enabled ? .photo : .video)
 #if DEBUG
         if enabled, CommandLine.arguments.contains("--ui-slow-photo") {
             session.setDevelopmentPhotoISO(400)

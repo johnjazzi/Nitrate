@@ -42,6 +42,15 @@ final class DevelopmentPhotoController: @unchecked Sendable {
     private var apertureBaseline: PhotoApertureBaseline?
     private var pinnedISO: Float?
     private var pinnedDuration: CMTime?
+    /// Video's temporary hold over the shared idle device: the mode's fixed film
+    /// shutter behind either the device's own auto ISO or the operator's ISO.
+    ///
+    /// Deliberately separate from Photo's stored intent — nothing here writes
+    /// `isoLocked`, `shutterLocked`, `pinnedISO` or `pinnedDuration`. Leaving
+    /// Video for Photo therefore restores exactly the still the operator had, and
+    /// leaving Photo for Video never carries the still's held duration into the
+    /// take (or Video's film shutter back into the still).
+    private var videoPreview: VideoPreviewIntent?
     private var traceSequence: UInt64 = 0
     private var wake: DispatchWorkItem?
     private var intentDeadline: TimeInterval = 0
@@ -99,6 +108,19 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         let aperture: Float?
     }
 
+    /// Video's own exposure intent for the shared idle device.
+    ///
+    /// The shutter is always a real duration: a Video preview that floats its
+    /// shutter meters an exposure the take never records. `manualISO == nil`
+    /// leaves the device's own auto ISO behind that locked shutter, which is the
+    /// shutter-priority exposure the take starts from.
+    struct VideoPreviewIntent: Equatable, Sendable {
+        let durationSeconds: Double
+        let manualISO: Float?
+        /// EV target in the device's installed coordinate.
+        let ev: Float
+    }
+
     var intentSnapshot: Intent {
         dispatchPrecondition(condition: .onQueue(queue))
         return Intent(iso: isoLocked ? pinnedISO : nil,
@@ -127,6 +149,54 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         apertureDirty = apertureIntent != nil
         // A restored intent starts a new metering context; the next aperture
         // write re-seeds the baseline from the device as it stands then.
+        apertureBaseline = nil
+        targetLimited = false
+        try submitCurrentIntent()
+    }
+
+    /// The Video intent currently held, if Video owns the shared idle exposure.
+    ///
+    /// Photo's stored intent is what `intentSnapshot` reports; this is the
+    /// temporary Video hold, and it never survives into Photo's.
+    var videoPreviewIntent: VideoPreviewIntent? {
+        dispatchPrecondition(condition: .onQueue(queue))
+        return videoPreview
+    }
+
+    /// Hold Video's exposure on the shared idle device: the mode's fixed film
+    /// shutter, with auto ISO or the operator's ISO behind it.
+    ///
+    /// The combination is validated against the active format BEFORE anything is
+    /// scheduled. `AVCaptureDevice.autoISO` is only legal where the format
+    /// advertises that priority mode, and passing it elsewhere raises an
+    /// Objective-C exception rather than returning an error — so an unsupported
+    /// format fails closed here, with the caller told and the device left on the
+    /// exposure it already had. It never silently falls back to a free shutter.
+    func applyVideoPreviewIntent(_ intent: VideoPreviewIntent) throws {
+        dispatchPrecondition(condition: .onQueue(queue)); try ensureMutable()
+        guard intent.durationSeconds.isFinite, intent.durationSeconds > 0,
+              intent.ev.isFinite,
+              intent.manualISO.map({ $0.isFinite && $0 > 0 }) ?? true else { throw Error.invalidValue }
+        guard #available(iOS 27.0, *) else { throw Error.unsupportedMode }
+        let clamped = VideoPreviewIntent(
+            durationSeconds: min(max(intent.durationSeconds, shutterRange.lowerBound), shutterRange.upperBound),
+            manualISO: intent.manualISO.map { min(max($0, isoRange.lowerBound), isoRange.upperBound) },
+            ev: min(max(intent.ev, exposureBiasRange.lowerBound), exposureBiasRange.upperBound))
+        _ = try videoExposurePlan(for: clamped)
+        videoPreview = clamped
+        // The shutter changed, so an ISO resolved at the old one is stale.
+        apertureBaseline = nil
+        targetLimited = false
+        try submitCurrentIntent()
+    }
+
+    /// Hand the idle device back to Photo's own stored intent. Photo's intent is
+    /// untouched by the Video hold, so nothing has to be restored: clearing the
+    /// hold is what re-applies it.
+    func clearVideoPreviewIntent() throws {
+        dispatchPrecondition(condition: .onQueue(queue)); try ensureMutable()
+        guard videoPreview != nil else { return }
+        videoPreview = nil
         apertureBaseline = nil
         targetLimited = false
         try submitCurrentIntent()
@@ -320,7 +390,10 @@ final class DevelopmentPhotoController: @unchecked Sendable {
     }
 
     private var usesNativeAutoExposure: Bool {
-        PhotoExposurePolicy.usesNativeAutoExposure(isoLocked: isoLocked,
+        // Video's hold always locks the shutter, so the device is never left in
+        // Photo's native auto exposure while Video owns the preview.
+        guard videoPreview == nil else { return false }
+        return PhotoExposurePolicy.usesNativeAutoExposure(isoLocked: isoLocked,
             shutterLocked: shutterLocked, apertureHeld: apertureIntent != nil)
     }
     private var neutralMeteringOffset: Float {
@@ -329,11 +402,87 @@ final class DevelopmentPhotoController: @unchecked Sendable {
     }
     private var settling: Bool {
         if usesNativeAutoExposure { return device.isAdjustingExposure }
+        // While Video owns the preview its hold is the only exposure that is live:
+        // a fixed ISO and shutter do not converge toward Photo's EV, so those
+        // cases are settled and must not fall through to Photo's own locks.
+        if let videoPreview {
+            return videoPreview.manualISO == nil
+                && abs(neutralMeteringOffset - videoPreview.ev) > PhotoExposurePolicy.settlingToleranceEV
+        }
         return !(isoLocked && shutterLocked)
             && abs(ev - neutralMeteringOffset) > PhotoExposurePolicy.settlingToleranceEV
     }
 
+    /// Video's exposure plan for the device as it stands, validated against the
+    /// active format before any setter is entered.
+    private struct VideoExposurePlan {
+        let iso: Float
+        let duration: CMTime
+        let bias: Float
+        /// True only when the device's own auto ISO is carrying the exposure. A
+        /// numeric fallback is not the priority mode, however it was asked for.
+        let automaticISO: Bool
+    }
+
+    /// Resolve — and validate — the exposure a Video intent asks for.
+    ///
+    /// The support check is mandatory, not defensive: `AVCaptureDevice.autoISO`
+    /// is a special value that is valid only where the format advertises that
+    /// priority mode, and an unsupported value raises an Objective-C exception
+    /// out of `setExposureModeCustom` instead of returning an error. Every
+    /// failure path here throws, so the caller reports it and the device keeps
+    /// the exposure it had.
+    @available(iOS 27.0, *)
+    private func videoExposurePlan(for intent: VideoPreviewIntent) throws -> VideoExposurePlan {
+        let duration = CMTime(seconds: intent.durationSeconds, preferredTimescale: 1_000_000_000)
+        // The iris is not part of Video's hold: hold whatever stop this lens is
+        // already at, and let the format answer for it.
+        let lens = apertureIntent ?? AVCaptureDevice.currentLensAperture
+        let format = device.activeFormat
+        let iso: Float
+        let automaticISO: Bool
+        if let manual = intent.manualISO {
+            guard format.supportsExposureModeCustom(lensAperture: lens, duration: duration, iso: manual) else {
+                throw Error.unsupportedMode
+            }
+            iso = manual
+            automaticISO = false
+        } else if format.supportsExposureModeCustom(lensAperture: lens, duration: duration, iso: AVCaptureDevice.autoISO) {
+            iso = AVCaptureDevice.autoISO
+            automaticISO = true
+        } else {
+            // A frozen numeric gain is not auto ISO: it would stop adapting as
+            // the scene changes. Report unsupported priority mode instead of
+            // quietly substituting a different exposure contract.
+            throw Error.unsupportedMode
+        }
+        // With an Auto parameter present the device applies the bias through that
+        // parameter, so auto ISO is pulled onto the operator's EV target. A
+        // numeric ISO is the operator's own gain: the bias has nothing left to
+        // adjust and writing it would only move the meter.
+        let bias: Float = automaticISO ? intent.ev : 0
+        return VideoExposurePlan(iso: iso, duration: duration, bias: bias,
+                                 automaticISO: automaticISO)
+    }
+
+    /// Whether the device already holds exactly this auto-ISO exposure. Writing
+    /// it again would restart the device's ISO convergence for no reason.
+    @available(iOS 27.0, *)
+    private func autoISOExposureInstalled(duration: CMTime, bias: Float) -> Bool {
+        device.exposureMode == .custom
+            && device.automaticallyAdjustsISO
+            && abs(device.exposureDuration.seconds - duration.seconds) <= max(0.000005, duration.seconds * 0.005)
+            && abs(device.exposureTargetBias - bias) <= 0.02
+    }
+
     private func applyCurrentIntent() throws {
+        if let videoPreview {
+            guard #available(iOS 27.0, *) else { throw Error.unsupportedMode }
+            let plan = try videoExposurePlan(for: videoPreview)
+            try applyIntent(iso: plan.iso, duration: plan.duration, bias: plan.bias,
+                            automaticISO: plan.automaticISO)
+            return
+        }
         let duration = shutterLocked ? (pinnedDuration ?? device.exposureDuration) : device.exposureDuration
         // The ISO floats while an aperture is held. Re-resolve it from the
         // metered baseline: re-writing the ISO read before the iris moved pins
@@ -391,12 +540,25 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         publish()
     }
 
-    private func applyIntent(iso: Float, duration: CMTime) throws {
+    private func applyIntent(iso: Float, duration: CMTime, bias: Float = 0,
+                             automaticISO: Bool = false) throws {
         guard !stopped else { throw Error.stopped }
-        guard iso.isFinite, duration.seconds.isFinite, isoRange.contains(iso), shutterRange.contains(duration.seconds) else { throw Error.invalidValue }
-        if !apertureDirty, !usesNativeAutoExposure, device.exposureMode == .custom,
-           !PhotoExposureCadence.needsWrite(iso: iso, duration: duration.seconds,
-               actualISO: device.iso, actualDuration: device.exposureDuration.seconds) { return }
+        guard duration.seconds.isFinite, shutterRange.contains(duration.seconds),
+              automaticISO || (iso.isFinite && isoRange.contains(iso)) else { throw Error.invalidValue }
+        if !apertureDirty, !usesNativeAutoExposure, device.exposureMode == .custom {
+            if automaticISO {
+                // Re-writing an installed auto-ISO exposure restarts the device's
+                // own convergence, so only a real difference earns a setter.
+                if #available(iOS 27.0, *), autoISOExposureInstalled(duration: duration, bias: bias) { return }
+            } else {
+                let actualISOIsAutomatic: Bool
+                if #available(iOS 27.0, *) { actualISOIsAutomatic = device.automaticallyAdjustsISO }
+                else { actualISOIsAutomatic = false }
+                if !PhotoExposureCadence.needsWrite(iso: iso, duration: duration.seconds,
+                    actualISO: device.iso, actualDuration: device.exposureDuration.seconds,
+                    actualISOIsAutomatic: actualISOIsAutomatic) { return }
+            }
+        }
         generation &+= 1
         try device.lockForConfiguration()
         defer { device.unlockForConfiguration() }
@@ -412,17 +574,26 @@ final class DevelopmentPhotoController: @unchecked Sendable {
             return
         }
         guard device.isExposureModeSupported(.custom) else { throw Error.unsupportedMode }
-        if #available(iOS 27.0, *), apertureDirty || apertureIntent != nil {
+        if #available(iOS 27.0, *), automaticISO || videoPreview != nil || apertureDirty || apertureIntent != nil {
             let aperture = apertureIntent ?? AVCaptureDevice.currentLensAperture
             guard device.activeFormat.supportsExposureModeCustom(lensAperture: aperture, duration: duration, iso: iso) else {
                 throw Error.unsupportedMode
             }
         }
+        // With an Auto parameter the streaming duration is capped by
+        // `activeMaxExposureDuration`. Raise a cap the device had shortened below
+        // the film shutter, or the "fixed" shutter would silently be clipped.
+        if automaticISO, device.activeMaxExposureDuration.isNumeric,
+           CMTimeCompare(device.activeMaxExposureDuration, duration) < 0 {
+            let ceiling = device.activeVideoMaxFrameDuration.isNumeric
+                ? device.activeVideoMaxFrameDuration : duration
+            if CMTimeCompare(ceiling, duration) >= 0 { device.activeMaxExposureDuration = duration }
+        }
         guard let token = operations.begin(.custom, now: ProcessInfo.processInfo.systemUptime) else { throw Error.notReady }
-        setBias(0)
+        setBias(bias)
         lastRequested = (iso, duration.seconds)
         armSetterWatchdog(token)
-        trace("setter-start token=\(token.id) requestedISO=\(iso) requestedDuration=\(duration.seconds)")
+        trace("setter-start token=\(token.id) requestedISO=\(automaticISO ? "auto" : String(iso)) requestedDuration=\(duration.seconds) bias=\(bias)")
         let completion: @Sendable (CMTime) -> Void = { [weak self] _ in
             guard let self else { return }
             self.queue.async {

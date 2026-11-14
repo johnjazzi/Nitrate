@@ -48,8 +48,9 @@ enum PhotoExposureCadence {
     /// callback or an explicitly coordinated session reset.
     static let captureTransactionTimeout: TimeInterval = 8
 
-    static func needsWrite(iso: Float, duration: Double, actualISO: Float, actualDuration: Double) -> Bool {
-        abs(iso - actualISO) > max(1, abs(actualISO) * 0.005)
+    static func needsWrite(iso: Float, duration: Double, actualISO: Float, actualDuration: Double,
+                           actualISOIsAutomatic: Bool = false) -> Bool {
+        actualISOIsAutomatic || abs(iso - actualISO) > max(1, abs(actualISO) * 0.005)
             || abs(duration - actualDuration) > max(0.000005, actualDuration * 0.005)
     }
 }
