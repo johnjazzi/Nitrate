@@ -22,12 +22,17 @@ struct QueueSheetView: View {
     var onBulkRedevelop: (Set<UUID>) -> Void = { _ in }
     @State private var selection: Set<UUID> = []
     @State private var isSelecting = false
+    @State private var showsFailedOnly = false
+    @State private var selectingFailed = false
+    @State private var failedSelection: Set<UUID> = []
     /// Presentation filter only: visible history by default, hidden on the eye.
     @State private var historyMode: QueueHistoryMode = .visible
     /// The one receipt whose action wells are open, drawn inside this sheet.
     @State private var selectedJobID: UUID?
     @State private var shareTarget: RenderJob?
-    @State private var playbackJob: RenderJob?
+    @State private var previewJobID: UUID?
+    @State private var previewFocused = false
+    @State private var showsHistoryDeletion = false
     @State private var metadataJob: RenderJob?
     @State private var photosOpenFailed = false
     @State private var showsStorage = false
@@ -43,7 +48,9 @@ struct QueueSheetView: View {
     private var columns: Int { QueueContactSheetLayout.columns(forWidth: contentWidth) }
     /// All history, newest first. No Latest/Earlier split: one sheet, one grid.
     private var historyReceipts: [RenderJob] {
-        historyMode.receipts(viewModel.historyJobs, hiddenIDs: hiddenIDs)
+        let mode: QueueHistoryMode = showsFailedOnly ? .visible : historyMode
+        let images = mode.receipts(viewModel.historyJobs, hiddenIDs: hiddenIDs)
+        return showsFailedOnly ? images.filter { $0.status == .failed } : images
     }
     private var shownReceipts: [RenderJob] {
         let count = QueueContactSheetLayout.visibleCount(total: historyReceipts.count,
@@ -76,6 +83,8 @@ struct QueueSheetView: View {
                     isHidden: hiddenIDs.contains(job.id),
                     canRedevelop: canReviewOriginal(job),
                     canPreview: canPreviewLocally(job),
+                    onShare: job.presentsAsPhoto && job.receiptActions.shareLocal ? { closeOverlay { shareVideo(job) } } : nil,
+                    onOpenPhotos: { closeOverlay { openPhotos() } },
                     onRedevelop: { redevelop(job) },
                     onMetadata: { showMetadata(job) },
                     onPreview: { previewLocally(job) },
@@ -90,45 +99,66 @@ struct QueueSheetView: View {
         .presentationDetents([.fraction(QueueContactSheetLayout.compactFraction), .large],
                              selection: $detent)
         .presentationDragIndicator(.visible)
+        .presentationBackground(.black)
+        .preferredColorScheme(.dark)
+        .onChange(of: historyReceipts.map(\.id)) { _, ids in
+            if let current = previewJobID, !ids.contains(current) {
+                previewJobID = ids.first
+            }
+        }
         .onAppear { cameraViewModel.updateFreeSpace() }
     }
 
     private var surface: some View {
-        VStack(spacing: 0) {
-            header
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    QueueActivityStrip(summary: summary, isExpanded: isExpanded,
-                                       expand: toggleExpansion)
-                    if isExpanded { notices }
-                    if isExpanded { workSections }
-                    historySection
-                    if isExpanded { footer }
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                header
+                if previewJobID != nil, isExpanded {
+                    inlinePreview
+                        .frame(height: previewFocused
+                            ? geometry.size.height * 0.72
+                            : min(geometry.size.height * 0.48, 420))
+                    previewControls
+                        .padding(.top, 8)
+                        .padding(.bottom, 16)
                 }
-                .padding(.bottom, isSelecting && !selection.isEmpty ? 76 : 16)
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-                    contentWidth = width
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        if isExpanded, !showsFailedOnly { notices }
+                        if isExpanded, !showsFailedOnly { workSections }
+                        if showsFailedOnly { failedControls }
+                        historySection
+                        if isExpanded, !showsFailedOnly { footer }
+                    }
+                    .padding(.bottom, isSelecting && !selection.isEmpty ? 76 : 0)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                        contentWidth = width
+                    }
                 }
+                .scrollIndicators(.hidden)
             }
-            .scrollIndicators(.hidden)
         }
+        .background(.black)
+        .preferredColorScheme(.dark)
         .safeAreaInset(edge: .bottom) { bulkActionBar }
         .sheet(item: $shareTarget) { job in
             if job.isImportedVideo != true, let url = job.retainedOutputURL {
                 ShareSheet(items: [url])
             }
         }
-        .sheet(item: $playbackJob) { job in
-            if job.isImportedVideo != true, let url = job.retainedOutputURL {
-                if job.isPhoto == true {
-                    PhotoPreviewSheet(url: url, title: job.receiptTitle)
-                } else {
-                    VideoPreviewSheet(url: url, title: job.receiptTitle, iso: job.iso)
+        .sheet(isPresented: $showsHistoryDeletion) {
+            HistoryDeletionSheet { _ in
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(300))
+                    queueNotice = "Deletion is not enabled yet. No images were deleted."
                 }
             }
         }
         .sheet(item: $metadataJob) { job in
-            QueueReceiptMetadataView(job: job)
+            QueueReceiptMetadataView(job: job, retry: job.status == .failed ? {
+                metadataJob = nil
+                viewModel.retry(jobId: job.id)
+            } : nil)
                 .labelStyle(.titleAndIcon)
         }
         .sheet(isPresented: $showsStorage) {
@@ -163,30 +193,153 @@ struct QueueSheetView: View {
         }
     }
 
+    private var inlinePreview: some View {
+        let images = historyReceipts
+        let index = images.firstIndex { $0.id == previewJobID } ?? 0
+        let start = max(index - 1, 0)
+        let end = min(index + 2, images.count)
+        let activeIDs = Set(images[start..<end].map(\.id))
+        return TabView(selection: $previewJobID) {
+            ForEach(images) { job in
+                HistoryInlinePreview(job: job, isActive: activeIDs.contains(job.id))
+                    .tag(Optional(job.id))
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .overlay(alignment: .topTrailing) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { previewJobID = nil }
+            } label: {
+                Image(systemName: "xmark")
+                    .frame(width: 44, height: 44)
+                    .background(.black.opacity(0.7), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(6)
+            .accessibilityLabel("Close image preview")
+        }
+        .accessibilityIdentifier("queue.inlinePreview")
+    }
+
+    private var previewControls: some View {
+        HStack(spacing: 12) {
+            if let job = previewJobID.flatMap({ id in historyReceipts.first { $0.id == id } }) {
+                if job.presentsAsPhoto {
+                    previewControl("Re-develop", symbol: "arrow.counterclockwise",
+                                   enabled: canReviewOriginal(job)) { redevelop(job) }
+                } else {
+                    previewControl("Open Photos", symbol: "photo.on.rectangle") { openPhotos() }
+                }
+                Spacer(minLength: 0)
+                previewControl("Metadata", symbol: "info.circle") { showMetadata(job) }
+                Spacer(minLength: 0)
+                if job.presentsAsPhoto {
+                    previewControl("Share", symbol: "square.and.arrow.up",
+                                   enabled: job.receiptActions.shareLocal) { shareVideo(job) }
+                    Spacer(minLength: 0)
+                }
+                previewControl(hiddenIDs.contains(job.id) ? "Show image" : "Hide image",
+                               symbol: hiddenIDs.contains(job.id) ? "eye" : "eye.slash") { toggleHidden(job) }
+                Spacer(minLength: 0)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.22)) { previewFocused.toggle() }
+                } label: {
+                    Image(systemName: previewFocused
+                        ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        .font(NitrateTypography.font(.subheadline))
+                        .frame(width: 44, height: 44)
+                        .background(previewFocused ? Color.white.opacity(0.15) : .clear,
+                                    in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .accessibilityLabel(previewFocused ? "Restore contact sheet" : "Enlarge centered preview")
+                .accessibilityValue(previewFocused ? "Large preview" : "Balanced preview and contact sheet")
+                .accessibilityIdentifier("queue.previewSizeToggle")
+            }
+        }
+        .padding(.horizontal, 24)
+        .frame(height: 44)
+        .background(.black)
+        .accessibilityIdentifier("queue.previewControls")
+    }
+
+    private func previewControl(_ title: String, symbol: String, enabled: Bool = true,
+                                action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(NitrateTypography.font(.title3))
+                .foregroundStyle(enabled ? Color.white : Color.white.opacity(0.3))
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(title)
+    }
+
     // MARK: - Header
 
-    /// HISTORY on the left; eye toggle and Photos on the right, one row. No
-    /// desktop toolbar, no storage copy.
     private var header: some View {
-        HStack(spacing: 2) {
-            Text("HISTORY")
+        HStack(spacing: 0) {
+            Text("IMAGES")
                 .font(NitrateTypography.font(.caption))
                 .tracking(1.6)
-                .foregroundStyle(.secondary)
+                .padding(.leading, 8)
                 .accessibilityAddTraits(.isHeader)
-            Spacer(minLength: 8)
-            if isExpanded, historyReceipts.contains(where: canReviewOriginal) || isSelecting {
-                selectionControl
-            }
+            Spacer(minLength: 0)
             visibilityToggle
             photosAction
+            Button { showsHistoryDeletion = true } label: {
+                Image(systemName: "trash")
+                    .font(NitrateTypography.font(.subheadline))
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Delete images")
+            .accessibilityIdentifier("queue.deleteImages")
+        }
+        .overlay {
+            GeometryReader { geometry in
+                Button(action: toggleFailedFilter) {
+                    Text(headerStatus)
+                    .font(NitrateTypography.font(size: 10))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.75)
+                    .frame(width: max(geometry.size.width - 3 * 44 * 2, 0), height: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(summary.failed == 0 && !showsFailedOnly)
+                .position(x: geometry.size.width / 2, y: 22)
+                .accessibilityLabel(showsFailedOnly ? "Show all images" : "Show failed images")
+                .accessibilityValue(headerStatus)
+                .accessibilityIdentifier("queue.activitySummary")
+            }
         }
         .padding(.horizontal, QueueContactSheetLayout.horizontalPadding)
-        .frame(minHeight: 44)
+        .frame(height: 44)
+        .padding(.top, 4)
+        .foregroundStyle(.white)
+        .background(Color(white: 0.12))
+    }
+
+    private var headerStatus: String {
+        var lines: [String] = []
+        if summary.failed > 0 || showsFailedOnly { lines.append("\(summary.failed) failed") }
+        let total = summary.processing + summary.queued
+        if total > 0 { lines.append("\(summary.processing)/\(total) processing") }
+        if summary.awaitingStock > 0 { lines.append("\(summary.awaitingStock) awaiting stock") }
+        if viewModel.isPersistenceBlocked { lines.append("Queue needs attention") }
+        else if summary.isPaused { lines.append("Paused") }
+        return lines.joined(separator: " · ")
     }
 
     private var visibilityToggle: some View {
         Button {
+            showsFailedOnly = false
+            selectingFailed = false
+            failedSelection.removeAll()
             withAnimation(.easeInOut(duration: 0.2)) { historyMode = historyMode.toggled() }
         } label: {
             Label(historyMode.accessibilityLabel, systemImage: historyMode.toggleSymbol)
@@ -374,9 +527,9 @@ struct QueueSheetView: View {
     // MARK: - History grid
 
     private var historySection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 0) {
             if historyMode == .hidden {
-                sectionHeader("Hidden receipts")
+                sectionHeader("Hidden images")
             }
             if historyReceipts.isEmpty {
                 emptyState
@@ -384,21 +537,29 @@ struct QueueSheetView: View {
                 LazyVGrid(columns: QueueContactSheetLayout.gridColumns(forWidth: contentWidth),
                           spacing: QueueContactSheetLayout.gutter) {
                     ForEach(shownReceipts) { job in
-                        receiptCell(job)
+                        VStack(spacing: 0) {
+                            receiptCell(job)
+                            if showsFailedOnly {
+                                Text(failedTimestamp(job))
+                                    .font(NitrateTypography.font(size: 9))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                                    .padding(.bottom, 6)
+                            }
+                        }
                     }
                 }
-                .padding(.horizontal, QueueContactSheetLayout.horizontalPadding)
                 if !isExpanded, historyReceipts.count > shownReceipts.count {
                     Button(action: expand) {
-                        Text("\(historyReceipts.count - shownReceipts.count) more")
+                        Image(systemName: "chevron.up")
                             .font(NitrateTypography.font(.caption2))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("queue.historyMore")
-                    .accessibilityLabel("\(historyReceipts.count - shownReceipts.count) more receipts")
-                    .accessibilityHint("Expands History to show every receipt.")
+                    .accessibilityLabel("\(historyReceipts.count - shownReceipts.count) more images")
+                    .accessibilityHint("Expands History to show every image.")
                 }
             }
         }
@@ -408,7 +569,7 @@ struct QueueSheetView: View {
         VStack(spacing: 8) {
             Image(systemName: historyMode == .hidden ? "eye.slash" : "tray")
                 .font(NitrateTypography.font(.title2))
-            Text(historyMode == .hidden ? "Nothing hidden" : "No history")
+            Text(showsFailedOnly ? "No failed images" : (historyMode == .hidden ? "Nothing hidden" : "No history"))
                 .font(NitrateTypography.font(.caption2))
         }
         .foregroundStyle(.secondary)
@@ -421,23 +582,41 @@ struct QueueSheetView: View {
     /// instead, so the card never nests a second button.
     private func receiptCell(_ job: RenderJob) -> some View {
         let isHidden = hiddenIDs.contains(job.id)
-        let isSelected = selection.contains(job.id)
+        let isSelected = showsFailedOnly && selectingFailed
+            ? failedSelection.contains(job.id) : selection.contains(job.id)
 
-        return Button {
-            if isSelecting, canReviewOriginal(job) {
-                toggleSelection(job)
-            } else {
-                openActions(for: job)
-            }
-        } label: {
-            QueueReceiptCard(job: job, openPhotos: openPhotos,
-                             showMetadata: { metadataJob = job },
-                             playLocal: { previewLocally(job) },
-                             shareLocal: { shareVideo(job) },
-                             redevelop: canReviewOriginal(job) ? { onRedevelop(job) } : nil,
-                             contactSheet: true)
+        return QueueReceiptCard(job: job, openPhotos: openPhotos,
+                                showMetadata: { metadataJob = job },
+                                playLocal: { previewLocally(job) },
+                                shareLocal: { shareVideo(job) },
+                                redevelop: canReviewOriginal(job) ? { onRedevelop(job) } : nil,
+                                contactSheet: true)
+        .contentShape(Rectangle())
+        .gesture(
+            LongPressGesture(minimumDuration: 0.45)
+                .exclusively(before: TapGesture())
+                .onEnded { gesture in
+                    switch gesture {
+                    case .first:
+                        openActions(for: job)
+                    case .second:
+                        if showsFailedOnly, selectingFailed {
+                            toggleFailedSelection(job.id)
+                        } else if isSelecting, canReviewOriginal(job) {
+                            toggleSelection(job)
+                        } else {
+                            previewLocally(job)
+                        }
+                    }
+                }
+        )
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction {
+            if showsFailedOnly, selectingFailed { toggleFailedSelection(job.id) }
+            else if isSelecting, canReviewOriginal(job) { toggleSelection(job) }
+            else { previewLocally(job) }
         }
-        .buttonStyle(.plain)
+        .accessibilityAction(named: Text("Image actions")) { openActions(for: job) }
         .overlay(alignment: .topLeading) {
             if isHidden {
                 Image(systemName: "eye.slash")
@@ -450,7 +629,7 @@ struct QueueSheetView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            if isSelecting, canReviewOriginal(job) {
+            if (showsFailedOnly && selectingFailed) || (isSelecting && canReviewOriginal(job)) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(NitrateTypography.font(.title3))
                     .foregroundStyle(isSelected ? .primary : .secondary)
@@ -458,41 +637,83 @@ struct QueueSheetView: View {
                     .accessibilityHidden(true)
             }
         }
-        .contextMenu { receiptMenu(job) }
+        .overlay {
+            if previewJobID == job.id {
+                Rectangle().strokeBorder(.white.opacity(0.8), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+        }
         .accessibilityLabel(cellLabel(job))
         .accessibilityValue(cellValue(job))
-        .accessibilityHint("Opens Re-develop, Metadata, Preview and Hide.")
-    }
-
-    @ViewBuilder private func receiptMenu(_ job: RenderJob) -> some View {
-        if job.receiptActions.shareLocal {
-            Button { shareVideo(job) } label: {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
-        }
-        Button { metadataJob = job } label: {
-            Label("Metadata", systemImage: "info.circle")
-        }
-        if canPreviewLocally(job) {
-            Button { previewLocally(job) } label: {
-                Label(job.isPhoto == true ? "Preview" : "Play", systemImage: "play.circle")
-            }
-        }
-        if canReviewOriginal(job) {
-            Button { onRedevelop(job) } label: {
-                Label("Re-develop", systemImage: "arrow.counterclockwise")
-            }
-        }
-        Button { toggleHidden(job) } label: {
-            Label(hiddenIDs.contains(job.id) ? "Show in history" : "Hide from history",
-                  systemImage: hiddenIDs.contains(job.id) ? "eye" : "eye.slash")
-        }
+        .accessibilityHint("Tap to preview. Touch and hold for image actions.")
     }
 
     // MARK: - Expanded footer
 
+    private var failedControls: some View {
+        HStack(spacing: 16) {
+            Button(action: toggleFailedFilter) {
+                Label("Back", systemImage: "chevron.left")
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Back to all images")
+            .accessibilityIdentifier("queue.failedBack")
+            Button("Clear all") { clearFailed(Set(historyReceipts.map(\.id))) }
+                .disabled(historyReceipts.isEmpty)
+                .accessibilityHint("Clears failed images from visible history. Originals and Photos are unchanged.")
+            Spacer(minLength: 0)
+            if selectingFailed, !failedSelection.isEmpty {
+                Button("Clear \(failedSelection.count)") { clearFailed(failedSelection) }
+            }
+            Button(selectingFailed ? "Done" : "Select") {
+                selectingFailed.toggle()
+                failedSelection.removeAll()
+            }
+        }
+        .font(NitrateTypography.font(.caption))
+        .buttonStyle(.plain)
+        .frame(minHeight: 44)
+        .padding(.horizontal, 20)
+        .accessibilityIdentifier("queue.failedControls")
+    }
+
+    private func toggleFailedFilter() {
+        previewJobID = nil
+        selectedJobID = nil
+        isSelecting = false
+        selection.removeAll()
+        selectingFailed = false
+        failedSelection.removeAll()
+        showsFailedOnly.toggle()
+        if showsFailedOnly { expand() }
+    }
+
+    private func toggleFailedSelection(_ id: UUID) {
+        if failedSelection.contains(id) { failedSelection.remove(id) }
+        else { failedSelection.insert(id) }
+    }
+
+    private func clearFailed(_ ids: Set<UUID>) {
+        let currentFailures = Set(viewModel.jobs.filter { $0.status == .failed }.map(\.id))
+        for id in ids.intersection(currentFailures) { viewModel.historyVisibility.hide(id) }
+        failedSelection.subtract(ids)
+    }
+
+    private func failedTimestamp(_ job: RenderJob) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .current
+        formatter.dateFormat = "MM/dd-HH:mm"
+        return formatter.string(from: job.receipt?.recordedAt ?? job.createdAt)
+    }
+
     private var footer: some View {
         HStack(spacing: 4) {
+            if historyReceipts.contains(where: canReviewOriginal) || isSelecting {
+                selectionControl
+            }
             Button { showsStorage = true } label: {
                 Label("Storage", systemImage: "internaldrive")
                     .labelStyle(.iconOnly)
@@ -592,12 +813,20 @@ struct QueueSheetView: View {
     }
 
     private func previewLocally(_ job: RenderJob) {
-        guard job.isImportedVideo != true, job.retainedOutputURL != nil else { return }
-        closeOverlay { playbackJob = job }
+        guard historyReceipts.contains(where: { $0.id == job.id }) else { return }
+        // A thumbnail is a direct selection, not an animated swipe through every
+        // intervening page. Finger swipes retain the pager's native animation.
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            selectedJobID = nil
+            previewJobID = job.id
+            detent = .large
+        }
     }
 
     private func canPreviewLocally(_ job: RenderJob) -> Bool {
-        job.permitsLocalMedia && job.retainedOutputURL != nil
+        job.permitsLocalMedia && (job.retainedOutputURL != nil || job.receipt?.thumbnailJPEG != nil)
     }
 
     /// Hide/show is presentation only: it never removes the job, its original,
@@ -659,7 +888,7 @@ struct QueueSheetView: View {
     // MARK: - Spoken receipt
 
     private func cellLabel(_ job: RenderJob) -> String {
-        let kind = job.isPhoto == true ? "Photo" : "Video"
+        let kind = job.presentsAsPhoto ? "Photo" : "Video"
         let hidden = hiddenIDs.contains(job.id) ? ", hidden" : ""
         return "\(job.receiptTitle), \(kind), \(statusWord(job))\(hidden)"
     }
@@ -681,61 +910,6 @@ struct QueueSheetView: View {
     }
 }
 
-// MARK: - Video Preview
-
-/// Plays a rendered clip from the render output directory.
-///
-/// Playback reads the file on disk rather than the Photos library, because the
-/// app only ever requests `.addOnly` Photos access and therefore cannot read
-/// its own saves back out.
-private struct VideoPreviewSheet: View {
-    let url: URL
-    let title: String
-    let iso: Float
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var player: AVPlayer?
-    @State private var isMissing = false
-
-    var body: some View {
-        NavigationStack {
-            Group {
-                if isMissing {
-                    ContentUnavailableView(
-                        "Render Not Found",
-                        systemImage: "film.slash",
-                        description: Text("This local copy is no longer available. If its save was confirmed, open Photos manually and look in Recently Saved.")
-                    )
-                } else if let player {
-                    VideoPlayer(player: player)
-                        .ignoresSafeArea(edges: .bottom)
-                } else {
-                    ProgressView()
-                }
-            }
-            .navigationTitle("\(title) · Render ISO \(QueueReceiptPresentation.number(Double(iso)))")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-        .onAppear {
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                isMissing = true
-                return
-            }
-            let player = AVPlayer(url: url)
-            self.player = player
-            player.play()
-        }
-        .onDisappear {
-            player?.pause()
-        }
-    }
-}
-
 // MARK: - Job Row
 
 private struct JobRow: View {
@@ -745,7 +919,7 @@ private struct JobRow: View {
 
     var body: some View {
         HStack {
-            Image(systemName: job.isPhoto == true ? "photo" : "film")
+            Image(systemName: job.presentsAsPhoto ? "photo" : "film")
                 .font(NitrateTypography.font(.title2))
                 .frame(width: 44, height: 44)
             Spacer(minLength: 0)
@@ -797,33 +971,4 @@ private struct ShareSheet: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
-}
-
-
-/// Local developed JPEG, never a RAW placeholder or a request to read Photos.
-private struct PhotoPreviewSheet: View {
-    let url: URL
-    let title: String
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            Group {
-                if let image = UIImage(contentsOfFile: url.path) {
-                    Image(uiImage: image).resizable().scaledToFit()
-                        .accessibilityLabel("Rendered photo preview")
-                        .accessibilityIdentifier("queue.photoFullPreview")
-                } else {
-                    ContentUnavailableView("Photo unavailable", systemImage: "photo",
-                        description: Text("The local rendered image could not be read."))
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
-            }
-        }
-    }
 }

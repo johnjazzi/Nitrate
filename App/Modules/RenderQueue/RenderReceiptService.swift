@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 /// Poster creation is best effort and never participates in Photos authorization.
 enum RenderReceiptService {
     private static let metadataKeys: Set<String> = Set([
-        "film-stock", "stock-name", "lut", "light-type", "iso", "iso-role",
+        "film-stock", "stock-name", "lut", "light-type", "iso", "iso-role", "capture-iso",
         "halation-level", "glow-level", "halation-radius-fraction", "halation-tint",
         "grain-size", "recipe-version", "print-gauge", "grain-size-effective",
         "grain-gauge-amplitude", "grain-algorithm", "grain-edge-boost-multiplier",
@@ -99,13 +99,34 @@ enum RenderReceiptService {
             }
         }
         guard includeThumbnail else { return receipt }
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: thumbnailSize, height: thumbnailSize)
-        if let result = try? await generator.image(at: .zero) {
-            receipt.thumbnailJPEG = jpeg(result.image, maximumSize: thumbnailSize)
+        if let image = await firstFrame(at: url, maximumSize: thumbnailSize) {
+            receipt.thumbnailJPEG = jpeg(image, maximumSize: thumbnailSize)
         }
         return receipt
+    }
+
+    /// Shared local first-frame reader for receipt posters and on-demand History
+    /// preview. The latter does not create another receipt or thumbnail store.
+    static func firstFrame(at url: URL, maximumSize: Int = 1600) async -> CGImage? {
+        guard url.isFileURL else { return nil }
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        let size = min(max(maximumSize, 1), 1600)
+        generator.maximumSize = CGSize(width: size, height: size)
+        return try? await generator.image(at: .zero).image
+    }
+
+    /// Decode only display-sized poster pixels, even when a retained-source
+    /// receipt contains a much larger image for later review.
+    static func gridPoster(from jpeg: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(jpeg as CFData,
+            [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: 320
+        ] as CFDictionary)
     }
 
     /// The source file's own properties: the "Original Video" row of the

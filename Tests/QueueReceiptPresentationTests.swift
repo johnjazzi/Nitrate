@@ -108,7 +108,7 @@ struct QueueReceiptPresentationTests {
         #expect(sheet.contains("QueueContactSheetLayout.gridColumns(forWidth: contentWidth)"))
         #expect(views.contains("QueueContactSheetLayout.cellAspect, contentMode: .fit"))
         #expect(views.contains(".padding(6)"), "Thick black poster border")
-        #expect(views.contains("contactSheet: true"))
+        #expect(sheet.contains("contactSheet: true"))
 
         // The regular queue row keeps its compact icon actions unchanged.
         let start = try #require(views.range(of: "struct QueueReceiptCard: View"))

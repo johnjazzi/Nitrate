@@ -56,6 +56,8 @@ final class RenderQueueViewModel {
     /// superseded attempt cannot overwrite a later phase or a retry.
     private var renderAttempts: [UUID: UUID] = [:]
 
+    /// Receipt visibility is durable presentation state, never a second queue.
+    let historyVisibility = QueueHistoryVisibility()
     var library: FilmStockLibrary?
     var jobs: [RenderJob] = []
     var rendererErrorMessage: String?
@@ -150,6 +152,9 @@ final class RenderQueueViewModel {
         }
         backfillLegacyPhotoReceiptMetadata()
         reconcileOrphanedCaptures()
+        // Only reconcile once the durable queue has loaded, not during the
+        // initially empty model's construction.
+        historyVisibility.reconcile(with: Set(jobs.map(\.id)))
         processNext()
     }
 
@@ -585,6 +590,9 @@ final class RenderQueueViewModel {
         }
         do {
             if let persistOverride { try persistOverride(jobs) } else { try persister.save(jobs) }
+            // Drop hidden IDs only after the corresponding queue change is
+            // durable. Hiding itself never calls this persistence path.
+            historyVisibility.reconcile(with: Set(jobs.map(\.id)))
             persistenceErrorMessage = nil
             publishQueueMessage()
             return true

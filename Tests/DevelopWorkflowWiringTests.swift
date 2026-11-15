@@ -103,9 +103,10 @@ struct DevelopWorkflowWiringTests {
     /// selected originals to the shared Develop review.
     @Test func contactSheetRoutesVideoActionsToPhotosAndKeepsTheBulkDevelopPath() throws {
         let sheet = try source("App/Modules/RenderQueue/QueueSheetView.swift")
-        #expect(sheet.contains("well(\"Photos\", symbol: \"photo.on.rectangle\""))
-        #expect(sheet.contains("QueueReceiptPresentation.photosActionID + \".video\""))
-        #expect(sheet.contains("well(\"Re-develop\", symbol: \"arrow.counterclockwise\""))
+        let actions = try source("App/Modules/RenderQueue/QueueContactSheet.swift")
+        #expect(actions.contains("well(\"Photos\", symbol: \"photo.on.rectangle\""))
+        #expect(actions.contains("QueueReceiptPresentation.photosActionID + \".video\""))
+        #expect(actions.contains("well(\"Re-develop\", symbol: \"arrow.counterclockwise\""))
         #expect(!sheet.contains("queue.redevelopVideo"), "Video action tile is Photos, not Re-develop")
         #expect(sheet.contains("onBulkRedevelop(selection)"))
         #expect(sheet.contains("queue.bulkRedevelop"))

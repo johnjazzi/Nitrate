@@ -8,7 +8,7 @@ extension RenderJob {
     }
 
     var receiptTitle: String {
-        if isPhoto == true { return "Rendered photo" }
+        if presentsAsPhoto { return "Rendered photo" }
         if originalOnly == true { return "Original recording" }
         let name = QueueReceiptPresentation.metadata(receipt?.metadata ?? [:], "stock-name")
         if name != QueueReceiptPresentation.unavailable { return name }
@@ -85,49 +85,38 @@ struct QueueReceiptCard: View {
     // MARK: - Contact-sheet cell
 
     private var contactSheetCell: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            contactPoster
-            Text(contactTitle)
-                .font(NitrateTypography.font(.caption2))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .foregroundStyle(.primary)
-            Text(contactMetadataLine)
-                .font(NitrateTypography.font(.caption2))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .foregroundStyle(.secondary)
-        }
-        .labelStyle(.iconOnly)
-        .tint(.primary)
-        .accessibilityElement(children: .ignore)
-        .accessibilityIdentifier("queue.receiptCard")
-        .accessibilityLabel(contactTitle)
-        .accessibilityValue(contactMetadataLine)
+        contactPoster
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier("queue.receiptCard")
+            .accessibilityLabel(contactTitle)
+            .accessibilityValue(contactMetadataLine)
     }
 
-    /// Normalized 4:3 poster. Video receipts carry the narrow alternating
-    /// black/white frame strip; it is a media cue, never a status.
+    /// Crop only the displayed poster, never the retained media. Explicit bounds
+    /// prevent a portrait image's ideal size from escaping the landscape cell.
     private var contactPoster: some View {
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(Color(uiColor: .tertiarySystemFill))
+        Rectangle()
+            .fill(.black)
             .aspectRatio(QueueContactSheetLayout.cellAspect, contentMode: .fit)
             .overlay {
-                contactPosterContent
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                GeometryReader { geometry in
+                    contactPosterContent
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                }
             }
+            .clipped()
+            .padding(6)
+            .background(.black)
             .overlay(alignment: .bottom) {
-                if job.isPhoto != true {
+                if !job.presentsAsPhoto {
                     QueueFrameStripBorder()
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .padding(.horizontal, 6)
+                        .padding(.bottom, 2)
                 }
             }
             .overlay(alignment: .topTrailing) {
                 contactStatusMark
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
             }
     }
 
@@ -159,21 +148,15 @@ struct QueueReceiptCard: View {
     }
 
     @ViewBuilder private var contactPosterContent: some View {
-        if job.permitsLocalMedia, let data = job.receipt?.thumbnailJPEG, let image = UIImage(data: data) {
-            Image(uiImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
+        if job.permitsLocalMedia, let data = job.receipt?.thumbnailJPEG {
+            HistoryGridThumbnail(jpeg: data)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
         } else {
-            VStack(spacing: 3) {
-                Image(systemName: "photo")
-                Text("No preview")
-                    .font(NitrateTypography.font(.caption2))
-                    .multilineTextAlignment(.center)
-            }
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Image(systemName: "photo")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityLabel("No preview")
         }
     }
 
@@ -192,7 +175,7 @@ struct QueueReceiptCard: View {
     @ViewBuilder private var posterControl: some View {
         if !job.permitsLocalMedia {
             poster
-        } else if job.isPhoto == true, job.retainedOutputURL != nil {
+        } else if job.presentsAsPhoto, job.retainedOutputURL != nil {
             Button(action: playLocal) { poster }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Preview rendered photo")
@@ -273,8 +256,8 @@ struct QueueReceiptCard: View {
     @ViewBuilder private var localActions: some View {
         if job.receiptActions.playLocal {
             Button(action: playLocal) {
-                Label(job.isPhoto == true ? "Preview" : "Play",
-                      systemImage: job.isPhoto == true ? "photo" : "play.circle")
+                Label(job.presentsAsPhoto ? "Preview" : "Play",
+                      systemImage: job.presentsAsPhoto ? "photo" : "play.circle")
             }
         }
         if job.receiptActions.shareLocal {
@@ -291,7 +274,7 @@ struct QueueReceiptCard: View {
                     .frame(width: 44, height: 44)
             }.buttonStyle(.borderless)
             .accessibilityHint("Returns the original to Develop for preview, gauge and push/pull before rendering.")
-            .accessibilityIdentifier(job.isPhoto == true ? "queue.redevelopPhoto" : "queue.redevelopVideo")
+            .accessibilityIdentifier(job.presentsAsPhoto ? "queue.redevelopPhoto" : "queue.redevelopVideo")
         }
     }
 }
@@ -324,6 +307,7 @@ struct QueueFrameStripBorder: View {
 
 struct QueueReceiptMetadataView: View {
     let job: RenderJob
+    var retry: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     private var receipt: RenderReceipt? { job.receipt }
@@ -335,7 +319,14 @@ struct QueueReceiptMetadataView: View {
                               details: recordDetails)
                 .navigationTitle("Metadata")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        if let retry {
+                            Button(action: retry) { Label("Retry", systemImage: "arrow.clockwise") }
+                        }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+                }
         }
     }
 

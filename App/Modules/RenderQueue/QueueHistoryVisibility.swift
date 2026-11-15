@@ -13,7 +13,7 @@ import Observation
 /// IDs that no longer correspond to a queue job are dropped by
 /// `reconcile(with:)`; the coordinator calls that at real queue
 /// initialization/removal boundaries, never from `init`, because the queue loads
-/// asynchronously and an empty valid set at launch would erase live choices.
+/// after model construction and an initial empty set would erase live choices.
 @MainActor
 @Observable
 final class QueueHistoryVisibility {

@@ -10,7 +10,7 @@ enum QueueContactSheetLayout {
     /// The collapsed sheet: roughly a third of the screen, drag handle visible.
     static let compactFraction: CGFloat = 0.34
     /// Tight, consistent gutters; the poster does the work, not the chrome.
-    static let gutter: CGFloat = 3
+    static let gutter: CGFloat = 0
     static let horizontalPadding: CGFloat = 12
     /// Every receipt is the same normalized 4:3 poster.
     static let cellAspect: CGFloat = 4.0 / 3.0
@@ -19,7 +19,7 @@ enum QueueContactSheetLayout {
     static let minimumCellWidth: CGFloat = 92
     static let maximumColumns = 6
     /// Rows the collapsed detent shows before the grid scrolls.
-    static let compactRowLimit = 2
+    static let compactRowLimit = 3
     /// The contact sheet never goes below three columns on a supported phone.
     static let minimumColumns = 3
 
@@ -60,13 +60,13 @@ enum QueueHistoryMode: String, CaseIterable, Sendable {
     }
 
     var accessibilityValue: String {
-        self == .hidden ? "Showing hidden receipts" : "Showing visible receipts"
+        self == .hidden ? "Showing hidden images" : "Showing visible images"
     }
 
     var accessibilityHint: String {
         self == .hidden
             ? "Switches to visible history."
-            : "Switches to hidden history, where receipts can be restored."
+            : "Switches to hidden history, where images can be restored."
     }
 
     func toggled() -> Self { self == .hidden ? .visible : .hidden }
@@ -97,7 +97,7 @@ struct QueueActivitySummary {
         processing = jobs.filter { $0.status == .processing }.count
         queued = jobs.filter { $0.status == .pending }.count
         awaitingStock = jobs.filter { $0.status == .awaitingStock }.count
-        failed = finished.filter { $0.status == .failed }.count
+        failed = finished.filter { $0.status == .failed && !hiddenIDs.contains($0.id) }.count
         history = finished.count
         self.isPaused = isPaused
         hidden = finished.filter { hiddenIDs.contains($0.id) }.count
@@ -107,16 +107,13 @@ struct QueueActivitySummary {
 
     /// One line, no storage prose: work first, then what is on the sheet.
     var text: String {
-        if isEmpty { return "No history" }
         var parts: [String] = []
         if isPaused { parts.append("Rendering paused") }
         if processing > 0 { parts.append("Processing") }
         if queued > 0 { parts.append("\(queued) queued") }
         if awaitingStock > 0 { parts.append("\(awaitingStock) awaiting stock") }
         if failed > 0 { parts.append("\(failed) failed") }
-        parts.append("\(history) in history")
-        if hidden > 0 { parts.append("\(hidden) hidden") }
-        return parts.joined(separator: " · ")
+        return parts.isEmpty ? "Queue needs attention" : parts.joined(separator: " · ")
     }
 }
 
@@ -176,6 +173,8 @@ struct QueueReceiptActionOverlay: View {
     let isHidden: Bool
     let canRedevelop: Bool
     let canPreview: Bool
+    var onShare: (() -> Void)? = nil
+    var onOpenPhotos: (() -> Void)? = nil
     let onRedevelop: () -> Void
     let onMetadata: () -> Void
     let onPreview: () -> Void
@@ -216,6 +215,15 @@ struct QueueReceiptActionOverlay: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 4)
+            if let onShare {
+                Button(action: onShare) {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(NitrateTypography.font(.caption))
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Share image")
+            }
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(NitrateTypography.font(.caption))
@@ -223,7 +231,7 @@ struct QueueReceiptActionOverlay: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Close receipt actions")
+            .accessibilityLabel("Close image actions")
             .accessibilityIdentifier("queue.receiptActions.close")
         }
     }
@@ -231,19 +239,28 @@ struct QueueReceiptActionOverlay: View {
     private var wells: some View {
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 10),
                             GridItem(.flexible(), spacing: 10)], spacing: 10) {
-            well("Re-develop", symbol: "arrow.counterclockwise",
-                 enabled: canRedevelop,
-                 unavailableHint: "The retained original is no longer available.",
-                 hint: "Returns the original to Develop for preview, gauge and push/pull before rendering.",
-                 identifier: job.isPhoto == true ? "queue.redevelopPhoto" : "queue.redevelopVideo",
-                 action: onRedevelop)
+            if job.presentsAsPhoto {
+                well("Re-develop", symbol: "arrow.counterclockwise",
+                     enabled: canRedevelop,
+                     unavailableHint: "The retained original is no longer available.",
+                     hint: "Returns the original to Develop for preview, gauge and push/pull before rendering.",
+                     identifier: "queue.redevelopPhoto",
+                     action: onRedevelop)
+            } else {
+                well("Photos", symbol: "photo.on.rectangle",
+                     enabled: onOpenPhotos != nil,
+                     unavailableHint: "Photos cannot be opened.",
+                     hint: "Opens Photos generally. Find the saved video in Recently Saved.",
+                     identifier: QueueReceiptPresentation.photosActionID + ".video",
+                     action: { onOpenPhotos?() })
+            }
             well("Metadata", symbol: "info.circle",
                  enabled: true,
                  unavailableHint: "",
-                 hint: "Shows the full receipt for \(job.receiptTitle).",
+                 hint: "Shows the image metadata for \(job.receiptTitle).",
                  identifier: QueueReceiptPresentation.metadataActionID,
                  action: onMetadata)
-            well("Preview", symbol: job.isPhoto == true ? "photo" : "play.circle",
+            well("Preview", symbol: job.presentsAsPhoto ? "photo" : "play.circle",
                  enabled: canPreview,
                  unavailableHint: "The local rendered copy is no longer available.",
                  hint: "Opens the local rendered copy, not Photos.",
@@ -254,8 +271,8 @@ struct QueueReceiptActionOverlay: View {
                  enabled: true,
                  unavailableHint: "",
                  hint: isHidden
-                     ? "Restores this receipt to the visible history. Nothing is deleted."
-                     : "Removes this receipt from the visible history but keeps it in the queue.",
+                     ? "Restores this image to the visible history. Nothing is deleted."
+                     : "Removes this image from the visible history but keeps it in the queue.",
                  identifier: isHidden ? "queue.historyShow" : "queue.historyHide",
                  action: onToggleHidden)
         }

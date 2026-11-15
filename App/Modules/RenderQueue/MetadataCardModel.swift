@@ -33,7 +33,7 @@ enum ReceiptMetadataCards {
     static func make(job: RenderJob) -> [MetadataCard] {
         let receipt = job.receipt
         let metadata = receipt?.metadata ?? [:]
-        let isPhoto = job.isPhoto == true
+        let isPhoto = job.presentsAsPhoto
 
         let delivered = MetadataRow(id: "delivered", cells: [
             MetadataCell(id: "proxy", label: isPhoto ? "Delivered" : "Proxy",
@@ -62,7 +62,7 @@ enum ReceiptMetadataCards {
         let exposure = MetadataRow(id: "exposure", cells: [
             MetadataCell(id: "shutter", label: "Shutter", value: shutter(metadata)),
             MetadataCell(id: "iris", label: "Iris", value: iris(metadata)),
-            MetadataCell(id: "iso", label: "ISO", value: text(metadata["com.filmemulation.iso"])),
+            MetadataCell(id: "iso", label: "Recorded ISO", value: captureISO(metadata, sourceISO: job.sourceCaptureISO)),
             MetadataCell(id: "wb", label: "WB", value: text(metadata["com.filmemulation.white-balance-kelvin"])),
             MetadataCell(id: "tint", label: "Tint", value: text(metadata["com.filmemulation.wb-tint"]))
         ])
@@ -117,6 +117,23 @@ enum ReceiptMetadataCards {
         guard let fps, fps.isFinite, fps > 0 else { return missing }
         return fps.formatted(.number.locale(Locale(identifier: "en_US_POSIX"))
             .grouping(.never).precision(.fractionLength(0...2)))
+    }
+
+    /// Capture and selected render ISO are different facts.
+    static func captureISO(_ metadata: [String: String], sourceISO: Float?) -> String {
+        if let sourceISO, sourceISO.isFinite, sourceISO > 0 {
+            return QueueReceiptPresentation.number(Double(sourceISO))
+        }
+        if let captured = metadata["com.filmemulation.capture-iso"].flatMap(Double.init),
+           captured.isFinite, captured > 0 {
+            return QueueReceiptPresentation.number(captured)
+        }
+        if metadata["com.filmemulation.iso-role"] == "capture-exposure-index",
+           let captured = metadata["com.filmemulation.iso"].flatMap(Double.init),
+           captured.isFinite, captured > 0 {
+            return QueueReceiptPresentation.number(captured)
+        }
+        return missing
     }
 
     static func resolution(_ width: Int?, _ height: Int?) -> String {

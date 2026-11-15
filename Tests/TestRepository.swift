@@ -63,6 +63,7 @@ enum TestRepository {
         "App/Resources/gauges.json",
         "App/PrivacyInfo.xcprivacy",
         "Tests/Fixtures/colorchecker-babelcolor-2006.json",
+        "Tests/Fixtures/history-first-frame.mov",
         "App/ContentView.swift",
         "App/Modules/FilmStockLibrary/GaugeControl.swift",
         "App/Modules/FilmStockLibrary/PushPullControl.swift",

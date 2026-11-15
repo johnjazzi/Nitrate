@@ -412,6 +412,8 @@ targets:
       - path: App/Modules/RenderQueue/MetadataCardModel.swift
       - path: App/Modules/RenderQueue/RenderMediaCleanup.swift
       - path: App/Modules/RenderQueue/QueueReceiptPresentation.swift
+      - path: App/Modules/RenderQueue/QueueHistoryVisibility.swift
+      - path: App/Modules/RenderQueue/HistoryDeletionScope.swift
       - path: App/Modules/RenderQueue/QueuePersister.swift
       - path: App/Modules/RenderQueue/RenderQueueViewModel.swift
       - path: App/Modules/RenderQueue/CaptureJournal.swift

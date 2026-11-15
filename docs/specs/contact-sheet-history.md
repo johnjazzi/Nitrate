@@ -9,12 +9,23 @@ This document specifies the compact contact-sheet history surface only. It does 
 
 ## Approved interaction decisions
 
-- Use one shared History component in compact and full native sheet states, as with the stock/gauge selector. Expansion shows more rows of the same contact sheet plus full queue details; it does not add a large selected-receipt preview above the grid.
-- Compact mode shows a small active-work strip. Expanded mode exposes existing processing, queued, awaiting-stock, retry, stock-assignment, and access/persistence controls.
-- Tap opens the 2×2 actions panel. Hold and the Preview action use the same local preview: the actual retained photo, or the first frame of the retained rendered video. Do not autoplay video.
-- Keep persisted receipt thumbnails as the grid posters. Reading the local video's first frame occurs only when its preview is opened; it is not a second thumbnail store or a replacement receipt pipeline. No Photos read-back.
-- Hidden receipts use the same action tile changing from Hide to Show. Restoring visibility changes no queue job or media state.
-- Apply the same History component to Minimal and Classic, respecting the existing shared appearance environment. Do not rename Develop, Dark room, or Lab in this PR.
+- Use one shared History component in compact and full native sheet states, as with the stock/gauge selector. Expansion shows more rows of the same contact sheet plus full queue details.
+- Show images in a gapless, full-width contact sheet: landscape 4:3 display crops with thick black borders, no captions beneath thumbnails. Original media is never cropped or changed.
+- Keep the sheet body dark, with contrasting header and frame borders. The visible name is **Images**, not receipts. Center failure/processing counts inside the header rather than adding a status row.
+- **Tap opens preview; hold opens the tight 2×2 actions panel.** Preview expands the same component and displays the selected photo or rendered video's first frame above the contact sheet. Swipe the preview to move between images; keep the contact sheet below it. No separate preview sheet and no video autoplay.
+- Grid posters remain persisted receipt thumbnails. Prefer retained local output for enlarged previews; an existing persisted rendered preview may be reused when delivery already cleaned up the local video. Never read back from Photos or create another thumbnail store.
+- Expanded mode preserves existing processing, queued, awaiting-stock, retry, stock-assignment, access/persistence, sharing and selection controls.
+- Hidden images use the same action tile changing from Hide to Show. Restoring visibility changes no queue job or media state.
+- Add a **non-destructive delete stub**, delegated to a subagent: older than 30 days, older than 7 days, or all images. An info control says **“Content won’t be deleted from Photos.”** The stub must not actually remove jobs, files or Photos content.
+- Apply the same component to Minimal and Classic. Do not rename Develop, Dark room, or Lab in this PR.
+- Compact mode shows three rows, allowing the lowest row to cut off on a shorter sheet. Inset the Images label from the bevel.
+- Preview print follows the fitted image edges, without animated aspect-ratio reflow: stock/gauge bottom-left, recorded ISO/shutter top-right, video FPS bottom-right, and local date/time `yyyy-MM-dd HH:mm` on the lower frame. Unknown recorded ISO remains unknown, never substituted from the render recipe.
+- Preview supports pinch/pan and double-tap reset, plus a focus-size toggle that enlarges the centered preview while leaving a smaller contact sheet below. Keep a separate icon-control strip and gap between preview and grid.
+- Videos expose the general Photos opener instead of preview Share/Re-develop. Photos retain those actions. Re-development remains available through existing shared/bulk owners; failed Retry is accessible through Metadata.
+- The failed count opens a failed-only view, with a visible Back button, `MM/dd-HH:mm` timestamps, Clear all, and Select/Clear. Clearing persists presentation hiding only and updates the visible failure count; hidden images remain restorable.
+- Legacy photo classification uses saved output format and source/output filenames when the old photo flag is absent. Video JPEG posters do not imply that a video is a photo.
+- Memory: contact-sheet images decode to a maximum of 320 pixels off the main thread and are released on disappearance. Enlarged previews load only the selected page and its immediate neighbors, clear inactive/disappeared image state, and downsample photo/video content to 2048/1600 pixels. Existing compressed receipt JPEG storage remains unchanged; no measured device RSS or hard total-process memory limit is claimed.
+- Release scope: **0.9.1 patch**, per owner instruction. The video source-to-render capture-ISO forwarding gap is documented rather than filled with guessed measurements.
 
 These explicit choices supersede the tentative gesture and full-video-playback alternatives below. Native media ownership and availability checks remain authoritative.
 
