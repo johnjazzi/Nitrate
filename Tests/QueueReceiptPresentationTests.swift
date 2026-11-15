@@ -79,37 +79,48 @@ struct QueueReceiptPresentationTests {
         }
     }
 
-    @Test func historyCardsUseIconsWhilePreservingDetails() throws {
+    /// The History surface is one compact contact sheet. The old Latest/Earlier
+    /// list, its navigation title and its options menu no longer exist.
+    @Test func contactSheetUsesOneImagesGridWithoutLegacySections() throws {
         let folder = TestRepository.root.appendingPathComponent("App/Modules/RenderQueue")
         let views = try String(contentsOf: folder.appendingPathComponent("QueueReceiptViews.swift"), encoding: .utf8)
         let sheet = try String(contentsOf: folder.appendingPathComponent("QueueSheetView.swift"), encoding: .utf8)
+        let layout = try String(contentsOf: folder.appendingPathComponent("QueueContactSheet.swift"), encoding: .utf8)
+
+        #expect(sheet.contains("Text(\"IMAGES\")"), "The visible name is Images")
+        #expect(!sheet.contains("Text(\"Latest\")"))
+        #expect(!sheet.contains("Text(\"Earlier\")"))
+        #expect(!sheet.contains(".navigationTitle(\"History\")"))
+        #expect(!sheet.contains(".listStyle(.plain)"))
+        #expect(!sheet.contains("queue.options"))
+        #expect(sheet.contains(".presentationDragIndicator(.visible)"))
+        #expect(sheet.contains(".presentationDetents([.fraction(QueueContactSheetLayout.compactFraction), .large]"))
+        #expect(sheet.contains("queue.historyVisibility"))
+        #expect(sheet.contains("QueueReceiptPresentation.photosActionID + \".general\""))
+        #expect(sheet.contains("queue.deleteImages"))
+
+        // Three compact rows of the same gapless 4:3 grid, never a second layout.
+        #expect(layout.contains("static let compactRowLimit = 3"))
+        #expect(layout.contains("static let gutter: CGFloat = 0"))
+        #expect(layout.contains("static let minimumColumns = 3"))
+        #expect(layout.contains("static let cellAspect: CGFloat = 4.0 / 3.0"))
+        #expect(sheet.contains("QueueContactSheetLayout.visibleCount(total: historyReceipts.count"))
+        #expect(sheet.contains("QueueContactSheetLayout.gridColumns(forWidth: contentWidth)"))
+        #expect(views.contains("QueueContactSheetLayout.cellAspect, contentMode: .fit"))
+        #expect(views.contains(".padding(6)"), "Thick black poster border")
+        #expect(sheet.contains("contactSheet: true"))
+
+        // The regular queue row keeps its compact icon actions unchanged.
         let start = try #require(views.range(of: "struct QueueReceiptCard: View"))
-        let end = try #require(views.range(of: "struct QueueReceiptMetadataView: View"))
+        let end = try #require(views.range(of: "struct QueueFrameStripBorder: View"))
         let card = String(views[start.lowerBound..<end.lowerBound])
         #expect(card.contains("Text(\"No preview\")"))
-        #expect(!card.contains("Text(job.receiptTitle)"), "Keep per-card actions compact")
         #expect(card.contains(".labelStyle(.iconOnly)"))
         #expect(card.contains("HStack(spacing: 0)"))
         #expect(!card.contains("ViewThatFits"), "Primary actions stay in one horizontal icon row")
-        #expect(card.contains("HStack(spacing: 12)"))
         #expect(card.contains("maxWidth: 136, minHeight: 104, maxHeight: 104"))
-        #expect(!card.contains("prominent ?"), "Latest and earlier receipts use the same compact row")
         #expect(card.contains("Menu { localActions }"))
         #expect(card.contains("Color(uiColor: .tertiarySystemFill)"), "Poster margins must not inherit link blue")
-        #expect(card.contains(".tint(.primary)"))
-        let surface = try #require(sheet.range(of: ".sheet(item: $shareTarget)"))
-        let main = String(sheet[..<surface.lowerBound])
-        #expect(main.contains(".labelStyle(.iconOnly)"))
-        #expect(main.contains(".navigationTitle(\"History\")"))
-        #expect(main.contains("Text(\"Latest\")"))
-        #expect(main.contains("Text(\"Earlier\")"))
-        #expect(!main.contains(#"systemImage: "star""#))
-        #expect(!main.contains(#"systemImage: "xmark""#))
-        #expect(sheet.contains(".presentationDragIndicator(.visible)"))
-        #expect(main.contains(".listStyle(.plain)"))
-        #expect(main.contains("queue.options"))
-        #expect(!main.contains("CameraStorageSummary("), "Storage belongs behind its icon")
-        #expect(sheet.contains(".sheet(isPresented: $showsStorage)"))
         #expect(views.contains("details.append((\"Kept original\", reason))"))
         #expect(views.contains("details.append((\"Error\", error))"))
         #expect(views.contains("details.append((\"Cleanup warning\", warning))"))

@@ -42,6 +42,19 @@ struct RenderJob: Codable, Identifiable, Equatable {
     /// Photo jobs share queue persistence/retry but retain their DNG and JPEG.
     /// Optional fields keep every pre-Photo queue readable as a Video queue.
     var isPhoto: Bool? = nil
+    /// Display classification for legacy entries without the later Photo flag.
+    /// Never infer type from thumbnailJPEG: video posters are JPEGs too. This
+    /// accessor does not change rendering, cleanup or persisted job semantics.
+    var presentsAsPhoto: Bool {
+        let imageExtensions: Set<String> = ["jpg", "jpeg", "heic", "heif", "png", "tif", "tiff",
+                                            "dng", "nef", "nrw", "cr2", "cr3", "arw", "orf", "raf", "rw2"]
+        let imageCodecs: Set<String> = ["public.jpeg", "public.heic", "public.heif", "public.png", "public.tiff",
+                                       "com.adobe.raw-image", "jpeg", "jpg", "heic", "heif", "png", "tiff", "dng"]
+        if let codec = receipt?.codec?.lowercased(), imageCodecs.contains(codec) { return true }
+        if let outputURL, imageExtensions.contains(outputURL.pathExtension.lowercased()) { return true }
+        if let isPhoto { return isPhoto }
+        return imageExtensions.contains(sourceURL.pathExtension.lowercased())
+    }
     var photoCropZoom: Double? = nil
     var photoGrainSeed: UInt32? = nil
     var retainedOutputURL: URL? {

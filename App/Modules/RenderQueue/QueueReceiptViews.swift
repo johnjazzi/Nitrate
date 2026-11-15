@@ -8,7 +8,7 @@ extension RenderJob {
     }
 
     var receiptTitle: String {
-        if isPhoto == true { return "Rendered photo" }
+        if presentsAsPhoto { return "Rendered photo" }
         if originalOnly == true { return "Original recording" }
         let name = QueueReceiptPresentation.metadata(receipt?.metadata ?? [:], "stock-name")
         if name != QueueReceiptPresentation.unavailable { return name }
@@ -17,6 +17,12 @@ extension RenderJob {
 }
 
 /// Independent sibling controls: the image never wraps the metadata/play/share actions.
+///
+/// `contactSheet` is the History sheet's presentation of the same receipt: one
+/// 4:3 poster with its stock/ISO/date line underneath and no inline buttons, so
+/// three or more cells fit across a phone. It reuses the same persisted
+/// `receipt.thumbnailJPEG` path as the regular row and adds no thumbnail store.
+/// The default keeps every existing usage exactly as it was.
 struct QueueReceiptCard: View {
     let job: RenderJob
     let openPhotos: () -> Void
@@ -25,8 +31,16 @@ struct QueueReceiptCard: View {
     let shareLocal: () -> Void
     /// Return a retained photo or video original to the shared Develop review.
     var redevelop: (() -> Void)? = nil
+    /// History contact-sheet cell: poster first, metadata outside the frame.
+    var contactSheet = false
 
     var body: some View {
+        if contactSheet { contactSheetCell } else { row }
+    }
+
+    // MARK: - Regular row (unchanged usage)
+
+    private var row: some View {
         HStack(spacing: 12) {
             posterControl
             VStack(alignment: .trailing, spacing: 8) {
@@ -68,10 +82,100 @@ struct QueueReceiptCard: View {
             .formatted(date: .abbreviated, time: .shortened))
     }
 
+    // MARK: - Contact-sheet cell
+
+    private var contactSheetCell: some View {
+        contactPoster
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier("queue.receiptCard")
+            .accessibilityLabel(contactTitle)
+            .accessibilityValue(contactMetadataLine)
+    }
+
+    /// Crop only the displayed poster, never the retained media. Explicit bounds
+    /// prevent a portrait image's ideal size from escaping the landscape cell.
+    private var contactPoster: some View {
+        Rectangle()
+            .fill(.black)
+            .aspectRatio(QueueContactSheetLayout.cellAspect, contentMode: .fit)
+            .overlay {
+                GeometryReader { geometry in
+                    contactPosterContent
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                }
+            }
+            .clipped()
+            .padding(6)
+            .background(.black)
+            .overlay(alignment: .bottom) {
+                if !job.presentsAsPhoto {
+                    QueueFrameStripBorder()
+                        .padding(.horizontal, 6)
+                        .padding(.bottom, 2)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                contactStatusMark
+            }
+    }
+
+    /// A quiet corner mark for anything that is not a finished render. The
+    /// poster is the subject; status stays legible without a caption row.
+    @ViewBuilder private var contactStatusMark: some View {
+        switch job.status {
+        case .completed:
+            EmptyView()
+        case .failed:
+            contactMarkSymbol("exclamationmark", color: .red, label: "Failed")
+        case .pending:
+            contactMarkSymbol("clock", color: .white, label: "Pending")
+        case .processing:
+            contactMarkSymbol("arrow.triangle.2.circlepath", color: .white, label: "Processing")
+        case .awaitingStock:
+            contactMarkSymbol("film", color: .white, label: "Awaiting stock")
+        }
+    }
+
+    private func contactMarkSymbol(_ symbol: String, color: Color, label: String) -> some View {
+        Image(systemName: symbol)
+            .font(NitrateTypography.font(.caption2))
+            .foregroundStyle(color)
+            .padding(4)
+            .background(.black.opacity(0.6), in: Circle())
+            .padding(3)
+            .accessibilityLabel(label)
+    }
+
+    @ViewBuilder private var contactPosterContent: some View {
+        if job.permitsLocalMedia, let data = job.receipt?.thumbnailJPEG {
+            HistoryGridThumbnail(jpeg: data)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+        } else {
+            Image(systemName: "photo")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityLabel("No preview")
+        }
+    }
+
+    /// Stock/record name; the same wording the regular card and metadata use.
+    private var contactTitle: String { job.receiptTitle }
+
+    /// Selected ISO and the recorded (or queued) day, outside the poster frame.
+    private var contactMetadataLine: String {
+        let iso = QueueReceiptPresentation.number(Double(job.iso))
+        let day = (job.receipt?.recordedAt ?? job.createdAt)
+            .formatted(.dateTime.day().month(.abbreviated))
+        return "ISO \(iso) · \(day)"
+    }
+
+
     @ViewBuilder private var posterControl: some View {
         if !job.permitsLocalMedia {
             poster
-        } else if job.isPhoto == true, job.retainedOutputURL != nil {
+        } else if job.presentsAsPhoto, job.retainedOutputURL != nil {
             Button(action: playLocal) { poster }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Preview rendered photo")
@@ -152,8 +256,8 @@ struct QueueReceiptCard: View {
     @ViewBuilder private var localActions: some View {
         if job.receiptActions.playLocal {
             Button(action: playLocal) {
-                Label(job.isPhoto == true ? "Preview" : "Play",
-                      systemImage: job.isPhoto == true ? "photo" : "play.circle")
+                Label(job.presentsAsPhoto ? "Preview" : "Play",
+                      systemImage: job.presentsAsPhoto ? "photo" : "play.circle")
             }
         }
         if job.receiptActions.shareLocal {
@@ -170,13 +274,40 @@ struct QueueReceiptCard: View {
                     .frame(width: 44, height: 44)
             }.buttonStyle(.borderless)
             .accessibilityHint("Returns the original to Develop for preview, gauge and push/pull before rendering.")
-            .accessibilityIdentifier(job.isPhoto == true ? "queue.redevelopPhoto" : "queue.redevelopVideo")
+            .accessibilityIdentifier(job.presentsAsPhoto ? "queue.redevelopPhoto" : "queue.redevelopVideo")
         }
+    }
+}
+
+/// Narrow alternating black/white strip along a video poster's edge.
+///
+/// It reads as a film edge — a media-type cue only. Status stays in the cell's
+/// spoken value and its own marks, so the strip is never the sole signal and is
+/// hidden from VoiceOver.
+struct QueueFrameStripBorder: View {
+    var height: CGFloat = 3
+    var segmentWidth: CGFloat = 7
+
+    var body: some View {
+        Canvas { context, size in
+            var x: CGFloat = 0
+            var isBlack = true
+            while x < size.width {
+                let width = min(segmentWidth, size.width - x)
+                context.fill(Path(CGRect(x: x, y: 0, width: width, height: size.height)),
+                             with: .color(isBlack ? .black : .white))
+                x += width
+                isBlack.toggle()
+            }
+        }
+        .frame(height: height)
+        .accessibilityHidden(true)
     }
 }
 
 struct QueueReceiptMetadataView: View {
     let job: RenderJob
+    var retry: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     private var receipt: RenderReceipt? { job.receipt }
@@ -188,7 +319,14 @@ struct QueueReceiptMetadataView: View {
                               details: recordDetails)
                 .navigationTitle("Metadata")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        if let retry {
+                            Button(action: retry) { Label("Retry", systemImage: "arrow.clockwise") }
+                        }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+                }
         }
     }
 
