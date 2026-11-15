@@ -7,11 +7,13 @@ import Testing
 struct MetadataCardsTests {
     private func job(photo: Bool = false,
                      metadata: [String: String] = [:],
-                     pushPull: PushPullExposure? = nil) -> RenderJob {
+                     pushPull: PushPullExposure? = nil,
+                     sourceISO: Float? = nil) -> RenderJob {
         var job = RenderJob(sourceURL: URL(fileURLWithPath: "/tmp/take"),
                             stockId: "kodak5219", iso: 500,
                             printGauge: .thirtyFiveMillimetre, pushPull: pushPull)
         job.isPhoto = photo
+        job.sourceCaptureISO = sourceISO
         job.receipt = RenderReceipt(
             pixelWidth: 1080, pixelHeight: 1920, framesPerSecond: 23.98, codec: "hvc1",
             fileSizeBytes: 7_528_448, metadata: metadata,
@@ -122,5 +124,51 @@ struct MetadataCardsTests {
         let cards = ReceiptMetadataCards.make(job: empty)
         #expect(cell(cards, "Proxy")?.value == ReceiptMetadataCards.missing)
         #expect(cell(cards, "Push / Pull")?.value == "0")
+    }
+
+    // MARK: - Recorded ISO is a capture fact, not the selected render ISO
+
+    @Test func recordedISOComesFromTheActualSourceReading() {
+        let cards = ReceiptMetadataCards.make(job: job(
+            metadata: ["com.filmemulation.iso": "800"],
+            sourceISO: 640))
+        #expect(cell(cards, "Recorded ISO")?.value == "640",
+                "The source's captured ISO outranks the render recipe")
+    }
+
+    @Test func recordedISOFallsBackToTheCaptureMetadataKeyAndRejectsNonpositiveValues() {
+        let cards = ReceiptMetadataCards.make(job: job(metadata: [
+            "com.filmemulation.iso": "800",
+            "com.filmemulation.capture-iso": "320"
+        ]))
+        #expect(cell(cards, "Recorded ISO")?.value == "320")
+
+        #expect(ReceiptMetadataCards.captureISO([:], sourceISO: -100) == ReceiptMetadataCards.missing)
+        #expect(ReceiptMetadataCards.captureISO([:], sourceISO: .nan) == ReceiptMetadataCards.missing)
+        #expect(ReceiptMetadataCards.captureISO([:], sourceISO: 0) == ReceiptMetadataCards.missing)
+        #expect(ReceiptMetadataCards.captureISO(["com.filmemulation.capture-iso": "nan"],
+                                                sourceISO: nil) == ReceiptMetadataCards.missing)
+        #expect(ReceiptMetadataCards.captureISO(["com.filmemulation.capture-iso": "0"],
+                                                sourceISO: nil) == ReceiptMetadataCards.missing)
+    }
+
+    @Test func recordedISOAcceptsTheCaptureExposureRole() {
+        let cards = ReceiptMetadataCards.make(job: job(metadata: [
+            "com.filmemulation.iso": "640",
+            "com.filmemulation.iso-role": "capture-exposure-index"
+        ]))
+        #expect(cell(cards, "Recorded ISO")?.value == "640")
+    }
+
+    @Test func selectedRenderISOIsNeverReportedAsRecordedISO() {
+        // Legacy video exports record only the recipe ISO. The card has no
+        // recorded capture reading, so it must stay blank rather than claim the
+        // stock's selected render ISO was the camera's.
+        let cards = ReceiptMetadataCards.make(job: job(metadata: [
+            "com.filmemulation.iso": "800",
+            "com.filmemulation.iso-role": "render-recipe"
+        ]))
+        #expect(cell(cards, "Recorded ISO")?.value == ReceiptMetadataCards.missing)
+        #expect(cell(cards, "ISO") == nil, "The old unqualified ISO cell is gone")
     }
 }

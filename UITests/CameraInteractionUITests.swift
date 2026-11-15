@@ -19,37 +19,43 @@ final class CameraInteractionUITests: XCTestCase {
         return false
     }
 
-    @MainActor func testHistoryHasTitleAndPullDownDismissal() throws {
+    @MainActor func testHistoryContactSheetEntriesAndGrabberDismissal() throws {
         continueAfterFailure = false
         let app = launchReadyCamera()
         let lcd = app.descendants(matching: .any).matching(identifier: "camera.queueLCD").firstMatch
         waitUntilReady(lcd, in: app, named: "history-queue-ready")
         lcd.tap()
-        let history = app.navigationBars["History"]
-        XCTAssertTrue(history.waitForExistence(timeout: 10))
-        XCTAssertFalse(history.buttons["Done"].exists, "History dismisses using its native grabber, not an X")
-        XCTAssertTrue(app.buttons["queue.options"].exists)
+
+        // History is now a sheet over the camera with an IMAGES header, not a
+        // navigation page with a History title and an options menu.
+        let images = app.staticTexts["IMAGES"]
+        XCTAssertTrue(images.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.navigationBars["History"].exists, "History is a sheet over the camera, not a page")
+        let visibility = app.buttons["queue.historyVisibility"]
+        XCTAssertTrue(visibility.exists, "The eye toggle is the history-mode entry")
+        XCTAssertTrue(app.buttons["queue.openPhotos.general"].exists)
+        XCTAssertTrue(app.buttons["queue.deleteImages"].exists)
+        XCTAssertFalse(app.buttons["queue.options"].exists, "The old options menu is gone")
+
+        let summary = app.buttons["queue.activitySummary"]
+        if summary.waitForExistence(timeout: 3) {
+            summary.tap()
+        }
         let card = app.descendants(matching: .any).matching(identifier: "queue.receiptCard").firstMatch
-        if card.exists {
-            XCTAssertLessThanOrEqual(card.frame.height, 128, "A receipt is one compact row, not stacked controls")
-            XCTAssertGreaterThanOrEqual(card.frame.height, 104, "Keep the larger preview")
+        if card.waitForExistence(timeout: 5) {
+            card.tap()
+            let preview = app.descendants(matching: .any).matching(identifier: "queue.inlinePreview").firstMatch
+            XCTAssertTrue(preview.waitForExistence(timeout: 5),
+                          "Tapping a thumbnail opens the inline preview above the grid")
+            attachEvidence(app, named: "history-inline-preview")
+        } else {
+            attachEvidence(app, named: "history-empty-contact-sheet")
         }
-        app.buttons["queue.options"].tap()
-        let allHistory = app.buttons["Show all"]
-        XCTAssertTrue(allHistory.waitForExistence(timeout: 3))
-        allHistory.tap()
-        attachEvidence(app, named: "history-title-placeholder-handle")
-        let more = app.buttons.matching(identifier: "queue.more").firstMatch
-        if more.exists {
-            more.tap()
-            XCTAssertTrue(app.buttons["Share"].waitForExistence(timeout: 3))
-            attachEvidence(app, named: "history-overflow-actions")
-            history.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        }
-        let handle = history.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+
+        let handle = images.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
         let down = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85))
         handle.press(forDuration: 0.05, thenDragTo: down)
-        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: history)
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: visibility)
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 10), .completed)
         XCTAssertTrue(lcd.isHittable)
     }

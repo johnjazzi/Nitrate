@@ -95,6 +95,20 @@ struct DevelopWorkflowWiringTests {
         let sheet = try source("App/Modules/RenderQueue/QueueSheetView.swift")
         #expect(sheet.contains("redevelop: canReviewOriginal(job) ? { onRedevelop(job) } : nil"))
         #expect(sheet.contains("job.originalOnly != true && job.hasRedevelopableSource"))
-        #expect(sheet.contains("if isSelecting, canReviewOriginal(latestRender)"))
+        #expect(sheet.contains("if isSelecting, canReviewOriginal(job)"))
+    }
+
+    /// The contact-sheet video cell no longer owns a per-video Re-develop tile:
+    /// video actions point at Photos, while the retained bulk path still returns
+    /// selected originals to the shared Develop review.
+    @Test func contactSheetRoutesVideoActionsToPhotosAndKeepsTheBulkDevelopPath() throws {
+        let sheet = try source("App/Modules/RenderQueue/QueueSheetView.swift")
+        #expect(sheet.contains("well(\"Photos\", symbol: \"photo.on.rectangle\""))
+        #expect(sheet.contains("QueueReceiptPresentation.photosActionID + \".video\""))
+        #expect(sheet.contains("well(\"Re-develop\", symbol: \"arrow.counterclockwise\""))
+        #expect(!sheet.contains("queue.redevelopVideo"), "Video action tile is Photos, not Re-develop")
+        #expect(sheet.contains("onBulkRedevelop(selection)"))
+        #expect(sheet.contains("queue.bulkRedevelop"))
+        #expect(!sheet.contains("redevelopJobs("), "Bulk re-develop hands off to Develop review")
     }
 }
