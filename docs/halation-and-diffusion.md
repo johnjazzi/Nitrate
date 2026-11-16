@@ -7,6 +7,17 @@ bleeds, the **reference** decides how much strength a given excess buys, and the
 
 Everything below is scene-linear and pre-LUT.
 
+**Reach is one mip chain, not three blurs.** The mask carries a separate energy
+per colour; it is allocated mipmapped and a single `generateMipmaps` pass builds
+the chain. The apply pass reads level 0 to measure how hard each layer is
+responding, then samples that colour's level — `baseLOD_c + lodGain ×
+smoothstep(knee_c, response_c)` — so red reads coarser than green and blue at the
+same brightness, and a bright area reads coarser than a faint one. Two properties
+follow: no colour gets its own blur pass (one chain serves all three), and because
+the level is interpolated rather than switched, there is no band boundary to ring
+on. Measured at 4K half resolution on an M2: chain 0.54 ms against 3.44 ms for the
+three Gaussians that preceded it.
+
 ## The five numbers, and who owns each
 
 | number | owner | file | what it does |
@@ -14,7 +25,7 @@ Everything below is scene-linear and pre-LUT.
 | `redOnsetStops` / `greenOnsetStops` / `blueOnsetStops` | engine | `SpatialEffectsStage` | light below these does not bleed; red first, then green, then blue |
 | `halationReferenceStops` | engine | `SpatialEffectsStage` | the superwhite that reaches **full** contribution, stills and takes alike |
 | `halationStrength` | stock | `Resources/stocks.json` | how strong the effect is at full contribution |
-| `halationRadiusFraction` | stock | `Resources/stocks.json` | how far the halo spreads (fraction of half-width) |
+| `halationRadiusFraction` | stock | `Resources/stocks.json` | how far the halo spreads (fraction of half-width); becomes a mip level |
 | `halationTint` | stock | `Resources/stocks.json` | per-layer weighting; red strongest |
 | `stillHalationScale` | stock | `Resources/stocks.json` | share of strength a held frame uses |
 | `diffusionPreset` / `diffusionAmount` | gauge | `Resources/gauges.json` | radius (px @ 1080p wide) and mix |
@@ -123,6 +134,9 @@ radii therefore run one direct separable pass.
 
 ## Changing something
 
+- Halo too wide/narrow: `halationRadiusFraction` in `stocks.json`. It is converted
+  to a base mip level per colour (`halationBaseLOD`), so a change moves every
+  colour's reach together; red still reads one level above green.
 - Halo too strong/weak on **everything**: `halationStrength` in `stocks.json`.
 - Where the halo reaches full strength, stills and takes together:
   `halationReferenceStops` in `SpatialEffectsStage` (lower saturates sooner).

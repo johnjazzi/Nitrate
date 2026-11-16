@@ -9,21 +9,22 @@ import simd
 /// way:
 ///
 ///  * `applyHalation` is physical and PRE-LUT. It decodes the ungraded Apple Log
-///    2 frame to linear scene light, diffuses each emulsion layer's superwhite
-///    excess at its own radius, adds the scattered energy back in LINEAR light,
-///    and re-encodes to Apple Log 2. The properties pinned here are the ones
-///    that make that physical: light appears OUTSIDE the source, the added light
-///    is warm, it is LOCAL, zero strength is identity, the source core grows
-///    instead of being hollowed into a ring, the per-layer knees select layers by
-///    intensity, each layer's own channel is read, and the whole thing is added
-///    in scene-linear BEFORE the encode.
+///    2 frame to linear scene light, samples ONE mip chain of the per-layer mask
+///    at a level chosen per colour (coarser for red, coarser again where the
+///    mask responds hard), adds the scattered energy back in LINEAR light, and
+///    re-encodes to Apple Log 2. The properties pinned here are the ones that
+///    make that physical: light appears OUTSIDE the source, the added light is
+///    warm, it is LOCAL, zero strength is identity, the source core grows
+///    instead of being hollowed into a ring, a mask with no chain passes
+///    straight through, the level is chosen per colour and climbs with the
+///    response, and the whole thing is added in scene-linear BEFORE the encode.
 ///
 ///  * `applyGlow` is a post-LUT graded-luminance bloom, unchanged in look. Its
 ///    tests pin that it still spreads light broadly and further than halation.
 ///
 /// The mask kernel `spatial_halation_mask` is also dispatched directly so its
 /// decode-before-average order and odd-dimension handling can be asserted
-/// exactly rather than inferred through the blur and composite.
+/// exactly rather than inferred through the mip chain and composite.
 struct SpatialEffectsTests {
 
     // MARK: - Fixtures and helpers
@@ -646,7 +647,7 @@ struct SpatialEffectsTests {
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
 
-        func nearBand(radiusFraction: Float) throws -> Double {
+        func band(radiusFraction: Float, columns: Range<Int>) throws -> Double {
             let source = Self.blockSource(width: Self.side, height: Self.side,
                                           block: SIMD3(Self.superwhite, Self.superwhite, Self.superwhite))
             let encoded = try Self.runHalation(
@@ -655,177 +656,373 @@ struct SpatialEffectsTests {
                 strength: 1.0, radiusFraction: radiusFraction, layerScale: Self.tint
             )
             let linear = Self.decodedLinear(encoded, count: Self.side * Self.side)
-            return Self.linearMean(linear, width: Self.side, columns: 158..<178, rows: 100..<156).x - Self.surround
+            return Self.linearMean(linear, width: Self.side, columns: columns, rows: 100..<156).x - Self.surround
         }
 
-        let zero = try nearBand(radiusFraction: 0)
-        let small = try nearBand(radiusFraction: 0.01)
-        let large = try nearBand(radiusFraction: 0.03)
+        let nearWindow = 158..<178
+        let farWindow = 196..<216
 
-        #expect(small > zero + 0.001, "any positive radius must spread further than zero (zero \\(zero), small \\(small))")
-        #expect(large > small + 0.001, "a larger radius must spread further (small \\(small), large \\(large))")
+        let zero = try band(radiusFraction: 0, columns: nearWindow)
+        let small = try band(radiusFraction: 0.01, columns: nearWindow)
+        #expect(small > zero + 0.001,
+                "any positive radius must spread further than zero (zero \(zero), small \(small))")
+
+        // Reach, not peak: a coarse mip level averages a small source into its
+        // texel, so the value hugging the block can be LOWER than a tight radius
+        // even though the light travelled further. What the stage promises is
+        // that a wider setting puts more light down the tail.
+        let smallFar = try band(radiusFraction: 0.01, columns: farWindow)
+        let largeFar = try band(radiusFraction: 0.03, columns: farWindow)
+        #expect(largeFar > smallFar,
+                "a larger radius must reach further (small \(smallFar), large \(largeFar))")
     }
 
-    // MARK: - Order of operations
+    // MARK: - Apply kernel (dispatched directly)
 
-    /// The scattered energy is added in scene-LINEAR light and then re-encoded to
-    /// Apple Log 2, so the stock LUT grades it by the same curve as the source.
-    ///
-    /// Dispatches `spatial_halation_apply` directly with a uniform source and
-    /// known diffusion so the arithmetic is exact. A kernel that added in the
-    /// encoded (code) domain instead — the old bug — would land near 0.95, not
-    /// 0.38, so the two orders are far apart.
-    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func halationEnergyIsAddedInSceneLinearBeforeTheEncode() throws {
-        let device = try #require(MTLCreateSystemDefaultDevice())
-        let queue = try #require(device.makeCommandQueue())
+    /// Compile `spatial_halation_apply` on its own, so a test can hand it an
+    /// authored mask and read the encoded result back without the stage's
+    /// prepare pass or its lens diffusion ladder.
+    private static func halationApplyPipeline(device: MTLDevice) throws -> MTLComputePipelineState {
         let function = try #require(
-            try Self.shaderLibrary(device: device).makeFunction(name: "spatial_halation_apply")
+            try shaderLibrary(device: device).makeFunction(name: "spatial_halation_apply")
         )
-        let pipeline = try device.makeComputePipelineState(function: function)
-        let side = 16
-
-        // Source 0.18; each layer texture carries a mask FRACTION of 0.2 (the mask
-        // is normalized to 0..1 now), so the add is 0.2 in linear → 0.38.
-        let source = Self.sourcePixels(width: side, height: side) { _, _ in SIMD3(0.18, 0.18, 0.18) }
-        func fill(_ channel: Int, _ value: Float) -> [Float16] {
-            var pixels = [Float16](repeating: 0, count: side * side * 4)
-            for index in 0..<(side * side) { pixels[index * 4 + channel] = Float16(value) }
-            return pixels
-        }
-
-        func run(strength: Float) throws -> SIMD3<Double> {
-            let sourceTexture = try Self.makeTexture(device: device, width: side, height: side, pixels: source)
-            let red = try Self.makeTexture(device: device, width: side, height: side, pixels: fill(0, 0.2))
-            let green = try Self.makeTexture(device: device, width: side, height: side, pixels: fill(1, 0.2))
-            let blue = try Self.makeTexture(device: device, width: side, height: side, pixels: fill(2, 0.2))
-            let output = try Self.makeTexture(device: device, width: side, height: side,
-                                              pixels: [Float16](repeating: 0, count: side * side * 4))
-            let commandBuffer = try #require(queue.makeCommandBuffer())
-            let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
-            var strength = strength
-            var layerScale = SIMD3<Float>(1, 1, 1)
-            encoder.setComputePipelineState(pipeline)
-            encoder.setTexture(sourceTexture, index: 0)
-            encoder.setTexture(red, index: 1)
-            encoder.setTexture(green, index: 2)
-            encoder.setTexture(blue, index: 3)
-            encoder.setTexture(output, index: 4)
-            encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
-            encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
-            // Neutral: this harness pins the linear ADD, not the system's
-            // develop lift, which gets its own test.
-            var postEmulsionStops: Float = 0
-            encoder.setBytes(&postEmulsionStops, length: MemoryLayout<Float>.size, index: 6)
-            encoder.dispatchThreadgroups(
-                MTLSize(width: 1, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: side, height: side, depth: 1)
-            )
-            encoder.endEncoding()
-            commandBuffer.commit()
-            commandBuffer.waitUntilCompleted()
-            #expect(commandBuffer.status == .completed)
-            let values = try Self.readBack(output, device: device, queue: queue, width: side, height: side)
-            return SIMD3(
-                Self.appleLogDecode(Double(values[0])),
-                Self.appleLogDecode(Double(values[1])),
-                Self.appleLogDecode(Double(values[2]))
-            )
-        }
-
-        let full = try run(strength: 1.0)
-        #expect(abs(full.x - 0.38) < 0.004, "linear add + encode expected 0.38 (was \\(full.x))")
-        #expect(abs(full.y - 0.38) < 0.004, "linear add + encode expected 0.38 (was \\(full.y))")
-        #expect(abs(full.z - 0.38) < 0.004, "linear add + encode expected 0.38 (was \\(full.z))")
-
-        let half = try run(strength: 0.5)
-        #expect(abs(half.x - 0.28) < 0.004, "strength must scale the linear contribution (was \\(half.x))")
+        return try device.makeComputePipelineState(function: function)
     }
 
-    /// The apply kernel reads each layer's OWN channel. Three diffusion textures
-    /// with energy in different channels pin this directly: a kernel that
-    /// sampled `.r` from all three would add the decoy values instead.
-    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func halationApplyReadsEachLayerChannel() throws {
-        let device = try #require(MTLCreateSystemDefaultDevice())
-        let queue = try #require(device.makeCommandQueue())
-        let function = try #require(
-            try Self.shaderLibrary(device: device).makeFunction(name: "spatial_halation_apply")
-        )
-        let pipeline = try device.makeComputePipelineState(function: function)
-        let side = 16
+    /// Uniform rgba pixels for one mask level.
+    private static func uniformPixels(
+        width: Int, height: Int, _ value: SIMD3<Float>
+    ) -> [Float16] {
+        var pixels = [Float16](repeating: 0, count: width * height * 4)
+        for index in 0..<(width * height) {
+            pixels[index * 4] = Float16(value.x)
+            pixels[index * 4 + 1] = Float16(value.y)
+            pixels[index * 4 + 2] = Float16(value.z)
+            pixels[index * 4 + 3] = 1
+        }
+        return pixels
+    }
 
-        let source = Self.sourcePixels(width: side, height: side) { _, _ in SIMD3(0.18, 0.18, 0.18) }
-        func uniform(_ fill: SIMD3<Float>) -> [Float16] {
-            var pixels = [Float16](repeating: 0, count: side * side * 4)
-            for index in 0..<(side * side) {
-                pixels[index * 4] = Float16(fill.x)
-                pixels[index * 4 + 1] = Float16(fill.y)
-                pixels[index * 4 + 2] = Float16(fill.z)
-                pixels[index * 4 + 3] = 1
+    /// A halation mask carrying an AUTHORED mip chain: `levels[0]` at full size,
+    /// `levels[1]` at half, and so on. Every level the texture has is written —
+    /// the supplied pixels where a test gives them, zeros elsewhere — so no
+    /// sample can land on undefined memory. One level means no chain at all,
+    /// which is the pass-through case.
+    private static func makeMask(
+        device: MTLDevice, width: Int, height: Int, levels: [[Float16]]
+    ) throws -> MTLTexture {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float, width: width, height: height,
+            mipmapped: levels.count > 1
+        )
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.storageMode = .shared
+        let texture = try #require(device.makeTexture(descriptor: descriptor))
+        for level in 0..<texture.mipmapLevelCount {
+            let levelWidth = max(1, width >> level)
+            let levelHeight = max(1, height >> level)
+            let pixels = level < levels.count
+                ? levels[level]
+                : [Float16](repeating: 0, count: levelWidth * levelHeight * 4)
+            pixels.withUnsafeBytes { raw in
+                texture.replace(
+                    region: MTLRegionMake2D(0, 0, levelWidth, levelHeight),
+                    mipmapLevel: level,
+                    withBytes: raw.baseAddress!, bytesPerRow: levelWidth * 8
+                )
             }
-            return pixels
         }
+        return texture
+    }
 
-        let sourceTexture = try Self.makeTexture(device: device, width: side, height: side, pixels: source)
-        // Decoys in `.r` of the green and blue textures are what a wrong read picks up.
-        // The layer values are mask fractions (eighth of the old raw energies, which
-        // the kernel used to divide by its reference): 0.1, 0.0625, 0.05.
-        let red = try Self.makeTexture(device: device, width: side, height: side, pixels: uniform(SIMD3(0.1, 0.1125, 0.1125)))
-        let green = try Self.makeTexture(device: device, width: side, height: side, pixels: uniform(SIMD3(0.0875, 0.0625, 0.0875)))
-        let blue = try Self.makeTexture(device: device, width: side, height: side, pixels: uniform(SIMD3(0.075, 0.075, 0.05)))
-        let output = try Self.makeTexture(device: device, width: side, height: side,
-                                          pixels: [Float16](repeating: 0, count: side * side * 4))
-
+    /// Dispatch `spatial_halation_apply` with ONE mask at texture index 1 and
+    /// return the encoded frame.
+    ///
+    /// The lens diffusion node is pinned OFF — zero weights, zero amount — so
+    /// the ladder slots 5-8 are never sampled; the mask is bound there anyway so
+    /// no slot is left dangling. Every constant buffer is set explicitly,
+    /// including the ones this harness does not exercise, because an unbound
+    /// `constant float&` reads undefined memory.
+    private static func applyHalationDirectly(
+        device: MTLDevice,
+        queue: MTLCommandQueue,
+        pipeline: MTLComputePipelineState,
+        width: Int,
+        height: Int,
+        source: [Float16],
+        mask: MTLTexture,
+        strength: Float = 1,
+        layerScale: SIMD3<Float> = SIMD3(1, 1, 1),
+        baseLOD: SIMD3<Float> = SIMD3(repeating: 0),
+        lodGain: Float = 1,
+        widenLow: SIMD3<Float> = SIMD3(0.08, 0.35, 0.60),
+        widenHigh: SIMD3<Float> = SIMD3(0.55, 0.85, 1.00)
+    ) throws -> [Float16] {
+        let sourceTexture = try makeTexture(
+            device: device, width: width, height: height, pixels: source
+        )
+        let output = try makeTexture(
+            device: device, width: width, height: height,
+            pixels: [Float16](repeating: 0, count: width * height * 4)
+        )
         let commandBuffer = try #require(queue.makeCommandBuffer())
         let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
-        var strength: Float = 1.0
-        var layerScale = SIMD3<Float>(1, 1, 1)
-        // Diffusion disabled: zero amount, zero weights. The level slots still
-        // have to be bound to samplable textures, so the red layer doubles for
-        // them and contributes nothing.
-        var diffusionWeights = SIMD4<Float>(0, 0, 0, 0)
-        var diffusionAmount: Float = 0
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(sourceTexture, index: 0)
-        encoder.setTexture(red, index: 1)
-        encoder.setTexture(green, index: 2)
-        encoder.setTexture(blue, index: 3)
+        encoder.setTexture(mask, index: 1)
         encoder.setTexture(output, index: 4)
         for index in 5...8 {
-            encoder.setTexture(red, index: index)
+            encoder.setTexture(mask, index: index)
         }
+
+        var strength = strength
+        var layerScale = layerScale
+        var diffusionWeights = SIMD4<Float>(0, 0, 0, 0)
+        var diffusionAmount: Float = 0
+        // Neutral exposure and no transport leak: this harness pins the mask's
+        // mip arithmetic, not the develop lift or the burn.
+        var exposureStops: Float = 0
+        var exposureCeiling: Float = 1
+        var postEmulsionStops: Float = 0
+        var leakStops: Float = 0
+        var leakTint = SIMD3<Float>(0, 0, 0)
+        var leakEdgeShare: Float = 0
+        var leakEdgeFalloff: Float = 0.2
+        var leakSlip: Float = 0
+        var baseLOD = baseLOD
+        var lodGain = lodGain
+        var widenLow = widenLow
+        var widenHigh = widenHigh
+
         encoder.setBytes(&strength, length: MemoryLayout<Float>.size, index: 0)
         encoder.setBytes(&layerScale, length: MemoryLayout<SIMD3<Float>>.size, index: 1)
         encoder.setBytes(&diffusionWeights, length: MemoryLayout<SIMD4<Float>>.size, index: 2)
         encoder.setBytes(&diffusionAmount, length: MemoryLayout<Float>.size, index: 3)
-        // Neutral: the develop lift is not what this pins.
-        var postEmulsionStops: Float = 0
+        encoder.setBytes(&exposureStops, length: MemoryLayout<Float>.size, index: 4)
+        encoder.setBytes(&exposureCeiling, length: MemoryLayout<Float>.size, index: 5)
         encoder.setBytes(&postEmulsionStops, length: MemoryLayout<Float>.size, index: 6)
+        encoder.setBytes(&leakStops, length: MemoryLayout<Float>.size, index: 7)
+        encoder.setBytes(&leakTint, length: MemoryLayout<SIMD3<Float>>.size, index: 8)
+        encoder.setBytes(&leakEdgeShare, length: MemoryLayout<Float>.size, index: 9)
+        encoder.setBytes(&leakEdgeFalloff, length: MemoryLayout<Float>.size, index: 10)
+        encoder.setBytes(&leakSlip, length: MemoryLayout<Float>.size, index: 11)
+        encoder.setBytes(&baseLOD, length: MemoryLayout<SIMD3<Float>>.size, index: 12)
+        encoder.setBytes(&lodGain, length: MemoryLayout<Float>.size, index: 13)
+        encoder.setBytes(&widenLow, length: MemoryLayout<SIMD3<Float>>.size, index: 14)
+        encoder.setBytes(&widenHigh, length: MemoryLayout<SIMD3<Float>>.size, index: 15)
         encoder.dispatchThreadgroups(
-            MTLSize(width: 1, height: 1, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: side, height: side, depth: 1)
+            MTLSize(width: (width + 15) / 16, height: (height + 15) / 16, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1)
         )
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         #expect(commandBuffer.status == .completed)
+        return try readBack(output, device: device, queue: queue, width: width, height: height)
+    }
 
-        let values = try Self.readBack(output, device: device, queue: queue, width: side, height: side)
-        // 0.18 + 0.1 = 0.28, 0.18 + 0.0625 = 0.2425, 0.18 + 0.05 = 0.23.
-        let redOut = Self.appleLogDecode(Double(values[0]))
-        let greenOut = Self.appleLogDecode(Double(values[1]))
-        let blueOut = Self.appleLogDecode(Double(values[2]))
-        #expect(abs(redOut - 0.28) < 0.004, "red must read the red layer (was \\(redOut))")
-        #expect(abs(greenOut - 0.2425) < 0.004, "green must read the green layer (was \\(greenOut))")
-        #expect(abs(blueOut - 0.23) < 0.004, "blue must read the blue layer (was \\(blueOut))")
+    /// A mask with NO mip chain passes straight through.
+    ///
+    /// The spread lives entirely in the chain, so with nothing coarser to read
+    /// the kernel adds the mask's own rgb — 0.2 / 0.1 / 0.05 here. That is also
+    /// why the stage can hand this kernel a plain mask and get exactly the mask
+    /// back when the radius is zero.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func halationApplyPassesANonMipmappedMaskStraightThrough() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let pipeline = try Self.halationApplyPipeline(device: device)
+        let side = 16
+        let base: Double = 0.18
+        let source = Self.sourcePixels(width: side, height: side) { _, _ in
+            SIMD3(base, base, base)
+        }
+        let mask = try Self.makeMask(
+            device: device, width: side, height: side,
+            levels: [Self.uniformPixels(width: side, height: side, SIMD3(0.2, 0.1, 0.05))]
+        )
+
+        func added(baseLOD: SIMD3<Float>) throws -> SIMD3<Double> {
+            let encoded = try Self.applyHalationDirectly(
+                device: device, queue: queue, pipeline: pipeline,
+                width: side, height: side, source: source, mask: mask,
+                baseLOD: baseLOD)
+            return SIMD3(
+                Self.appleLogDecode(Double(encoded[0])),
+                Self.appleLogDecode(Double(encoded[1])),
+                Self.appleLogDecode(Double(encoded[2]))
+            ) - SIMD3(base, base, base)
+        }
+
+        let flat = try added(baseLOD: SIMD3(repeating: 0))
+        #expect(abs(flat.x - 0.2) < 0.004,
+                "a mask with no chain adds its own red (was \(flat.x))")
+        #expect(abs(flat.y - 0.1) < 0.004,
+                "a mask with no chain adds its own green (was \(flat.y))")
+        #expect(abs(flat.z - 0.05) < 0.004,
+                "a mask with no chain adds its own blue (was \(flat.z))")
+
+        // A coarse base level has no other octave to resolve to, so it clamps to
+        // level 0 as well: the pass-through comes from the ABSENCE of the chain,
+        // not from the base level happening to be zero.
+        let coarse = try added(baseLOD: SIMD3(3, 2, 1))
+        #expect(abs(coarse.x - flat.x) < 0.004,
+                "a level past the chain must clamp to level 0 (was \(coarse.x))")
+        #expect(abs(coarse.y - flat.y) < 0.004,
+                "a level past the chain must clamp to level 0 (was \(coarse.y))")
+        #expect(abs(coarse.z - flat.z) < 0.004,
+                "a level past the chain must clamp to level 0 (was \(coarse.z))")
+    }
+
+    /// The level is chosen PER COLOUR.
+    ///
+    /// The authored chain carries 0.2 / 0.1 / 0.05 on level 0 and 0.6 on level
+    /// 1. With red's base level at 1 and green's and blue's at 0 (and no climb,
+    /// so brightness cannot move the level), red must read the coarse octave
+    /// while green and blue read level 0. A kernel that picked one level for all
+    /// three channels would return 0.6 everywhere, or 0.2 / 0.1 / 0.05
+    /// everywhere — never the split below.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func halationApplyChoosesTheMipLevelPerColour() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let pipeline = try Self.halationApplyPipeline(device: device)
+        let side = 16
+        let base: Double = 0.18
+        let source = Self.sourcePixels(width: side, height: side) { _, _ in
+            SIMD3(base, base, base)
+        }
+        let mask = try Self.makeMask(
+            device: device, width: side, height: side,
+            levels: [
+                Self.uniformPixels(width: side, height: side, SIMD3(0.2, 0.1, 0.05)),
+                Self.uniformPixels(width: side / 2, height: side / 2, SIMD3(0.6, 0.6, 0.6)),
+            ]
+        )
+
+        let encoded = try Self.applyHalationDirectly(
+            device: device, queue: queue, pipeline: pipeline,
+            width: side, height: side, source: source, mask: mask,
+            baseLOD: SIMD3(1, 0, 0), lodGain: 0)
+
+        // 0.18 + 0.6 = 0.78 from level 1; 0.18 + 0.1 = 0.28 and 0.18 + 0.05 =
+        // 0.23 from level 0.
+        let red = Self.appleLogDecode(Double(encoded[0]))
+        let green = Self.appleLogDecode(Double(encoded[1]))
+        let blue = Self.appleLogDecode(Double(encoded[2]))
+        #expect(abs(red - 0.78) < 0.004, "red must read level 1 (was \(red))")
+        #expect(abs(green - 0.28) < 0.004, "green must read level 0 (was \(green))")
+        #expect(abs(blue - 0.23) < 0.004, "blue must read level 0 (was \(blue))")
+    }
+
+    /// The level also climbs with the RESPONSE, not just the colour.
+    ///
+    /// Level 0 carries 0.05 on the left half and 0.95 on the right; level 1 is
+    /// 0.3 everywhere. With `lodGain` = 1 and knees both halves straddle, the
+    /// faint half stays on level 0 and adds its own 0.05, while the bright half
+    /// climbs a full level and adds 0.3 — LESS energy than the 0.95 its own
+    /// level-0 response carries, which is the coarse octave being read. The
+    /// knees here are the test's own (0.10 → 0.50) rather than the shipping
+    /// ones, so both arms land on an exact level; the shipping blue knee tops
+    /// out at 1.00 and only reaches 0.96 there, which would make the assertion
+    /// about the knees instead of about the climb.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func halationApplyClimbsToACoarserLevelForAHighResponse() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let pipeline = try Self.halationApplyPipeline(device: device)
+        let side = 16
+        let base: Double = 0.18
+        let source = Self.sourcePixels(width: side, height: side) { _, _ in
+            SIMD3(base, base, base)
+        }
+
+        var level0 = [Float16]()
+        level0.reserveCapacity(side * side * 4)
+        for _ in 0..<side {
+            for column in 0..<side {
+                let value = Float16(column < side / 2 ? 0.05 : 0.95)
+                level0.append(contentsOf: [value, value, value, 1])
+            }
+        }
+        let mask = try Self.makeMask(
+            device: device, width: side, height: side,
+            levels: [
+                level0,
+                Self.uniformPixels(width: side / 2, height: side / 2, SIMD3(0.3, 0.3, 0.3)),
+            ]
+        )
+
+        let encoded = try Self.applyHalationDirectly(
+            device: device, queue: queue, pipeline: pipeline,
+            width: side, height: side, source: source, mask: mask,
+            baseLOD: SIMD3(repeating: 0), lodGain: 1,
+            widenLow: SIMD3(repeating: 0.10), widenHigh: SIMD3(repeating: 0.50))
+
+        func added(column: Int, row: Int) -> Double {
+            Self.appleLogDecode(Double(encoded[(row * side + column) * 4])) - base
+        }
+
+        // Well inside each half, so no bilinear bleed across the boundary.
+        let faint = added(column: 3, row: 8)
+        let bright = added(column: 12, row: 8)
+        #expect(abs(faint - 0.05) < 0.01,
+                "a response below the low knee stays on level 0 (was \(faint))")
+        #expect(abs(bright - 0.3) < 0.01,
+                "a response past the high knee reads level 1 (was \(bright))")
+        #expect(bright < 0.95 - 0.01,
+                "the bright response must read coarser than its own level-0 value (was \(bright))")
+    }
+
+    /// The scattered energy is added in scene-LINEAR light and then re-encoded to
+    /// Apple Log 2, so the stock LUT grades it by the same curve as the source.
+    ///
+    /// Dispatches `spatial_halation_apply` directly with a uniform source and a
+    /// known mask so the arithmetic is exact. A kernel that added in the encoded
+    /// (code) domain instead — the old bug — would land near 0.95, not 0.38, so
+    /// the two orders are far apart.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func halationEnergyIsAddedInSceneLinearBeforeTheEncode() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let pipeline = try Self.halationApplyPipeline(device: device)
+        let side = 16
+        let base: Double = 0.18
+        let source = Self.sourcePixels(width: side, height: side) { _, _ in
+            SIMD3(base, base, base)
+        }
+        // A mask fraction of 0.2 on a non-mipmapped mask: it is added as-is.
+        let mask = try Self.makeMask(
+            device: device, width: side, height: side,
+            levels: [Self.uniformPixels(width: side, height: side, SIMD3(0.2, 0.2, 0.2))]
+        )
+
+        func added(strength: Float) throws -> SIMD3<Double> {
+            let encoded = try Self.applyHalationDirectly(
+                device: device, queue: queue, pipeline: pipeline,
+                width: side, height: side, source: source, mask: mask,
+                strength: strength)
+            return SIMD3(
+                Self.appleLogDecode(Double(encoded[0])),
+                Self.appleLogDecode(Double(encoded[1])),
+                Self.appleLogDecode(Double(encoded[2]))
+            )
+        }
+
+        let full = try added(strength: 1.0)
+        #expect(abs(full.x - 0.38) < 0.004, "linear add + encode expected 0.38 (was \(full.x))")
+        #expect(abs(full.y - 0.38) < 0.004, "linear add + encode expected 0.38 (was \(full.y))")
+        #expect(abs(full.z - 0.38) < 0.004, "linear add + encode expected 0.38 (was \(full.z))")
+
+        let half = try added(strength: 0.5)
+        #expect(abs(half.x - 0.28) < 0.004, "strength must scale the linear contribution (was \(half.x))")
     }
 
     // MARK: - Mask kernel (dispatched directly)
 
     /// Dispatch `spatial_halation_mask` directly and read the half-resolution
     /// mask back, so per-layer energy and the 2x2 downsample can be asserted
-    /// exactly instead of inferred through the blur and composite.
+    /// exactly instead of inferred through the mip chain and composite.
     private static func halationMask(
         device: MTLDevice,
         queue: MTLCommandQueue,
