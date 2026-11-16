@@ -37,6 +37,8 @@ struct RenderQueueExportCleanupTests {
         #expect(queue.jobs.first?.hasRedevelopableSource == true)
         #expect(queue.jobs.first?.hasRedevelopableOriginal == false)
         #expect(queue.jobs.first?.permitsLocalMedia == false)
+        #expect(queue.jobs.first?.permitsReceiptPreview == true,
+                "Lab's persisted first-frame receipt must remain visible without permitting movie playback")
         #expect(queue.jobs.first?.shouldSaveOriginal == false)
         #expect(queue.jobs.first?.receipt?.thumbnailJPEG == poster)
         #expect(queue.jobs.first?.outputURL == nil)
@@ -55,6 +57,8 @@ struct RenderQueueExportCleanupTests {
         receipt: { _, _ in RenderReceipt(thumbnailJPEG: poster) }, mediaCleanup: fixture.cleaner)
         recovered.onAppear()
         await settle(recovered)
+        #expect(recovered.jobs.first?.permitsReceiptPreview == true)
+        #expect(recovered.jobs.first?.permitsLocalMedia == false)
         #expect(recovered.jobs.first?.receipt?.thumbnailJPEG == poster,
                 "onAppear and persistence must preserve opted-in posters")
         let model = DevelopVideoModel(queue: recovered)
@@ -89,6 +93,7 @@ struct RenderQueueExportCleanupTests {
         _ = queue.enqueueImportedVideo(sourceURL: source, stockId: "test", iso: 400)
         await settle(queue)
         #expect(queue.jobs.first?.retainsDevelopmentSource == nil)
+        #expect(queue.jobs.first?.permitsReceiptPreview == false)
         #expect(queue.jobs.first?.receipt?.thumbnailJPEG == nil)
         #expect(durable.first?.receipt?.thumbnailJPEG == nil)
         #expect(!FileManager.default.fileExists(atPath: source.path))

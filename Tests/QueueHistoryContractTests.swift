@@ -72,12 +72,14 @@ struct QueueHistoryContractTests {
         let grid = try #require(surface.range(of: "historySection"))
         #expect(preview.lowerBound < grid.lowerBound, "The pager sits above the same contact sheet")
 
-        #expect(inline.contains("guard isActive, job.permitsLocalMedia else {"))
+        #expect(inline.contains("guard isActive, job.permitsReceiptPreview else {"))
         #expect(inline.contains("image = nil"), "An inactive page drops its decoded image")
         #expect(inline.contains(".onDisappear { image = nil }"))
         #expect(inline.contains("kCGImageSourceThumbnailMaxPixelSize: 2048"),
                 "Full-photo previews are still bounded")
-        #expect(inline.contains("formatter.dateFormat = \"yyyy-MM-dd HH:mm\""),
+        let frame = try source("App/Modules/RenderQueue/ContactPreviewFrame.swift")
+        #expect(inline.contains("ContactPreviewFrame("))
+        #expect(frame.contains("formatter.dateFormat = \"yyyy-MM-dd HH:mm\""),
                 "Printed metadata uses a 24-hour recorded time")
         #expect(zoom.contains("maximumZoomScale = 6"))
         #expect(zoom.contains("func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }"))
@@ -86,6 +88,17 @@ struct QueueHistoryContractTests {
             #expect(!view.contains("PHAsset"))
             #expect(!view.contains("PhotosPicker"))
         }
+    }
+
+    @Test func historySeparatesReceiptStillsFromImportedMovieAccess() throws {
+        let inline = try source("App/Modules/RenderQueue/HistoryInlinePreview.swift")
+        let sheet = try source("App/Modules/RenderQueue/QueueSheetView.swift")
+        let cards = try source("App/Modules/RenderQueue/QueueReceiptViews.swift")
+        #expect(inline.contains("guard isActive, job.permitsReceiptPreview else {"))
+        #expect(inline.contains("if job.permitsLocalMedia, let url = job.retainedOutputURL {"),
+                "Allowing a saved still must not enable full imported-movie reads")
+        #expect(cards.contains("if job.permitsReceiptPreview, let data = job.receipt?.thumbnailJPEG"))
+        #expect(sheet.contains("job.permitsReceiptPreview && job.receipt?.thumbnailJPEG != nil"))
     }
 
     @Test func gridDecodesDisplaySizedPostersAndReleasesThem() throws {

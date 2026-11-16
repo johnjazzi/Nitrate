@@ -55,9 +55,8 @@ struct CameraModeCarouselRenderTests {
     private let testAccent = Color(.sRGB, red: 0.95, green: 0.45, blue: 0.12, opacity: 1)
 
     @Test func compactStripFitsItsRealCameraSlotWithoutDrawingOutsideIt() throws {
-        // The row's fixed height is the touch floor; the bounds check below
-        // renders at exactly that height. 96/120pt are the compact fallback
-        // slots, 180/200pt are ordinary widths.
+        // The touch strip remains 44pt. The approved mode caption has a separate
+        // non-interactive band below it; no ink may escape their combined bounds.
         #expect(CameraModeCarousel.height == 44)
         let margin = 24
         let scale = 2
@@ -69,14 +68,20 @@ struct CameraModeCarouselRenderTests {
                 let image = try #require(renderer.cgImage)
                 let data = try pixels(image)
                 var outside = 0
+                var captionInk = 0
+                let stripBottom = (margin + Int(CameraModeCarousel.height)) * scale
+                let captionBottom = stripBottom + Int(CameraModeCarousel.captionHeight) * scale
                 for y in 0..<image.height {
                     for x in 0..<image.width {
                         let inside = x >= margin * scale && x < (margin + Int(width)) * scale
-                            && y >= margin * scale && y < (margin + 44) * scale
-                        if !inside, data[(y * image.width + x) * 4 + 3] > 20 { outside += 1 }
+                            && y >= margin * scale && y < captionBottom
+                        let paints = data[(y * image.width + x) * 4 + 3] > 20
+                        if !inside, paints { outside += 1 }
+                        if inside, paints, y >= stripBottom { captionInk += 1 }
                     }
                 }
-                #expect(outside == 0, "The centred row must stay inside the \(width)pt camera slot.")
+                #expect(outside == 0, "Track and caption must stay inside the \(width)pt slot and reserved caption band.")
+                #expect(captionInk > 20, "The selected mode name must actually draw below the unchanged touch strip.")
             }
         }
     }

@@ -312,14 +312,20 @@ struct CameraUIStyleStatusTests {
             let image = try render(view, name: "classic-mode-bounds-\(active.rawValue)")
             let data = try pixels(image)
             var outside = 0
+            var captionInk = 0
+            let stripBottom = (margin + Int(CameraModeCarousel.height)) * scale
+            let captionBottom = stripBottom + Int(CameraModeCarousel.captionHeight) * scale
             for y in 0..<image.height {
                 for x in 0..<image.width {
                     let inside = x >= margin * scale && x < (margin + Int(width)) * scale
-                        && y >= margin * scale && y < (margin + Int(CameraModeCarousel.height)) * scale
-                    if !inside, data[(y * image.width + x) * 4 + 3] > 20 { outside += 1 }
+                        && y >= margin * scale && y < captionBottom
+                    let paints = data[(y * image.width + x) * 4 + 3] > 20
+                    if !inside, paints { outside += 1 }
+                    if inside, paints, y >= stripBottom { captionInk += 1 }
                 }
             }
-            #expect(outside == 0, "The classic row must stay inside its \(Int(width))pt slot.")
+            #expect(outside == 0, "The classic track and caption stay in the slot and its reserved caption band.")
+            #expect(captionInk > 20, "Classic retains the selected mode name beneath the track.")
         }
     }
 

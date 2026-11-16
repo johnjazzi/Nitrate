@@ -147,6 +147,9 @@ FILE_FIXTURES: tuple[str, ...] = (
     "App/Modules/RenderQueue/QueueSheetView.swift",
     "App/Modules/RenderQueue/PhotosLibraryOpener.swift",
     "App/Modules/VideoImport/DevelopPreview.swift",
+    "App/Modules/VideoImport/DevelopWhiteBalanceControl.swift",
+    "App/Modules/VideoImport/DevelopFramePreviewRenderer.swift",
+    "App/Modules/RenderQueue/ContactPreviewFrame.swift",
     "App/Modules/VideoImport/DevelopResultsPager.swift",
     "App/Modules/VideoImport/DevelopMediaHelp.swift",
 )
