@@ -47,6 +47,10 @@ final class PipelineRenderer: @unchecked Sendable {
     private var pass2Pipeline: MTLComputePipelineState?
     private var hlgPipeline: MTLComputePipelineState?
     private var spatialStage: SpatialEffectsStage?
+    /// The development white balance's one compute stage. Built with the other
+    /// pipelines, so a bundle that cannot provide `plate_prepare` fails renderer
+    /// construction instead of silently delivering unbalanced frames.
+    private var whiteBalanceStage: DevelopWhiteBalanceStage?
     private var grainTexture: MTLTexture?
     private var textureCache: CVMetalTextureCache?
 
@@ -106,6 +110,10 @@ final class PipelineRenderer: @unchecked Sendable {
     /// finished. The callback is `@Sendable` and is invoked from the render
     /// task, not the main actor; the caller owns any hop and throttling is
     /// already applied here.
+    /// `whiteBalance` is the job's development white balance: a relative video
+    /// warmth applied in linear Apple Wide Gamut before halation, exposure and
+    /// the LUT. `.neutral` is the unmodified take and renders the bytes this
+    /// path always produced.
     func render(
         sourceURL: URL,
         config: FilmStockConfig,
@@ -114,12 +122,13 @@ final class PipelineRenderer: @unchecked Sendable {
         capturePolicy: RenderCapturePolicy? = nil,
         isImportedSource: Bool = false,
         framing: DeliveryFraming = .widescreen,
-        progress: (@Sendable (Double) -> Void)? = nil
+        progress: (@Sendable (Double) -> Void)? = nil,
+        whiteBalance: DevelopWhiteBalance = .neutral
     ) async throws -> URL {
         (try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange,
                                     bitrate: bitrate, capturePolicy: capturePolicy,
                                     isImportedSource: isImportedSource, framing: framing,
-                                    progress: progress)).outputURL
+                                    progress: progress, whiteBalance: whiteBalance)).outputURL
     }
 
     /// The take's lamp record, read from the source movie's own tags. Nil for a
@@ -154,7 +163,8 @@ final class PipelineRenderer: @unchecked Sendable {
         isImportedSource: Bool = false,
         framing: DeliveryFraming = .widescreen,
         collectDecodedBufferEvidence: Bool = false,
-        progress: (@Sendable (Double) -> Void)? = nil
+        progress: (@Sendable (Double) -> Void)? = nil,
+        whiteBalance: DevelopWhiteBalance = .neutral
     ) async throws -> (outputURL: URL, counters: RenderDiagnosticsManifest.Counters,
                        sourceColorProvenance: RenderInputColorProvenance,
                        firstDecodedBuffer: RenderDiagnosticsManifest.DecodedBufferEvidence?) {
@@ -349,7 +359,8 @@ final class PipelineRenderer: @unchecked Sendable {
             config: config, bitrate: bitrate, sourceColorProvenance: sourceColorProvenance,
             orientation: deliveryOrientation, capturePolicy: capturePolicy,
             isImportedSource: isImportedSource, sourceNominalFrameRate: Double(nominalFrameRate),
-            flash: flash, framing: framing, deliveredSize: delivery.deliveredSize
+            flash: flash, framing: framing, deliveredSize: delivery.deliveredSize,
+            whiteBalance: whiteBalance
         )
 
         // Audio passthrough writer input
@@ -409,7 +420,8 @@ final class PipelineRenderer: @unchecked Sendable {
                 lightLeak: lightLeak,
                 frameDuration: frameDuration,
                 takeFrameCount: takeFrameCount,
-                leadsWithNominalFrame: leadsWithNominalFrame
+                leadsWithNominalFrame: leadsWithNominalFrame,
+                whiteBalance: whiteBalance
             )
             try Task.checkCancellation()
             guard frameResult.counters.processed > 0 else {
@@ -460,7 +472,8 @@ final class PipelineRenderer: @unchecked Sendable {
         bitrate: Int = RenderEncodingContract.averageBitRate,
         framing: DeliveryFraming = .widescreen,
         diagnosticsBundleDirectory: URL,
-        capturePolicy: RenderCapturePolicy? = nil
+        capturePolicy: RenderCapturePolicy? = nil,
+        whiteBalance: DevelopWhiteBalance = .neutral
     ) async throws -> RenderDiagnosticResult {
         let runID = UUID()
         let bundleURL = diagnosticsBundleDirectory.appendingPathComponent("render-\(runID.uuidString)", isDirectory: true)
@@ -488,7 +501,8 @@ final class PipelineRenderer: @unchecked Sendable {
         do {
             let renderResult = try await renderInternally(sourceURL: sourceURL, config: config, trimRange: trimRange,
                                                           bitrate: bitrate, capturePolicy: capturePolicy, framing: framing,
-                                                          collectDecodedBufferEvidence: true)
+                                                          collectDecodedBufferEvidence: true,
+                                                          whiteBalance: whiteBalance)
             let outputURL = renderResult.outputURL
             resultOutput = outputURL
             manifest.counters = renderResult.counters
@@ -831,7 +845,10 @@ final class PipelineRenderer: @unchecked Sendable {
         takeFrameCount: Int,
         /// Whether the clip opens with a frame of the take at its metered
         /// exposure, ahead of the black film.
-        leadsWithNominalFrame: Bool
+        leadsWithNominalFrame: Bool,
+        /// The job's development white balance: a relative warmth applied to
+        /// every frame in linear Apple Wide Gamut before halation and the LUT.
+        whiteBalance: DevelopWhiteBalance
     ) async throws -> (counters: RenderDiagnosticsManifest.Counters,
                        firstBufferEvidence: RenderDiagnosticsManifest.DecodedBufferEvidence?) {
         guard let lut = renderQueue.sync(execute: { lutTexture }) else {
@@ -974,7 +991,8 @@ final class PipelineRenderer: @unchecked Sendable {
                         lut: lut,
                         cancellationHandle: cancellationHandle,
                         highlightCeiling: highlightCeiling,
-                        sourceProfile: sourceProfile
+                        sourceProfile: sourceProfile,
+                        whiteBalance: whiteBalance
                     )
                     // The head of the film is written once the first take frame has
                     // been read, because the clip's own first frame is made from
@@ -1386,8 +1404,28 @@ final class PipelineRenderer: @unchecked Sendable {
                             return .failure(RenderError.stageFailed(
                                 "delivery-crop", "The delivery crop pass did not complete."))
                         }
+                        // Development white balance, BEFORE the halo: the
+                        // correction is a chromatic adaptation in linear Apple
+                        // Wide Gamut, so halation scatters the light the
+                        // operator balanced to and the LUT grades corrected
+                        // light. A neutral job hands this texture straight on.
+                        guard let whiteBalanceStage = self.whiteBalanceStage else {
+                            return .failure(RenderError.missingFunction("plate_prepare"))
+                        }
+                        let balanced: MTLTexture
+                        do {
+                            balanced = try whiteBalanceStage.corrected(
+                                delivered,
+                                referenceKelvin: config.colorTemperature,
+                                warmth: context.whiteBalance.resolvedVideoWarmth,
+                                commandQueue: self.commandQueue)
+                        } catch {
+                            return .failure(RenderError.stageFailed(
+                                "development-white-balance",
+                                "The development white balance pass did not complete."))
+                        }
                         guard let halated = spatialStage.applyHalation(
-                            source: delivered,
+                            source: balanced,
                             commandQueue: self.commandQueue,
                             strength: config.effectiveHalationStrength,
                             radiusFraction: config.halationRadiusFraction,
@@ -1838,6 +1876,7 @@ final class PipelineRenderer: @unchecked Sendable {
         pass2Pipeline = try pipeline("pass2_grain")
         hlgPipeline = try pipeline("hlg_prepare")
         spatialStage = try SpatialEffectsStage(device: device, library: library)
+        whiteBalanceStage = try DevelopWhiteBalanceStage(device: device, library: library)
     }
 
     private func loadGrainVolume() throws {
@@ -2022,6 +2061,9 @@ private struct FrameRenderContext {
     /// Nil when the render is neutral (nothing to hold) or the sample failed.
     let highlightCeiling: Float?
     let sourceProfile: CameraSourceProfile
+    /// The job's development white balance, applied to every frame before the
+    /// halo is measured.
+    let whiteBalance: DevelopWhiteBalance
 }
 
 /// Captures the result from the dedicated audio-copy worker for the render queue.

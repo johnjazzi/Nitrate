@@ -98,12 +98,17 @@ enum PhotoDeliveryMetadata {
     ///   is also the factor the halation knees were scaled by. Recorded so a
     ///   render can be audited instead of trusted. Not the baseline alone.
     /// - Parameter exposureEV: the decode's additional lift; legacy callers retain +1 EV.
+    /// - Parameter whiteBalance: the development white balance this still was
+    ///   given. A neutral develop adds no key, so a default still states nothing
+    ///   it did not do; when the operator overrode it the applied Kelvin is
+    ///   recorded beside — never instead of — the capture lock.
     static func properties(config: FilmStockConfig, capture: StillCapture,
                            deliveredSize: CGSize,
                            raw: DNGMetadata? = nil,
                            sceneLiftStops: Float? = nil,
                            halationHeadroom: Float? = nil,
-                           exposureEV: Float = RAWPhotoDecoder.baseExposureEV) throws -> [CFString: Any] {
+                           exposureEV: Float = RAWPhotoDecoder.baseExposureEV,
+                           whiteBalance: DevelopWhiteBalance = .neutral) throws -> [CFString: Any] {
         let orientation = RenderDeliveryOrientation.from(naturalSize: deliveredSize,
                                                         preferredTransform: .identity)
         let caption = RenderConsumerMetadata.caption(stockName: config.displayName,
@@ -142,6 +147,10 @@ enum PhotoDeliveryMetadata {
         overrides["halation-still-scale"] = String(format: "%.2f", config.effectiveStillHalationScale)
         overrides["diffusion-still-scale"] = String(format: "%.2f", config.effectiveStillDiffusionScale)
         overrides["diffusion-amount"] = String(format: "%.2f", config.effectiveStillDiffusion.amount)
+        // The development white balance this still was given. The stock recipe
+        // temperature (`white-balance-kelvin`) stays separate; a
+        // neutral develop contributes no key at all.
+        overrides.merge(whiteBalance.photoMetadataValues) { _, applied in applied }
         if let whiteLevel = raw?.usableWhiteLevel {
             overrides["raw-white-level"] = String(format: "%.0f", whiteLevel)
         }

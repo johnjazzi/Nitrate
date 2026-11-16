@@ -9,7 +9,8 @@ enum DevelopmentPhotoRenderer {
     static func render(originalDNG: URL, stockID: String, resourcesURL: URL? = nil,
                        gauge: PrintGauge = .neutral, seed: UInt32 = 0, cropZoom: Double = 1,
                        pushPull: PushPullExposure = .neutral,
-                       bundle: Bundle = .main) throws -> URL {
+                       bundle: Bundle = .main,
+                       whiteBalance: DevelopWhiteBalance = .neutral) throws -> URL {
         let normalizedStock: String
         switch stockID.lowercased() {
         // Preserve historical short identifiers; all canonical catalogue IDs
@@ -21,7 +22,12 @@ enum DevelopmentPhotoRenderer {
         let film = try StillFilmRenderResources(stockID: normalizedStock, gauge: gauge, seed: seed,
                                                 bundle: bundle, pushPull: pushPull)
         let decoder = try RAWPhotoDecoder(device: film.device, queue: film.queue)
-        let decodedRAW = try decoder.decode(url: originalDNG, temperature: film.config.colorTemperature)
+        // The development white balance enters the DECODE, before any grading,
+        // and only there: the stock's own lock passes through untouched when the
+        // operator set nothing, so the default develop is the decode it always
+        // was. The capture's as-shot balance still travels in the file's tags.
+        let decodedRAW = try decoder.decode(url: originalDNG,
+            temperature: whiteBalance.resolvedPhotoKelvin(stockKelvin: film.config.colorTemperature))
         guard let decoded = CIImage(mtlTexture: decodedRAW.texture,
             options: [.colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!]) else {
             throw RenderError.decode("RAW texture unavailable")
@@ -63,7 +69,8 @@ enum DevelopmentPhotoRenderer {
             config: film.config, capture: capture,
             deliveredSize: CGSize(width: cg.width, height: cg.height),
             raw: decodedRAW.metadata, sceneLiftStops: decodedRAW.sceneLiftStops,
-            halationHeadroom: decodedRAW.halationHeadroom, exposureEV: decodedRAW.exposureEV) {
+            halationHeadroom: decodedRAW.halationHeadroom, exposureEV: decodedRAW.exposureEV,
+            whiteBalance: whiteBalance) {
             properties[key] = value
         }
         CGImageDestinationAddImage(sink, cg, properties as CFDictionary)
