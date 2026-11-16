@@ -22,6 +22,15 @@ constexpr sampler spatial_linear_sampler(
     address::clamp_to_edge
 );
 
+/// Same, but mip-aware: the halation mask is read at a level chosen per colour,
+/// so the filter has to interpolate between levels or the reach steps.
+constexpr sampler spatial_mip_sampler(
+    coord::normalized,
+    filter::linear,
+    mip_filter::linear,
+    address::clamp_to_edge
+);
+
 /// Spatial halation + glow (epic story 1.4).
 ///
 /// Two independent effects live here and must stay independent.
@@ -430,9 +439,10 @@ kernel void spatial_scene_prepare(
 /// why a very bright source reads as larger rather than hollowed into a ring.
 kernel void spatial_halation_apply(
     texture2d<float, access::read>  source [[texture(0)]],
-    texture2d<float, access::sample> red   [[texture(1)]],
-    texture2d<float, access::sample> green [[texture(2)]],
-    texture2d<float, access::sample> blue  [[texture(3)]],
+    texture2d<float, access::sample> mask  [[texture(1)]],
+    // texture(2) and (3) are unused: the per-colour blurs were replaced by one
+    // mip chain of the mask, and the output keeps index 4 so the diffusion
+    // ladder's slots (5-8) do not move.
     texture2d<float, access::write> output [[texture(4)]],
     texture2d<float, access::sample> diffusionLevel0 [[texture(5)]],
     texture2d<float, access::sample> diffusionLevel1 [[texture(6)]],
@@ -464,6 +474,13 @@ kernel void spatial_halation_apply(
     /// partial, because the transport is stopped between takes with the film
     /// mid-frame — see `LightLeakTransport.firstFrameSlip`.
     constant float& leakSlip               [[buffer(11)]],
+    /// Per-colour base mip level, from the stage's sigma-per-radius.
+    constant float3& baseLOD               [[buffer(12)]],
+    /// Extra levels a fully-responding area reads.
+    constant float& lodGain                [[buffer(13)]],
+    /// Where each colour starts and finishes climbing those levels.
+    constant float3& widenLow              [[buffer(14)]],
+    constant float3& widenHigh             [[buffer(15)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
@@ -478,15 +495,19 @@ kernel void spatial_halation_apply(
     float2 size = float2(source.get_width(), source.get_height());
     float2 uv = (float2(gid) + 0.5f) / size;
 
-    // Each layer is diffused at its own radius, so each keeps its own reach:
-    // red is the widest and therefore the only one still present in the far
-    // tail, which is what makes a faint halo read red. Each layer's OWN channel
-    // is read — the mask carries a distinct per-layer energy in rgb, so sampling
-    // `.r` from all three would feed red's energy into the green and blue layers
-    // and let an all-red source masquerade as full RGB.
-    float3 diffusion = float3(red.sample(spatial_linear_sampler, uv).r,
-                              green.sample(spatial_linear_sampler, uv).g,
-                              blue.sample(spatial_linear_sampler, uv).b);
+    // One chain, three levels. The level-0 read is how hard each layer is
+    // responding here; that, plus the colour's base level, is where the channel
+    // samples. Red's base level sits above green's and blue's, so a red source
+    // keeps a wider skirt at the same brightness, and a bright area reads one
+    // level coarser than a dim one — the skirt grows with intensity without any
+    // band ever being cut, which is what kept the earlier attempt ringing.
+    float3 response = mask.sample(spatial_mip_sampler, uv, level(0.0f)).rgb;
+    float3 climb = clamp((response - widenLow) / max(widenHigh - widenLow, 0.01f), 0.0f, 1.0f);
+    climb = climb * climb * (3.0f - 2.0f * climb);
+    float3 lod = max(baseLOD + lodGain * climb, 0.0f);
+    float3 diffusion = float3(mask.sample(spatial_mip_sampler, uv, level(lod.r)).r,
+                              mask.sample(spatial_mip_sampler, uv, level(lod.g)).g,
+                              mask.sample(spatial_mip_sampler, uv, level(lod.b)).b);
 
     // The mask is already a 0..1 fraction of the layer's own onset-to-reference
     // span (see `spatial_halation_energy`), so there is nothing left to

@@ -500,7 +500,7 @@ struct PushPullTests {
         outputDescriptor.storageMode = .shared
         let output = try #require(device.makeTexture(descriptor: outputDescriptor))
 
-        // A 1x1 mask stands in for the three diffused layers and all four
+        // A 1x1 mask stands in for the halation mask and all four lens
         // diffusion levels. Sampled, never read: strength and amount are zero.
         func mask() throws -> MTLTexture {
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -509,20 +509,16 @@ struct PushPullTests {
             descriptor.storageMode = .shared
             return try #require(device.makeTexture(descriptor: descriptor))
         }
-        let red = try mask()
-        let green = try mask()
-        let blue = try mask()
-        let levelTexture = try mask()
+        let halationMask = try mask()
 
         let commandBuffer = try #require(queue.makeCommandBuffer())
         let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(input, index: 0)
-        encoder.setTexture(red, index: 1)
-        encoder.setTexture(green, index: 2)
-        encoder.setTexture(blue, index: 3)
+        // ONE mask chain now, not three per-colour blurs; 2 and 3 are unread.
+        encoder.setTexture(halationMask, index: 1)
         encoder.setTexture(output, index: 4)
-        for level in 0..<4 { encoder.setTexture(levelTexture, index: 5 + level) }
+        for level in 0..<4 { encoder.setTexture(halationMask, index: 5 + level) }
         var strength: Float = 0
         var layerScale = SIMD3<Float>(0, 0, 0)
         var diffusionWeights = SIMD4<Float>(0, 0, 0, 0)
@@ -539,6 +535,17 @@ struct PushPullTests {
         encoder.setBytes(&exposureStops, length: MemoryLayout<Float>.size, index: 4)
         encoder.setBytes(&exposureCeiling, length: MemoryLayout<Float>.size, index: 5)
         encoder.setBytes(&postEmulsionStops, length: MemoryLayout<Float>.size, index: 6)
+        // The mask chain's level selection is irrelevant here — strength and
+        // layer scale are zero — but every constant is bound so nothing reads
+        // undefined memory.
+        var baseLOD = SIMD3<Float>(0, 0, 0)
+        var lodGain: Float = 0
+        var widenLow = SIMD3<Float>(0.08, 0.35, 0.60)
+        var widenHigh = SIMD3<Float>(0.55, 0.85, 1.00)
+        encoder.setBytes(&baseLOD, length: MemoryLayout<SIMD3<Float>>.size, index: 12)
+        encoder.setBytes(&lodGain, length: MemoryLayout<Float>.size, index: 13)
+        encoder.setBytes(&widenLow, length: MemoryLayout<SIMD3<Float>>.size, index: 14)
+        encoder.setBytes(&widenHigh, length: MemoryLayout<SIMD3<Float>>.size, index: 15)
         encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1))
         encoder.endEncoding()
