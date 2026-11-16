@@ -221,7 +221,7 @@ struct DiffusionTests {
     func everyGaugeOwnsItsRadius() throws {
         #expect(PrintGauge.eightMillimetre.diffusionPreset == .radius35)
         #expect(PrintGauge.sixteenMillimetre.diffusionPreset == .radius16)
-        #expect(PrintGauge.thirtyFiveMillimetre.diffusionPreset == .radius4)
+        #expect(PrintGauge.thirtyFiveMillimetre.diffusionPreset == .radius8)
         #expect(PrintGauge.seventyFiveMillimetre.diffusionPreset == .radius75)
         #expect(PrintGauge.seventyFiveMillimetre.diffusion.preset.isBypass)
         // The ladder is inverted against grain coarseness: the gauge with the
@@ -253,7 +253,7 @@ struct DiffusionTests {
             let shipped: [PrintGauge: (preset: DiffusionPreset, amount: Float)] = [
                 .eightMillimetre: (.radius35, 0.35),
                 .sixteenMillimetre: (.radius16, 0.21),
-                .thirtyFiveMillimetre: (.radius4, 0.14),
+                .thirtyFiveMillimetre: (.radius8, 0.14),
                 .seventyFiveMillimetre: (.radius75, 0)
             ]
             let expected = try #require(shipped[gauge])

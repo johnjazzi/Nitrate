@@ -21,7 +21,7 @@
       "gauge": "35mm",
       "sizeMultiplier": 0.81,
       "amplitudeMultiplier": 0.36,
-      "diffusionPreset": "radius4",
+      "diffusionPreset": "radius8",
       "diffusionAmount": 0.14,
       "halationMultiplier": 0.45
     },
