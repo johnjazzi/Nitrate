@@ -40,7 +40,10 @@ struct DevelopWhiteBalanceRenderTests {
         for warmth: Float in [0, -0, .nan] {
             let output = try stage.corrected(input, referenceKelvin: 5_600, warmth: warmth,
                                              commandQueue: queue)
-            #expect((output as AnyObject) === (input as AnyObject),
+            // Keep the existential identity comparison out of #expect's generic
+            // operator expansion: Cloud's Swift 6.4.0 aborts while lowering it.
+            let isInputTexture = (output as AnyObject) === (input as AnyObject)
+            #expect(isInputTexture,
                     "warmth \(warmth) must bypass the correction entirely")
         }
     }
@@ -180,7 +183,8 @@ struct DevelopWhiteBalanceRenderTests {
 
         // And a neutral job is a pure pass-through on the preview side too.
         let neutral = try color.corrected(prepared, whiteBalance: .neutral, referenceKelvin: 3_200)
-        #expect((neutral as AnyObject) === (prepared as AnyObject))
+        let isPreparedTexture = (neutral as AnyObject) === (prepared as AnyObject)
+        #expect(isPreparedTexture)
     }
 
     /// End to end through the preview entry point: a neutral preview is byte-for-
