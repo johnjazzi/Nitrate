@@ -67,6 +67,19 @@ final class SpatialEffectsStage {
     // ratios below are global, and are the values to tune first when the halo
     // reads wrong on device.
 
+    /// How many extra mip levels a fully-responding area reads, on top of its
+    /// colour's base level. One level doubles the reach, so 1 gives a bright
+    /// source twice the skirt of a faint one.
+    private static let halationLODGain: Float = 1.0
+
+    /// Where each colour starts and finishes climbing to that extra level, in
+    /// mask energy. Red climbs first and green then blue follow, which is what
+    /// keeps a growing halo red before it whitens — the same ordering the onsets
+    /// already give the colour ramp, now applied to reach.
+    private static let redWidenKnee: SIMD2<Float> = SIMD2(0.08, 0.55)
+    private static let greenWidenKnee: SIMD2<Float> = SIMD2(0.35, 0.85)
+    private static let blueWidenKnee: SIMD2<Float> = SIMD2(0.60, 1.00)
+
     /// Per-layer diffusion radius, as a multiple of the stock's base radius.
     /// Red scatters furthest through the emulsion, blue least — this is the
     /// single most visible property of real halation and the first
@@ -150,6 +163,23 @@ final class SpatialEffectsStage {
         let lift = sceneLiftStops.isFinite ? max(-8, min(8, sceneLiftStops)) : 0
         let capture = SystemExposureScheme.captureStops.isFinite ? SystemExposureScheme.captureStops : 0
         return capture + lift
+    }
+
+    /// The mip level each colour reads at zero energy.
+    ///
+    /// Level N of the chain is a box downsample 2^N times, which reads as a blur
+    /// of roughly `2^(N-1)` mask pixels. So a colour's shipping radius becomes a
+    /// level through the same sigma-per-radius the blur used to take: red's 1.8x
+    /// lands above green's, blue's 0.5x below it. A mask with no chain (a zero
+    /// radius) reads level 0 for all three and the mip sampling is a plain read.
+    static func halationBaseLOD(baseRadius: Float, mipmapped: Bool) -> SIMD3<Float> {
+        guard mipmapped, baseRadius > 0 else { return SIMD3(repeating: 0) }
+        func level(_ multiplier: Float) -> Float {
+            let sigma = baseRadius * multiplier * blurSigmaPerRadius
+            return max(0, log2(sigma / 0.5))
+        }
+        return SIMD3(level(redRadiusMultiplier), level(greenRadiusMultiplier),
+                     level(blueRadiusMultiplier))
     }
 
     private static func clampOnset(_ stops: Float) -> Float {
@@ -303,7 +333,12 @@ final class SpatialEffectsStage {
         let maskWidth = fullResMask ? width : halfWidth
         let maskHeight = fullResMask ? height : halfHeight
 
-        guard let halationMask = makeTexture(width: maskWidth, height: maskHeight),
+        // The mask is sampled at a mip level chosen per colour, so it carries a
+        // chain when it is diffused at all. A zero radius never samples above
+        // level 0, and a chain nobody reads would still cost its generation.
+        let maskMipmapped = strength != 0 && radiusFraction > 0
+        guard let halationMask = makeTexture(width: maskWidth, height: maskHeight,
+                                             mipmapped: maskMipmapped),
               let output = makeTexture(width: width, height: height, storageMode: .shared),
               let commandBuffer = commandQueue.makeCommandBuffer() else {
             return nil
@@ -364,31 +399,16 @@ final class SpatialEffectsStage {
         // asking MPS for an invalid sigma of zero.
         let baseRadius = Float(halfWidth) * radiusFraction
 
-        // 2. One blur per emulsion layer: red widest, then green, then blue.
-        //    MPSImageGaussianBlur convolves every channel at one sigma, so the
-        //    per-layer radii need three passes over the shared mask. A layer
-        //    whose radius is zero is bound the mask itself (no diffusion), and
-        //    with halation disabled the mask is bound directly — its energy is
-        //    already multiplied by a strength of zero.
-        var layerTextures = (red: halationMask, green: halationMask, blue: halationMask)
-        if strength != 0, radiusFraction > 0 {
-            guard let redDiffusion = makeTexture(width: maskWidth, height: maskHeight),
-                  let greenDiffusion = makeTexture(width: maskWidth, height: maskHeight),
-                  let blueDiffusion = makeTexture(width: maskWidth, height: maskHeight) else {
-                return nil
-            }
-            layerTextures.red = diffuse(
-                source: halationMask, destination: redDiffusion,
-                radius: baseRadius * Self.redRadiusMultiplier, commandBuffer: commandBuffer
-            )
-            layerTextures.green = diffuse(
-                source: halationMask, destination: greenDiffusion,
-                radius: baseRadius * Self.greenRadiusMultiplier, commandBuffer: commandBuffer
-            )
-            layerTextures.blue = diffuse(
-                source: halationMask, destination: blueDiffusion,
-                radius: baseRadius * Self.blueRadiusMultiplier, commandBuffer: commandBuffer
-            )
+        // 2. No per-colour blurs. The mask carries all three layer energies, and
+        //    a mip chain of it gives every octave of reach for the cost of a box
+        //    downsample: level N is roughly a blur of sigma 2^(N-1) mask pixels.
+        //    The apply pass samples the chain at a level chosen per colour, so red
+        //    can read a coarser level than green at the same brightness — that is
+        //    its wider skirt — and the level also rises with how hard the mask is
+        //    responding, so a bright source spreads further than a dim one.
+        if maskMipmapped, let blit = commandBuffer.makeBlitCommandEncoder() {
+            blit.generateMipmaps(for: halationMask)
+            blit.endEncoding()
         }
 
         // 3. The lens diffusion ladder: one small separable blur per octave of
@@ -416,16 +436,14 @@ final class SpatialEffectsStage {
             // Unused level slots are bound to a real, samplable texture rather
             // than left unbound; their weights are zero, so they contribute
             // nothing and the blend stays a normalized average.
-            let fallback = diffusionLevels.first ?? layerTextures.red
+            let fallback = diffusionLevels.first ?? halationMask
             let boundLevels = (0..<4).map { index in
                 index < diffusionLevels.count ? diffusionLevels[index] : fallback
             }
             var diffusionAmount = plan == nil ? 0 : diffusion.amount
             encoder.setComputePipelineState(halationApplyPipeline)
             encoder.setTexture(source, index: 0)
-            encoder.setTexture(layerTextures.red, index: 1)
-            encoder.setTexture(layerTextures.green, index: 2)
-            encoder.setTexture(layerTextures.blue, index: 3)
+            encoder.setTexture(halationMask, index: 1)
             encoder.setTexture(output, index: 4)
             for (offset, texture) in boundLevels.enumerated() {
                 encoder.setTexture(texture, index: 5 + offset)
@@ -447,6 +465,19 @@ final class SpatialEffectsStage {
             encoder.setBytes(&leakEdgeFalloff, length: MemoryLayout<Float>.size, index: 10)
             var leakSlip = leak.slip
             encoder.setBytes(&leakSlip, length: MemoryLayout<Float>.size, index: 11)
+            // Per-colour base mip level: log2 of the blur sigma that colour wants
+            // at level 0 over half a mask pixel, which is what one octave buys.
+            var baseLod = Self.halationBaseLOD(baseRadius: baseRadius,
+                                               mipmapped: maskMipmapped)
+            var lodGain = Self.halationLODGain
+            var kneelLow = SIMD3<Float>(Self.redWidenKnee.x, Self.greenWidenKnee.x,
+                                        Self.blueWidenKnee.x)
+            var kneeHigh = SIMD3<Float>(Self.redWidenKnee.y, Self.greenWidenKnee.y,
+                                        Self.blueWidenKnee.y)
+            encoder.setBytes(&baseLod, length: MemoryLayout<SIMD3<Float>>.size, index: 12)
+            encoder.setBytes(&lodGain, length: MemoryLayout<Float>.size, index: 13)
+            encoder.setBytes(&kneelLow, length: MemoryLayout<SIMD3<Float>>.size, index: 14)
+            encoder.setBytes(&kneeHigh, length: MemoryLayout<SIMD3<Float>>.size, index: 15)
             encoder.dispatchThreadgroups(fullGroups, threadsPerThreadgroup: Self.groupSize)
             encoder.endEncoding()
         }
@@ -622,19 +653,6 @@ final class SpatialEffectsStage {
     /// mask itself is returned, so the scattered energy is still added — locally
     /// — rather than the whole effect vanishing. `sigma = radius * k` is only
     /// evaluated for a strictly positive radius, so MPS is never asked for an
-    /// invalid sigma of zero.
-    private func diffuse(
-        source: MTLTexture,
-        destination: MTLTexture,
-        radius: Float,
-        commandBuffer: MTLCommandBuffer
-    ) -> MTLTexture {
-        guard radius > 0 else { return source }
-        let blur = MPSImageGaussianBlur(device: device, sigma: radius * Self.blurSigmaPerRadius)
-        blur.edgeMode = .clamp
-        blur.encode(commandBuffer: commandBuffer, sourceTexture: source, destinationTexture: destination)
-        return destination
-    }
 
     /// A continuous, efficient Gaussian approximation, including at 4K radii.
     /// Clamp boundaries preserve uniform highlights instead of darkening edges.
@@ -685,12 +703,13 @@ final class SpatialEffectsStage {
     /// Measured on an A20 Pro GPU at 3840x2160: all-shared 3.30 ms vs
     /// all-private 1.31 ms for identical passes, so the split matters.
     private func makeTexture(width: Int, height: Int,
-                             storageMode: MTLStorageMode = .private) -> MTLTexture? {
+                             storageMode: MTLStorageMode = .private,
+                             mipmapped: Bool = false) -> MTLTexture? {
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float,
             width: width,
             height: height,
-            mipmapped: false
+            mipmapped: mipmapped
         )
         desc.usage = [.shaderRead, .shaderWrite]
         desc.storageMode = storageMode
