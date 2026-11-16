@@ -278,9 +278,9 @@ struct RenderContractTests {
         #expect(app == cli, "both bundled catalogs must carry the identical reduction")
         let daylight = try #require(app.first { $0.stockId == "kodak5207" })
         let tungsten = try #require(app.first { $0.stockId == "kodak5219" })
-        // The amount is the only halation field that moved.
-        #expect(daylight.halationTint == SIMD3(1.0, 0.28, 0.10))
-        #expect(tungsten.halationTint == SIMD3(1.0, 0.32, 0.10))
+        // Keep the shared tuned tint and the unrelated stock fields pinned.
+        #expect(daylight.halationTint == SIMD3(1.0, 0.75, 0.75))
+        #expect(tungsten.halationTint == SIMD3(1.0, 0.75, 0.75))
         #expect(daylight.glowStrength == 0.155 && tungsten.glowStrength == 0.2325)
         #expect(daylight.grainSize == 1.15 && tungsten.grainSize == 1.3)
     }
@@ -442,7 +442,7 @@ struct RenderContractTests {
 
     @Test func halationGeometryDecodesPerStock() throws {
         // Geometry stays authored per stock, but both currently use the user's
-        // shared 0.001 spread target. Channel weights remain stock-specific.
+        // shared 0.001 spread target. Channel weights share the tuned G/B target.
         let app = try stocks("App/Resources/stocks.json")
         func radius(_ id: String) throws -> Float {
             try #require(app.first { $0.stockId == id }).halationRadiusFraction
@@ -453,11 +453,11 @@ struct RenderContractTests {
         #expect(try radius("kodak5207") == 0.001)
         #expect(try radius("kodak5219") == 0.001)
 
-        // Published red-dominant range, full-scale red.
-        #expect(try tint("kodak5219") == SIMD3(1.0, 0.32, 0.10))
-        #expect(try tint("kodak5207") == SIMD3(1.0, 0.28, 0.10))
+        // Shared tuned channel weights, full-scale red.
+        #expect(try tint("kodak5219") == SIMD3(1.0, 0.75, 0.75))
+        #expect(try tint("kodak5207") == SIMD3(1.0, 0.75, 0.75))
         #expect(app.allSatisfy { $0.halationTint.x == 1.0 })
-        #expect(try tint("kodak5207") != tint("kodak5219"))
+        #expect(app.allSatisfy { $0.halationTint == SIMD3(1.0, 0.75, 0.75) })
     }
 
     @Test func halationGainValidationAllowsTheTuningRangeAndRejectsInvalidValues() throws {
