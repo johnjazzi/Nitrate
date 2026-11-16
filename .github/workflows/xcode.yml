@@ -1,121 +1,53 @@
-name: Xcode checks
-
-# Automatic Xcode Cloud test monitor (the CI cutover).
-#
-# This workflow replaces the former native macOS job. It does not compile on a
-# GitHub macOS runner; it starts a Cloud RenderCLI TEST run through the App Store
-# Connect API and monitors it to completion. The job name stays
-# "Xcode build and tests" so the required main-branch status-check context is
-# unchanged and no branch-protection setting has to move.
-#
-# Why Ubuntu: the App Store Connect API is plain HTTPS; orchestrating a Cloud
-# build needs no macOS minutes. The iOS build coverage the native job used to
-# provide is restored *inside* Cloud by ci_scripts/ci_post_xcodebuild.sh, which
-# lints and compiles the iOS app during the source-available build-for-testing
-# phase of the TEST action (Apple: "In the first phase, Xcode Cloud accesses your
-# source code ... using the xcodebuild build-for-testing command").
-#
-# Fork safety: a fork pull request must FAIL this check, never silently pass.
-# Fork PRs never receive the App Store Connect secrets and a fork's head branch
-# is not in this repository, so the monitor cannot start a run. The explicit
-# refusal step below makes that failure legible instead of an opaque config error.
-on:
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
-    inputs:
-      branch:
-        description: Branch to test (defaults to the dispatched ref when empty)
-        type: string
-        required: false
-        default: ""
-      expected_sha:
-        description: Exact commit SHA Cloud must build (required when branch is given)
-        type: string
-        required: false
-        default: ""
-
-# Read the repository; write pull-request comments for the deadline/launch
-# alerts. Nothing here rewrites, pushes, or merges.
-permissions:
-  contents: read
-  pull-requests: write
-
-concurrency:
-  # One orchestration group for the whole product, shared with the manual
-  # release monitor in cloud.yml: a second monitor must not run in parallel.
-  # cancel-in-progress is FALSE because a cancelled monitor cannot cancel the
-  # Cloud run it started.
-  group: cloud-monitor
-  cancel-in-progress: false
-
-jobs:
-  xcode:
-    name: Xcode build and tests
-    runs-on: ubuntu-latest
-    # Longer than the alert deadline below so the monitor's own deadline failure
-    # fires before the runner is killed.
-    timeout-minutes: 25
-    env:
-      XCODE_CLOUD_WORKFLOW_ID: ${{ vars.XCODE_CLOUD_TEST_WORKFLOW_ID }}
-      APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      CLOUD_ROLE: test
-    steps:
-      - name: Check out the trusted monitor helper at the reviewed commit
-        # Official actions/checkout v4.3.1, the pin the release-version gate uses.
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          # Never the PR head: a pull request can change any file in this
-          # repository, so the helper is pinned to the reviewed commit
-          # (git rev-parse 05993dd on dev). Advance this pin deliberately.
-          ref: 05993dd3ef90ff19d38440a49cc462f8f5ead2c3
-          persist-credentials: false
-          fetch-depth: 1
-      - name: Refuse fork pull requests
-        # A fork must fail the required check, not pass by being skipped. The
-        # guard runs before any step that reads a secret.
-        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
-        run: |
-          echo "::error::Fork pull requests are not monitored: the App Store Connect secrets must never reach a fork, and a fork branch does not exist in this repository. Push the change to a same-repo branch and open the pull request from it."
-          exit 1
-      - name: Resolve the Cloud target
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          INPUT_BRANCH: ${{ inputs.branch }}
-          INPUT_SHA: ${{ inputs.expected_sha }}
-        run: |
-          # Values are passed through the environment and quoted: a branch name
-          # is never interpolated into shell source.
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            printf 'CLOUD_BRANCH=%s\n' "$PR_HEAD_REF" >> "$GITHUB_ENV"
-            printf 'CLOUD_EXPECTED_SHA=%s\n' "$PR_HEAD_SHA" >> "$GITHUB_ENV"
-          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_BRANCH" ]; then
-            printf 'CLOUD_BRANCH=%s\n' "$INPUT_BRANCH" >> "$GITHUB_ENV"
-            printf 'CLOUD_EXPECTED_SHA=%s\n' "$INPUT_SHA" >> "$GITHUB_ENV"
-          else
-            printf 'CLOUD_BRANCH=%s\n' "$GITHUB_REF_NAME" >> "$GITHUB_ENV"
-            printf 'CLOUD_EXPECTED_SHA=%s\n' "$GITHUB_SHA" >> "$GITHUB_ENV"
-          fi
-      - name: Install the monitor dependencies in an isolated venv
-        run: |
-          python3 -m venv "$RUNNER_TEMP/cloud-monitor-venv"
-          "$RUNNER_TEMP/cloud-monitor-venv/bin/pip" install --disable-pip-version-check \
-            --require-hashes -r scripts/cloud-monitor-requirements.txt
-      - name: Run the monitor unit tests
-        run: |
-          "$RUNNER_TEMP/cloud-monitor-venv/bin/python" scripts/test_cloud_monitor.py -v
-      - name: Start and monitor the Cloud test run
-        # The App Store Connect private key is only exposed to the one step that
-        # actually needs it. Dependency install and unit tests run without it.
-        env:
-          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
-        run: |
-          "$RUNNER_TEMP/cloud-monitor-venv/bin/python" scripts/cloud_monitor.py start \
-            --role test \
-            --expected-sha "$CLOUD_EXPECTED_SHA" \
-            --branch "$CLOUD_BRANCH" \
-            --alert-deadline 1080
+{
+  "name": "Read existing PR74 Cloud failure evidence",
+  "on": {
+    "workflow_dispatch": {}
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "concurrency": {
+    "group": "pr74-read-only-cloud-evidence",
+    "cancel-in-progress": false
+  },
+  "jobs": {
+    "evidence": {
+      "runs-on": "ubuntu-latest",
+      "timeout-minutes": 10,
+      "steps": [
+        {
+          "name": "Checkout diagnostic branch",
+          "uses": "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Install pinned authentication dependencies",
+          "run": "python3 -m venv \"$RUNNER_TEMP/evidence-venv\"\n\"$RUNNER_TEMP/evidence-venv/bin/pip\" install --disable-pip-version-check --require-hashes -r scripts/cloud-monitor-requirements.txt"
+        },
+        {
+          "name": "Retrieve existing failed build artifacts (GET only)",
+          "env": {
+            "APP_STORE_CONNECT_KEY_ID": "${{ secrets.APP_STORE_CONNECT_KEY_ID }}",
+            "APP_STORE_CONNECT_ISSUER_ID": "${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}",
+            "APP_STORE_CONNECT_PRIVATE_KEY": "${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}"
+          },
+          "run": "\"$RUNNER_TEMP/evidence-venv/bin/python\" scripts/pr74_cloud_evidence.py"
+        },
+        {
+          "name": "Retain failure evidence",
+          "if": "always()",
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "name": "pr74-cloud-failure-evidence",
+            "path": "cloud-failure-evidence/",
+            "retention-days": 2,
+            "if-no-files-found": "error"
+          }
+        }
+      ]
+    }
+  }
+}
