@@ -22,7 +22,7 @@ settings:
     # release. The build number is deliberately NOT maintained here: Xcode Cloud
     # supplies its own increasing build number to anything distributed, and a
     # hand-incremented second counter only ever drifted from it.
-    MARKETING_VERSION: "0.9.4"
+    MARKETING_VERSION: "0.9.5"
     INFOPLIST_KEY_CFBundleDisplayName: Nitrate
     INFOPLIST_KEY_NSCameraUsageDescription: "Nitrate needs camera access to capture Apple Log video for film stock processing."
     INFOPLIST_KEY_NSMicrophoneUsageDescription: "Nitrate records audio to accompany your film clips."
