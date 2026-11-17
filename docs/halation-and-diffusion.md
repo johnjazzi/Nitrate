@@ -7,16 +7,20 @@ bleeds, the **reference** decides how much strength a given excess buys, and the
 
 Everything below is scene-linear and pre-LUT.
 
-**Reach is one mip chain, not three blurs.** The mask carries a separate energy
-per colour; it is allocated mipmapped and a single `generateMipmaps` pass builds
-the chain. The apply pass reads level 0 to measure how hard each layer is
-responding, then samples that colour's level — `baseLOD_c + lodGain ×
-smoothstep(knee_c, response_c)` — so red reads coarser than green and blue at the
-same brightness, and a bright area reads coarser than a faint one. Two properties
-follow: no colour gets its own blur pass (one chain serves all three), and because
-the level is interpolated rather than switched, there is no band boundary to ring
-on. Measured at 4K half resolution on an M2: chain 0.54 ms against 3.44 ms for the
-three Gaussians that preceded it.
+**Reach uses source-brightness soft steps, not mip levels.** Each source texel's
+RGB mask energy is partitioned into three nonnegative buckets whose weights sum
+to one. The handoffs are smoothstep ramps in log brightness: narrow below 2×
+white, narrow-to-middle between 2× and 4×, middle-to-wide between 4× and 8×,
+and wide above 8×. Radius factors are **1 / 1.25 / 2**. Each bucket is filtered
+at the colour's own sigma (red **1.8**, green **1**, blue **0.5** times base),
+then summed before tint/strength and scene-linear addition. The implementation
+uses nine MPS Gaussian operations and three channel-gather dispatches.
+
+The gauge separately scales the stock radius: **8mm 1.4, 16mm 0.7, 35mm 0.35,
+75mm 0.05**, relative to the previously shared stock radius. Its halation energy
+multiplier is unchanged. The former mip implementation was rejected for visible
+coarse-grid artifacts; its timing is not the cost of this renderer. A fourth
+radius is not implemented in the app.
 
 ## The five numbers, and who owns each
 
@@ -25,7 +29,7 @@ three Gaussians that preceded it.
 | `redOnsetStops` / `greenOnsetStops` / `blueOnsetStops` | engine | `SpatialEffectsStage` | light below these does not bleed; red first, then green, then blue |
 | `halationReferenceStops` | engine | `SpatialEffectsStage` | the superwhite that reaches **full** contribution, stills and takes alike |
 | `halationStrength` | stock | `Resources/stocks.json` | how strong the effect is at full contribution |
-| `halationRadiusFraction` | stock | `Resources/stocks.json` | how far the halo spreads (fraction of half-width); becomes a mip level |
+| `halationRadiusFraction` | stock | `Resources/stocks.json` | base spread (fraction of half-resolution width), scaled by gauge and brightness |
 | `halationTint` | stock | `Resources/stocks.json` | per-layer weighting; red strongest |
 | `stillHalationScale` | stock | `Resources/stocks.json` | share of strength a held frame uses |
 | `diffusionPreset` / `diffusionAmount` | gauge | `Resources/gauges.json` | radius (px @ 1080p wide) and mix |
@@ -36,9 +40,9 @@ three Gaussians that preceded it.
 All four numbers are stops above diffuse white:
 
 ```
-redOnset    -0.41    0.75x diffuse white
-greenOnset  +0.41    1.33x
-blueOnset   +1.58    2.99x
+redOnset    +0.60    1.52x diffuse white
+greenOnset  +1.20    2.30x
+blueOnset   +2.10    4.29x
 reference   +3.322   10x, inside Apple Log 2's ~12x recorded range
 ```
 
@@ -123,7 +127,7 @@ per-gauge amounts are taste.
 ```
 8mm   radius35  0.35
 16mm  radius16  0.21
-35mm  radius4   0.14
+35mm  radius8   0.14
 75mm  bypass    -
 ```
 
@@ -134,9 +138,9 @@ radii therefore run one direct separable pass.
 
 ## Changing something
 
-- Halo too wide/narrow: `halationRadiusFraction` in `stocks.json`. It is converted
-  to a base mip level per colour (`halationBaseLOD`), so a change moves every
-  colour's reach together; red still reads one level above green.
+- Halo too wide/narrow: `halationRadiusFraction` in `stocks.json`, multiplied by
+  `halationRadiusMultiplier` in `gauges.json`. RGB radius factors and the
+  source-brightness ladder live in `SpatialEffectsStage`.
 - Halo too strong/weak on **everything**: `halationStrength` in `stocks.json`.
 - Where the halo reaches full strength, stills and takes together:
   `halationReferenceStops` in `SpatialEffectsStage` (lower saturates sooner).

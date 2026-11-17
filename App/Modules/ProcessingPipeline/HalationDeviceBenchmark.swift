@@ -3,26 +3,14 @@ import Foundation
 import Metal
 import MetalPerformanceShaders
 
-/// Development-only measurement of the spatial halation stage.
+/// Development-only legacy filtering comparisons plus a real-stage timing.
 ///
-/// The Mac numbers were produced by a standalone harness that replicated
-/// `spatial.metal` and `SpatialEffectsStage`'s blur work. This runs the
-/// SAME terms on the actual device GPU so the two can be compared directly,
-/// and additionally times the real `SpatialEffectsStage.apply` path as ground
-/// truth against the replica.
-///
-/// The comparison it exists for is how the halation mask gets its reach. The
-/// shipping stage builds ONE mip chain of the mask — a single
-/// `MTLBlitCommandEncoder.generateMipmaps` — and the apply pass reads it at a
-/// level chosen per colour (red coarsest). The retired shape ran three
-/// independent Gaussian blurs of the same mask at three sigmas and sampled one
-/// channel from each. Both arms here dispatch the same mask kernel and the same
-/// single full-resolution composite, so the delta is the cost of the reach and
-/// nothing else. It is a cost comparison, not a look comparison: a mip level is
-/// a box downsample, not a Gaussian.
-///
-/// Runs only when the app is launched with `-halation-benchmark`, prints to
-/// stdout, and is compiled out of Release builds entirely.
+/// The mip-chain and three-blur replicas below are RETIRED experiments, not the
+/// current soft-step renderer. Their delta does not measure a fourth brightness
+/// radius. Only `measureRealStage` invokes the current production stage; its
+/// explicit fixture/radius and wall-clock submit/wait timing remain a diagnostic,
+/// not a measured cost for a real take or for an unimplemented fourth bucket.
+/// Runs only with `-halation-benchmark`; compiled out of Release builds.
 enum HalationDeviceBenchmark {
     static var isRequested: Bool {
         ProcessInfo.processInfo.arguments.contains("-halation-benchmark")
@@ -57,7 +45,7 @@ enum HalationDeviceBenchmark {
         mask.write(float4(highlight, highlight, highlight, 1.0f), gid);
     }
 
-    // SHIPPING SHAPE: one rgb read of how hard the mask responds, one level
+    // RETIRED MIP EXPERIMENT: one rgb read of how hard the mask responds, one level
     // chosen per colour, then one sample per channel at that channel's level.
     kernel void spatial_composite_chain(
         texture2d<float, access::read>   source [[texture(0)]],
@@ -113,7 +101,7 @@ enum HalationDeviceBenchmark {
     private static let halationRadiusFraction: Float = 0.011
     private static let groupSize = MTLSize(width: 16, height: 16, depth: 1)
 
-    /// The stage's own numbers, so the replica measures the shipping look.
+    /// Historical mip experiment settings, not the current soft-step defaults.
     private static let redRadiusMultiplier: Float = 1.8
     private static let greenRadiusMultiplier: Float = 1.0
     private static let blueRadiusMultiplier: Float = 0.5
@@ -349,7 +337,7 @@ enum HalationDeviceBenchmark {
             print(String(format: "[halation-bench]   DELTA                               : %7.3f ms  (three-blur is +%.0f%% of the chain)",
                          tLayerTotal - tChainTotal, (tLayerTotal / tChainTotal - 1) * 100))
             print(String(format: "[halation-bench]   frame budget at 24 fps              :  41.667 ms"))
-            print(String(format: "[halation-bench]   stage as share of budget            : %7.2f %%", tChainTotal / 41.667 * 100))
+            print(String(format: "[halation-bench]   legacy chain share of budget            : %7.2f %%", tChainTotal / 41.667 * 100))
             print(String(format: "[halation-bench]   delta as share of budget            : %7.2f %%", (tLayerTotal - tChainTotal) / 41.667 * 100))
         }
 
