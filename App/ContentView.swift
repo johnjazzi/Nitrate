@@ -467,9 +467,11 @@ struct ContentView: View {
                     },
                     onPull: {
                         // The stock's own persisted preference is the single owner:
-                        // choosing the next darker rung turns auto off for this stock
+                        // choosing the rescue pull turns auto off for this stock
                         // exactly as the stock sheet does, and the render resolves it
-                        // through `lastPushPull(...).resolved(...)`. The busy gate is
+                        // through `lastPushPull(...).resolved(...)`. The destination is
+                        // recomputed from the same policy the row displayed, so the
+                        // written rung is the one the operator read. The busy gate is
                         // re-checked here, because the card can be tapped a frame
                         // after a take starts and the row's own gate is only a render.
                         guard !daylightRescueBusy,
@@ -1407,12 +1409,14 @@ struct ContentView: View {
             isAvailable: cameraViewModel.hasExposureMeter)
     }
 
-    /// The next supported aperture stop the rescue card can close to, or nil.
-    /// Reads the canonical capability gate and the lens' own reported ladder, so
-    /// a tele/front fixed lens — or a lens already at its widest — offers nothing.
+    /// The strongest supported aperture stop the rescue card stops down to in one
+    /// tap, or nil. Reads the canonical capability gate and the lens' own
+    /// reported ladder, so the destination is always hardware-reported: f/4 only
+    /// where f/4 is on the ladder. A tele/front fixed lens — or a lens already at
+    /// its own maximum f-number — offers nothing.
     private var daylightRescueApertureStop: Float? {
         guard cameraViewModel.canSelectAperture, !cameraViewModel.isChangingFrameRate else { return nil }
-        return DaylightRescueAperturePolicy.nextStop(
+        return DaylightRescueAperturePolicy.strongestStop(
             after: CameraAperturePolicy.displayAperture(selected: cameraViewModel.selectedLensAperture,
                                                         measured: cameraViewModel.liveAperture),
             stops: cameraViewModel.apertureStops)

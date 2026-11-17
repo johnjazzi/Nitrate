@@ -49,6 +49,15 @@ struct DaylightExposureRescuePolicyTests {
         #expect(!DaylightExposureRescuePolicy.canConfirm(available: true, canChange: false))
         #expect(!DaylightExposureRescuePolicy.canConfirm(available: false, canChange: false))
     }
+
+    /// The offer already means ≥2 EV over target, so the pull option must move
+    /// the full two rungs the trigger implies: one tap resolves the scene rather
+    /// than nudging it half way and asking again.
+    @Test func offerThresholdMatchesTheTwoStopPull() {
+        #expect(DaylightExposureRescuePolicy.thresholdStops == 2)
+        #expect(DaylightRescuePullPolicy.nextStops(after: 0, floor: PushPullStops.pullThree.rawValue)
+                == PushPullStops.pullTwo.rawValue)
+    }
 }
 
 /// Pure placement for the idle-only armed 60 fps badge. It mirrors the mood

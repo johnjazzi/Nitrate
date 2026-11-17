@@ -23,7 +23,9 @@ struct ContactPreviewFrame<Content: View>: View {
             let size = fittedImageSize(in: geometry.size)
             VStack(spacing: 0) {
                 HStack(spacing: 0) {
-                    frameLabel(stockAndGauge, degrees: -90)
+                    // Stock reads top-to-bottom, matching the right-hand ISO
+                    // print; both become upright when the phone turns left.
+                    frameLabel(stockAndGauge, degrees: 90)
                     content()
                         .frame(width: size.width, height: size.height)
                         .clipped()

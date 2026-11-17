@@ -179,22 +179,28 @@ struct ExposureRescueButton: View {
 
 /// Pure gates for the two non-frame-rate rescue options. Both read the owners
 /// that already exist — the push/pull ladder and the lens aperture capability —
-/// and neither invents a value: a pull is always the next real rung on the
-/// ladder, and an aperture target is always a stop the active lens reports.
+/// and neither invents a value: a pull is always a real rung on the ladder, and
+/// an aperture target is always a stop the active lens reports.
+///
+/// The offer begins at two stops over target. Pull jumps two rungs towards the
+/// ladder floor; aperture selects the largest reported f-number in one tap.
+/// Each remains an explicit, independent choice.
 enum DaylightRescuePullPolicy {
-    /// The rung one step darker than `stops`, or nil when the ladder floor is
-    /// already reached. `floor` is the owner's own minimum (`PushPullStops`) and
-    /// must itself be negative: a non-negative request is a broken floor, not an
-    /// offer, so no destination is invented from it.
+    /// Two rungs darker than `stops`, clamped to the ladder floor, or nil when
+    /// the ladder is already at or below that floor. `floor` is the owner's own
+    /// minimum (`PushPullStops`) and must itself be negative: a non-negative
+    /// request is a broken floor, not an offer, so no destination is invented
+    /// from it.
     ///
     /// The destination is a real pull even from a pushed or neutral take. Stops
-    /// are signed and the ladder runs -3...+2, so the next rung below `stops` is
-    /// `min(stops, 0) - 1` clamped to the floor. That makes PUSH +2 and PUSH +1
-    /// develop at -1 (a pull), neutral 0 develop at -1, and an existing -1 go to
-    /// -2 — one rung darker in the direction that actually recovers a bright take.
+    /// are signed and the ladder runs -3...+2, so the jump is `min(stops, 0) - 2`
+    /// clamped to the floor: PUSH +2, PUSH +1 and neutral 0 all develop at -2
+    /// (the two-stop pull the ≥2 EV trigger implies), an existing -1 goes to -3,
+    /// and an existing -2 also lands on -3 rather than overshooting the ladder.
+    /// A negative `stops` therefore can never move brighter.
     static func nextStops(after stops: Int, floor: Int) -> Int? {
         guard floor < 0, stops > floor else { return nil }
-        return max(min(stops, 0) - 1, floor)
+        return max(min(stops, 0) - 2, floor)
     }
 
     /// Concise row title for a destination rung, stated as a magnitude: a
@@ -205,19 +211,30 @@ enum DaylightRescuePullPolicy {
     }
 }
 
-/// Aperture rescue targets the next *supported* higher f-number on the active
-/// variable-aperture lens. When the current iris is unknown, or the lens reports
-/// no higher rung, no destination exists and the option is not offered — no
-/// invented one-stop close, and no offer on fixed-aperture or front/tele lenses
-/// (their capability already reports empty stops).
+/// Aperture rescue targets the **strongest** f-number the active
+/// variable-aperture lens reports — not the next rung up. On a lens whose
+/// ladder tops out at f/4 this is f/4; on a lens that stops at f/2.8 it is
+/// f/2.8. The destination is never guessed: when the current iris is unknown, or
+/// no supported stop is above it, no destination exists and the option is not
+/// offered — no invented close to an f/4 the hardware does not report, and no
+/// offer on fixed-aperture or front/tele lenses (their capability reports a
+/// single stop or none, both of which leave nothing above the current iris).
 enum DaylightRescueAperturePolicy {
-    static func nextStop(after current: Float?, stops: [Float]) -> Float? {
+    /// The largest finite, positive reported stop above `current`, or nil. The
+    /// lens' own list is used as given: unsorted ladders pick the true maximum,
+    /// and non-finite or non-positive entries can never become a destination.
+    static func strongestStop(after current: Float?, stops: [Float]) -> Float? {
         guard let current, current.isFinite, current > 0 else { return nil }
-        return stops.filter { $0.isFinite && $0 > current + 0.001 }.min()
+        return stops.filter { $0.isFinite && $0 > 0 && $0 > current + 0.001 }.max()
     }
 
+    /// Row title in the same f-number form the lens reports: a whole stop reads
+    /// "Stop down to f/4", a third-stop lens reads "Stop down to f/2.8".
     static func title(forStop stop: Float) -> String {
-        "Close to f/" + String(format: "%.1f", stop)
+        let number = stop == stop.rounded()
+            ? String(format: "%.0f", stop)
+            : String(format: "%.1f", stop)
+        return "Stop down to f/" + number
     }
 }
 
@@ -267,6 +284,8 @@ enum DaylightRescuePresentation {
 
     /// Push/pull row. Development only: the take is already recorded, so the row
     /// never claims it reduces incoming light or recovers clipped highlights.
+    /// The title names the whole destination in one tap ("Pull 2 stops"), so the
+    /// operator sees the leap before taking it.
     static func pull(stockSelected: Bool, currentStops: Int?, floor: Int, busy: Bool) -> DaylightRescueOption {
         let current = currentStops ?? 0
         let next = DaylightRescuePullPolicy.nextStops(after: current, floor: floor)
@@ -282,13 +301,15 @@ enum DaylightRescuePresentation {
         return DaylightRescueOption(title: title, detail: detail, enabled: true)
     }
 
-    /// Aperture row, or nil when the active lens offers no higher stop. The
-    /// canonical `setLensAperture` guard still owns the final refusal; the row is
+    /// Aperture row, or nil when the active lens reports no stop above the
+    /// current iris. `nextStop` is the strongest supported destination from
+    /// `DaylightRescueAperturePolicy.strongestStop(after:stops:)`. The canonical
+    /// `setLensAperture` guard still owns the final refusal; the row is
     /// pre-disabled while the device is busy.
     static func aperture(nextStop: Float?, enabled: Bool) -> DaylightRescueOption? {
         guard let nextStop else { return nil }
         return DaylightRescueOption(title: DaylightRescueAperturePolicy.title(forStop: nextStop),
-                                    detail: enabled ? "Next take · preview keeps its iris"
+                                    detail: enabled ? "Strongest stop · applies to the next take"
                                                     : "Busy — finish the take first",
                                     enabled: enabled)
     }
