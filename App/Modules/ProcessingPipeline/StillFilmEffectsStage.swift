@@ -57,7 +57,7 @@ final class StillFilmEffectsStage {
         guard source.pixelFormat == .rgba16Float else { return nil }
         return spatial.applyHalation(source: source, commandQueue: commandQueue,
                                      strength: config.effectiveHalationStrength * config.effectiveStillHalationScale,
-                                     radiusFraction: config.halationRadiusFraction,
+                                     radiusFraction: config.effectiveHalationRadiusFraction,
                                      layerScale: config.halationTint,
                                      diffusion: config.effectiveStillDiffusion,
                                      sceneLiftStops: sceneLiftStops,

@@ -399,14 +399,15 @@ struct PlatePreviewEffectsTests {
             let config = PreviewConfiguration(stock: stock, gauge: gauge, sceneIlluminantKelvin: 3600)
             #expect(config.halationStrength == stock.halationStrength(for: gauge),
                     "the preview must apply the selected gauge exactly once")
-            #expect(config.halationRadiusFraction == stock.halationRadiusFraction)
+            #expect(config.halationRadiusFraction == stock.halationRadiusFraction(for: gauge))
             #expect(config.halationTint == stock.halationTint)
         }
-        // The gauge must not disturb the stock's halation geometry.
+        // Radius and energy are separate gauge treatments, each applied once.
         let a = PreviewConfiguration(stock: stock, gauge: .eightMillimetre, sceneIlluminantKelvin: 3600)
         let b = PreviewConfiguration(stock: stock, gauge: .seventyFiveMillimetre, sceneIlluminantKelvin: 3600)
         #expect(abs(b.halationStrength - a.halationStrength * 0.20) < 0.00001)
-        #expect(a.halationRadiusFraction == b.halationRadiusFraction)
+        let expectedRadiusRatio: Float = 1.4 / 0.05
+        #expect(abs(a.halationRadiusFraction / b.halationRadiusFraction - expectedRadiusRatio) < 0.0001)
     }
 
     // MARK: - Real 8-bit output fixture

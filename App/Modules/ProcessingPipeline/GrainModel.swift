@@ -33,6 +33,9 @@ enum PrintGauge: String, Codable, CaseIterable, Equatable, Sendable {
     /// Scales halation presence independently of grain and diffusion geometry.
     var halationMultiplier: Float { GaugeTunings.tuning(for: self).halationMultiplier }
 
+    /// Authored radius scale, independent of halation energy.
+    var halationRadiusMultiplier: Float { GaugeTunings.tuning(for: self).halationRadiusMultiplier }
+
     /// Short label for the gauge selector; the encoded value is the same short
     /// form, so exported metadata reads "35mm", not "thirtyFiveMillimetre".
     var displayName: String { rawValue }
@@ -92,6 +95,7 @@ struct GaugeTuning: Codable, Equatable, Sendable {
     let diffusionPreset: DiffusionPreset
     let diffusionAmount: Float
     var halationMultiplier: Float = 1
+    var halationRadiusMultiplier: Float = 1
 
     var diffusion: DiffusionSettings {
         DiffusionSettings(preset: diffusionPreset, amount: diffusionAmount)
@@ -116,6 +120,7 @@ struct GaugeTuningConfig: Codable, Equatable, Sendable {
         let diffusionPreset: DiffusionPreset
         let diffusionAmount: Float
         var halationMultiplier: Float? = nil
+        var halationRadiusMultiplier: Float? = nil
     }
 
     let schemaVersion: Int
@@ -138,6 +143,8 @@ struct GaugeTuningConfig: Codable, Equatable, Sendable {
             }
             try Self.requirePositive(entry.sizeMultiplier, field: "sizeMultiplier", gauge: entry.gauge)
             try Self.requirePositive(entry.amplitudeMultiplier, field: "amplitudeMultiplier", gauge: entry.gauge)
+            let radius = entry.halationRadiusMultiplier ?? 1
+            try Self.requirePositive(radius, field: "halationRadiusMultiplier", gauge: entry.gauge)
             let halation = entry.halationMultiplier ?? 1
             guard halation.isFinite, (0...1).contains(halation) else {
                 throw GaugeConfigError.invalidMultiplier(
@@ -157,7 +164,8 @@ struct GaugeTuningConfig: Codable, Equatable, Sendable {
                                                 amplitudeMultiplier: entry.amplitudeMultiplier,
                                                 diffusionPreset: entry.diffusionPreset,
                                                 diffusionAmount: entry.diffusionAmount,
-                                                halationMultiplier: halation)
+                                                halationMultiplier: halation,
+                                                halationRadiusMultiplier: radius)
         }
         let missing = PrintGauge.allCases.filter { resolved[$0] == nil }
         guard missing.isEmpty else {

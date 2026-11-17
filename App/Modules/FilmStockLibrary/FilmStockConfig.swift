@@ -90,6 +90,12 @@ struct FilmStockConfig: Codable, Equatable, Sendable {
 
     var effectiveHalationStrength: Float { halationStrength(for: effectivePrintGauge) }
 
+    func halationRadiusFraction(for gauge: PrintGauge) -> Float {
+        halationRadiusFraction * gauge.halationRadiusMultiplier
+    }
+
+    var effectiveHalationRadiusFraction: Float { halationRadiusFraction(for: effectivePrintGauge) }
+
     /// The gauge actually applied to the render: the selected gauge or 35mm.
     var effectivePrintGauge: PrintGauge { printGauge ?? .neutral }
 

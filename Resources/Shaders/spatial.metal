@@ -142,11 +142,15 @@ kernel void spatial_composite(
 //     has been applied, so the quantity that drives halation is already gone
 //     after the LUT. These kernels read the ungraded Apple Log 2 frame and
 //     decode it, add the scattered light in linear, and re-encode.
-//  2. The three emulsion layers do not respond equally. Red is re-exposed by the
-//     least scattered light, then green, then blue, which is why a halo reads
-//     red at low intensity, warm red as it grows, and white once it is bright
-//     enough to reach all three. That falls out of per-layer knees and
-//     per-layer diffusion radii — not from a colour tint applied afterwards.
+//  2. The three emulsion layers do not respond equally, and they do not SCATTER
+//     equally either. Red is re-exposed by the least scattered light and travels
+//     furthest through the emulsion, green is the middle layer and blue the
+//     tightest — which is why a halo reads red at its outer edge, yellow where
+//     red and green overlap, and white only in the core. That is per-layer
+//     onsets, per-layer contribution weights AND per-channel diffusion radii,
+//     not a colour tint applied afterwards. Brightness then scales all three
+//     radii together (see the soft-step policy below), so the ordering cannot
+//     invert at any exposure: the red fringe always reaches furthest.
 //  3. The reflected light lands across the source's own footprint too. It is
 //     added, never subtracted, so a very bright source reads as *larger* rather
 //     than being hollowed into a ring.
@@ -342,9 +346,101 @@ static inline float3 spatial_halation_energy(float3 linear, float3 onsetStops,
     return clamp((stops - onsetStops) / span, 0.0f, 1.0f);
 }
 
+// ===========================================================================
+// Soft-step width policy
+// ===========================================================================
+//
+// ONE brightness policy, THREE per-channel radii. The per-layer energy above is
+// partitioned, at each SOURCE texel, into three buckets by how bright the light
+// that produced it is — measured in multiples of diffuse white BEFORE any
+// blurring. Each bucket is then filtered at its own sigma, and the three
+// filtered buckets are summed.
+//
+// The per-channel radii stay the emulsion's: red scatters 1.8x as far as green,
+// green 2x as far as blue, at every brightness. The bucket factor multiplies
+// ALL THREE channel sigmas, so the colour ordering can never invert — a bright
+// source spreads further, and it does so as red-then-yellow-then-white outside
+// in, which is what makes a halo read like film rather than like a bloom.
+// That is why the filtering is per channel: three widths cannot express a
+// red fringe that outruns green and blue.
+//
+// The partition is a smooth, nonnegative, sum-to-one ramp in LOG brightness with
+// knots at 2x, 4x and 8x diffuse white:
+//
+//   b <= 2x   narrow only            w = (1,     0,   0)
+//   2x .. 4x  narrow -> middle       w = (1-a,   a,   0)
+//   4x .. 8x  middle -> wide         w = (0,   1-c,   c)
+//   b >= 8x   wide only              w = (0,     0,   1)
+//
+// with `a` the 2x..4x ramp and `c` the 4x..8x one, so `w = (1-a, a-c, c)`.
+// Every weight is >= 0 and the three sum to exactly 1 at every brightness. The
+// blur is linear, so that makes the operator energy-preserving by construction:
+// the summed buckets carry the same total energy as the mask whatever the
+// brightness mix, and a bright source cannot add halo light merely by spreading
+// further.
+//
+// The ramp is taken on log2(brightness), not on light, so a source climbing in
+// stops crosses each knot at an even rate; on a linear ramp nearly every stop
+// above 4x would sit crammed into the top of the 4x..8x range.
+static inline float spatial_bucket_ramp(float brightness, float low, float high) {
+    float stops = log2(max(brightness, 1.0e-4f));
+    float t = clamp((stops - log2(low)) / max(log2(high) - log2(low), 1.0e-4f), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static inline float3 spatial_bucket_weights(float brightness) {
+    float a = spatial_bucket_ramp(brightness, 2.0f, 4.0f);
+    float c = spatial_bucket_ramp(brightness, 4.0f, 8.0f);
+    return float3(1.0f - a, a - c, c);
+}
+
+/// How bright the SOURCE is here, in multiples of diffuse white.
+///
+/// One scalar for all three layers, and it comes from the light, never from the
+/// mask: the mask's RGB is each layer's own response, so keying width on it
+/// would let a saturated colour pick its own radius.
+///
+/// `spatial_halation_energy` measures `log2(linear) - frameWhiteStops` stops
+/// above diffuse white, which puts diffuse white itself at `2^frameWhiteStops`
+/// in the frame's scene units — 0.5 for a take (captured a stop under, so the
+/// film saw half the delivered white), 1.0 for a frame the develop lift has
+/// already put back. Dividing the exposed linear luma by that value keeps the
+/// knots on the same scale as the onsets, with no second exposure convention to
+/// drift away from the first. Rec.709 luma rather than a channel maximum: a
+/// saturated colour carries little light, and it is light that scatters.
+static inline float spatial_source_brightness(float3 linear, float frameWhiteStops) {
+    float white = max(exp2(frameWhiteStops), 1.0e-6f);
+    return max(spatial_luma(linear), 0.0f) / white;
+}
+
+/// Write one source texel's energy into the bucket textures.
+///
+/// `split` false is the unfiltered case — a zero radius, or halation disabled.
+/// With no filter to separate the buckets their sum IS the energy, so one
+/// texture carries it whole and the other two are left untouched. They may even
+/// be that same texture bound three times, which is why they are never written
+/// unless the caller asked for a split.
+static inline void spatial_write_halation_buckets(
+    float3 energy,
+    float3 weights,
+    bool split,
+    texture2d<float, access::write> narrow,
+    texture2d<float, access::write> middle,
+    texture2d<float, access::write> wide,
+    uint2 gid
+) {
+    narrow.write(float4(energy * weights.x, 1.0f), gid);
+    if (split) {
+        middle.write(float4(energy * weights.y, 1.0f), gid);
+        wide.write(float4(energy * weights.z, 1.0f), gid);
+    }
+}
+
 kernel void spatial_halation_mask(
     texture2d<float, access::read>  input  [[texture(0)]],
-    texture2d<float, access::write> mask   [[texture(1)]],
+    texture2d<float, access::write> narrow [[texture(1)]],
+    texture2d<float, access::write> middle [[texture(2)]],
+    texture2d<float, access::write> wide   [[texture(3)]],
     constant float& redOnsetStops          [[buffer(0)]],
     constant float& greenOnsetStops        [[buffer(1)]],
     constant float& blueOnsetStops         [[buffer(2)]],
@@ -352,36 +448,44 @@ kernel void spatial_halation_mask(
     constant float& exposureCeiling        [[buffer(4)]],
     constant float& referenceStops         [[buffer(5)]],
     constant float& frameWhiteStops        [[buffer(6)]],
+    /// 0: write the whole energy to `narrow` only (nothing will be filtered).
+    /// 1: partition it across `narrow`, `middle` and `wide` by source brightness.
+    constant uint&  splitBuckets           [[buffer(7)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
-    if (gid.x >= mask.get_width() || gid.y >= mask.get_height()) {
+    if (gid.x >= narrow.get_width() || gid.y >= narrow.get_height()) {
         return;
     }
 
     uint valid = 0;
     float3 linear = spatial_expose(
-        spatial_linear_block(input, gid, spatial_mask_scale(mask, input), valid),
+        spatial_linear_block(input, gid, spatial_mask_scale(narrow, input), valid),
         exposureStops, exposureCeiling);
     float3 energy = spatial_halation_energy(linear, float3(redOnsetStops, greenOnsetStops,
                                                           blueOnsetStops),
                                             referenceStops, frameWhiteStops);
+    bool split = splitBuckets != 0;
+    float3 weights = split ? spatial_bucket_weights(spatial_source_brightness(linear, frameWhiteStops))
+                           : float3(1.0f, 0.0f, 0.0f);
 
-    mask.write(float4(energy, 1.0f), gid);
+    spatial_write_halation_buckets(energy, weights, split, narrow, middle, wide, gid);
 }
 
-/// The same halation mask, plus the scene-linear frame the diffusion node
+/// The same halation buckets, plus the scene-linear frame the diffusion node
 /// blurs, from ONE decode.
 ///
 /// Diffusion scatters light in linear scene light, so it needs the decoded
 /// frame; halation needs the per-layer excess of that same frame. Decoding
 /// twice would double the half-res read traffic for no benefit, so this entry
 /// point writes both. It is used only when the diffusion node is enabled — the
-/// mask-only kernel above stays the default path so a disabled diffusion node
+/// buckets-only kernel above stays the default path so a disabled diffusion node
 /// allocates and writes nothing.
 kernel void spatial_scene_prepare(
     texture2d<float, access::read>  input  [[texture(0)]],
-    texture2d<float, access::write> mask   [[texture(1)]],
-    texture2d<float, access::write> linear [[texture(2)]],
+    texture2d<float, access::write> narrow [[texture(1)]],
+    texture2d<float, access::write> middle [[texture(2)]],
+    texture2d<float, access::write> wide   [[texture(3)]],
+    texture2d<float, access::write> linearOut [[texture(4)]],
     constant float& redOnsetStops          [[buffer(0)]],
     constant float& greenOnsetStops        [[buffer(1)]],
     constant float& blueOnsetStops         [[buffer(2)]],
@@ -389,25 +493,58 @@ kernel void spatial_scene_prepare(
     constant float& exposureCeiling        [[buffer(4)]],
     constant float& referenceStops         [[buffer(5)]],
     constant float& frameWhiteStops        [[buffer(6)]],
+    constant uint&  splitBuckets           [[buffer(7)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
-    if (gid.x >= mask.get_width() || gid.y >= mask.get_height()) {
+    if (gid.x >= narrow.get_width() || gid.y >= narrow.get_height()) {
         return;
     }
 
     uint valid = 0;
     float3 scene = spatial_expose(
-        spatial_linear_block(input, gid, spatial_mask_scale(mask, input), valid),
+        spatial_linear_block(input, gid, spatial_mask_scale(narrow, input), valid),
         exposureStops, exposureCeiling);
     float3 energy = spatial_halation_energy(scene, float3(redOnsetStops, greenOnsetStops,
                                                           blueOnsetStops),
                                             referenceStops, frameWhiteStops);
+    bool split = splitBuckets != 0;
+    float3 weights = split ? spatial_bucket_weights(spatial_source_brightness(scene, frameWhiteStops))
+                           : float3(1.0f, 0.0f, 0.0f);
 
-    mask.write(float4(energy, 1.0f), gid);
-    linear.write(float4(scene, 1.0f), gid);
+    spatial_write_halation_buckets(energy, weights, split, narrow, middle, wide, gid);
+    linearOut.write(float4(scene, 1.0f), gid);
 }
 
-/// Add the three diffused layers to the scene-linear source, then re-encode —
+/// Recombine three per-channel filtered copies of ONE bucket into one RGB
+/// texture, each channel from the copy filtered at ITS radius.
+///
+/// The buckets cannot be filtered as RGB: red wants 1.8x green's sigma and blue
+/// 0.5x, and one MPS Gaussian pass applies a single sigma to all channels. So a
+/// bucket is filtered three times — at the red, green and blue sigma — and this
+/// pass takes red's red, green's green and blue's blue. Nothing is widened to
+/// the largest radius and no channel's energy leaks into another: each channel's
+/// scattered light is that channel's own mask energy, blurred at that channel's
+/// own sigma.
+///
+/// `gathered` is the bucket's own texture, reused: the three filtered copies are
+/// separate scratch, so this write cannot race a read of them.
+kernel void spatial_halation_gather(
+    texture2d<float, access::read> redBlur   [[texture(0)]],
+    texture2d<float, access::read> greenBlur [[texture(1)]],
+    texture2d<float, access::read> blueBlur  [[texture(2)]],
+    texture2d<float, access::write> gathered [[texture(3)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= gathered.get_width() || gid.y >= gathered.get_height()) {
+        return;
+    }
+    gathered.write(float4(redBlur.read(gid).r,
+                          greenBlur.read(gid).g,
+                          blueBlur.read(gid).b,
+                          1.0f), gid);
+}
+
+/// Add the three diffused buckets to the scene-linear source, then re-encode —
 /// and, in the same pass, apply the lens diffusion node.
 ///
 /// The source is decoded per channel once, the diffusion blend and then the
@@ -422,17 +559,29 @@ kernel void spatial_scene_prepare(
 /// system's develop lift is applied after all of it — see `postEmulsionStops`.
 ///
 /// Halation's colour is mostly the consequence of the per-layer physics: red
-/// responds to the least light and scatters furthest, so a faint halo reads red,
-/// and as a highlight climbs more layers respond and the sum whitens. Above the
-/// reference all three layers sit at 1.0, so a highlight at or past full
-/// contribution takes the shape of the layer weights rather than growing
-/// redder. The energy is ADDED over the source's own footprint as well, which is
-/// why a very bright source reads as larger rather than hollowed into a ring.
+/// responds to the least light, so a faint halo reads red, and as a highlight
+/// climbs more layers respond and the sum whitens. Above the reference all three
+/// layers sit at 1.0, so a highlight at or past full contribution takes the shape
+/// of the layer weights rather than growing redder. The energy is ADDED over the
+/// source's own footprint as well, which is why a very bright source reads as
+/// larger rather than hollowed into a ring.
+///
+/// Width is per channel AND per bucket. Each bucket was filtered three times,
+/// once at each emulsion radius, and recombined so red carries only red's
+/// scattered light at red's sigma — the red fringe that outruns green and blue,
+/// which is what keeps a halo warm at the edge instead of uniformly white. The
+/// bucket factor scales all three channels, and it was chosen from the SOURCE's
+/// brightness before the blur, so a bright highlight reaches further at every
+/// channel while the colour ordering stays fixed.
 kernel void spatial_halation_apply(
     texture2d<float, access::read>  source [[texture(0)]],
-    texture2d<float, access::sample> red   [[texture(1)]],
-    texture2d<float, access::sample> green [[texture(2)]],
-    texture2d<float, access::sample> blue  [[texture(3)]],
+    // The three soft-step buckets, each already filtered per channel and
+    // recombined (or, with no radius to filter them, the one texture that
+    // carries their sum bound three times).
+    texture2d<float, access::sample> narrow [[texture(1)]],
+    texture2d<float, access::sample> middle [[texture(2)]],
+    texture2d<float, access::sample> wide   [[texture(3)]],
+    // The output keeps index 4 so the diffusion ladder's slots (5-8) do not move.
     texture2d<float, access::write> output [[texture(4)]],
     texture2d<float, access::sample> diffusionLevel0 [[texture(5)]],
     texture2d<float, access::sample> diffusionLevel1 [[texture(6)]],
@@ -464,6 +613,10 @@ kernel void spatial_halation_apply(
     /// partial, because the transport is stopped between takes with the film
     /// mid-frame — see `LightLeakTransport.firstFrameSlip`.
     constant float& leakSlip               [[buffer(11)]],
+    /// Multiplies the three bucket textures: (1, 1, 1) when they are the three
+    /// filtered buckets, (1, 0, 0) when one texture carries the unsplit energy.
+    /// A constant, never a reading of the pixel being written.
+    constant float3& bucketWeight          [[buffer(12)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
@@ -478,17 +631,20 @@ kernel void spatial_halation_apply(
     float2 size = float2(source.get_width(), source.get_height());
     float2 uv = (float2(gid) + 0.5f) / size;
 
-    // Each layer is diffused at its own radius, so each keeps its own reach:
-    // red is the widest and therefore the only one still present in the far
-    // tail, which is what makes a faint halo read red. Each layer's OWN channel
-    // is read — the mask carries a distinct per-layer energy in rgb, so sampling
-    // `.r` from all three would feed red's energy into the green and blue layers
-    // and let an all-red source masquerade as full RGB.
-    float3 diffusion = float3(red.sample(spatial_linear_sampler, uv).r,
-                              green.sample(spatial_linear_sampler, uv).g,
-                              blue.sample(spatial_linear_sampler, uv).b);
+    // Three buckets, summed. Each bucket is the same per-layer energy
+    // partitioned at the SOURCE by how bright that source is (see
+    // `spatial_bucket_weights`), then filtered per channel at that channel's own
+    // radius and recombined (see `spatial_halation_gather`). Because the
+    // brightness weights are a partition of unity and the blur is linear, the
+    // sum still carries the mask's energy exactly; what the buckets buy is
+    // reach, and what the per-channel filtering keeps is the colour ordering —
+    // red outside, then yellow, then white. Nothing is keyed on the receiving
+    // pixel, so the halo cannot shrink in a dark surround.
+    float3 diffusion = narrow.sample(spatial_linear_sampler, uv).rgb * bucketWeight.x
+                     + middle.sample(spatial_linear_sampler, uv).rgb * bucketWeight.y
+                     + wide.sample(spatial_linear_sampler, uv).rgb * bucketWeight.z;
 
-    // The mask is already a 0..1 fraction of the layer's own onset-to-reference
+    // Each bucket is already a 0..1 fraction of its layer's onset-to-reference
     // span (see `spatial_halation_energy`), so there is nothing left to
     // normalize here: `layerScale` weights each layer's contribution, red
     // strongest because it is the layer most re-exposed by scattered light.

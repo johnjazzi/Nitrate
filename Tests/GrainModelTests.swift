@@ -91,6 +91,34 @@ struct GrainModelTests {
             .halationMultiplier == 0)
     }
 
+    @Test func gaugeHalationRadiusIsIndependentAndLegacyDefaultsToOne() throws {
+        let data = try Data(contentsOf: TestRepository.url(for: "Resources/gauges.json"))
+        let document = try JSONDecoder().decode(GaugeTuningConfig.self, from: data)
+        let expected: [PrintGauge: Float] = [.eightMillimetre: 1.4, .sixteenMillimetre: 0.7,
+                                            .thirtyFiveMillimetre: 0.35, .seventyFiveMillimetre: 0.05]
+        let resolved = try document.validated()
+        for gauge in PrintGauge.allCases {
+            #expect(resolved[gauge]?.halationRadiusMultiplier == expected[gauge])
+            #expect(gauge.halationRadiusMultiplier == expected[gauge])
+        }
+        for value: Float in [0, -1, .nan, .infinity] {
+            var entries = document.gauges
+            entries[0].halationRadiusMultiplier = value
+            #expect(throws: (any Error).self) {
+                _ = try GaugeTuningConfig(schemaVersion: 1, gauges: entries).validated()
+            }
+        }
+        var entries = document.gauges
+        for index in entries.indices { entries[index].halationRadiusMultiplier = nil }
+        let legacy = try GaugeConfigLoader.decode(JSONEncoder().encode(
+            GaugeTuningConfig(schemaVersion: 1, gauges: entries)))
+        #expect(legacy.values.allSatisfy { $0.halationRadiusMultiplier == 1 })
+        // Removing radius authoring must not change the separate energy scale.
+        for gauge in PrintGauge.allCases {
+            #expect(legacy[gauge]?.halationMultiplier == resolved[gauge]?.halationMultiplier)
+        }
+    }
+
     @Test func bundledGaugeConfigIsTheTuningSourceOfTruth() throws {
         let cli = try Data(contentsOf: TestRepository.url(for: "Resources/gauges.json"))
         let app = try Data(contentsOf: TestRepository.url(for: "App/Resources/gauges.json"))

@@ -320,7 +320,7 @@ enum RenderMovieMetadata {
             "light-type": config.lightType,
             "iso": String(Int(config.defaultISO)), "iso-role": "selected-render-exposure-index",
             "halation-level": String(config.effectiveHalationStrength), "glow-level": String(config.glowStrength),
-            "halation-radius-fraction": String(config.halationRadiusFraction),
+            "halation-radius-fraction": String(config.effectiveHalationRadiusFraction),
             "halation-tint": "\(config.halationTint.x),\(config.halationTint.y),\(config.halationTint.z)",
             "grain-size": String(config.grainSize), "recipe-version": config.effectiveRecipe.version,
             "print-gauge": config.effectivePrintGauge.rawValue,

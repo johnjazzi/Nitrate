@@ -305,7 +305,7 @@ struct PlatePreviewVisibilityTests {
 
             // The stock LUT and the scene's white-balance lock can change channel ordering;
             // the measurable requirement here is a nonzero effect at the shipped geometry.
-            #expect(on.halationRadiusFraction == stock.halationRadiusFraction)
+            #expect(on.halationRadiusFraction == stock.effectiveHalationRadiusFraction)
             #expect(on.halationStrength == stock.effectiveHalationStrength)
             #expect(delta.maxRed > 0 && delta.changed > 0,
                     "\(sceneID): the actual stock radius must produce a nonzero rendered halo")
