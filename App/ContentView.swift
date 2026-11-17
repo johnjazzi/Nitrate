@@ -97,6 +97,7 @@ struct ContentView: View {
     /// Camera controls state
     @State private var selectedLens: CameraLens
     @State private var availableLenses: [CameraLens] = []
+    @State private var lensSelectionFeedbackTrigger = 0
 
     /// Pinch-zoom baseline (ISO/EV controls live in `CameraControlBar`).
     @State private var pinchIsActive = false
@@ -494,6 +495,7 @@ struct ContentView: View {
                 )
             }
         }
+        .sensoryFeedback(.selection, trigger: lensSelectionFeedbackTrigger)
         .sheet(item: $stockEntry) { entry in stockSheet(entry: entry) }
         .sheet(isPresented: $showQueueSheet) { queueSheet }
         .sheet(isPresented: $showSettings, onDismiss: {
@@ -1472,6 +1474,11 @@ struct ContentView: View {
 
     private func selectLens(_ lens: CameraLens) {
         guard canSelectCameraLens else { return }
+        guard lens != selectedLens || lens == .wide else { return }
+        // Both lens-button surfaces acknowledge the tap immediately, including
+        // the wide camera's crop toggle. Meter/zoom polling never fires this.
+        CameraHaptics.prepareForCaptureFeedback()
+        lensSelectionFeedbackTrigger &+= 1
         if lens == selectedLens {
             // Only the wide lens has a second stop, and activating its already
             // selected key toggles 24 ↔ 50 mm on the physical wide camera that

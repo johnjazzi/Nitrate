@@ -114,7 +114,8 @@ struct CameraWideLensToggleTests {
         // Same-lens activation goes through the existing absolute-mm path; the
         // focus-reset/device-selection path stays behind the different-lens branch.
         let select = try #require(screen.range(of: "private func selectLens(_ lens: CameraLens) {"))
-        let body = screen[select.lowerBound...].prefix(1200)
+        let end = try #require(screen.range(of: "    // MARK: - Control Bar", range: select.upperBound..<screen.endIndex))
+        let body = screen[select.lowerBound..<end.lowerBound]
         #expect(body.contains("guard canSelectCameraLens else { return }"))
         #expect(body.contains("guard lens == .wide else { return }"))
         #expect(body.contains("cameraViewModel.setFocalLengthZoom("))
@@ -137,6 +138,26 @@ struct CameraWideLensToggleTests {
         #expect(selector.contains("CameraFocalZoomPolicy.wideLensToggleTargetMM(currentMM: currentMM)"))
         #expect(selector.contains(".accessibilityIdentifier(\"camera.lens.\\(lens.rawValue)\")"))
         #expect(selector.contains(".accessibilityAddTraits(isSelected ? [.isSelected] : [])"))
+    }
+
+    @Test func lensButtonsShareOneImmediateSelectionHaptic() throws {
+        let screen = try source("App/ContentView.swift")
+        #expect(screen.contains(".sensoryFeedback(.selection, trigger: lensSelectionFeedbackTrigger)"))
+        #expect(screen.components(separatedBy: "lensSelectionFeedbackTrigger &+= 1").count - 1 == 1,
+                "The row and popover use one feedback trigger, not one each.")
+        let start = try #require(screen.range(of: "private func selectLens(_ lens: CameraLens) {"))
+        let end = try #require(screen.range(of: "    // MARK: - Control Bar", range: start.upperBound..<screen.endIndex))
+        let body = screen[start.lowerBound..<end.lowerBound]
+        let guardRange = try #require(body.range(of: "guard canSelectCameraLens else { return }"))
+        let audio = try #require(body.range(of: "CameraHaptics.prepareForCaptureFeedback()"))
+        let tick = try #require(body.range(of: "lensSelectionFeedbackTrigger &+= 1"))
+        let toggle = try #require(body.range(of: "cameraViewModel.setFocalLengthZoom("))
+        let cameraSwitch = try #require(body.range(of: "cameraViewModel.selectLens(lens)"))
+        #expect(guardRange.lowerBound < audio.lowerBound)
+        #expect(audio.lowerBound < tick.lowerBound,
+                "Capture's active microphone must not silence lens feedback.")
+        #expect(tick.lowerBound < toggle.lowerBound && tick.lowerBound < cameraSwitch.lowerBound,
+                "A lens tap ticks immediately, for physical switches and 24↔50 toggles alike.")
     }
 
     private func source(_ path: String) throws -> String {
