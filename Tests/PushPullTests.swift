@@ -206,6 +206,28 @@ struct PushPullTests {
         }
     }
 
+    @Test func approvedFirmPullMatchesThePrototypeAndPreservesClip() throws {
+        try Self.withPipeline { device, pipeline, queue in
+            let inputs = [6.0, 8.0, 10.0, 12.0]
+            let probes = inputs.map { Float(PushPullTransfer.encode($0)) }
+            let output = try Self.run(probes: probes, stops: .pullOne, ceiling: 10,
+                                      device: device, pipeline: pipeline, queue: queue)
+            let expected = inputs.map { value -> Double in
+                if value >= 10 { return value }
+                let t = min(1, max(0, log2(10 / value) / 0.6))
+                let smooth = t * t * (3 - 2 * t)
+                return value * (1 - 0.5 * (1 - pow(1 - smooth, 8)))
+            }
+            for index in inputs.indices {
+                let code = Double(probes[index])
+                let cpu = PushPullTransfer.gained(code: code, stops: .pullOne, ceiling: 10)
+                let reference = PushPullTransfer.encode(expected[index])
+                #expect(abs(Double(output[index]) - reference) < 0.0001)
+                #expect(abs(cpu - reference) < 0.0001)
+            }
+        }
+    }
+
     @Test func positivePushIsMonotoneBoundedAndContinuousThroughTheCeiling() {
         for ceiling in [1.0, 3.0, PushPullTransfer.clipWhite] {
             for stops in [PushPullStops.pushOne, .pushTwo] {

@@ -249,8 +249,9 @@ static inline uint spatial_mask_scale(
 /// applied in full up to `2^holdStops` under the clip and fades to none at the
 /// clip itself. Widen it to protect more of the shoulder, narrow it to leave
 /// only the last fraction of a stop alone. It is the one taste constant of the
-/// curve; every other number here is derived.
-constant float kPushPullHoldStops = 1.0f;
+/// curve, together with the firmness below; the source clip itself stays fixed.
+constant float kPushPullHoldStops = 0.6f;
+constant float kPushPullFirmness = 8.0f;
 
 /// Pull gain weight at one scene-light value: 1 where the exposure is applied in
 /// full, 0 at and above the clip ceiling — so a truly clipped highlight does not
@@ -263,7 +264,9 @@ static inline float spatial_hold_weight(float linear, float ceiling) {
     }
     float below = log2(ceiling / linear) / kPushPullHoldStops; // stops under the clip
     below = clamp(below, 0.0f, 1.0f);
-    return below * below * (3.0f - 2.0f * below);              // smoothstep
+    float smooth = below * below * (3.0f - 2.0f * below);
+    // Keep more pull in the recoverable shoulder without moving the source clip.
+    return 1.0f - pow(1.0f - smooth, kPushPullFirmness);
 }
 
 /// Render-time push/pull as a highlight-preserving exposure CURVE, applied to

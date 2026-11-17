@@ -112,7 +112,10 @@ receives. `runLUTPass` only grades: its exposure buffers stay bound and pinned t
 neutral, so a stale kernel signature cannot apply a second gain.
 
 The curve HOLDS truly clipped highlights instead of dragging them down with the
-flat gain. For negative stops, `spatial_hold_weight` fades the gain to none at the source's clip
+flat gain. Pull protection spans **0.6 stops** below the source clip, with **8×
+firmness**: `w = 1 - (1 - smoothstep(t))^8`. This pulls recoverable highlights
+harder while retaining the original source ceiling. For negative stops,
+`spatial_hold_weight` fades the gain to none at the source's clip
 ceiling, so a highlight with no scene detail left to recover stays white and
 keeps halating at full intensity, while everything below it still exposes. A
 debug-sheet frame measures its own ceiling, so the preview shows the curve the
