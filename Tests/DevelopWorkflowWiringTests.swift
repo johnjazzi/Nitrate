@@ -10,8 +10,9 @@ struct DevelopWorkflowWiringTests {
     }
 
     @Test func developLabelsStayWithinTwoWords() throws {
-        let files = ["DevelopPreview.swift", "DevelopResultsPager.swift", "DevelopMediaHelp.swift"]
-        let pattern = #"(?:Text|Button|Label|ProgressView|readout|resultActionLabel|LabeledContent|navigationTitle)\("([^"\n]*)"#
+        // Help contains explanatory paragraphs, not compact action labels.
+        let files = ["DevelopPreview.swift", "DevelopResultsPager.swift"]
+        let pattern = #"(?<![A-Za-z])(?:Text|Button|Label|ProgressView|readout|resultActionLabel|LabeledContent|navigationTitle)\("([^"\n]*)"#
         let labels = try NSRegularExpression(pattern: pattern)
         let interpolation = try NSRegularExpression(pattern: #"\\\([^)]*\)"#)
         for file in files {
@@ -21,6 +22,8 @@ struct DevelopWorkflowWiringTests {
                 let label = (text as NSString).substring(with: match.range(at: 1))
                 let literal = interpolation.stringByReplacingMatches(in: label,
                     range: NSRange(label.startIndex..., in: label), withTemplate: "0")
+                // The chooser prompt is owner-approved explanatory copy, not an action label.
+                if literal == "Choose what to develop" { continue }
                 #expect(literal.split(whereSeparator: \.isWhitespace).count <= 2,
                         "\(file): \(label)")
             }
@@ -41,17 +44,90 @@ struct DevelopWorkflowWiringTests {
         #expect(results.contains("Text(job?.errorMessage"))
     }
 
-    @Test func previewUsesAvailableSpaceInsteadOfSmallFixedCards() throws {
-        for file in ["DevelopPreview.swift", "DevelopResultsPager.swift"] {
-            let text = try source("App/Modules/VideoImport/" + file)
-            #expect(!text.contains(".frame(height: 210)"))
-            #expect(!text.contains(".frame(height: 380)"))
-            #expect(!text.contains("ScrollView(.vertical"))
-            #expect(text.contains(".frame(maxWidth: .infinity, maxHeight: .infinity)"))
-        }
+    @Test func reviewKeepsTheSharedRecipePickerOpenBelowTheSource() throws {
         let text = try source("App/Modules/VideoImport/DevelopPreview.swift")
-        #expect(text.contains("GaugeControl(gauge: $gauge, enlarged: true)"))
-        #expect(text.contains("enlarged: true)"))
+        #expect(text.contains("CompactStockPicker("))
+        #expect(text.contains("gauge: $gauge"))
+        #expect(text.contains("manualStops: $pushPullStops"))
+        #expect(text.contains("resolvedPushPull: resolvedPushPull"))
+        #expect(!text.contains("StockSamplePreview("), "The staged source is the review preview")
+        #expect(text.contains("ScrollView"), "Short screens must retain access to every recipe control")
+        let picker = try source("App/Modules/FilmStockLibrary/CompactStockPicker.swift")
+        #expect(picker.contains("GaugeControl(gauge: $gauge, enlarged: true)"))
+        #expect(picker.contains("PushPullControl(resolved: resolvedPushPull"))
+        #expect(text.contains("model.develop(stock: stock, iso: stock.defaultISO, gauge: gauge, pushPull: resolvedPushPull,"))
+        #expect(text.contains("whiteBalance: whiteBalance)"))
+    }
+
+    @Test func whiteBalanceUsesTheReviewBindingForPreviewSubmissionAndRecall() throws {
+        let preview = try source("App/Modules/VideoImport/DevelopPreview.swift")
+        let content = try source("App/ContentView.swift")
+        let picker = try source("App/Modules/FilmStockLibrary/CompactStockPicker.swift")
+        let control = try source("App/Modules/VideoImport/DevelopWhiteBalanceControl.swift")
+        #expect(preview.contains("whiteBalance: $whiteBalance"))
+        #expect(preview.contains("whiteBalance: recipe.whiteBalance"))
+        #expect(preview.contains("whiteBalance = first.developmentWhiteBalance ?? .neutral"))
+        #expect(content.contains("whiteBalance: $developWhiteBalance"))
+        #expect(content.contains("whiteBalance: developWhiteBalance"))
+        #expect(content.contains("developWhiteBalance = first.developmentWhiteBalance ?? .neutral"))
+        #expect(picker.contains("DevelopWhiteBalanceControl(value: whiteBalance"))
+        #expect(control.contains("Slider(value: sliderValue"))
+        #expect(control.contains(".presentationCompactAdaptation(.popover)"))
+        #expect(control.contains("Relative correction, not the camera's recorded white balance."))
+    }
+
+    @Test func returnToVideoIsLimitedToAnEmptyChooser() throws {
+        let text = try source("App/Modules/VideoImport/DevelopPreview.swift")
+        let start = try #require(text.range(of: "private var labHeader: some View"))
+        let tail = text[start.upperBound...]
+        let end = try #require(tail.range(of: "private var stockPicker: some View"))
+        let header = tail[..<end.lowerBound]
+        let chooserExit = header.contains("if stage == .chooser {\n                returnToVideoButton")
+        #expect(chooserExit, "Returning to Video is offered only when no staged batch can be discarded")
+        #expect(header.contains("Button(action: startOver)"))
+        #expect(header.contains("develop.bulkCancel"))
+    }
+
+    @Test func reviewAndResultsUseOneBlackContactFrame() throws {
+        let preview = try source("App/Modules/VideoImport/DevelopPreview.swift")
+        let results = try source("App/Modules/VideoImport/DevelopResultsPager.swift")
+        let history = try source("App/Modules/RenderQueue/HistoryInlinePreview.swift")
+        let frame = try source("App/Modules/RenderQueue/ContactPreviewFrame.swift")
+        for surface in [preview, results, history] {
+            #expect(surface.contains("ContactPreviewFrame("))
+        }
+        #expect(!preview.contains(".background(.black.opacity(0.68)"), "Metadata must not overlay the source")
+        #expect(frame.contains(".black"))
+        #expect(frame.contains("rotationEffect"), "Side printing is vertical")
+        #expect(frame.contains("QueueFrameStripBorder()"))
+        #expect(frame.contains("private let printColor = Color.white.opacity(0.85)"))
+        #expect(!results.contains("struct DevelopFrameStrip"))
+        #expect(results.contains("CAPTURE ISO"))
+        #expect(results.contains("RENDER ISO"), "Selected ISO must not masquerade as capture ISO")
+    }
+
+    @Test func redevelopmentUsesRetainedSourcesAndThePriorRecipe() throws {
+        let text = try source("App/Modules/VideoImport/DevelopPreview.swift")
+        #expect(text.contains("await model.adoptExistingJobs(jobs)"))
+        #expect(text.contains("first.printGauge"))
+        #expect(text.contains("first.pushPull?.stops"))
+        #expect(text.contains("first.stockId"))
+        #expect(text.contains("develop.redevelop"))
+        #expect(text.contains("PhotosLibraryOpener.failureMessage"))
+    }
+
+    @Test func localResultFallbackStartsAtZeroAndNeverReadsPhotos() throws {
+        let text = try source("App/Modules/VideoImport/DevelopPreview.swift")
+        #expect(!text.contains("CMTime(seconds: 1,"))
+        #expect(text.contains("url.isFileURL"))
+        let renderer = try source("App/Modules/VideoImport/DevelopFramePreviewRenderer.swift")
+        #expect(renderer.contains("reader.timeRange = CMTimeRange(start: .zero"))
+        #expect(renderer.contains("track.load(.preferredTransform)"))
+        for file in ["DevelopPreview.swift", "DevelopResultsPager.swift"] {
+            let code = try source("App/Modules/VideoImport/" + file)
+            #expect(!code.contains("PHAsset"))
+            #expect(!code.contains("PHImageManager"))
+        }
     }
 
     @Test func previewRetainsOnlyTheSameOriginalAndBoundsItsWork() throws {
@@ -79,7 +155,7 @@ struct DevelopWorkflowWiringTests {
     @Test func cameraBarAndPanelUseTheSharedSubmissionOwner() throws {
         let content = try source("App/ContentView.swift")
         #expect(content.contains("developCanRender: developModel.canDevelop(stock: selectedStock)"))
-        #expect(content.contains("developModel.develop(stock: stock, iso: currentISO, gauge: developGauge"))
+        #expect(content.contains("developModel.develop(stock: stock, iso: stock.defaultISO, gauge: developGauge"))
         #expect(!content.contains("developModel.render("))
         #expect(!content.contains("developModel.adoptExistingPhoto("))
         #expect(content.contains("developModel.hasActiveRenders"))
@@ -98,18 +174,22 @@ struct DevelopWorkflowWiringTests {
         #expect(sheet.contains("if isSelecting, canReviewOriginal(job)"))
     }
 
-    /// The contact-sheet video cell no longer owns a per-video Re-develop tile:
-    /// video actions point at Photos, while the retained bulk path still returns
-    /// selected originals to the shared Develop review.
-    @Test func contactSheetRoutesVideoActionsToPhotosAndKeepsTheBulkDevelopPath() throws {
+    /// Native rows replace the retired action grid without changing video
+    /// permissions or the retained-original bulk review route.
+    @Test func contactSheetUsesVerticalActionsAndKeepsTheBulkDevelopPath() throws {
         let sheet = try source("App/Modules/RenderQueue/QueueSheetView.swift")
         let actions = try source("App/Modules/RenderQueue/QueueContactSheet.swift")
-        #expect(actions.contains("well(\"Photos\", symbol: \"photo.on.rectangle\""))
-        #expect(actions.contains("QueueReceiptPresentation.photosActionID + \".video\""))
-        #expect(actions.contains("well(\"Re-develop\", symbol: \"arrow.counterclockwise\""))
-        #expect(!sheet.contains("queue.redevelopVideo"), "Video action tile is Photos, not Re-develop")
+        #expect(sheet.contains(".contextMenu { receiptActions(job) }"))
+        #expect(sheet.contains(".accessibilityActions { receiptActions(job) }"))
+        #expect(sheet.contains("Label(\"Open Photos\", systemImage: \"photo.on.rectangle\")"))
+        #expect(sheet.contains("QueueReceiptPresentation.photosActionID + \".video\""))
+        #expect(sheet.contains("queue.redevelopPhoto"))
+        #expect(!sheet.contains("queue.redevelopVideo"), "Video menu preserves Photos rather than a new per-video Develop action")
+        #expect(!sheet.contains("selectedJobID"))
+        #expect(!actions.contains("QueueReceiptActionOverlay"))
         #expect(sheet.contains("onBulkRedevelop(selection)"))
         #expect(sheet.contains("queue.bulkRedevelop"))
         #expect(!sheet.contains("redevelopJobs("), "Bulk re-develop hands off to Develop review")
     }
+
 }

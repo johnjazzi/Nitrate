@@ -69,7 +69,8 @@ actor DevelopFramePreviewRenderer {
     init(bundle: Bundle = .main) { self.bundle = bundle }
 
     func preview(url: URL, isPhoto: Bool, stock: FilmStockConfig, gauge: PrintGauge,
-                 pushPull: PushPullExposure, cropZoom: Double = 1) async throws -> DevelopFramePreview {
+                 pushPull: PushPullExposure, cropZoom: Double = 1,
+                 whiteBalance: DevelopWhiteBalance = .neutral) async throws -> DevelopFramePreview {
         let request = UUID()
         latestRequest = request
         do {
@@ -95,10 +96,13 @@ actor DevelopFramePreviewRenderer {
             let result: DevelopFramePreview
             switch source {
             case .photo(let photo):
-                // Delivery uses the stock temperature with zero tint. The file
-                // meter uses its own as-shot WB and is cached separately, so
-                // neither a stock change nor gauge/push/pull rewrites the reading.
-                let balance = WhiteBalance(temperature: stock.colorTemperature, tint: 0)
+                // Delivery uses the stock temperature with zero tint, or the
+                // operator's override — the same resolved value the delivered
+                // JPEG is decoded at. The file meter uses its own as-shot WB and
+                // is cached separately, so neither a stock change, a development
+                // white balance nor gauge/push/pull rewrites the reading.
+                let balance = WhiteBalance(temperature: whiteBalance.resolvedPhotoKelvin(
+                    stockKelvin: stock.colorTemperature), tint: 0)
                 let decoded: RAWPhotoDecoder.Decoded
                 if let existing = photo.decodes[balance] {
                     decoded = existing
@@ -114,7 +118,8 @@ actor DevelopFramePreviewRenderer {
             case .video(let video):
                 result = try renderVideo(video.buffer, transform: video.transform, stock: stock,
                                          gauge: gauge, pushPull: pushPull, cropZoom: cropZoom,
-                                         measurement: video.measurement, captureDescription: video.description)
+                                         measurement: video.measurement, captureDescription: video.description,
+                                         whiteBalance: whiteBalance)
             }
             try check(request)
             return result
@@ -248,12 +253,19 @@ actor DevelopFramePreviewRenderer {
     /// full-export eight-frame measurement. The meter never consumes the grade.
     func renderVideo(_ buffer: CVPixelBuffer, transform: CGAffineTransform = .identity,
                      stock: FilmStockConfig, gauge: PrintGauge, pushPull: PushPullExposure,
-                     cropZoom: Double = 1, measurement: Double?, captureDescription: String?) throws -> DevelopFramePreview {
+                     cropZoom: Double = 1, measurement: Double?, captureDescription: String?,
+                     whiteBalance: DevelopWhiteBalance = .neutral) throws -> DevelopFramePreview {
         try Task.checkCancellation()
         guard RenderInputColorProvenance.profile(of: buffer) != nil else { throw PreviewError.unsupportedVideo }
         let color = try resources()
         let source = try Self.boundedBuffer(buffer, cropZoom: cropZoom)
-        let finished = try color.grade(color.prepare(source), stock: stock, pushPull: pushPull)
+        // Development white balance in linear Apple Wide Gamut, BEFORE halation,
+        // exposure and the LUT, through the stage the delivered render uses. A
+        // neutral job hands the prepared texture straight on untouched.
+        let prepared = try color.prepare(source)
+        let balanced = try color.corrected(prepared, whiteBalance: whiteBalance,
+                                           referenceKelvin: stock.colorTemperature)
+        let finished = try color.grade(balanced, stock: stock, pushPull: pushPull)
         // The track transform is authored for a top-down frame, and Core Image's
         // space is bottom-up: applying it verbatim turns the odd quarter turns the
         // wrong way round. Negating the off-diagonal terms is the same transform

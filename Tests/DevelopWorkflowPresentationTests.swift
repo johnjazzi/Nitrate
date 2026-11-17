@@ -104,9 +104,11 @@ struct DevelopWorkflowPresentationTests {
         let url = URL(fileURLWithPath: "/fixture/source.dng")
         func recipe(url overrideURL: URL? = nil, photo: Bool = true, crop: Double = 1,
                     stock overrideStock: FilmStockConfig? = nil, gauge: PrintGauge = .thirtyFiveMillimetre,
-                    pushPull: PushPullExposure = .neutral) -> DevelopPreviewRecipe {
+                    pushPull: PushPullExposure = .neutral,
+                    whiteBalance: DevelopWhiteBalance = .neutral) -> DevelopPreviewRecipe {
             DevelopPreviewRecipe(url: overrideURL ?? url, isPhoto: photo, cropZoom: crop,
-                                 stock: overrideStock ?? configuration, gauge: gauge, pushPull: pushPull)
+                                 stock: overrideStock ?? configuration, gauge: gauge, pushPull: pushPull,
+                                 whiteBalance: whiteBalance)
         }
         let shown = recipe()
         #expect(shown != recipe(url: URL(fileURLWithPath: "/fixture/next.dng")))
@@ -114,6 +116,9 @@ struct DevelopWorkflowPresentationTests {
         #expect(shown != recipe(crop: 1.5))
         #expect(shown == recipe(gauge: .sixteenMillimetre), "Gauge changes must not restart a colour-only preview")
         #expect(shown != recipe(pushPull: .manual(.pullOne)))
+        #expect(shown != recipe(whiteBalance: .init(photoKelvin: 4200)))
+        #expect(shown != recipe(whiteBalance: .init(videoWarmth: 0.25)))
+        #expect(shown.whiteBalance == .neutral, "The displayed request is a value snapshot")
         var changedStock = configuration
         changedStock.outputContrast = 0.9
         #expect(shown != recipe(stock: changedStock), "A reused stock ID must not reuse stale pixels")

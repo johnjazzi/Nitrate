@@ -27,8 +27,6 @@ struct QueueSheetView: View {
     @State private var failedSelection: Set<UUID> = []
     /// Presentation filter only: visible history by default, hidden on the eye.
     @State private var historyMode: QueueHistoryMode = .visible
-    /// The one receipt whose action wells are open, drawn inside this sheet.
-    @State private var selectedJobID: UUID?
     @State private var shareTarget: RenderJob?
     @State private var previewJobID: UUID?
     @State private var previewFocused = false
@@ -68,32 +66,11 @@ struct QueueSheetView: View {
         QueueActivitySummary(jobs: viewModel.jobs, hiddenIDs: hiddenIDs,
                              isPaused: viewModel.isRenderPausedForAccess)
     }
-    private var selectedJob: RenderJob? {
-        selectedJobID.flatMap { id in viewModel.jobs.first { $0.id == id } }
-    }
 
     // MARK: - Body
 
     var body: some View {
-        ZStack {
-            surface
-            if let job = selectedJob {
-                QueueReceiptActionOverlay(
-                    job: job,
-                    isHidden: hiddenIDs.contains(job.id),
-                    canRedevelop: canReviewOriginal(job),
-                    canPreview: canPreviewLocally(job),
-                    onShare: job.presentsAsPhoto && job.receiptActions.shareLocal ? { closeOverlay { shareVideo(job) } } : nil,
-                    onOpenPhotos: { closeOverlay { openPhotos() } },
-                    onRedevelop: { redevelop(job) },
-                    onMetadata: { showMetadata(job) },
-                    onPreview: { previewLocally(job) },
-                    onToggleHidden: { toggleHidden(job) },
-                    onClose: { closeOverlay() }
-                )
-                .zIndex(1)
-            }
-        }
+        surface
         // Compact third of the screen by default; the drag handle (and the work
         // strip) reveal more rows of the same grid plus the full queue details.
         .presentationDetents([.fraction(QueueContactSheetLayout.compactFraction), .large],
@@ -577,9 +554,8 @@ struct QueueSheetView: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// One contact-sheet cell: the shared receipt card in its poster layout. A
-    /// tap opens the action wells; in selection mode it toggles the bulk choice
-    /// instead, so the card never nests a second button.
+    /// Tap previews (or toggles bulk selection); the native context menu owns
+    /// long press and its dismissal, without an expanding action-grid overlay.
     private func receiptCell(_ job: RenderJob) -> some View {
         let isHidden = hiddenIDs.contains(job.id)
         let isSelected = showsFailedOnly && selectingFailed
@@ -592,31 +568,23 @@ struct QueueSheetView: View {
                                 redevelop: canReviewOriginal(job) ? { onRedevelop(job) } : nil,
                                 contactSheet: true)
         .contentShape(Rectangle())
-        .gesture(
-            LongPressGesture(minimumDuration: 0.45)
-                .exclusively(before: TapGesture())
-                .onEnded { gesture in
-                    switch gesture {
-                    case .first:
-                        openActions(for: job)
-                    case .second:
-                        if showsFailedOnly, selectingFailed {
-                            toggleFailedSelection(job.id)
-                        } else if isSelecting, canReviewOriginal(job) {
-                            toggleSelection(job)
-                        } else {
-                            previewLocally(job)
-                        }
-                    }
-                }
-        )
+        .onTapGesture {
+            if showsFailedOnly, selectingFailed {
+                toggleFailedSelection(job.id)
+            } else if isSelecting, canReviewOriginal(job) {
+                toggleSelection(job)
+            } else {
+                previewLocally(job)
+            }
+        }
+        .contextMenu { receiptActions(job) }
         .accessibilityAddTraits(.isButton)
         .accessibilityAction {
             if showsFailedOnly, selectingFailed { toggleFailedSelection(job.id) }
             else if isSelecting, canReviewOriginal(job) { toggleSelection(job) }
             else { previewLocally(job) }
         }
-        .accessibilityAction(named: Text("Image actions")) { openActions(for: job) }
+        .accessibilityActions { receiptActions(job) }
         .overlay(alignment: .topLeading) {
             if isHidden {
                 Image(systemName: "eye.slash")
@@ -680,7 +648,6 @@ struct QueueSheetView: View {
 
     private func toggleFailedFilter() {
         previewJobID = nil
-        selectedJobID = nil
         isSelecting = false
         selection.removeAll()
         selectingFailed = false
@@ -785,31 +752,54 @@ struct QueueSheetView: View {
         withAnimation(.easeInOut(duration: 0.22)) { detent = .fraction(QueueContactSheetLayout.compactFraction) }
     }
 
-    /// The wells need room, so opening them also takes the sheet to its full
-    /// detent. The receipt is selected, never re-statused.
-    private func openActions(for job: RenderJob) {
-        withAnimation(.easeIn(duration: 0.16)) { selectedJobID = job.id }
-        if !isExpanded { expand() }
-    }
-
-    /// Clear the in-sheet overlay first, then route, so a child sheet or Develop
-    /// never asks for a presentation while the overlay is still leaving.
-    private func closeOverlay(then next: (() -> Void)? = nil) {
-        withAnimation(.easeOut(duration: 0.16)) { selectedJobID = nil }
-        guard let next else { return }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(260))
-            next()
+    /// The same rows serve the native long-press menu and VoiceOver actions.
+    /// They reuse existing owners and retain imported-media permissions.
+    @ViewBuilder private func receiptActions(_ job: RenderJob) -> some View {
+        Button { previewLocally(job) } label: {
+            Label("Preview", systemImage: job.presentsAsPhoto ? "photo" : "play.circle")
         }
+        .disabled(!canPreviewLocally(job))
+        .accessibilityIdentifier("queue.localPreview")
+
+        if job.presentsAsPhoto {
+            Button { redevelop(job) } label: {
+                Label("Re-develop", systemImage: "arrow.counterclockwise")
+            }
+            .disabled(!canReviewOriginal(job))
+            .accessibilityIdentifier("queue.redevelopPhoto")
+        }
+
+        Button { showMetadata(job) } label: {
+            Label("Metadata", systemImage: "info.circle")
+        }
+        .accessibilityIdentifier(QueueReceiptPresentation.metadataActionID)
+
+        if job.presentsAsPhoto, job.receiptActions.shareLocal {
+            Button { shareVideo(job) } label: {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+        }
+        if !job.presentsAsPhoto {
+            Button(action: openPhotos) {
+                Label("Open Photos", systemImage: "photo.on.rectangle")
+            }
+            .accessibilityIdentifier(QueueReceiptPresentation.photosActionID + ".video")
+        }
+        Button { toggleHidden(job) } label: {
+            Label(hiddenIDs.contains(job.id) ? "Show" : "Hide",
+                  systemImage: hiddenIDs.contains(job.id) ? "eye" : "eye.slash")
+        }
+        .accessibilityHint("Changes history visibility only. Originals and Photos are unchanged.")
+        .accessibilityIdentifier(hiddenIDs.contains(job.id) ? "queue.historyShow" : "queue.historyHide")
     }
 
     private func redevelop(_ job: RenderJob) {
         guard canReviewOriginal(job) else { return }
-        closeOverlay { onRedevelop(job) }
+        onRedevelop(job)
     }
 
     private func showMetadata(_ job: RenderJob) {
-        closeOverlay { metadataJob = job }
+        metadataJob = job
     }
 
     private func previewLocally(_ job: RenderJob) {
@@ -819,14 +809,14 @@ struct QueueSheetView: View {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            selectedJobID = nil
             previewJobID = job.id
             detent = .large
         }
     }
 
     private func canPreviewLocally(_ job: RenderJob) -> Bool {
-        job.permitsLocalMedia && (job.retainedOutputURL != nil || job.receipt?.thumbnailJPEG != nil)
+        (job.permitsLocalMedia && job.retainedOutputURL != nil)
+            || (job.permitsReceiptPreview && job.receipt?.thumbnailJPEG != nil)
     }
 
     /// Hide/show is presentation only: it never removes the job, its original,
@@ -837,7 +827,6 @@ struct QueueSheetView: View {
         } else {
             viewModel.historyVisibility.hide(job.id)
         }
-        closeOverlay()
     }
 
     private func toggleSelection(_ job: RenderJob) {

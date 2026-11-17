@@ -23,6 +23,7 @@ enum RenderReceiptService {
         "flash-exposure-seconds", "flash-refused", "flash-refused-reason",
         // Colour, balance, lens and slate cards.
         "color-space", "white-balance-kelvin", "wb-tint",
+        "development-photo-kelvin", "development-video-warmth",
         "aperture-f-number", "lens", "focal-length-mm",
         "reel", "scene", "take"
     ].map { "com.filmemulation." + $0 })

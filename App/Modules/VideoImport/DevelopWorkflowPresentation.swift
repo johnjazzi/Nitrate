@@ -78,6 +78,7 @@ struct DevelopPreviewRecipe: Equatable, Sendable {
     let stock: FilmStockConfig
     let gauge: PrintGauge
     let pushPull: PushPullExposure
+    var whiteBalance: DevelopWhiteBalance = .neutral
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.url == rhs.url && lhs.isPhoto == rhs.isPhoto && lhs.cropZoom == rhs.cropZoom
@@ -85,6 +86,7 @@ struct DevelopPreviewRecipe: Equatable, Sendable {
             && lhs.stock.colorTemperature == rhs.stock.colorTemperature
             && lhs.stock.outputContrast == rhs.stock.outputContrast
             && lhs.pushPull == rhs.pushPull
+            && lhs.whiteBalance == rhs.whiteBalance
     }
 }
 

@@ -199,6 +199,8 @@ struct CameraModeCarousel: View {
     /// Fixed row height. Keeps the row from resizing as the active label
     /// changes, and is itself the minimum touch height.
     static let height: CGFloat = 44
+    /// Non-interactive selected-mode name below the unchanged touch strip.
+    static let captionHeight: CGFloat = 16
 
     /// The selected target's fixed width — the touch floor it never shrinks
     /// below.
@@ -232,6 +234,17 @@ struct CameraModeCarousel: View {
                 .clipped()
         }
         .frame(height: Self.height)
+        .overlay(alignment: .bottom) {
+            Text(selected.voiceLabel)
+                .font(NitrateTypography.font(size: 10, relativeTo: .caption2))
+                .foregroundStyle(controlAccent)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(height: Self.captionHeight)
+                .offset(y: Self.captionHeight)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
         .opacity(enabled ? 1 : 0.4)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: selected)
         .simultaneousGesture(swipeGesture)

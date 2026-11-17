@@ -169,6 +169,13 @@ struct CompactStockPicker: View {
     /// Whether the sheet is at its large detent. It reveals the sample preview
     /// above the same stack; it never adds a second set of controls.
     var expanded = false
+    /// Embedded review already prints the recipe on its contact frame.
+    var showsSelectionSummary = true
+    /// Lab centres short rows; camera sheets retain their original alignment.
+    var centersChoices = false
+    /// Present only in Lab; camera stock selection keeps its existing controls.
+    var whiteBalance: Binding<DevelopWhiteBalance>? = nil
+    var whiteBalanceIsPhoto = false
 
     @Environment(\.cameraControlAccent) private var controlAccent
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -246,7 +253,7 @@ struct CompactStockPicker: View {
     private var controlStack: some View {
         VStack(alignment: .leading, spacing: CompactStockPickerLayout.rowSpacing) {
             stockRow
-            selectionRow
+            if showsSelectionSummary { selectionRow }
             controls
         }
     }
@@ -260,17 +267,20 @@ struct CompactStockPicker: View {
                 .foregroundStyle(.secondary)
                 .frame(height: stockRowHeight, alignment: .leading)
         } else {
-            ScrollView(.horizontal) {
-                HStack(spacing: CompactStockPickerLayout.stockChipSpacing) {
-                    ForEach(stocks, id: \.stockId) { stock in
-                        chip(for: stock)
+            GeometryReader { proxy in
+                ScrollView(.horizontal) {
+                    HStack(spacing: CompactStockPickerLayout.stockChipSpacing) {
+                        ForEach(stocks, id: \.stockId) { stock in
+                            chip(for: stock)
+                        }
                     }
+                    // Short Lab rows centre in the surface; long catalogues
+                    // still scroll, keeping the first chip reachable.
+                    .frame(minWidth: centersChoices ? proxy.size.width : nil)
+                    .padding(.vertical, 1)
                 }
-                // A hairline of inset so the selected chip's border is not
-                // clipped by the scroll view's edge.
-                .padding(.vertical, 1)
+                .scrollIndicators(.hidden)
             }
-            .scrollIndicators(.hidden)
             .frame(height: stockRowHeight)
         }
     }
@@ -326,16 +336,30 @@ struct CompactStockPicker: View {
             VStack(alignment: .leading, spacing: CompactStockPickerLayout.controlSpacing) {
                 GaugeControl(gauge: $gauge, enlarged: true)
                 pushPullControl
+                whiteBalanceControl
             }
         } else {
             HStack(alignment: .bottom, spacing: CompactStockPickerLayout.controlSpacing) {
                 GaugeControl(gauge: $gauge, enlarged: true)
-                    .frame(maxWidth: CompactStockPickerLayout.preferredGaugeWidth,
+                    .frame(maxWidth: whiteBalance == nil ? CompactStockPickerLayout.preferredGaugeWidth
+                               : CompactStockPickerLayout.minimumGaugeWidth,
                            alignment: .leading)
                 pushPullControl
                     .frame(width: CompactStockPickerLayout.pushPullWidth)
+                if whiteBalance != nil {
+                    whiteBalanceControl
+                        .frame(width: CompactStockPickerLayout.pushPullWidth)
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: centersChoices ? .center : .leading)
+        }
+    }
+
+    @ViewBuilder private var whiteBalanceControl: some View {
+        if let whiteBalance {
+            DevelopWhiteBalanceControl(value: whiteBalance, isPhoto: whiteBalanceIsPhoto,
+                                       stockKelvin: selectedStock?.colorTemperature ?? 5500)
+                .disabled(whiteBalanceIsPhoto && selectedStock == nil)
         }
     }
 

@@ -205,7 +205,8 @@ final class RenderQueueViewModel {
                               pushPull: PushPullExposure? = nil,
                               preferences: RenderDeliveryPreferences? = nil,
                               retainsDevelopmentSource: Bool = false,
-                              originalFilename: String? = nil, sourceCaptureISO: Float? = nil) -> UUID? {
+                              originalFilename: String? = nil, sourceCaptureISO: Float? = nil,
+                              whiteBalance: DevelopWhiteBalance = .neutral) -> UUID? {
         guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
         guard Self.isUsableFile(sourceURL) else {
             reportRenderError("The selected video could not be read. Choose it again.")
@@ -228,6 +229,10 @@ final class RenderQueueViewModel {
         if retainsDevelopmentSource { imported.retainsDevelopmentSource = true }
         imported.sourceOriginalFilename = originalFilename
         imported.sourceCaptureISO = sourceCaptureISO.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        // Freeze Develop's manual balance in the accepted job. The panel's
+        // current value is never consulted again, so a later edit cannot
+        // change work that is already queued.
+        imported.developmentWhiteBalance = whiteBalance
         jobs.append(imported)
         guard persistJobs() else {
             jobs.removeAll { $0.id == imported.id }
@@ -251,7 +256,8 @@ final class RenderQueueViewModel {
                       pushPull: PushPullExposure? = nil,
                       preferences: RenderDeliveryPreferences? = nil,
                       isImported: Bool = false, retainsDevelopmentSource: Bool = false,
-                      originalFilename: String? = nil, sourceCaptureISO: Float? = nil) -> UUID? {
+                      originalFilename: String? = nil, sourceCaptureISO: Float? = nil,
+                      whiteBalance: DevelopWhiteBalance = .neutral) -> UUID? {
         guard !isPersistenceBlocked else { publishQueueMessage(); return nil }
         // Any raw the still renderer can develop, not only a DNG: the importer
         // already proved the file opens through the system RAW pipeline.
@@ -277,6 +283,7 @@ final class RenderQueueViewModel {
         if retainsDevelopmentSource { photo.retainsDevelopmentSource = true }
         photo.sourceOriginalFilename = originalFilename
         photo.sourceCaptureISO = sourceCaptureISO.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        photo.developmentWhiteBalance = whiteBalance
         jobs.append(photo)
         guard persistJobs() else {
             jobs.removeAll { $0.id == photo.id }
@@ -438,17 +445,25 @@ final class RenderQueueViewModel {
     /// - Returns: how many jobs went back to pending.
     @discardableResult
     func redevelopPhotos(jobIds: [UUID], stockId: String? = nil, gauge: PrintGauge? = nil,
-                         pushPull: PushPullExposure? = nil) -> Int {
+                         pushPull: PushPullExposure? = nil,
+                         whiteBalance: DevelopWhiteBalance? = nil) -> Int {
         let photoIDs = jobIds.filter { id in jobs.contains { $0.id == id && $0.isPhoto == true } }
-        return redevelopJobs(jobIds: photoIDs, stockId: stockId, gauge: gauge, pushPull: pushPull)
+        return redevelopJobs(jobIds: photoIDs, stockId: stockId, gauge: gauge, pushPull: pushPull,
+                             whiteBalance: whiteBalance)
     }
 
     /// Requeue retained originals through the same serial durable worker. Recipe
     /// edits are transactional: a rejected write leaves review and old results
     /// intact. Capture ISO, policy, trim, crop, grain and delivery stay unchanged.
+    ///
+    /// `whiteBalance` is optional on purpose: omitting it preserves whatever the
+    /// job already froze (a stock/gauge edit must not silently re-balance the
+    /// shot), while an explicit `.neutral` is a reset request. The rollback
+    /// snapshot is a value copy, so the previous balance survives a failed write.
     @discardableResult
     func redevelopJobs(jobIds: [UUID], stockId: String? = nil, gauge: PrintGauge? = nil,
-                       pushPull: PushPullExposure? = nil) -> Int {
+                       pushPull: PushPullExposure? = nil,
+                       whiteBalance: DevelopWhiteBalance? = nil) -> Int {
         guard !isPersistenceBlocked else { publishQueueMessage(); return 0 }
         let previous = jobs
         var requeued: [UUID] = []
@@ -467,6 +482,7 @@ final class RenderQueueViewModel {
             if let stockId { jobs[index].stockId = stockId }
             if let gauge { jobs[index].printGauge = gauge }
             if let pushPull { jobs[index].pushPull = pushPull }
+            if let whiteBalance { jobs[index].developmentWhiteBalance = whiteBalance }
             if jobs[index].isPhoto != true { jobs[index].retainsDevelopmentSource = true }
             if let stale = jobs[index].outputURL { staleOutputs.append(stale) }
             jobs[index].status = .pending
@@ -978,7 +994,8 @@ final class RenderQueueViewModel {
             return try await Task.detached(priority: .userInitiated) {
                 try DevelopmentPhotoRenderer.render(originalDNG: job.sourceURL, stockID: job.stockId,
                     gauge: job.printGauge ?? .neutral, seed: job.photoGrainSeed ?? 0,
-                    cropZoom: job.photoCropZoom ?? 1, pushPull: job.pushPull ?? .neutral)
+                    cropZoom: job.photoCropZoom ?? 1, pushPull: job.pushPull ?? .neutral,
+                    whiteBalance: job.developmentWhiteBalance ?? .neutral)
             }.value
         }
         guard let renderer else {
@@ -1004,7 +1021,8 @@ final class RenderQueueViewModel {
                                          capturePolicy: job.capturePolicy,
                                          isImportedSource: job.isImportedVideo == true,
                                          framing: job.deliveryPreferences?.framing ?? DeliveryFraming.defaultValue,
-                                         progress: onProgress)
+                                         progress: onProgress,
+                                         whiteBalance: job.developmentWhiteBalance ?? .neutral)
     }
 
     // MARK: - Ephemeral render progress

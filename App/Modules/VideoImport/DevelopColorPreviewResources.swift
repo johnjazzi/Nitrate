@@ -12,6 +12,9 @@ final class DevelopColorPreviewResources {
     private let bundle: Bundle
     private let lutPipeline: MTLComputePipelineState
     private let hlgPipeline: MTLComputePipelineState
+    /// The shared development white balance stage — the same type the export
+    /// dispatches, so a preview and a delivery cannot grade at different whites.
+    let whiteBalanceStage: DevelopWhiteBalanceStage
     private var textureCache: CVMetalTextureCache
     private var luts: [String: MTLTexture] = [:]
     private var curveKey: String?
@@ -36,6 +39,7 @@ final class DevelopColorPreviewResources {
         self.textureCache = cache
         self.lutPipeline = try pipeline("pass1_lut_halation_glow")
         self.hlgPipeline = try pipeline("hlg_prepare")
+        self.whiteBalanceStage = try DevelopWhiteBalanceStage(device: device, library: library)
         self.context = CIContext(mtlDevice: device, options: [.workingColorSpace: space, .cacheIntermediates: false])
     }
 
@@ -98,6 +102,16 @@ final class DevelopColorPreviewResources {
         try finish(command)
         withExtendedLifetime(references) {}
         return output
+    }
+
+    /// Video development white balance, in linear Apple Wide Gamut, through the
+    /// same stage the delivered render dispatches. Returns `input` itself when
+    /// the job is neutral, so an unadjusted preview is the bytes it always was.
+    func corrected(_ input: MTLTexture, whiteBalance: DevelopWhiteBalance,
+                   referenceKelvin: Float) throws -> MTLTexture {
+        try whiteBalanceStage.corrected(input, referenceKelvin: referenceKelvin,
+                                        warmth: whiteBalance.resolvedVideoWarmth,
+                                        commandQueue: queue)
     }
 
     func grade(_ input: MTLTexture, stock: FilmStockConfig, pushPull: PushPullExposure,

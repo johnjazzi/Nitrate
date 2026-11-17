@@ -148,7 +148,7 @@ struct QueueReceiptCard: View {
     }
 
     @ViewBuilder private var contactPosterContent: some View {
-        if job.permitsLocalMedia, let data = job.receipt?.thumbnailJPEG {
+        if job.permitsReceiptPreview, let data = job.receipt?.thumbnailJPEG {
             HistoryGridThumbnail(jpeg: data)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
@@ -217,7 +217,7 @@ struct QueueReceiptCard: View {
 
     private var poster: some View {
         Group {
-            if job.permitsLocalMedia, let data = job.receipt?.thumbnailJPEG, let image = UIImage(data: data) {
+            if job.permitsReceiptPreview, let data = job.receipt?.thumbnailJPEG, let image = UIImage(data: data) {
                 Image(uiImage: image).resizable().scaledToFit()
             } else {
                 VStack(spacing: 4) {

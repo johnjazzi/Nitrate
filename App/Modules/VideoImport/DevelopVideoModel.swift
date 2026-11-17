@@ -47,6 +47,7 @@ struct DevelopSource: Identifiable, Sendable, Equatable {
     let isPhoto: Bool
     let iso: Float?
     let capturedOffsetEV: Float?
+    let capturedAt: Date?
     let cropZoom: Double
     var id: String { url.absoluteString }
 }
@@ -140,12 +141,14 @@ final class DevelopVideoModel {
 
     private static func source(_ photo: ImportedPhoto) -> DevelopSource {
         DevelopSource(url: photo.url, originalFilename: photo.originalFilename,
-                      isPhoto: true, iso: photo.iso, capturedOffsetEV: nil, cropZoom: 1)
+                      isPhoto: true, iso: photo.iso, capturedOffsetEV: nil,
+                      capturedAt: photo.capturedAt, cropZoom: 1)
     }
 
     private static func source(_ video: ImportedVideo) -> DevelopSource {
         DevelopSource(url: video.url, originalFilename: video.originalFilename,
-                      isPhoto: false, iso: nil, capturedOffsetEV: nil, cropZoom: 1)
+                      isPhoto: false, iso: nil, capturedOffsetEV: nil,
+                      capturedAt: video.capturedAt, cropZoom: 1)
     }
 
     var hasActiveRenders: Bool { isRenderActive(in: queue) }
@@ -236,20 +239,30 @@ final class DevelopVideoModel {
 
     @discardableResult
     func develop(stock: FilmStockConfig, iso: Float, gauge: PrintGauge,
-                 pushPull: PushPullExposure) -> BulkDevelopResult {
-        submit(stock: stock, iso: iso, gauge: gauge, pushPull: pushPull, queue: queue)
+                 pushPull: PushPullExposure,
+                 whiteBalance: DevelopWhiteBalance = .neutral) -> BulkDevelopResult {
+        submit(stock: stock, iso: iso, gauge: gauge, pushPull: pushPull,
+               whiteBalance: whiteBalance, queue: queue)
     }
 
     @discardableResult
     func commitBulk(stock: FilmStockConfig, gauge: PrintGauge, pushPull: PushPullExposure?,
-                    queue: RenderQueueViewModel) -> BulkDevelopResult {
-        submit(stock: stock, iso: stock.defaultISO, gauge: gauge, pushPull: pushPull, queue: queue)
+                    queue: RenderQueueViewModel,
+                    whiteBalance: DevelopWhiteBalance = .neutral) -> BulkDevelopResult {
+        submit(stock: stock, iso: stock.defaultISO, gauge: gauge, pushPull: pushPull,
+               whiteBalance: whiteBalance, queue: queue)
     }
 
     /// Freeze the supplied recipe synchronously; release only accepted leases.
     /// Refused sources remain staged (including after a partial durable failure).
+    ///
+    /// `whiteBalance` is the panel's manual balance at the moment Develop was
+    /// pressed. It is handed to every accepted job explicitly, so omitted is not
+    /// "keep the old one" here: what the operator sees is what gets stored.
     private func submit(stock: FilmStockConfig, iso: Float, gauge: PrintGauge,
-                        pushPull: PushPullExposure?, queue: RenderQueueViewModel) -> BulkDevelopResult {
+                        pushPull: PushPullExposure?,
+                        whiteBalance: DevelopWhiteBalance = .neutral,
+                        queue: RenderQueueViewModel) -> BulkDevelopResult {
         guard canRender(stock: stock, queue: queue) else { return BulkDevelopResult() }
         let selected = sources
         if workflowOrder.isEmpty { workflowOrder = selected.map(\.url) }
@@ -264,18 +277,21 @@ final class DevelopVideoModel {
                 // A terminal queue job must really requeue, never deduplicate to
                 // an old completed result. Preserve its capture/delivery recipe.
                 id = queue.redevelopJobs(jobIds: [existing.id], stockId: stock.stockId,
-                                         gauge: gauge, pushPull: pushPull) > 0 ? existing.id : nil
+                                         gauge: gauge, pushPull: pushPull,
+                                         whiteBalance: whiteBalance) > 0 ? existing.id : nil
             } else if source.isPhoto, let imported = bulk.photos.first(where: { $0.url == source.url }) ?? photo {
                 id = queue.enqueuePhoto(sourceURL: source.url, stockId: stock.stockId,
                                         iso: source.iso ?? iso, gauge: gauge, cropZoom: source.cropZoom,
                                         seed: Self.grainSeed(for: imported), pushPull: pushPull,
                                         isImported: true, retainsDevelopmentSource: true,
-                                        originalFilename: source.originalFilename, sourceCaptureISO: source.iso)
+                                        originalFilename: source.originalFilename, sourceCaptureISO: source.iso,
+                                        whiteBalance: whiteBalance)
             } else if !source.isPhoto {
                 id = queue.enqueueImportedVideo(sourceURL: source.url, stockId: stock.stockId,
                                                 iso: source.iso ?? iso, gauge: gauge, pushPull: pushPull,
                                                 retainsDevelopmentSource: true,
-                                                originalFilename: source.originalFilename, sourceCaptureISO: source.iso)
+                                                originalFilename: source.originalFilename, sourceCaptureISO: source.iso,
+                                                whiteBalance: whiteBalance)
             } else {
                 id = nil
             }
@@ -351,6 +367,7 @@ final class DevelopVideoModel {
                                        originalFilename: job.sourceOriginalFilename ?? job.sourceURL.lastPathComponent,
                                        isPhoto: job.isPhoto == true, iso: job.sourceCaptureISO,
                                        capturedOffsetEV: job.sourceCapturedOffsetEV ?? job.pushPull?.meteredOffsetEV,
+                                       capturedAt: job.receipt?.recordedAt,
                                        cropZoom: job.photoCropZoom ?? 1)
             if seen.insert(source.id).inserted { adoptedSources.append(source) }
         }
@@ -466,8 +483,10 @@ final class DevelopVideoModel {
 
     @discardableResult
     func render(stock: FilmStockConfig, iso: Float, gauge: PrintGauge,
-                pushPull: PushPullExposure? = nil, queue: RenderQueueViewModel) -> UUID? {
-        let result = submit(stock: stock, iso: iso, gauge: gauge, pushPull: pushPull, queue: queue)
+                pushPull: PushPullExposure? = nil, queue: RenderQueueViewModel,
+                whiteBalance: DevelopWhiteBalance = .neutral) -> UUID? {
+        let result = submit(stock: stock, iso: iso, gauge: gauge, pushPull: pushPull,
+                            whiteBalance: whiteBalance, queue: queue)
         return result.queued > 0 ? resultJobIDs.first : nil
     }
 

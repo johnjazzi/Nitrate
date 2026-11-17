@@ -423,11 +423,13 @@ enum RenderMovieMetadata {
                      sourceNominalFrameRate: Double? = nil,
                      flash: FlashRecord? = nil,
                      framing: DeliveryFraming? = nil,
-                     deliveredSize: CGSize? = nil) throws -> [AVMetadataItem] {
+                     deliveredSize: CGSize? = nil,
+                     whiteBalance: DevelopWhiteBalance = .neutral) throws -> [AVMetadataItem] {
         let metadataValues = try recipeValues(config: config, bitrate: bitrate,
             sourceColorProvenance: sourceColorProvenance, capturePolicy: capturePolicy,
             isImportedSource: isImportedSource, sourceNominalFrameRate: sourceNominalFrameRate,
-            flash: flash, framing: framing, deliveredSize: deliveredSize)
+            flash: flash, framing: framing, deliveredSize: deliveredSize,
+            overrides: whiteBalance.videoMetadataValues)
         var items: [AVMutableMetadataItem] = metadataValues.sorted { $0.key < $1.key }.map { key, value in
             let item = AVMutableMetadataItem()
             item.keySpace = .quickTimeMetadata

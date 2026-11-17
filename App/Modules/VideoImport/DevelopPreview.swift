@@ -14,9 +14,11 @@ struct DevelopPreview: View {
     var stockOptions: [FilmStockConfig] = []
     var onSelectStock: (FilmStockConfig) -> Void = { _ in }
     var onOpenResults: () -> Void = {}
+    var onReturnToVideo: () -> Void = {}
     @Binding var gauge: PrintGauge
     @Binding var pushPullAutomatic: Bool
     @Binding var pushPullStops: PushPullStops
+    @Binding var whiteBalance: DevelopWhiteBalance
     var onControlsChanged: () -> Void = {}
 
     @State private var pickerItems: [PhotosPickerItem] = []
@@ -47,6 +49,7 @@ struct DevelopPreview: View {
 
     var body: some View {
         VStack(spacing: 12) {
+            labHeader
             if reviewingRemaining, !model.sources.isEmpty, !model.hasActiveRenders {
                 reviewState
             } else {
@@ -70,6 +73,7 @@ struct DevelopPreview: View {
                 .font(NitrateTypography.font(.callout))
                 .foregroundStyle(DevelopPreviewChrome.warning)
             }
+            bottomActions
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -93,38 +97,111 @@ struct DevelopPreview: View {
         }
         .alert("Photos unavailable", isPresented: $photosOpenFailed) {
             Button("OK", role: .cancel) {}
+        } message: {
+            Text(PhotosLibraryOpener.failureMessage)
         }
     }
 
     private var chooser: some View {
-        VStack(spacing: 20) {
-            Spacer(minLength: 0)
-            HStack(spacing: 16) {
+        VStack(spacing: 16) {
+            HStack(spacing: 0) {
+                // Balance the Info target so the prompt itself stays centred.
+                Color.clear.frame(width: 44, height: 44)
+                    .accessibilityHidden(true)
+                    .allowsHitTesting(false)
+                Text("Choose what to develop")
+                    .font(NitrateTypography.font(.body))
+                    .foregroundStyle(DevelopPreviewChrome.muted)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                Button { showHelp = true } label: {
+                    Image(systemName: "info.circle")
+                        .font(.body)
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Info")
+                .accessibilityIdentifier("develop.help")
+            }
+            VStack(spacing: 12) {
                 photoPicker
                 videoPicker
             }
-            Button { showHelp = true } label: {
-                Image(systemName: "info.circle")
-                    .font(.title2)
-                    .frame(width: 48, height: 48)
-            }
-            .accessibilityLabel("Info")
-            .accessibilityIdentifier("develop.help")
+            .frame(maxWidth: 240)
+            .frame(maxWidth: .infinity, alignment: .center)
             Spacer(minLength: 0)
         }
+        .padding(.top, 8)
+    }
+
+    private var returnToVideoButton: some View {
+        Button(action: onReturnToVideo) {
+            Image(systemName: "arrow.uturn.backward")
+                .font(.title3)
+                .frame(width: 44, height: 44)
+        }
+        .accessibilityLabel("Return to Video")
+        .accessibilityIdentifier("develop.returnToVideo")
     }
 
     private var reviewState: some View {
-        VStack(spacing: 12) {
-            HStack {
-                stockMenu
-                Spacer(minLength: 8)
-                if !model.bulk.skipped.isEmpty {
-                    Button("Skipped \(model.bulk.skipped.count)") { showHelp = true }
-                        .foregroundStyle(DevelopPreviewChrome.warning)
-                        .frame(minHeight: 48)
-                        .accessibilityIdentifier("develop.bulkSkipped")
+        GeometryReader { proxy in
+            // The picker is content, not a sheet: it stays open beneath the
+            // preview. On a short panel (landscape, split view, accessibility
+            // type) the stack scrolls rather than squeezing the preview to a
+            // strip, and the action stays pinned so it is always reachable.
+            let pageHeight = max(DevelopPreviewLayout.minimumPageHeight,
+                                 proxy.size.height - DevelopPreviewLayout.pickerReservation
+                                    - (model.sources.count > 1
+                                        ? DevelopPreviewLayout.positionRowHeight : 0))
+            VStack(spacing: 12) {
+                ScrollView(.vertical) {
+                    VStack(spacing: 12) {
+                        TabView(selection: $sourcePage) {
+                            ForEach(Array(model.sources.enumerated()), id: \.element.id) { index, source in
+                                DevelopSourcePage(source: source, stock: stock, gauge: gauge,
+                                                  pushPull: resolvedPushPull, renderer: renderer,
+                                                  active: index == sourcePage, whiteBalance: whiteBalance)
+                                    .tag(index)
+                            }
+                        }
+                        .tabViewStyle(.page(indexDisplayMode: .never))
+                        .frame(height: pageHeight)
+                        if model.sources.count > 1 {
+                            Text("\(sourcePage + 1)/\(model.sources.count)")
+                                .font(NitrateTypography.font(.body).monospacedDigit())
+                                .foregroundStyle(DevelopPreviewChrome.muted)
+                                .accessibilityIdentifier("develop.source.position")
+                        }
+                        stockPicker
+                    }
+                    .frame(maxWidth: .infinity)
                 }
+                .scrollBounceBehavior(.basedOnSize)
+                .scrollIndicators(.hidden)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The Lab heading and the current cancel/return action.
+    private var labHeader: some View {
+        HStack(spacing: 8) {
+            Text("LAB").font(NitrateTypography.font(.title2))
+            Spacer(minLength: 0)
+            if !model.bulk.skipped.isEmpty {
+                Button("Skipped \(model.bulk.skipped.count)") { showHelp = true }
+                    .font(NitrateTypography.font(.caption))
+                    .foregroundStyle(DevelopPreviewChrome.warning)
+                    .frame(minHeight: 48)
+                    .accessibilityIdentifier("develop.bulkSkipped")
+            }
+            // Only the film chooser returns to the video: it holds no staged
+            // batch, so leaving is lossless. Every other stage owns partial
+            // batch state (staged, skipped, queued jobs), so the sole exit
+            // there is the explicit Cancel below, which starts over.
+            if stage == .chooser {
+                returnToVideoButton
+            } else {
                 Button(action: startOver) {
                     Image(systemName: "xmark")
                         .font(.title3)
@@ -133,39 +210,98 @@ struct DevelopPreview: View {
                 .accessibilityLabel("Cancel")
                 .accessibilityIdentifier("develop.bulkCancel")
             }
-            TabView(selection: $sourcePage) {
-                ForEach(Array(model.sources.enumerated()), id: \.element.id) { index, source in
-                    DevelopSourcePage(source: source, stock: stock, gauge: gauge,
-                                      pushPull: resolvedPushPull, renderer: renderer, active: index == sourcePage)
-                        .tag(index)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if model.sources.count > 1 {
-                Text("\(sourcePage + 1)/\(model.sources.count)")
-                    .font(NitrateTypography.font(.body).monospacedDigit())
-                    .foregroundStyle(DevelopPreviewChrome.muted)
-                    .accessibilityIdentifier("develop.source.position")
-            }
-            controlRow
-            Button(action: develop) {
-                Text("Develop")
-                    .font(NitrateTypography.font(.title3))
-                    .frame(maxWidth: .infinity, minHeight: 52)
-                    .background(DevelopPreviewChrome.orange, in: RoundedRectangle(cornerRadius: 12))
-                    .contentShape(Rectangle())
-            }
-                .buttonStyle(.plain)
-                .foregroundStyle(.black)
-                .disabled(!model.canDevelop(stock: stock))
-                .accessibilityIdentifier("develop.bulkCommit")
         }
+    }
+
+    /// The existing stock + print picker, always open below the preview and
+    /// bound to the parent's one selection / gauge / push-pull owner. The
+    /// wrapper carries the panel's own identifier so the picker keeps
+    /// `stock.compactPicker` for the stock sheet's shared contract.
+    private var stockPicker: some View {
+        VStack(spacing: 0) {
+            CompactStockPicker(stocks: stockOptions,
+                               selectedStockId: selectedStockId,
+                               gauge: $gauge,
+                               resolvedPushPull: resolvedPushPull,
+                               isAutomatic: $pushPullAutomatic,
+                               manualStops: $pushPullStops,
+                               onPushPullChange: onControlsChanged,
+                               expanded: false,
+                               showsSelectionSummary: false,
+                               centersChoices: true,
+                               whiteBalance: $whiteBalance,
+                               whiteBalanceIsPhoto: model.sources.indices.contains(sourcePage)
+                                   && model.sources[sourcePage].isPhoto)
+        }
+        // The review already scrolls, so the picker reports its real height
+        // instead of nesting a second vertical scroll view inside it — that is
+        // what keeps every control reachable at accessibility type sizes.
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(8)
+        .background(Color(white: 0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .accessibilityIdentifier("develop.controls")
+    }
+
+    /// A chip tap writes the parent's selection through the existing callback;
+    /// this view never owns a second stock identity.
+    private var selectedStockId: Binding<String?> {
+        Binding(get: { stock?.stockId },
+                set: { id in
+                    guard let id, let option = stockOptions.first(where: { $0.stockId == id })
+                    else { return }
+                    onSelectStock(option)
+                })
+    }
+
+    /// One bottom row across every stage. History stays at the left edge and
+    /// equal flexible side slots keep the review's Develop action centred.
+    private var bottomActions: some View {
+        HStack(spacing: 12) {
+            historyButton
+                .frame(minWidth: 48, maxWidth: .infinity, alignment: .leading)
+            if stage == .review || (reviewingRemaining && !model.sources.isEmpty && !model.hasActiveRenders) {
+                developButton
+            }
+            Color.clear
+                .frame(minWidth: 48, maxWidth: .infinity, minHeight: 1, maxHeight: 1)
+                .accessibilityHidden(true)
+                .allowsHitTesting(false)
+        }
+        .frame(minHeight: 52)
+    }
+
+    private var historyButton: some View {
+        Button(action: onOpenResults) {
+            VStack(spacing: 2) {
+                Image(systemName: "list.bullet").font(.title3)
+                Text("History").font(NitrateTypography.font(.caption2))
+            }
+            .frame(minWidth: 48, minHeight: 48)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Queue and History")
+        .accessibilityHint("Open the history contact sheet and render queue")
+        .accessibilityIdentifier("develop.queue")
+    }
+
+    private var developButton: some View {
+        Button(action: develop) {
+            Text("Develop")
+                .font(NitrateTypography.font(.title3))
+                .frame(maxWidth: 160, minHeight: 52)
+                .background(DevelopPreviewChrome.orange, in: RoundedRectangle(cornerRadius: 12))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.black)
+        .disabled(!model.canDevelop(stock: stock))
+        .accessibilityIdentifier("develop.bulkCommit")
     }
 
     private var resultsState: some View {
         VStack(spacing: 12) {
-            DevelopResultsPager(ids: model.resultJobIDs, queue: queue)
+            DevelopResultsPager(ids: model.resultJobIDs, queue: queue, stocks: stockOptions)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if !model.hasActiveRenders {
                 if !model.sources.isEmpty {
@@ -174,12 +310,6 @@ struct DevelopPreview: View {
                         .frame(minHeight: 48)
                 }
                 resultActions
-            }
-            if model.hasActiveRenders || resultJobs.contains(where: { $0.status == .failed }) {
-                Button("Queue", action: onOpenResults)
-                    .font(NitrateTypography.font(.body))
-                    .frame(minHeight: 48)
-                    .accessibilityIdentifier("develop.queue")
             }
         }
     }
@@ -244,46 +374,26 @@ struct DevelopPreview: View {
         }
     }
 
-    private var stockMenu: some View {
-        Menu {
-            ForEach(stockOptions, id: \.stockId) { option in
-                Button { onSelectStock(option) } label: {
-                    if option.stockId == stock?.stockId {
-                        Label(option.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(option.displayName)
-                    }
-                }
-            }
-        } label: {
-            Label(stock?.displayName ?? "Choose stock", systemImage: "chevron.up.chevron.down")
-                .font(NitrateTypography.font(.title3))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 16)
-                .frame(minHeight: 48)
-                .background(DevelopPreviewChrome.control, in: Capsule())
-        }
-        .accessibilityIdentifier("develop.bulkStock")
-    }
-
-    private var controlRow: some View {
-        HStack(alignment: .bottom, spacing: 16) {
-            GaugeControl(gauge: $gauge, enlarged: true)
-            PushPullControl(resolved: resolvedPushPull, isAutomatic: $pushPullAutomatic,
-                            manualStops: $pushPullStops, onChange: onControlsChanged, enlarged: true)
-                .frame(width: 90)
-        }
-        .accessibilityIdentifier("develop.controls")
-    }
-
     private var videoPicker: some View {
         PhotosPicker(selection: $pickerItems, maxSelectionCount: 0, matching: .videos,
                      preferredItemEncoding: .current) {
-            Label("Video", systemImage: "photo.on.rectangle")
-                .font(NitrateTypography.font(.title2))
-                .frame(maxWidth: .infinity, minHeight: 80)
+            Label {
+                Text("Video")
+            } icon: {
+                Image(systemName: "photo.on.rectangle")
+                    .foregroundStyle(SettingsControlChrome.lightPurple.opacity(0.85))
+            }
+            .font(NitrateTypography.font(.headline))
+            .frame(maxWidth: .infinity, minHeight: 56)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(CameraRaisedButtonStyle(faceColor: Color(white: 0.32), cornerRadius: 6))
+        .foregroundStyle(.white)
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(SettingsControlChrome.lightPurple.opacity(0.4), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .environment(\.cameraUIStyle, .classic)
         .disabled(model.hasActiveRenders)
         .accessibilityIdentifier("develop.choose")
     }
@@ -291,11 +401,23 @@ struct DevelopPreview: View {
     private var photoPicker: some View {
         PhotosPicker(selection: $photoPickerItems, maxSelectionCount: 0, matching: .images,
                      preferredItemEncoding: .current) {
-            Label("Photo", systemImage: "camera.aperture")
-                .font(NitrateTypography.font(.title2))
-                .frame(maxWidth: .infinity, minHeight: 80)
+            Label {
+                Text("Photo")
+            } icon: {
+                Image(systemName: "camera.aperture")
+                    .foregroundStyle(DevelopPreviewChrome.orange.opacity(0.85))
+            }
+            .font(NitrateTypography.font(.headline))
+            .frame(maxWidth: .infinity, minHeight: 56)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(CameraRaisedButtonStyle(faceColor: Color(white: 0.32), cornerRadius: 6))
+        .foregroundStyle(.white)
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(DevelopPreviewChrome.orange.opacity(0.4), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .environment(\.cameraUIStyle, .classic)
         .disabled(model.hasActiveRenders)
         .accessibilityIdentifier("develop.choosePhoto")
     }
@@ -325,13 +447,15 @@ struct DevelopPreview: View {
     private func develop() {
         guard let stock, model.canDevelop(stock: stock) else { return }
         reviewingRemaining = false
-        _ = model.develop(stock: stock, iso: stock.defaultISO, gauge: gauge, pushPull: resolvedPushPull)
+        _ = model.develop(stock: stock, iso: stock.defaultISO, gauge: gauge, pushPull: resolvedPushPull,
+                          whiteBalance: whiteBalance)
     }
 
     private func startOver() {
         selectionTask?.cancel()
         selectionTask = nil
         model.startOver()
+        whiteBalance = .neutral
         reviewingRemaining = false
         pickerItems = []
         photoPickerItems = []
@@ -341,6 +465,7 @@ struct DevelopPreview: View {
         let jobs = resultJobs
         guard redevelopment.isEnabled else { return }
         if let first = jobs.first(where: \.hasRedevelopableSource) {
+            whiteBalance = first.developmentWhiteBalance ?? .neutral
             if let priorStock = stockOptions.first(where: { $0.stockId == first.stockId }) {
                 onSelectStock(priorStock)
             }
@@ -377,6 +502,20 @@ struct DevelopPreview: View {
     }
 }
 
+/// Review-side geometry. The picker is content beneath the preview, so the
+/// review states only ever decide how tall the paged contact may get: it keeps
+/// a usable minimum and the stack scrolls when the panel cannot hold both.
+enum DevelopPreviewLayout {
+    /// Picker and surface padding with gaps. Header and bottom actions are
+    /// outside the review geometry and are not reserved a second time.
+    static let pickerReservation: CGFloat = 232
+    /// The extra a multi-source review needs for its page position caption.
+    static let positionRowHeight: CGFloat = 32
+    /// The paged contact (frame plus its exposure readout) never shrinks below
+    /// this; below it the review scrolls instead.
+    static let minimumPageHeight: CGFloat = 160
+}
+
 private struct DevelopSourceRequest: Equatable {
     let source: DevelopSource
     let recipe: DevelopPreviewRecipe?
@@ -390,6 +529,7 @@ private struct DevelopSourcePage: View {
     let pushPull: PushPullExposure
     let renderer: DevelopFramePreviewRenderer
     let active: Bool
+    let whiteBalance: DevelopWhiteBalance
     @State private var frame: DevelopFramePreview?
     @State private var loadedRequest: DevelopSourceRequest?
     @State private var failure: String?
@@ -400,51 +540,22 @@ private struct DevelopSourcePage: View {
     private var request: DevelopSourceRequest {
         .init(source: source, recipe: stock.map {
             DevelopPreviewRecipe(url: source.url, isPhoto: source.isPhoto, cropZoom: source.cropZoom,
-                                 stock: $0, gauge: gauge, pushPull: pushPull)
+                                 stock: $0, gauge: gauge, pushPull: pushPull, whiteBalance: whiteBalance)
         }, active: active)
     }
 
     var body: some View {
         VStack(spacing: 10) {
-            ZStack {
-                if loadedRequest?.source == source, let frame {
-                    DevelopExpandableStill(image: frame.image, label: "Preview")
-                        .overlay(alignment: .topTrailing) {
-                            if loadedRequest != request {
-                                ProgressView().padding(12)
-                            }
-                        }
-                        .accessibilityIdentifier("develop.preview")
-                } else if loadedRequest == request, let failure {
-                    VStack(spacing: 12) {
-                        Text("Preview unavailable")
-                        Text(DevelopWorkflowPresentation.issueSummary(failure))
-                            .font(NitrateTypography.font(.callout))
-                            .foregroundStyle(DevelopPreviewChrome.warning)
-                            .multilineTextAlignment(.center)
-                            .accessibilityIdentifier("develop.preview.issue")
-                        Button("Retry") { retry += 1 }.frame(minHeight: 48)
-                    }
-                } else if stock == nil {
-                    Text("Choose stock")
-                } else {
-                    ProgressView().controlSize(.large)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            HStack(spacing: 16) {
-                readout("Estimate", value: DevelopWorkflowPresentation.exposure(frame?.measuredOffsetEV))
+            contact
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 8) {
+                Text("Estimate \(DevelopWorkflowPresentation.exposure(frame?.measuredOffsetEV))")
+                    .font(NitrateTypography.font(.caption))
+                    .foregroundStyle(DevelopPreviewChrome.muted)
                     .accessibilityIdentifier("develop.exposure.estimate")
-                if let rating = source.capturedOffsetEV {
-                    readout("Captured", value: DevelopWorkflowPresentation.exposure(Double(rating)))
-                }
-                if let iso = source.iso {
-                    readout("Rated", value: DevelopWorkflowPresentation.captureRating(iso))
-                        .accessibilityIdentifier("develop.exposure.captureRating")
-                }
                 Spacer(minLength: 0)
                 Button { showDetails = true } label: {
-                    Image(systemName: "info.circle").font(.title3).frame(width: 44, height: 48)
+                    Image(systemName: "info.circle").font(.body).frame(width: 44, height: 44)
                 }
                 .accessibilityLabel("Details")
             }
@@ -460,6 +571,48 @@ private struct DevelopSourcePage: View {
         .task(id: retry) {
             guard retry > 0 else { return }
             await load(request)
+        }
+    }
+
+    /// The same contact the queue will deliver: its black frame, the selected
+    /// stock and gauge printed on the borders, and the source's own capture ISO
+    /// when it is known — never the stock's fallback ISO presented as capture.
+    private var contact: some View {
+        ContactPreviewFrame(imageSize: frame.map { CGSize(width: $0.image.width, height: $0.image.height) },
+                            stockAndGauge: "\(stock?.displayName ?? "STOCK —") · \(gauge.displayName)",
+                            exposure: DevelopContactISO.caption(captureISO: source.iso,
+                                                                renderISO: stock?.defaultISO),
+                            date: ContactPreviewPrinting.date(source.capturedAt),
+                            isVideo: !source.isPhoto,
+                            metadataIdentifier: "develop.contactMetadata") {
+            preview
+        }
+        .accessibilityIdentifier("develop.contact")
+    }
+
+    @ViewBuilder private var preview: some View {
+        if loadedRequest?.source == source, let frame {
+            DevelopExpandableStill(image: frame.image, label: "Preview")
+                .overlay(alignment: .topTrailing) {
+                    if loadedRequest != request {
+                        ProgressView().padding(12)
+                    }
+                }
+                .accessibilityIdentifier("develop.preview")
+        } else if loadedRequest == request, let failure {
+            VStack(spacing: 12) {
+                Text("Preview unavailable")
+                Text(DevelopWorkflowPresentation.issueSummary(failure))
+                    .font(NitrateTypography.font(.callout))
+                    .foregroundStyle(DevelopPreviewChrome.warning)
+                    .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("develop.preview.issue")
+                Button("Retry") { retry += 1 }.frame(minHeight: 48)
+            }
+        } else if stock == nil {
+            Text("Choose stock")
+        } else {
+            ProgressView().controlSize(.large)
         }
     }
 
@@ -489,7 +642,8 @@ private struct DevelopSourcePage: View {
                 let task = Task {
                     do {
                         let image = try await renderer.preview(url: recipe.url, isPhoto: recipe.isPhoto,
-                            stock: recipe.stock, gauge: recipe.gauge, pushPull: recipe.pushPull, cropZoom: recipe.cropZoom)
+                            stock: recipe.stock, gauge: recipe.gauge, pushPull: recipe.pushPull, cropZoom: recipe.cropZoom,
+                            whiteBalance: recipe.whiteBalance)
                         completion(.success(image))
                     } catch {
                         completion(.failure(error))
@@ -517,15 +671,20 @@ enum DevelopPreviewLoader {
     static let maxPixelSize: CGFloat = 1600
 
     static func image(for url: URL, isPhoto: Bool) async -> CGImage? {
+        // A delivered contact is always a local retained file. Never let a
+        // stored absolute/remote URL turn presentation into a network read.
+        guard url.isFileURL else { return nil }
         if isPhoto {
             return await Task.detached(priority: .userInitiated) { thumbnail(for: url) }.value
         }
         let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: maxPixelSize, height: maxPixelSize)
-        generator.requestedTimeToleranceBefore = .positiveInfinity
+        // First frame, matching DevelopFramePreviewRenderer's time-zero read:
+        // no tolerance before zero, and the first available frame after it.
+        generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .positiveInfinity
-        return try? await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)).image
+        return try? await generator.image(at: .zero).image
     }
 
     static func thumbnail(from data: Data) -> CGImage? {

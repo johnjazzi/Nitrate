@@ -84,6 +84,9 @@ struct RenderJob: Codable, Identifiable, Equatable {
         (isImportedVideo == true || retainsDevelopmentSource == true) && discardImportedMedia == true
     }
     var permitsLocalMedia: Bool { isImportedVideo != true }
+    /// Receipt stills have a separate display policy from full movie playback,
+    /// sharing and original delivery. This does not grant access to a movie.
+    var permitsReceiptPreview: Bool { permitsLocalMedia || retainsDevelopmentSource == true }
     /// Media-aware original delivery: a Photo job honours the independent RAW
     /// switch, a video honours `saveOriginalLog`.
     ///
@@ -120,6 +123,12 @@ struct RenderJob: Codable, Identifiable, Equatable {
     /// Why a kept original was retained (a validation failure), kept for the
     /// queue row. Never used to decide rendering.
     var retainedReason: String? = nil
+    /// Develop's manual white balance, frozen into the job when the queue
+    /// accepts it. Optional so every queue written before Develop stays
+    /// readable; nil renders `.neutral`, which is the stock's own balance.
+    /// Like `pushPull`, this is a job value: the renderer reads it here and
+    /// never from live UI, so changing the panel cannot alter queued work.
+    var developmentWhiteBalance: DevelopWhiteBalance? = nil
     /// Capture policy snapshotted at enqueue. Immutable value; the renderer and
     /// metadata read this, never live UI. `nil` preserves legacy behaviour:
     /// 24 fps, per-frame grain, `1/48` shutter metadata.

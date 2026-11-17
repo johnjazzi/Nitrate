@@ -264,8 +264,11 @@ struct StockSheetLayoutTests {
                 "The pill is the shared component, fed the exposure the render will apply.")
         #expect(picker.contains(".frame(width: CompactStockPickerLayout.pushPullWidth)"),
                 "The pill keeps its fixed slot beside the gauge.")
-        #expect(picker.contains("maxWidth: CompactStockPickerLayout.preferredGaugeWidth"),
-                "The gauge flexes up to its preferred share and no further.")
+        #expect(picker.contains("whiteBalance == nil ? CompactStockPickerLayout.preferredGaugeWidth"),
+                "Camera keeps the original gauge share when the Lab-only WB control is absent.")
+        #expect(picker.contains(": CompactStockPickerLayout.minimumGaugeWidth"),
+                "Lab reserves a readable gauge width beside Push/Pull and WB.")
+        #expect(picker.contains("var whiteBalance: Binding<DevelopWhiteBalance>? = nil"))
         #expect(picker.contains("spacing: CompactStockPickerLayout.controlSpacing"))
         #expect(!picker.contains("flashPill"),
                 "The lamp lives in the top bar now, not in the picker's bottom row.")

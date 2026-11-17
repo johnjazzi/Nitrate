@@ -107,6 +107,7 @@ struct ContentView: View {
     @State private var developGauge: PrintGauge = .neutral
     @State private var developPushPullAutomatic = true
     @State private var developPushPullStops: PushPullStops = .none
+    @State private var developWhiteBalance: DevelopWhiteBalance = .neutral
 
     /// Physical orientation source for the `.cameraUpright()` chrome modifier.
     /// Every icon/text glyph in the camera UI rotates to stay readable in
@@ -188,11 +189,17 @@ struct ContentView: View {
                     .allowsHitTesting(!isDevelopMode)
 
                 if isDevelopMode {
-                    let rect = boundedPreviewRect(in: geometry) ?? .zero
+                    let top: CGFloat = 8
+                    let bottomControls = controlBounds["bottom"]
+                    let modeStrip = bottomControls.flatMap {
+                        CameraModeStripGeometry.frame(controls: $0, canvasWidth: geometry.size.width,
+                            horizontalInset: controlBarHorizontalInset(in: geometry))
+                    }
+                    let bottom = (modeStrip?.minY ?? bottomControls?.minY ?? geometry.size.height) - 8
                     developPanel
-                        .frame(width: rect.width, height: rect.height)
-                        .clipShape(RoundedRectangle(cornerRadius: showFramedPreview ? 16 : 0))
-                        .position(x: rect.midX, y: rect.midY)
+                        .frame(width: geometry.size.width, height: max(0, bottom - top))
+                        .clipped()
+                        .position(x: geometry.size.width / 2, y: top + max(0, bottom - top) / 2)
                         // Entering Develop lands on the stock's remembered gauge
                         // and push/pull, exactly like the stock sheet does.
                         .onAppear { restoreDevelopControls() }
@@ -202,12 +209,18 @@ struct ContentView: View {
                 VStack(spacing: 0) {
                     topBar
                         .disabled(isDevelopMode)
-                        .opacity(isDevelopMode ? 0.3 : 1)
+                        .opacity(isDevelopMode ? 0 : 1)
+                        .accessibilityHidden(isDevelopMode)
                         .background(controlMeasurement("top"))
 
                     Spacer()
 
                     controlBar(horizontalInset: controlBarHorizontalInset(in: geometry))
+                        // Preserve its measurement for the mode strip, but Lab
+                        // owns the only visible recipe controls and Develop action.
+                        .opacity(isDevelopMode ? 0 : 1)
+                        .allowsHitTesting(!isDevelopMode)
+                        .accessibilityHidden(isDevelopMode)
                         .padding(.bottom, 8)
                         .background(controlMeasurement("bottom"))
                 }
@@ -222,7 +235,7 @@ struct ContentView: View {
                         .position(x: row.midX, y: row.midY)
                 }
 
-                if let meter = exposureMeterRect(in: geometry) {
+                if !isDevelopMode, let meter = exposureMeterRect(in: geometry) {
                     ExposureIndicatorView(meteredEV: cameraViewModel.liveExposureTargetOffset,
                                           targetEV: cameraViewModel.liveExposureBias,
                                           isManual: cameraViewModel.isManualExposure,
@@ -262,7 +275,7 @@ struct ContentView: View {
                             ?? modeRefusalNotice ?? "")
                 }
 
-                if let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
+                if !isDevelopMode, let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
                     RecordingStatusOverlay(viewport: geometry.size, toolbarBottom: top.maxY, controlsTop: bottom.minY,
                                            rotationDegrees: statusRotationDegrees,
                                            isInteractive: canManageDaylightMode && !isPhotoMode) {
@@ -411,7 +424,8 @@ struct ContentView: View {
 
                 debugControlsOverlay(in: geometry)
                     .disabled(isDevelopMode)
-                    .opacity(isDevelopMode ? 0.3 : 1)
+                    .opacity(isDevelopMode ? 0 : 1)
+                    .accessibilityHidden(isDevelopMode)
 
                 cameraNoticeOverlay(in: geometry)
 
@@ -1542,8 +1556,8 @@ struct ContentView: View {
                 guard let stock = selectedStock else { return }
                 // The panel's controls ARE the render settings: no second read of
                 // the library at render time, so what is on screen is applied.
-                _ = developModel.develop(stock: stock, iso: currentISO, gauge: developGauge,
-                                         pushPull: developPushPull)
+                _ = developModel.develop(stock: stock, iso: stock.defaultISO, gauge: developGauge,
+                                         pushPull: developPushPull, whiteBalance: developWhiteBalance)
             },
             isPhotoMode: isPhotoMode,
             isQueuePresented: showQueueSheet,
@@ -1652,9 +1666,11 @@ struct ContentView: View {
             stockOptions: library.videoStocks(),
             onSelectStock: { stock in selectedStock = stock },
             onOpenResults: { showQueueSheet = true },
+            onReturnToVideo: { selectCameraMode(.video) },
             gauge: $developGauge,
             pushPullAutomatic: $developPushPullAutomatic,
             pushPullStops: $developPushPullStops,
+            whiteBalance: $developWhiteBalance,
             onControlsChanged: persistDevelopControls
         )
     }
@@ -1698,6 +1714,7 @@ struct ContentView: View {
             await developModel.adoptExistingJobs(jobs)
             // Restore the actual prior recipe after stock observation settles,
             // rather than silently replacing it with the camera's last settings.
+            developWhiteBalance = first.developmentWhiteBalance ?? .neutral
             if let gauge = first.printGauge { developGauge = gauge }
             if let pushPull = first.pushPull {
                 developPushPullAutomatic = false
