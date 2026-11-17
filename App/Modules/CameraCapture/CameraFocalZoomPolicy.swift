@@ -169,6 +169,44 @@ enum CameraFocalZoomPolicy {
               minimum <= maximum else { return nil }
         return minimum...maximum
     }
+
+    // MARK: - Wide-lens button toggle (24 mm ↔ 50 mm)
+
+    /// The wide lens's native 1x focal length and the second stop its lens key
+    /// toggles to. Neither is a zoom owner: both go through the same absolute
+    /// focal-length path as a pinch, on the same physical wide device.
+    static let wideLensNativeFocalLengthMM: Double = 24
+    static let wideLensAlternateFocalLengthMM: Double = 50
+
+    /// Whether a live focal length *reads* as the wide lens's alternate stop.
+    /// Uses the same whole-millimetre rounding the focal readouts print
+    /// (`Int(millimeters.rounded())`: 49.5–50.5 rounds to 50), so an
+    /// intermediate pinch — 35 mm, or 48 mm — leaves the key on its native
+    /// 24 mm label instead of claiming a second stop the operator has not
+    /// reached. Absent or non-finite input never matches.
+    static func isWideLensAlternate(_ currentMM: Double?) -> Bool {
+        guard let millimeters = currentMM, millimeters.isFinite else { return false }
+        return millimeters.rounded() == wideLensAlternateFocalLengthMM
+    }
+
+    /// The focal length a lens key prints for `tier`: its native base, except
+    /// the wide lens, which prints 50 mm exactly while the live preview rounds
+    /// to 50 mm. Every other tier (including the front camera's 24 mm) keeps
+    /// its unchanged label.
+    static func lensKeyFocalLengthMM(for tier: CameraFocalZoomLensTier,
+                                     currentMM: Double?) -> Double {
+        let native = baseFocalLengthMM(for: tier)
+        guard tier == .wide, isWideLensAlternate(currentMM) else { return native }
+        return wideLensAlternateFocalLengthMM
+    }
+
+    /// The absolute focal length the already-selected wide lens toggles to:
+    /// back to native 24 mm from a 50 mm readout, otherwise 50 mm. Absent or
+    /// non-finite input asks for the alternate stop, since a key can only leave
+    /// a state it was actually showing.
+    static func wideLensToggleTargetMM(currentMM: Double?) -> Double {
+        isWideLensAlternate(currentMM) ? wideLensNativeFocalLengthMM : wideLensAlternateFocalLengthMM
+    }
 }
 
 /// Coalesces pinch updates while a physical lens switch is in flight and keeps

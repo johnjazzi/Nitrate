@@ -228,6 +228,7 @@ struct ContentView: View {
                 if !isDevelopMode, lensControlPosition == .aboveShutter,
                    let row = lensRowRect(in: geometry) {
                     CameraLensRow(availableLenses: availableLenses, selectedLens: selectedLens,
+                                  currentFocalLengthMM: cameraViewModel.currentFocalLengthMM,
                                   onSelectLens: selectLens)
                         .disabled(!canSelectCameraLens)
                         .opacity(canSelectCameraLens ? 1 : 0.4)
@@ -1463,13 +1464,27 @@ struct ContentView: View {
         CameraLensSelector(
             availableLenses: availableLenses,
             selectedLens: selectedLens,
+            currentFocalLengthMM: cameraViewModel.currentFocalLengthMM,
             onSelectLens: selectLens
         )
         .disabled(!canSelectCameraLens)
     }
 
     private func selectLens(_ lens: CameraLens) {
-        guard lens != selectedLens, canSelectCameraLens else { return }
+        guard canSelectCameraLens else { return }
+        if lens == selectedLens {
+            // Only the wide lens has a second stop, and activating its already
+            // selected key toggles 24 ↔ 50 mm on the physical wide camera that
+            // is already installed. It reuses the absolute focal-length path a
+            // pinch uses, so there is no second zoom owner, no device
+            // re-selection and no focus reset. Every other selected key stays
+            // inert, exactly as before.
+            guard lens == .wide else { return }
+            cameraViewModel.setFocalLengthZoom(
+                CameraFocalZoomPolicy.wideLensToggleTargetMM(
+                    currentMM: cameraViewModel.currentFocalLengthMM))
+            return
+        }
         focusReadGeneration &+= 1
         let focusRequest = focusReadGeneration
         cameraViewModel.selectLens(lens) { error in

@@ -5,6 +5,10 @@ import SwiftUI
 struct CameraLensSelector: View {
     let availableLenses: [CameraLens]
     let selectedLens: CameraLens
+    /// The preview's live focal length, forwarded from the camera view model.
+    /// Presentation only: it lets the wide key print 50 mm while the operator
+    /// is actually at that stop. Defaulted so older callers keep compiling.
+    var currentFocalLengthMM: Double? = nil
     let onSelectLens: (CameraLens) -> Void
 
     @State private var isPresented = false
@@ -61,7 +65,8 @@ struct CameraLensSelector: View {
     @ViewBuilder
     private var lensWell: some View {
         if uiStyle == .minimal {
-            CameraLensRow(availableLenses: availableLenses, selectedLens: selectedLens) { lens in
+            CameraLensRow(availableLenses: availableLenses, selectedLens: selectedLens,
+                          currentFocalLengthMM: currentFocalLengthMM) { lens in
                 isPresented = false
                 onSelectLens(lens)
             }
@@ -99,11 +104,14 @@ struct CameraLensSelector: View {
 
     private func lensKey(_ lens: CameraLens) -> some View {
         let isSelected = lens == selectedLens
+        let label = lens == .front
+            ? "Front"
+            : "\(lensKeyFocalMM(lens, currentMM: currentFocalLengthMM))"
         return Button {
             isPresented = false
             onSelectLens(lens)
         } label: {
-            CameraLensFace(label: lens == .front ? "Front" : "\(lens.focalLengthMM)",
+            CameraLensFace(label: label,
                            rotationDegrees: CameraGlyphRotation.degrees(for: deviceOrientation),
                            isSelected: isSelected)
                 .foregroundStyle(isSelected ? controlAccent : .white.opacity(0.65))
@@ -111,12 +119,15 @@ struct CameraLensSelector: View {
         }
         .buttonStyle(CameraRaisedButtonStyle(faceColor: isSelected ? controlAccent.opacity(0.14) : nil))
         .accessibilityLabel(title(lens))
-        .accessibilityHint(isSelected ? "Current camera lens" : "Switches camera lens and closes selector")
+        .accessibilityHint(isSelected
+            ? wideKeyToggleHint(lens, selected: selectedLens, currentMM: currentFocalLengthMM)
+                ?? "Current camera lens"
+            : "Switches camera lens and closes selector")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
     private func title(_ lens: CameraLens) -> String {
-        lens == .front ? "Front" : "\(lens.focalLengthMM) mm"
+        lens == .front ? "Front" : "\(lensKeyFocalMM(lens, currentMM: currentFocalLengthMM)) mm"
     }
 }
 
@@ -126,6 +137,9 @@ struct CameraLensSelector: View {
 struct CameraLensRow: View {
     let availableLenses: [CameraLens]
     let selectedLens: CameraLens
+    /// Live focal length, forwarded by the selector or the camera screen.
+    /// Defaulted for older callers; the parent passes the real value.
+    var currentFocalLengthMM: Double? = nil
     let onSelectLens: (CameraLens) -> Void
     @Environment(\.cameraControlAccent) private var controlAccent
     @Environment(\.cameraUIStyle) private var uiStyle
@@ -136,11 +150,16 @@ struct CameraLensRow: View {
             ForEach(availableLenses.sorted {
                 ($0 == .front ? Int.max : $0.focalLengthMM) < ($1 == .front ? Int.max : $1.focalLengthMM)
             }) { lens in
+                let label = lens == .front
+                    ? "F"
+                    : "\(lensKeyFocalMM(lens, currentMM: currentFocalLengthMM))"
                 Button {
-                    guard lens != selectedLens else { return }
+                    // The selected wide key is live: activating it again
+                    // toggles 24 ↔ 50 mm. Every other selected key stays inert.
+                    guard lens != selectedLens || lens == .wide else { return }
                     onSelectLens(lens)
                 } label: {
-                    Text(lens == .front ? "F" : "\(lens.focalLengthMM)")
+                    Text(label)
                         .font(NitrateTypography.font(size: 12, relativeTo: .caption))
                         .foregroundStyle(lens == selectedLens ? controlAccent : .white.opacity(0.65))
                         .frame(width: CameraMinimalLayout.lensFaceSize, height: CameraMinimalLayout.lensFaceSize)
@@ -152,13 +171,51 @@ struct CameraLensRow: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(lens == .front ? "Front camera" : "\(lens.focalLengthMM) mm")
-                .accessibilityHint(lens == selectedLens ? "Current camera lens" : "Switches camera lens")
+                .accessibilityLabel(lens == .front
+                    ? "Front camera"
+                    : "\(lensKeyFocalMM(lens, currentMM: currentFocalLengthMM)) mm")
+                .accessibilityHint(lens == selectedLens
+                    ? wideKeyToggleHint(lens, selected: selectedLens, currentMM: currentFocalLengthMM)
+                        ?? "Current camera lens"
+                    : "Switches camera lens")
                 .accessibilityAddTraits(lens == selectedLens ? .isSelected : [])
                 .accessibilityIdentifier("camera.lens.\(lens.rawValue)")
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Camera lenses")
+    }
+}
+
+/// The number a lens key prints: its native focal length, except the wide lens,
+/// which prints 50 mm only while the live preview rounds to 50 mm. An
+/// intermediate pinch keeps the native 24 mm label. Shared by the toolbar
+/// popover's classic keys and the minimal row so both can never disagree.
+private func lensKeyFocalMM(_ lens: CameraLens, currentMM: Double?) -> Int {
+    Int(CameraFocalZoomPolicy.lensKeyFocalLengthMM(for: lens.focalZoomTier,
+                                                   currentMM: currentMM))
+}
+
+/// VoiceOver's next action for the selected wide key; nil for every other lens,
+/// whose activation still only reports its current state.
+private func wideKeyToggleHint(_ lens: CameraLens,
+                               selected: CameraLens,
+                               currentMM: Double?) -> String? {
+    guard lens == .wide, lens == selected else { return nil }
+    let next = Int(CameraFocalZoomPolicy.wideLensToggleTargetMM(currentMM: currentMM))
+    return "Current camera lens; activate again for \(next) mm"
+}
+
+/// The pure policy's tier for a physical lens, kept beside the two lens-key
+/// views so neither re-derives it and `CameraFocalZoomPolicy` stays free of
+/// AVFoundation.
+extension CameraLens {
+    var focalZoomTier: CameraFocalZoomLensTier {
+        switch self {
+        case .ultraWide: .ultraWide
+        case .wide: .wide
+        case .telephoto: .telephoto
+        case .front: .front
+        }
     }
 }
