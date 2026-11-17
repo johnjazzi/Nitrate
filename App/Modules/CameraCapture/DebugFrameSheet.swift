@@ -439,21 +439,21 @@ struct DebugFrameSheet: View {
             labelled(String(format: "Size %.2f  (footprint %.2f)",
                             viewModel.parameters.sizeMultiplier,
                             viewModel.parameters.realizedFootprint)) {
-                Slider(value: float({ viewModel.parameters.sizeMultiplier },
+                defaultSlider(value: float({ viewModel.parameters.sizeMultiplier },
                                     { viewModel.parameters.sizeMultiplier = $0 }),
-                       in: 0.3...6, step: 0.05)
+                       in: 0.3...6, step: 0.05, defaultValue: defaultParameters.sizeMultiplier)
             }
             labelled(String(format: "Presence %.2f  (amount %.3f)",
                             viewModel.parameters.presenceMultiplier,
                             viewModel.parameters.realizedAmount)) {
-                Slider(value: float({ viewModel.parameters.presenceMultiplier },
+                defaultSlider(value: float({ viewModel.parameters.presenceMultiplier },
                                     { viewModel.parameters.presenceMultiplier = $0 }),
-                       in: 0...1.5, step: 0.01)
+                       in: 0...1.5, step: 0.01, defaultValue: defaultParameters.presenceMultiplier)
             }
             labelled(String(format: "Edge boost %.2f", viewModel.parameters.edgeBoostMultiplier)) {
-                Slider(value: float({ viewModel.parameters.edgeBoostMultiplier },
+                defaultSlider(value: float({ viewModel.parameters.edgeBoostMultiplier },
                                     { viewModel.parameters.edgeBoostMultiplier = $0 }),
-                       in: 0...3, step: 0.05)
+                       in: 0...3, step: 0.05, defaultValue: defaultParameters.edgeBoostMultiplier)
             }
         }
     }
@@ -461,9 +461,9 @@ struct DebugFrameSheet: View {
     private var halationSection: some View {
         DebugCollapsibleSection(title: "Halation", isExpanded: $halationExpanded) {
             labelled(String(format: "Strength %.2f", viewModel.parameters.halationStrength)) {
-                Slider(value: float({ viewModel.parameters.halationStrength },
+                defaultSlider(value: float({ viewModel.parameters.halationStrength },
                                     { viewModel.parameters.halationStrength = $0 }),
-                       in: 0...8, step: 0.01)
+                       in: 0...8, step: 0.01, defaultValue: defaultParameters.halationStrength)
             }
             // One onset per layer, in stops above diffuse white: the level where
             // that layer starts to halate, and the number that can be pasted
@@ -475,35 +475,58 @@ struct DebugFrameSheet: View {
                             viewModel.parameters.halationGreenOnsetStops,
                             viewModel.parameters.halationBlueOnsetStops)) {
                 VStack(spacing: 4) {
-                    Slider(value: float({ viewModel.parameters.halationRedOnsetStops },
+                    defaultSlider(value: float({ viewModel.parameters.halationRedOnsetStops },
                                         { viewModel.parameters.halationRedOnsetStops = $0 }),
-                           in: -6...3.3, step: 0.05)
-                    Slider(value: float({ viewModel.parameters.halationGreenOnsetStops },
+                           in: -6...3.3, step: 0.05, defaultValue: defaultParameters.halationRedOnsetStops)
+                    defaultSlider(value: float({ viewModel.parameters.halationGreenOnsetStops },
                                         { viewModel.parameters.halationGreenOnsetStops = $0 }),
-                           in: -6...3.3, step: 0.05)
-                    Slider(value: float({ viewModel.parameters.halationBlueOnsetStops },
+                           in: -6...3.3, step: 0.05, defaultValue: defaultParameters.halationGreenOnsetStops)
+                    defaultSlider(value: float({ viewModel.parameters.halationBlueOnsetStops },
                                         { viewModel.parameters.halationBlueOnsetStops = $0 }),
-                           in: -6...3.3, step: 0.05)
+                           in: -6...3.3, step: 0.05, defaultValue: defaultParameters.halationBlueOnsetStops)
                 }
             }
             Text(halationReadout)
                 .font(NitrateTypography.font(.caption).monospacedDigit())
-            labelled(String(format: "Radius fraction %.4f", viewModel.parameters.halationRadiusFraction)) {
-                Slider(value: float({ viewModel.parameters.halationRadiusFraction },
+            labelled(String(format: "Gauge radius fraction %.5f", viewModel.parameters.halationRadiusFraction)) {
+                defaultSlider(value: float({ viewModel.parameters.halationRadiusFraction },
                                     { viewModel.parameters.halationRadiusFraction = $0 }),
-                       in: 0.0005...0.0030, step: 0.0001)
+                       in: 0...0.0030, step: 0.00001, defaultValue: defaultParameters.halationRadiusFraction)
+            }
+            labelled(String(format: "Soft-step growth %.2f", viewModel.parameters.halationGrowth)) {
+                defaultSlider(value: float({ viewModel.parameters.halationGrowth },
+                                    { viewModel.parameters.halationGrowth = $0 }),
+                       in: 0...1, step: 0.05, defaultValue: defaultParameters.halationGrowth)
+            }
+            Text("Source brightness: 2× → 4× → 8× white. Growth 0 fixes the width; 1 reaches 1× / 1.5× / 2× radius.")
+                .font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
+            labelled(String(format: "Radius factors  R %.2f   G %.2f   B %.2f",
+                            viewModel.parameters.halationRadiusFactors.x,
+                            viewModel.parameters.halationRadiusFactors.y,
+                            viewModel.parameters.halationRadiusFactors.z)) {
+                VStack(spacing: 4) {
+                    defaultSlider(value: float({ viewModel.parameters.halationRadiusFactors.x },
+                                        { viewModel.parameters.halationRadiusFactors.x = $0 }),
+                           in: 0.05...4, step: 0.05, defaultValue: defaultParameters.halationRadiusFactors.x)
+                    defaultSlider(value: float({ viewModel.parameters.halationRadiusFactors.y },
+                                        { viewModel.parameters.halationRadiusFactors.y = $0 }),
+                           in: 0.05...4, step: 0.05, defaultValue: defaultParameters.halationRadiusFactors.y)
+                    defaultSlider(value: float({ viewModel.parameters.halationRadiusFactors.z },
+                                        { viewModel.parameters.halationRadiusFactors.z = $0 }),
+                           in: 0.05...4, step: 0.05, defaultValue: defaultParameters.halationRadiusFactors.z)
+                }
             }
             labelled(String(format: "Tint  R %.2f   G %.2f   B %.2f",
                             viewModel.parameters.halationTint.x,
                             viewModel.parameters.halationTint.y,
                             viewModel.parameters.halationTint.z)) {
                 VStack(spacing: 4) {
-                    Slider(value: float({ viewModel.parameters.halationTint.x },
-                                        { viewModel.parameters.halationTint.x = $0 }), in: 0...1, step: 0.01)
-                    Slider(value: float({ viewModel.parameters.halationTint.y },
-                                        { viewModel.parameters.halationTint.y = $0 }), in: 0...1, step: 0.01)
-                    Slider(value: float({ viewModel.parameters.halationTint.z },
-                                        { viewModel.parameters.halationTint.z = $0 }), in: 0...1, step: 0.01)
+                    defaultSlider(value: float({ viewModel.parameters.halationTint.x },
+                                        { viewModel.parameters.halationTint.x = $0 }), in: 0...1, step: 0.01, defaultValue: defaultParameters.halationTint.x)
+                    defaultSlider(value: float({ viewModel.parameters.halationTint.y },
+                                        { viewModel.parameters.halationTint.y = $0 }), in: 0...1, step: 0.01, defaultValue: defaultParameters.halationTint.y)
+                    defaultSlider(value: float({ viewModel.parameters.halationTint.z },
+                                        { viewModel.parameters.halationTint.z = $0 }), in: 0...1, step: 0.01, defaultValue: defaultParameters.halationTint.z)
                 }
             }
         }
@@ -553,9 +576,9 @@ struct DebugFrameSheet: View {
                 .pickerStyle(.segmented)
             }
             labelled(String(format: "Amount %.2f", viewModel.parameters.diffusion.amount)) {
-                Slider(value: float({ viewModel.parameters.diffusion.amount },
+                defaultSlider(value: float({ viewModel.parameters.diffusion.amount },
                                     { viewModel.parameters.diffusion.amount = $0 }),
-                       in: 0...1, step: 0.01)
+                       in: 0...1, step: 0.01, defaultValue: defaultParameters.diffusion.amount)
             }
             Text(diffusionReadout)
                 .font(NitrateTypography.font(.caption).monospacedDigit())
@@ -597,14 +620,50 @@ struct DebugFrameSheet: View {
     private var glowSection: some View {
         DebugCollapsibleSection(title: "Glow", isExpanded: $glowExpanded) {
             labelled(String(format: "Strength %.2f", viewModel.parameters.glowStrength)) {
-                Slider(value: float({ viewModel.parameters.glowStrength },
+                defaultSlider(value: float({ viewModel.parameters.glowStrength },
                                     { viewModel.parameters.glowStrength = $0 }),
-                       in: 0...1, step: 0.01)
+                       in: 0...1, step: 0.01, defaultValue: defaultParameters.glowStrength)
             }
         }
     }
 
     // MARK: - Helpers
+
+    /// Resolve the authored baseline from the current stock and gauge, not the
+    /// already-edited controls. Markers therefore follow stock/gauge selection.
+    private var defaultParameters: PipelineRenderer.DebugFrameParameters {
+        PipelineRenderer.DebugFrameParameters(
+            config: viewModel.config.overridingGauge(viewModel.parameters.gauge))
+    }
+
+    private func defaultSlider(value: Binding<Float>, in range: ClosedRange<Float>,
+                               step: Float, defaultValue: Float) -> some View {
+        let fraction = CGFloat(min(1, max(0,
+            (defaultValue - range.lowerBound) / (range.upperBound - range.lowerBound))))
+        let delta = value.wrappedValue - defaultValue
+        return VStack(alignment: .leading, spacing: 0) {
+            Slider(value: value, in: range, step: step)
+                .overlay {
+                    GeometryReader { geometry in
+                        // The native thumb's centre travels inside the track's
+                        // end insets. Place the tick below it, outside the thumb.
+                        let inset: CGFloat = 14
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.7))
+                            .frame(width: 2, height: 7)
+                            .position(x: inset + max(0, geometry.size.width - 2 * inset) * fraction,
+                                      y: geometry.size.height / 2 + 15)
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                }
+                .accessibilityValue(String(format: "%.5g, default %.5g", value.wrappedValue, defaultValue))
+            Text(String(format: "│ Default %.5g · Δ %+.5g", defaultValue, delta))
+                .font(NitrateTypography.font(.caption2).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .padding(.top, 3)
+        }
+    }
 
     /// A slider binding that re-renders (debounced) whenever the value changes.
     private func float(_ get: @escaping () -> Float, _ set: @escaping (Float) -> Void) -> Binding<Float> {

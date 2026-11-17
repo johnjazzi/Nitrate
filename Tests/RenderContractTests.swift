@@ -511,6 +511,28 @@ struct RenderContractTests {
         }
     }
 
+    @Test func gaugeHalationRadiusMatchesPreviewDebugAndRestoredShot() throws {
+        let factors: [(PrintGauge, Float)] = [(.eightMillimetre, 1.4), (.sixteenMillimetre, 0.7),
+            (.thirtyFiveMillimetre, 0.35), (.seventyFiveMillimetre, 0.05)]
+        for stock in try stocks("App/Resources/stocks.json") {
+            var debug = PipelineRenderer.DebugFrameParameters(config: stock)
+            for (gauge, factor) in factors {
+                let shot = stock.overridingGauge(gauge)
+                let expected = stock.halationRadiusFraction * factor
+                #expect(abs(shot.effectiveHalationRadiusFraction - expected) < 0.0000001)
+                #expect(shot.halationRadiusFraction == stock.halationRadiusFraction,
+                        "gauge scaling must not mutate the stock base or be applied twice")
+                let restored = try JSONDecoder().decode(FilmStockConfig.self, from: JSONEncoder().encode(shot))
+                #expect(restored.effectiveHalationRadiusFraction == shot.effectiveHalationRadiusFraction)
+                let preview = PreviewConfiguration(stock: stock, gauge: gauge, sceneIlluminantKelvin: 5600)
+                #expect(preview.halationRadiusFraction == shot.effectiveHalationRadiusFraction)
+                debug.applyGauge(gauge)
+                #expect(debug.halationRadiusFraction == shot.effectiveHalationRadiusFraction,
+                        "gauge switching must replace the old radius rather than multiply it again")
+            }
+        }
+    }
+
     @Test func missingRecipeDoesNotInventProvenance() throws {
         var config = try #require(stocks("App/Resources/stocks.json").first)
         config.recipe = nil

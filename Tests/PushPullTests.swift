@@ -515,8 +515,8 @@ struct PushPullTests {
         let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(input, index: 0)
-        // ONE mask chain now, not three per-colour blurs; 2 and 3 are unread.
-        encoder.setTexture(halationMask, index: 1)
+        // Bind all three bucket slots even though strength is zero.
+        for index in 1...3 { encoder.setTexture(halationMask, index: index) }
         encoder.setTexture(output, index: 4)
         for level in 0..<4 { encoder.setTexture(halationMask, index: 5 + level) }
         var strength: Float = 0
@@ -535,17 +535,18 @@ struct PushPullTests {
         encoder.setBytes(&exposureStops, length: MemoryLayout<Float>.size, index: 4)
         encoder.setBytes(&exposureCeiling, length: MemoryLayout<Float>.size, index: 5)
         encoder.setBytes(&postEmulsionStops, length: MemoryLayout<Float>.size, index: 6)
-        // The mask chain's level selection is irrelevant here — strength and
-        // layer scale are zero — but every constant is bound so nothing reads
-        // undefined memory.
-        var baseLOD = SIMD3<Float>(0, 0, 0)
-        var lodGain: Float = 0
-        var widenLow = SIMD3<Float>(0.08, 0.35, 0.60)
-        var widenHigh = SIMD3<Float>(0.55, 0.85, 1.00)
-        encoder.setBytes(&baseLOD, length: MemoryLayout<SIMD3<Float>>.size, index: 12)
-        encoder.setBytes(&lodGain, length: MemoryLayout<Float>.size, index: 13)
-        encoder.setBytes(&widenLow, length: MemoryLayout<SIMD3<Float>>.size, index: 14)
-        encoder.setBytes(&widenHigh, length: MemoryLayout<SIMD3<Float>>.size, index: 15)
+        var bucketWeight = SIMD3<Float>(1, 0, 0)
+        var leakStops: Float = 0
+        var leakTint = SIMD3<Float>(repeating: 0)
+        var leakEdgeShare: Float = 0
+        var leakEdgeFalloff: Float = 0.2
+        var leakSlip: Float = 0
+        encoder.setBytes(&leakStops, length: MemoryLayout<Float>.size, index: 7)
+        encoder.setBytes(&leakTint, length: MemoryLayout<SIMD3<Float>>.size, index: 8)
+        encoder.setBytes(&leakEdgeShare, length: MemoryLayout<Float>.size, index: 9)
+        encoder.setBytes(&leakEdgeFalloff, length: MemoryLayout<Float>.size, index: 10)
+        encoder.setBytes(&leakSlip, length: MemoryLayout<Float>.size, index: 11)
+        encoder.setBytes(&bucketWeight, length: MemoryLayout<SIMD3<Float>>.size, index: 12)
         encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1))
         encoder.endEncoding()

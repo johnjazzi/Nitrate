@@ -120,7 +120,7 @@ import Testing
         let halation = try section("halationSection", in: source)
             .components(separatedBy: "private var diffusionSection: some View {")[0]
         #expect(halation.contains("in: 0...8, step: 0.01"))
-        #expect(halation.contains("in: 0.0005...0.0030, step: 0.0001"))
+        #expect(halation.contains("in: 0...0.0030, step: 0.00001"))
         #expect(halation.components(separatedBy: "in: 0...1, step: 0.01").count == 4,
                 "the three halation tint dials must retain their range")
 

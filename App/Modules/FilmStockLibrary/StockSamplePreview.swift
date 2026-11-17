@@ -180,7 +180,7 @@ struct PreviewConfiguration: Equatable {
             whiteBalance: PlateWhiteBalance.adaptation(sceneKelvin: sceneIlluminantKelvin,
                                                        lockedKelvin: stock.colorTemperature),
             halationStrength: stock.halationStrength(for: effectiveGauge),
-            halationRadiusFraction: stock.halationRadiusFraction,
+            halationRadiusFraction: stock.halationRadiusFraction(for: effectiveGauge),
             halationTint: stock.halationTint,
             diffusion: stock.overridingGauge(effectiveGauge).effectiveDiffusion)
     }

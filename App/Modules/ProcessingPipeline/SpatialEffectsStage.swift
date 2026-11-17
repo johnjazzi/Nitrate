@@ -80,7 +80,7 @@ final class SpatialEffectsStage {
     /// band and a white core — the single most visible property of real halation.
     /// The bucket factor above multiplies all three, so these ratios hold at
     /// every brightness and the ordering cannot invert.
-    private static let halationChannelFactors = SIMD3<Float>(1.8, 1.0, 0.5)
+    static let halationChannelFactors = SIMD3<Float>(1.8, 1.0, 0.5)
 
     /// Per-layer halation onsets, in STOPS above diffuse white: the brightness at
     /// which that layer starts to scatter.
@@ -274,6 +274,9 @@ final class SpatialEffectsStage {
         /// offset is applied separately, through `frameWhiteStops` — so a dial
         /// value can be pasted straight into the constants above.
         authoredOnsets: SIMD3<Float>? = nil,
+        /// Debug overrides; nil uses the authored soft-step spread.
+        authoredGrowth: Float? = nil,
+        authoredRadiusFactors: SIMD3<Float>? = nil,
         /// Measured highlight ceiling of a still, in lifted units, used by the
         /// push/pull hold. Nil for video, which hands over its own measured
         /// `highlightCeiling` instead. See `halationCeiling`. The halo's own
@@ -438,8 +441,18 @@ final class SpatialEffectsStage {
         //    Clamped edges keep a uniform highlight from darkening at the border.
         if blurred {
             let baseSigma = baseRadius * Self.blurSigmaPerRadius
-            let bucketFactors = Self.halationBucketFactors
-            let channelFactors = Self.halationChannelFactors
+            let requestedGrowth = authoredGrowth ?? 1
+            let growth = requestedGrowth.isFinite ? max(0, min(1, requestedGrowth)) : 1
+            let bucketFactors = SIMD3<Float>(repeating: 1)
+                + (Self.halationBucketFactors - SIMD3<Float>(repeating: 1)) * growth
+            let requestedFactors = authoredRadiusFactors ?? Self.halationChannelFactors
+            func safeFactor(_ value: Float, fallback: Float) -> Float {
+                value.isFinite ? max(0.05, min(4, value)) : fallback
+            }
+            let channelFactors = SIMD3<Float>(
+                safeFactor(requestedFactors.x, fallback: Self.halationChannelFactors.x),
+                safeFactor(requestedFactors.y, fallback: Self.halationChannelFactors.y),
+                safeFactor(requestedFactors.z, fallback: Self.halationChannelFactors.z))
             let bucketValues = [bucketFactors.x, bucketFactors.y, bucketFactors.z]
             let channelValues = [channelFactors.x, channelFactors.y, channelFactors.z]
             for (bucketIndex, bucketFactor) in bucketValues.enumerated() {

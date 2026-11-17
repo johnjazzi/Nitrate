@@ -566,6 +566,8 @@ final class PipelineRenderer: @unchecked Sendable {
         var halationStrength: Float
         var halationRadiusFraction: Float
         var halationTint: SIMD3<Float>
+        var halationGrowth: Float = 1
+        var halationRadiusFactors = SpatialEffectsStage.halationChannelFactors
         /// Halation onset, as three dials. The shipping paths read the stage's
         /// authored onsets; the sheet varies them on one frame so a value can be
         /// judged before it is authored anywhere.
@@ -591,7 +593,7 @@ final class PipelineRenderer: @unchecked Sendable {
             self.presenceMultiplier = gauge.amplitudeMultiplier
             self.edgeBoostMultiplier = config.effectiveRecipe.edgeBoostMultiplier
             self.halationStrength = config.effectiveHalationStrength
-            self.halationRadiusFraction = config.halationRadiusFraction
+            self.halationRadiusFraction = config.effectiveHalationRadiusFraction
             self.halationTint = config.halationTint
             self.halationRedOnsetStops = SpatialEffectsStage.authoredOnsets.x
             self.halationGreenOnsetStops = SpatialEffectsStage.authoredOnsets.y
@@ -608,6 +610,7 @@ final class PipelineRenderer: @unchecked Sendable {
             sizeMultiplier = gauge.sizeMultiplier
             presenceMultiplier = gauge.amplitudeMultiplier
             halationStrength = stockConfig.halationStrength(for: gauge)
+            halationRadiusFraction = stockConfig.halationRadiusFraction(for: gauge)
             diffusion = gauge.diffusion
         }
 
@@ -708,6 +711,8 @@ final class PipelineRenderer: @unchecked Sendable {
                     authoredOnsets: SIMD3(parameters.halationRedOnsetStops,
                                           parameters.halationGreenOnsetStops,
                                           parameters.halationBlueOnsetStops),
+                                          authoredGrowth: parameters.halationGrowth,
+                                          authoredRadiusFactors: parameters.halationRadiusFactors,
                     // The pull is applied HERE, in front of the emulsion, so the
                     // halo is measured against the light the film receives. The
                     // LUT pass below therefore grades with no exposure of its own.
@@ -1428,7 +1433,7 @@ final class PipelineRenderer: @unchecked Sendable {
                             source: balanced,
                             commandQueue: self.commandQueue,
                             strength: config.effectiveHalationStrength,
-                            radiusFraction: config.halationRadiusFraction,
+                            radiusFraction: config.effectiveHalationRadiusFraction,
                             layerScale: config.halationTint,
                             diffusion: config.effectiveDiffusion,
                             // A video take is locked to its shutter, so a bright
