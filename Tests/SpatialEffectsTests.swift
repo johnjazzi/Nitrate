@@ -702,7 +702,7 @@ struct SpatialEffectsTests {
     /// not the unquantized fixture. Normalization separates reach from amplitude.
     private static func pointSpread(
         stage: SpatialEffectsStage, device: MTLDevice, queue: MTLCommandQueue,
-        brightness: Double, growth: Float = 1, strength: Float = 1
+        brightness: Double, growth: Float = 1, strength: Float = 1, radiusFraction: Float = 0.012
     ) throws -> SIMD3<Double> {
         let side = 256
         let source = sourcePixels(width: side, height: side) { x, y in
@@ -710,7 +710,7 @@ struct SpatialEffectsTests {
         }
         let result = try runHalation(
             stage: stage, device: device, queue: queue, width: side, height: side,
-            sourcePixels: source, strength: strength, radiusFraction: 0.012,
+            sourcePixels: source, strength: strength, radiusFraction: radiusFraction,
             layerScale: SIMD3(repeating: 1), growth: growth)
         let input = decodedLinear(source, count: side * side)
         let output = decodedLinear(result, count: side * side)
@@ -747,6 +747,11 @@ struct SpatialEffectsTests {
         let narrow = try Self.pointSpread(stage: stage, device: device, queue: queue, brightness: 1)
         let middle = try Self.pointSpread(stage: stage, device: device, queue: queue, brightness: 2)
         let wide = try Self.pointSpread(stage: stage, device: device, queue: queue, brightness: 4)
+        let middleReference = try Self.pointSpread(
+            stage: stage, device: device, queue: queue, brightness: 2,
+            growth: 0, radiusFraction: 0.012 * 1.25)
+        #expect(abs(middle.x / middleReference.x - 1) < 0.01,
+                "at 4x white the middle bucket must have 1.25x the base radius")
         #expect(middle.x > narrow.x * 1.15)
         #expect(wide.x > middle.x * 1.10)
         let fixed = try Self.pointSpread(stage: stage, device: device, queue: queue, brightness: 4, growth: 0)

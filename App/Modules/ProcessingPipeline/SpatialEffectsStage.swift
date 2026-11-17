@@ -72,7 +72,7 @@ final class SpatialEffectsStage {
     /// The three brightness bucket sigmas, as multiples of ONE shared base. A
     /// source climbs from narrow to wide as it gets brighter (see
     /// `spatial_bucket_weights` for the knots).
-    private static let halationBucketFactors = SIMD3<Float>(1.0, 1.5, 2.0)
+    private static let halationBucketFactors = SIMD3<Float>(1.0, 1.25, 2.0)
 
     /// Per-channel diffusion radius, as a multiple of the same base sigma.
     /// Red scatters furthest through the emulsion, green is the middle layer and
