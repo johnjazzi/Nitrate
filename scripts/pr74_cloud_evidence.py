@@ -10,8 +10,8 @@ from urllib.parse import urlsplit
 import cloud_monitor as cm
 
 API = 'https://api.appstoreconnect.apple.com'
-RUN = '442351d6-619b-45a5-813b-4c4f23fdaf48'
-SHA = 'eb27288e07baafa9872fe774383792a363412727'
+RUN = '13e3c15b-c5ca-4f80-9298-cbe235b6c6e6'
+SHA = 'aad62444ecb23c26dfcaab510b02cc37123a82d1'
 OUT = Path('cloud-failure-evidence')
 MAX_BYTES = 400 * 1024 * 1024
 
@@ -64,7 +64,7 @@ def main():
     OUT.mkdir(exist_ok=True)
     run = get('/v1/ciBuildRuns/' + RUN)['data']
     assert run['attributes']['sourceCommit']['commitSha'] == SHA
-    assert run['attributes']['completionStatus'] == 'FAILED'
+    assert run['attributes']['completionStatus'] == 'SUCCEEDED'
     actions = all_items('/v1/ciBuildRuns/' + RUN + '/actions?limit=200')
     metadata = {'run': run, 'actions': actions, 'artifacts': []}
     workflow = run.get('relationships', {}).get('workflow', {}).get('data')
