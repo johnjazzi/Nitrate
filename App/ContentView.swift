@@ -97,6 +97,7 @@ struct ContentView: View {
     /// Camera controls state
     @State private var selectedLens: CameraLens
     @State private var availableLenses: [CameraLens] = []
+    @State private var lensSelectionFeedbackTrigger = 0
 
     /// Pinch-zoom baseline (ISO/EV controls live in `CameraControlBar`).
     @State private var pinchIsActive = false
@@ -228,6 +229,7 @@ struct ContentView: View {
                 if !isDevelopMode, lensControlPosition == .aboveShutter,
                    let row = lensRowRect(in: geometry) {
                     CameraLensRow(availableLenses: availableLenses, selectedLens: selectedLens,
+                                  currentFocalLengthMM: cameraViewModel.currentFocalLengthMM,
                                   onSelectLens: selectLens)
                         .disabled(!canSelectCameraLens)
                         .opacity(canSelectCameraLens ? 1 : 0.4)
@@ -239,7 +241,11 @@ struct ContentView: View {
                     ExposureIndicatorView(meteredEV: cameraViewModel.liveExposureTargetOffset,
                                           targetEV: cameraViewModel.liveExposureBias,
                                           isManual: cameraViewModel.isManualExposure,
-                                          isAvailable: cameraViewModel.hasExposureMeter)
+                                          isAvailable: cameraViewModel.hasExposureMeter,
+                                          renderMarker: ExposureRenderMarker(
+                                              pushPull: shootingPushPull,
+                                              meteredEV: cameraViewModel.liveExposureTargetOffset),
+                                          renderTint: shootingPushPull?.stops.processingTint ?? .white)
                         .frame(width: meter.width, height: meter.height)
                         .position(x: meter.midX, y: meter.midY)
                 }
@@ -489,6 +495,7 @@ struct ContentView: View {
                 )
             }
         }
+        .sensoryFeedback(.selection, trigger: lensSelectionFeedbackTrigger)
         .sheet(item: $stockEntry) { entry in stockSheet(entry: entry) }
         .sheet(isPresented: $showQueueSheet) { queueSheet }
         .sheet(isPresented: $showSettings, onDismiss: {
@@ -1459,13 +1466,32 @@ struct ContentView: View {
         CameraLensSelector(
             availableLenses: availableLenses,
             selectedLens: selectedLens,
+            currentFocalLengthMM: cameraViewModel.currentFocalLengthMM,
             onSelectLens: selectLens
         )
         .disabled(!canSelectCameraLens)
     }
 
     private func selectLens(_ lens: CameraLens) {
-        guard lens != selectedLens, canSelectCameraLens else { return }
+        guard canSelectCameraLens else { return }
+        guard lens != selectedLens || lens == .wide else { return }
+        // Both lens-button surfaces acknowledge the tap immediately, including
+        // the wide camera's crop toggle. Meter/zoom polling never fires this.
+        CameraHaptics.prepareForCaptureFeedback()
+        lensSelectionFeedbackTrigger &+= 1
+        if lens == selectedLens {
+            // Only the wide lens has a second stop, and activating its already
+            // selected key toggles 24 ↔ 50 mm on the physical wide camera that
+            // is already installed. It reuses the absolute focal-length path a
+            // pinch uses, so there is no second zoom owner, no device
+            // re-selection and no focus reset. Every other selected key stays
+            // inert, exactly as before.
+            guard lens == .wide else { return }
+            cameraViewModel.setFocalLengthZoom(
+                CameraFocalZoomPolicy.wideLensToggleTargetMM(
+                    currentMM: cameraViewModel.currentFocalLengthMM))
+            return
+        }
         focusReadGeneration &+= 1
         let focusRequest = focusReadGeneration
         cameraViewModel.selectLens(lens) { error in

@@ -99,6 +99,13 @@ struct CameraMoodLayoutTests {
         #expect(meter.contains("meteredEV: cameraViewModel.liveExposureTargetOffset,"))
         #expect(meter.contains("targetEV: cameraViewModel.liveExposureBias,"))
         #expect(!meter.contains("isManualExposure ? 0"))
+        // The render's position is a second index on that same measured scale,
+        // measured from the live meter and coloured by the development's
+        // direction — never from the bias dial.
+        #expect(meter.contains("renderMarker: ExposureRenderMarker("))
+        #expect(meter.contains("pushPull: shootingPushPull,"))
+        #expect(meter.contains("meteredEV: cameraViewModel.liveExposureTargetOffset),"))
+        #expect(meter.contains("renderTint: shootingPushPull?.stops.processingTint ?? .white"))
     }
 
     @Test func focalSwitchCallbacksCannotOverrideAManualChoiceOrResumeAfterTeardown() throws {

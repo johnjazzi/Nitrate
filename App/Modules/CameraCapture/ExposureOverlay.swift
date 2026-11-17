@@ -7,6 +7,12 @@ struct ExposureIndicatorView: View {
     let targetEV: Float
     let isManual: Bool
     let isAvailable: Bool
+    /// Where the delivered frame will sit after the development's push or pull,
+    /// or nil for a neutral development. Drawn as a second index on the same
+    /// scale, so the meter keeps one measured pointer and gains one render mark.
+    var renderMarker: ExposureRenderMarker? = nil
+    /// The processing hue for that mark: orange for a push, purple for a pull.
+    var renderTint: Color = .white
     @Environment(\.cameraControlAccent) private var controlAccent
     @Environment(\.cameraUIStyle) private var uiStyle
 
@@ -33,9 +39,16 @@ struct ExposureIndicatorView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityIdentifier("camera.measuredExposure")
         .accessibilityLabel("\(isManual ? "Manual" : "Auto") exposure \(statusText.lowercased())")
-        .accessibilityValue(hasReading
-            ? String(format: "metered %+.2f EV, target %+.2f EV", meteredEV, targetEV)
-            : "Live exposure meter unavailable")
+        .accessibilityValue(accessibilityValue)
+    }
+
+    /// The measured reading, and the render's when the development is pushed or
+    /// pulled. The meter's own pointer stays the measured value in both cases.
+    private var accessibilityValue: String {
+        guard hasReading else { return "Live exposure meter unavailable" }
+        let reading = String(format: "metered %+.2f EV, target %+.2f EV", meteredEV, targetEV)
+        guard let renderMarker else { return reading }
+        return "\(reading), \(renderMarker.spokenDescription)"
     }
 
     private var horizontalMeter: some View {
@@ -109,6 +122,16 @@ struct ExposureIndicatorView: View {
                     Rectangle().fill(controlAccent)
                         .frame(width: 2, height: 12)
                         .position(x: markerX(meteredEV, width: width), y: 8)
+                    if let renderMarker, renderMarker.renderedEV.isFinite {
+                        // The render mark shares the ticks' baseline and its own
+                        // shape, so it can never be mistaken for the measured
+                        // pointer even when the two sit on the same stop.
+                        RenderDiamond()
+                            .fill(renderTint)
+                            .overlay(RenderDiamond().stroke(.black.opacity(0.45), lineWidth: 0.5))
+                            .frame(width: 6, height: 6)
+                            .position(x: markerX(renderMarker.renderedEV, width: width), y: 10.5)
+                    }
                 }
             }
         }
@@ -116,5 +139,20 @@ struct ExposureIndicatorView: View {
 
     private func markerX(_ ev: Float, width: CGFloat) -> CGFloat {
         2 + CGFloat(ExposureIndicatorPolicy.position(ev: ev)) * width
+    }
+}
+
+/// A small diamond, the meter's second index. Distinct from the target's
+/// outline and the measured pointer's bar, so the three never depend on hue to
+/// be told apart.
+private struct RenderDiamond: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.midY))
+        path.closeSubpath()
+        return path
     }
 }

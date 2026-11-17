@@ -621,6 +621,54 @@ struct CameraDesignRenderTests {
         }
     }
 
+    /// The measured meter's second index, rendered: a pull's diamond sits left of
+    /// a pointer metering at 0 EV and a push's sits right, in that direction's
+    /// processing hue. A neutral development draws no second index at all.
+    @MainActor @Test func renderMarkSitsAtTheRendersPositionOnTheMeter() throws {
+        let orange = Color(red: 1.0, green: 0.74, blue: 0.30)
+        let purple = Color(red: 0.78, green: 0.60, blue: 1.0)
+        func meter(_ marker: ExposureRenderMarker?, tint: Color) -> some View {
+            ExposureIndicatorView(meteredEV: 0, targetEV: 0, isManual: false,
+                                  isAvailable: true, renderMarker: marker, renderTint: tint)
+                .frame(width: 240, height: 32)
+        }
+        func xPositions(of image: CGImage) throws -> [Int] {
+            let data = try pixels(image)
+            var xs: [Int] = []
+            for index in stride(from: 0, to: data.count, by: 4) {
+                let red = Int(data[index]), green = Int(data[index + 1]), blue = Int(data[index + 2])
+                let isOrange = red > 230 && green > 150 && green < 210 && blue < 120
+                let isPurple = blue > 235 && red > 170 && red < 225 && green > 125 && green < 190
+                if isOrange || isPurple { xs.append((index / 4) % image.width) }
+            }
+            return xs
+        }
+
+        let pushed = try render(meter(ExposureRenderMarker(pushPull: .manual(.pushOne), meteredEV: 0),
+                                     tint: orange),
+                                name: "meter-render-push")
+        let pulled = try render(meter(ExposureRenderMarker(pushPull: .manual(.pullOne), meteredEV: 0),
+                                     tint: purple),
+                                name: "meter-render-pull")
+        let plain = try render(meter(nil, tint: orange), name: "meter-render-none")
+
+        let pushedX = try xPositions(of: pushed)
+        let pulledX = try xPositions(of: pulled)
+        let plainX = try xPositions(of: plain)
+        // The pointer meters 0 EV at the track's centre. The push's mark sits at
+        // 0.75 of the width and the pull's at 0.25, so compare in fractions of
+        // the rendered width rather than in either points or device pixels.
+        let span = Double(pushed.width)
+        #expect(try #require(pushedX.max()) > Int(span * 0.6),
+                "A push must mark the render to the right.")
+        #expect(try #require(pulledX.min()) < Int(span * 0.4),
+                "A pull must mark the render to the left.")
+        #expect(plainX.allSatisfy { Double($0) > span * 0.42 && Double($0) < span * 0.58 },
+                "A neutral development must draw no second index away from the pointer.")
+        #expect(pushed.width == plain.width && pushed.height == plain.height,
+                "The mark is drawn inside the meter and must not resize it.")
+    }
+
     @MainActor
     private func render(_ view: some View, name: String, hostedSize: CGSize? = nil,
                         appearance: ColorScheme = .dark) throws -> CGImage {
