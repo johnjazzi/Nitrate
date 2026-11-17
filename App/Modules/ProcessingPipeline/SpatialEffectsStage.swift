@@ -94,17 +94,18 @@ final class SpatialEffectsStage {
     ///
     /// Stops rather than multiples of white because the response is logarithmic
     /// in light: one dial step is one stop brighter wherever it sits in the
-    /// range, and the ramp from an onset to its reference is linear in stops, not
-    /// in light (see `spatial_halation_energy`). The old form — a knee in white
+    /// range. Green/blue ramps are linear in stops; red's earlier low tail
+    /// smoothly meets its preserved upper ramp at 4x white (see
+    /// `spatial_halation_energy`). The old form — a knee in white
     /// multiples with growth linear in light — spent most of its span near the
     /// top, so a highlight appeared to do nothing and then saturate.
     /// Authored from an outdoor scene in the debug sheet: these are the onsets that
     /// read most natural on real light, and they sit about a stop and a half above
     /// the earlier authored set, so an ordinary sunlit surface has to climb a
     /// little further before it scatters. Red comes on first, then green, then
-    /// blue, and the ramp each layer runs from its onset up to the reference is the
-    /// same length in stops.
-    private static let redOnsetStops: Float = 0.6000    // 1.52x diffuse white
+    /// blue. Red's low tail begins at half white, while its response from 4x
+    /// white upward and the shared full-response reference stay unchanged.
+    private static let redOnsetStops: Float = -1.0000   // 0.5x diffuse white; rejoins old curve at 4x
     private static let greenOnsetStops: Float = 1.2000  // 2.30x
     private static let blueOnsetStops: Float = 2.1000   // 4.29x
 

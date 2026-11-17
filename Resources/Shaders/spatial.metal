@@ -316,8 +316,9 @@ static inline float3 spatial_expose(float3 linear, float stops, float ceiling) {
 /// Per-layer halation response, in STOPS above diffuse white.
 ///
 /// Each layer starts at its own `onsetStops` and reaches full contribution at
-/// `referenceStops`, so the growth is linear in stops: every stop of extra
-/// brightness adds the same increment of scattered light. The previous form was
+/// `referenceStops`. Green/blue remain linear in stops. An earlier red onset
+/// gets a monotone power tail that matches the old red response and slope at
+/// 4x white; above that join, red retains its previous linear ramp. The old form was
 /// linear in LIGHT over the same span, which spends most of that span near the
 /// top — on a 4.7-stop ramp, a highlight 2 stops above the onset was only ~6 %
 /// of the way to full — so a highlight appeared to do nothing and then suddenly
@@ -343,7 +344,25 @@ static inline float3 spatial_halation_energy(float3 linear, float3 onsetStops,
     // Per-layer span. Guarded so an onset pushed past the reference degenerates
     // to a step instead of dividing by zero.
     float3 span = max(referenceStops - onsetStops, 0.05f);
-    return clamp((stops - onsetStops) / span, 0.0f, 1.0f);
+    float3 energy = clamp((stops - onsetStops) / span, 0.0f, 1.0f);
+    // Extend only red's low-light tail. Preserve the previous +0.6-stop
+    // response at/above 4x white, including its slope at the join. The power
+    // p=(join-onset)/(join-oldOnset) makes E*t^p meet that slope exactly;
+    // p>1 also gives a soft, monotone start at the earlier energy onset.
+    constexpr float oldRedOnset = 0.6f;
+    constexpr float joinStops = 2.0f;
+    if (onsetStops.x < oldRedOnset && referenceStops > joinStops) {
+        float oldSpan = max(referenceStops - oldRedOnset, 0.05f);
+        if (stops.x >= joinStops) {
+            energy.x = clamp((stops.x - oldRedOnset) / oldSpan, 0.0f, 1.0f);
+        } else {
+            float width = joinStops - onsetStops.x;
+            float t = clamp((stops.x - onsetStops.x) / width, 0.0f, 1.0f);
+            float power = width / (joinStops - oldRedOnset);
+            energy.x = ((joinStops - oldRedOnset) / oldSpan) * pow(t, power);
+        }
+    }
+    return energy;
 }
 
 // ===========================================================================
@@ -352,11 +371,11 @@ static inline float3 spatial_halation_energy(float3 linear, float3 onsetStops,
 //
 // ONE brightness policy, THREE per-channel radii. The mask's RGB energy is
 // partitioned at each SOURCE texel into four nonnegative buckets summing to 1.
-// Log-brightness handoffs are 1x -> 4x -> 8x -> 12x diffuse white; their default
+// Log-brightness handoffs are 0.5x -> 4x -> 8x -> 12x diffuse white; their default
 // radius factors are 0.5 / 1.25 / 2 / 2.5. Each bucket's RGB channels retain their
 // own Gaussian radii: red 1.8x, green 1x, blue 0.5x base. The receiving pixel
 // never chooses a width; a brighter source only redistributes existing energy.
-// Width anchors do not change the independent RGB energy onsets above.
+// The first width anchor and red energy onset are both 0.5x white by default.
 //
 static inline float spatial_bucket_ramp(float brightness, float low, float high) {
     float stops = log2(max(brightness, 1.0e-4f));
@@ -365,7 +384,7 @@ static inline float spatial_bucket_ramp(float brightness, float low, float high)
 }
 
 static inline float4 spatial_bucket_weights(float brightness) {
-    float a = spatial_bucket_ramp(brightness, 1.0f, 4.0f);
+    float a = spatial_bucket_ramp(brightness, 0.5f, 4.0f);
     float b = spatial_bucket_ramp(brightness, 4.0f, 8.0f);
     float c = spatial_bucket_ramp(brightness, 8.0f, 12.0f);
     return float4(1.0f - a, a - b, b - c, c);
