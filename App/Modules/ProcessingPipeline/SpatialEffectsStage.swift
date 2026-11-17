@@ -10,14 +10,16 @@ import simd
 ///
 ///  * HALATION is physical and PRE-LUT. `applyHalation(source:...)` decodes the
 ///    ungraded Apple Log 2 frame to linear scene light, takes each emulsion
-///    layer's excess above its knee, diffuses the three layers at their own
-///    radii, adds the scattered energy back in LINEAR light, and re-encodes to
-///    Apple Log 2. The renderer then runs the stock LUT and output contrast on
-///    that re-encoded frame, so the scattered light is tone-mapped by the same
-///    curve as the light that produced it — the halo rolls off with the
-///    highlight instead of clipping into a detached fringe. The graded image is
-///    never read and there is no background-dependent shadow gate: the light
-///    that scatters is the light that is added.
+///    layer's excess above its knee, partitions that energy into three buckets
+///    by how bright its source is, filters each bucket at its own per-channel
+///    radii (red widest, then green, then blue), adds the scattered energy back
+///    in LINEAR light, and re-encodes to Apple Log 2. The renderer then runs the
+///    stock LUT and output contrast on that re-encoded frame, so the scattered
+///    light is tone-mapped by the same curve as the light that produced it —
+///    the halo rolls off with the highlight instead of clipping into a detached
+///    fringe. The graded image is never read and there is no
+///    background-dependent shadow gate: the light that scatters is the light
+///    that is added.
 ///
 ///  * GLOW is an optical-filter bloom with no physical model.
 ///    `applyGlow(graded:...)` keeps the graded-luminance highlight mask and the
@@ -63,30 +65,22 @@ final class SpatialEffectsStage {
     //
     // These are the per-layer constants of the model. The per-stock knobs remain
     // `halationRadiusFraction` (the base diffusion radius), `halationStrength`
-    // and `halationTint` (now the per-layer contribution weight); the channel
-    // ratios below are global, and are the values to tune first when the halo
+    // and `halationTint` (now the per-layer contribution weight); the bucket
+    // factors below are global, and are the values to tune first when the halo
     // reads wrong on device.
 
-    /// How many extra mip levels a fully-responding area reads, on top of its
-    /// colour's base level. One level doubles the reach, so 1 gives a bright
-    /// source twice the skirt of a faint one.
-    private static let halationLODGain: Float = 1.0
+    /// The three brightness bucket sigmas, as multiples of ONE shared base. A
+    /// source climbs from narrow to wide as it gets brighter (see
+    /// `spatial_bucket_weights` for the knots).
+    private static let halationBucketFactors = SIMD3<Float>(1.0, 1.5, 2.0)
 
-    /// Where each colour starts and finishes climbing to that extra level, in
-    /// mask energy. Red climbs first and green then blue follow, which is what
-    /// keeps a growing halo red before it whitens — the same ordering the onsets
-    /// already give the colour ramp, now applied to reach.
-    private static let redWidenKnee: SIMD2<Float> = SIMD2(0.08, 0.55)
-    private static let greenWidenKnee: SIMD2<Float> = SIMD2(0.35, 0.85)
-    private static let blueWidenKnee: SIMD2<Float> = SIMD2(0.60, 1.00)
-
-    /// Per-layer diffusion radius, as a multiple of the stock's base radius.
-    /// Red scatters furthest through the emulsion, blue least — this is the
-    /// single most visible property of real halation and the first
-    /// implementation had no way to express it (one blur, one radius).
-    private static let redRadiusMultiplier: Float = 1.8
-    private static let greenRadiusMultiplier: Float = 1.0
-    private static let blueRadiusMultiplier: Float = 0.5
+    /// Per-channel diffusion radius, as a multiple of the same base sigma.
+    /// Red scatters furthest through the emulsion, green is the middle layer and
+    /// blue is the tightest, so a halo carries a red fringe outside a yellow
+    /// band and a white core — the single most visible property of real halation.
+    /// The bucket factor above multiplies all three, so these ratios hold at
+    /// every brightness and the ordering cannot invert.
+    private static let halationChannelFactors = SIMD3<Float>(1.8, 1.0, 0.5)
 
     /// Per-layer halation onsets, in STOPS above diffuse white: the brightness at
     /// which that layer starts to scatter.
@@ -165,23 +159,6 @@ final class SpatialEffectsStage {
         return capture + lift
     }
 
-    /// The mip level each colour reads at zero energy.
-    ///
-    /// Level N of the chain is a box downsample 2^N times, which reads as a blur
-    /// of roughly `2^(N-1)` mask pixels. So a colour's shipping radius becomes a
-    /// level through the same sigma-per-radius the blur used to take: red's 1.8x
-    /// lands above green's, blue's 0.5x below it. A mask with no chain (a zero
-    /// radius) reads level 0 for all three and the mip sampling is a plain read.
-    static func halationBaseLOD(baseRadius: Float, mipmapped: Bool) -> SIMD3<Float> {
-        guard mipmapped, baseRadius > 0 else { return SIMD3(repeating: 0) }
-        func level(_ multiplier: Float) -> Float {
-            let sigma = baseRadius * multiplier * blurSigmaPerRadius
-            return max(0, log2(sigma / 0.5))
-        }
-        return SIMD3(level(redRadiusMultiplier), level(greenRadiusMultiplier),
-                     level(blueRadiusMultiplier))
-    }
-
     private static func clampOnset(_ stops: Float) -> Float {
         guard stops.isFinite else { return 0 }
         return max(-6, min(halationReferenceStops, stops))
@@ -217,6 +194,7 @@ final class SpatialEffectsStage {
     private let glowMaskPipeline: MTLComputePipelineState
     private let glowCompositePipeline: MTLComputePipelineState
     private let halationMaskPipeline: MTLComputePipelineState
+    private let halationGatherPipeline: MTLComputePipelineState
     private let halationApplyPipeline: MTLComputePipelineState
     private let scenePreparePipeline: MTLComputePipelineState
     private let diffusionDownsamplePipeline: MTLComputePipelineState
@@ -239,6 +217,7 @@ final class SpatialEffectsStage {
         self.glowMaskPipeline = try pipeline("spatial_mask")
         self.glowCompositePipeline = try pipeline("spatial_composite")
         self.halationMaskPipeline = try pipeline("spatial_halation_mask")
+        self.halationGatherPipeline = try pipeline("spatial_halation_gather")
         self.halationApplyPipeline = try pipeline("spatial_halation_apply")
         self.scenePreparePipeline = try pipeline("spatial_scene_prepare")
         self.diffusionDownsamplePipeline = try pipeline("diffusion_downsample")
@@ -259,6 +238,20 @@ final class SpatialEffectsStage {
     /// half-resolution width; `layerScale` weights the three per-layer
     /// contributions. A radius of 0 means no spatial diffusion — the scattered
     /// energy is still added, but locally, over the source's own footprint.
+    ///
+    /// WIDTH is two independent policies multiplied together. The per-layer
+    /// energy is first split by how bright its SOURCE is (knots at 2x, 4x and 8x
+    /// diffuse white — see `spatial_bucket_weights`), and each bucket's factor
+    /// from `halationBucketFactors` scales the reach. Each bucket is then
+    /// filtered per channel at `halationChannelFactors`: red 1.8x green's sigma,
+    /// green 2x blue's, so the halo keeps a red fringe outside a yellow band and
+    /// a white core at every brightness. Nothing reads the brightness of the
+    /// pixel the halo lands on.
+    ///
+    /// That needs nine filters per frame — three bucket sigmas times three
+    /// channel sigmas — because one MPS Gaussian pass applies a single sigma to
+    /// every channel. Three scratch textures are reused bucket to bucket, so the
+    /// nine filters cost six mask-sized textures, not ten.
     ///
     /// `diffusion` is the lens filter in front of the emulsion. Both effects are
     /// scene-linear and pre-LUT, so they share ONE decode and ONE encode: the
@@ -333,18 +326,45 @@ final class SpatialEffectsStage {
         let maskWidth = fullResMask ? width : halfWidth
         let maskHeight = fullResMask ? height : halfHeight
 
-        // The mask is sampled at a mip level chosen per colour, so it carries a
-        // chain when it is diffused at all. A zero radius never samples above
-        // level 0, and a chain nobody reads would still cost its generation.
-        let maskMipmapped = strength != 0 && radiusFraction > 0
-        guard let halationMask = makeTexture(width: maskWidth, height: maskHeight,
-                                             mipmapped: maskMipmapped),
+        // The buckets are only separated when there is a radius to filter them
+        // with: a zero radius means no blur, and with no blur the three buckets
+        // sum back to the energy they came from. So the unfiltered case writes
+        // that energy once and the apply pass binds the one texture three times
+        // with weights (1, 0, 0) — no writes nobody reads, no allocation nobody
+        // samples. Halation off is the same case: its contribution is zero.
+        let blurred = strength != 0 && radiusFraction > 0
+
+        guard let halationEnergy = makeTexture(width: maskWidth, height: maskHeight),
               let output = makeTexture(width: width, height: height, storageMode: .shared),
               let commandBuffer = commandQueue.makeCommandBuffer() else {
             return nil
         }
+        // The three buckets, each of which ends up holding its own per-channel
+        // filtered result; and three scratch textures the per-channel filters
+        // write through, reused bucket to bucket. That is six masks at most —
+        // two per bucket — rather than one per filter.
+        var bucketTextures: [MTLTexture] = [halationEnergy]
+        var filterScratch: [MTLTexture] = []
+        if blurred {
+            for _ in 1..<3 {
+                guard let bucket = makeTexture(width: maskWidth, height: maskHeight) else { return nil }
+                bucketTextures.append(bucket)
+            }
+            for _ in 0..<3 {
+                guard let scratch = makeTexture(width: maskWidth, height: maskHeight) else { return nil }
+                filterScratch.append(scratch)
+            }
+        }
+        // A texture bound to a slot nothing writes is still a texture MPS and
+        // the sampler will read, so the unsplit case binds its one texture to
+        // all three slots and the weights keep the sum honest.
+        let prepareBuckets = blurred ? bucketTextures
+                                     : [halationEnergy, halationEnergy, halationEnergy]
+        let applyBuckets = prepareBuckets
+        var bucketWeight = blurred ? SIMD3<Float>(repeating: 1) : SIMD3<Float>(1, 0, 0)
+
         // The linear scene is the diffusion node's input; without the node it is
-        // never allocated and the mask-only prepare kernel runs instead.
+        // never allocated and the buckets-only prepare kernel runs instead.
         var scene: MTLTexture?
         if plan != nil {
             guard let linear = makeTexture(width: halfWidth, height: halfHeight) else { return nil }
@@ -354,15 +374,19 @@ final class SpatialEffectsStage {
         let maskGroups = threadgroups(width: maskWidth, height: maskHeight)
         let fullGroups = threadgroups(width: width, height: height)
 
-        // 1. Prepare: the per-layer halation mask, and — when the diffusion node
-        //    is on — the scene-linear frame it blurs, from the same decode.
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+        // 1. Prepare: the per-layer energy split into brightness buckets, and —
+        //    when the diffusion node is on — the scene-linear frame it blurs,
+        //    from the same decode.
+        guard let prepareEncoder = commandBuffer.makeComputeCommandEncoder() else { return nil }
+        do {
             let onsets = Self.halationOnsets(authored: authoredOnsets)
             var red = onsets.x
             var green = onsets.y
             var blue = onsets.z
-            // The mask and the ladder must be measured on the EXPOSED scene, or
-            // the apply pass would add a halo taken from light the film never saw.
+            // The buckets and the ladder must be measured on the EXPOSED scene,
+            // or the apply pass would add a halo taken from light the film never
+            // saw. The bucket weights are keyed on that same exposed brightness,
+            // so a pulled take widens on the light it actually received.
             var stops = exposureStops
             // The push/pull is a curve, not a flat gain: it fades to none at the
             // source's clip ceiling, so a truly clipped highlight holds at white
@@ -372,24 +396,29 @@ final class SpatialEffectsStage {
                                                highlightCeiling: highlightCeiling)
             var referenceStops = Self.halationReferenceStops
             // Where this frame sits relative to the picture it will deliver, so
-            // the onsets above are read on one scale whatever the capture held
+            // the onsets above — and the diffuse white the bucket knots are
+            // measured in — are read on one scale whatever the capture held
             // under or the decode lifted.
             var frameWhite = Self.frameWhiteStops(sceneLiftStops: sceneLiftStops)
-            encoder.setComputePipelineState(scene == nil ? halationMaskPipeline : scenePreparePipeline)
-            encoder.setTexture(source, index: 0)
-            encoder.setTexture(halationMask, index: 1)
-            if let scene {
-                encoder.setTexture(scene, index: 2)
+            var split = UInt32(blurred ? 1 : 0)
+            prepareEncoder.setComputePipelineState(scene == nil ? halationMaskPipeline : scenePreparePipeline)
+            prepareEncoder.setTexture(source, index: 0)
+            for (offset, texture) in prepareBuckets.enumerated() {
+                prepareEncoder.setTexture(texture, index: 1 + offset)
             }
-            encoder.setBytes(&red, length: MemoryLayout<Float>.size, index: 0)
-            encoder.setBytes(&green, length: MemoryLayout<Float>.size, index: 1)
-            encoder.setBytes(&blue, length: MemoryLayout<Float>.size, index: 2)
-            encoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 3)
-            encoder.setBytes(&ceiling, length: MemoryLayout<Float>.size, index: 4)
-            encoder.setBytes(&referenceStops, length: MemoryLayout<Float>.size, index: 5)
-            encoder.setBytes(&frameWhite, length: MemoryLayout<Float>.size, index: 6)
-            encoder.dispatchThreadgroups(maskGroups, threadsPerThreadgroup: Self.groupSize)
-            encoder.endEncoding()
+            if let scene {
+                prepareEncoder.setTexture(scene, index: 4)
+            }
+            prepareEncoder.setBytes(&red, length: MemoryLayout<Float>.size, index: 0)
+            prepareEncoder.setBytes(&green, length: MemoryLayout<Float>.size, index: 1)
+            prepareEncoder.setBytes(&blue, length: MemoryLayout<Float>.size, index: 2)
+            prepareEncoder.setBytes(&stops, length: MemoryLayout<Float>.size, index: 3)
+            prepareEncoder.setBytes(&ceiling, length: MemoryLayout<Float>.size, index: 4)
+            prepareEncoder.setBytes(&referenceStops, length: MemoryLayout<Float>.size, index: 5)
+            prepareEncoder.setBytes(&frameWhite, length: MemoryLayout<Float>.size, index: 6)
+            prepareEncoder.setBytes(&split, length: MemoryLayout<UInt32>.size, index: 7)
+            prepareEncoder.dispatchThreadgroups(maskGroups, threadsPerThreadgroup: Self.groupSize)
+            prepareEncoder.endEncoding()
         }
 
         // Radii scale with the frame so the effect looks the same at any size.
@@ -399,16 +428,41 @@ final class SpatialEffectsStage {
         // asking MPS for an invalid sigma of zero.
         let baseRadius = Float(halfWidth) * radiusFraction
 
-        // 2. No per-colour blurs. The mask carries all three layer energies, and
-        //    a mip chain of it gives every octave of reach for the cost of a box
-        //    downsample: level N is roughly a blur of sigma 2^(N-1) mask pixels.
-        //    The apply pass samples the chain at a level chosen per colour, so red
-        //    can read a coarser level than green at the same brightness — that is
-        //    its wider skirt — and the level also rises with how hard the mask is
-        //    responding, so a bright source spreads further than a dim one.
-        if maskMipmapped, let blit = commandBuffer.makeBlitCommandEncoder() {
-            blit.generateMipmaps(for: halationMask)
-            blit.endEncoding()
+        // 2. Filter each bucket at three sigmas, then keep each channel from the
+        //    copy filtered at ITS radius: red 1.8x green's, green 2x blue's, all
+        //    scaled by the bucket's brightness factor. One MPS Gaussian pass
+        //    applies one sigma to every channel, so a bucket needs three of them
+        //    and a recombine — that is the price of a red fringe that genuinely
+        //    outruns green and blue. The buckets were chosen per SOURCE texel
+        //    before this pass, so nothing here reads the pixel the halo lands on.
+        //    Clamped edges keep a uniform highlight from darkening at the border.
+        if blurred {
+            let baseSigma = baseRadius * Self.blurSigmaPerRadius
+            let bucketFactors = Self.halationBucketFactors
+            let channelFactors = Self.halationChannelFactors
+            let bucketValues = [bucketFactors.x, bucketFactors.y, bucketFactors.z]
+            let channelValues = [channelFactors.x, channelFactors.y, channelFactors.z]
+            for (bucketIndex, bucketFactor) in bucketValues.enumerated() {
+                for (channelIndex, channelFactor) in channelValues.enumerated() {
+                    let blur = MPSImageGaussianBlur(device: device,
+                                                    sigma: baseSigma * bucketFactor * channelFactor)
+                    blur.edgeMode = .clamp
+                    blur.encode(commandBuffer: commandBuffer,
+                                sourceTexture: bucketTextures[bucketIndex],
+                                destinationTexture: filterScratch[channelIndex])
+                }
+                // The three filtered copies are scratch; gather each channel's
+                // own result back into the bucket, which is no longer needed as
+                // a blur source and becomes that bucket's contribution.
+                guard let gather = commandBuffer.makeComputeCommandEncoder() else { return nil }
+                gather.setComputePipelineState(halationGatherPipeline)
+                for (index, scratch) in filterScratch.enumerated() {
+                    gather.setTexture(scratch, index: index)
+                }
+                gather.setTexture(bucketTextures[bucketIndex], index: 3)
+                gather.dispatchThreadgroups(maskGroups, threadsPerThreadgroup: Self.groupSize)
+                gather.endEncoding()
+            }
         }
 
         // 3. The lens diffusion ladder: one small separable blur per octave of
@@ -425,7 +479,8 @@ final class SpatialEffectsStage {
 
         // 4. Blend the diffusion, add the scattered light in scene-linear, and
         //    re-encode — one full-resolution pass for both effects.
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return nil }
+        do {
             var stops = exposureStops
             var lift = postEmulsionStops
             var ceiling = Self.halationCeiling(sceneLiftStops: sceneLiftStops,
@@ -436,14 +491,16 @@ final class SpatialEffectsStage {
             // Unused level slots are bound to a real, samplable texture rather
             // than left unbound; their weights are zero, so they contribute
             // nothing and the blend stays a normalized average.
-            let fallback = diffusionLevels.first ?? halationMask
+            let fallback = diffusionLevels.first ?? halationEnergy
             let boundLevels = (0..<4).map { index in
                 index < diffusionLevels.count ? diffusionLevels[index] : fallback
             }
             var diffusionAmount = plan == nil ? 0 : diffusion.amount
             encoder.setComputePipelineState(halationApplyPipeline)
             encoder.setTexture(source, index: 0)
-            encoder.setTexture(halationMask, index: 1)
+            for (offset, texture) in applyBuckets.enumerated() {
+                encoder.setTexture(texture, index: 1 + offset)
+            }
             encoder.setTexture(output, index: 4)
             for (offset, texture) in boundLevels.enumerated() {
                 encoder.setTexture(texture, index: 5 + offset)
@@ -465,19 +522,9 @@ final class SpatialEffectsStage {
             encoder.setBytes(&leakEdgeFalloff, length: MemoryLayout<Float>.size, index: 10)
             var leakSlip = leak.slip
             encoder.setBytes(&leakSlip, length: MemoryLayout<Float>.size, index: 11)
-            // Per-colour base mip level: log2 of the blur sigma that colour wants
-            // at level 0 over half a mask pixel, which is what one octave buys.
-            var baseLod = Self.halationBaseLOD(baseRadius: baseRadius,
-                                               mipmapped: maskMipmapped)
-            var lodGain = Self.halationLODGain
-            var kneelLow = SIMD3<Float>(Self.redWidenKnee.x, Self.greenWidenKnee.x,
-                                        Self.blueWidenKnee.x)
-            var kneeHigh = SIMD3<Float>(Self.redWidenKnee.y, Self.greenWidenKnee.y,
-                                        Self.blueWidenKnee.y)
-            encoder.setBytes(&baseLod, length: MemoryLayout<SIMD3<Float>>.size, index: 12)
-            encoder.setBytes(&lodGain, length: MemoryLayout<Float>.size, index: 13)
-            encoder.setBytes(&kneelLow, length: MemoryLayout<SIMD3<Float>>.size, index: 14)
-            encoder.setBytes(&kneeHigh, length: MemoryLayout<SIMD3<Float>>.size, index: 15)
+            // (1,1,1) for the three filtered buckets, (1,0,0) for the one
+            // unsplit texture bound three times. See `blurred` above.
+            encoder.setBytes(&bucketWeight, length: MemoryLayout<SIMD3<Float>>.size, index: 12)
             encoder.dispatchThreadgroups(fullGroups, threadsPerThreadgroup: Self.groupSize)
             encoder.endEncoding()
         }
@@ -647,13 +694,6 @@ final class SpatialEffectsStage {
         )
     }
 
-    /// Diffuse `source` into `destination` and return the texture the caller
-    /// should sample. A positive `radius` (in half-resolution texels) becomes an
-    /// MPS Gaussian blur; a zero radius means "no spatial diffusion" and the
-    /// mask itself is returned, so the scattered energy is still added — locally
-    /// — rather than the whole effect vanishing. `sigma = radius * k` is only
-    /// evaluated for a strictly positive radius, so MPS is never asked for an
-
     /// A continuous, efficient Gaussian approximation, including at 4K radii.
     /// Clamp boundaries preserve uniform highlights instead of darkening edges.
     /// Reserved for the glow path, whose radius is always positive.
@@ -703,13 +743,12 @@ final class SpatialEffectsStage {
     /// Measured on an A20 Pro GPU at 3840x2160: all-shared 3.30 ms vs
     /// all-private 1.31 ms for identical passes, so the split matters.
     private func makeTexture(width: Int, height: Int,
-                             storageMode: MTLStorageMode = .private,
-                             mipmapped: Bool = false) -> MTLTexture? {
+                             storageMode: MTLStorageMode = .private) -> MTLTexture? {
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float,
             width: width,
             height: height,
-            mipmapped: mipmapped
+            mipmapped: false
         )
         desc.usage = [.shaderRead, .shaderWrite]
         desc.storageMode = storageMode
