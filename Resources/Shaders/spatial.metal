@@ -350,48 +350,25 @@ static inline float3 spatial_halation_energy(float3 linear, float3 onsetStops,
 // Soft-step width policy
 // ===========================================================================
 //
-// ONE brightness policy, THREE per-channel radii. The per-layer energy above is
-// partitioned, at each SOURCE texel, into three buckets by how bright the light
-// that produced it is — measured in multiples of diffuse white BEFORE any
-// blurring. Each bucket is then filtered at its own sigma, and the three
-// filtered buckets are summed.
+// ONE brightness policy, THREE per-channel radii. The mask's RGB energy is
+// partitioned at each SOURCE texel into four nonnegative buckets summing to 1.
+// Log-brightness handoffs are 1x -> 4x -> 8x -> 12x diffuse white; their default
+// radius factors are 0.5 / 1.25 / 2 / 2.5. Each bucket's RGB channels retain their
+// own Gaussian radii: red 1.8x, green 1x, blue 0.5x base. The receiving pixel
+// never chooses a width; a brighter source only redistributes existing energy.
+// Width anchors do not change the independent RGB energy onsets above.
 //
-// The per-channel radii stay the emulsion's: red scatters 1.8x as far as green,
-// green 2x as far as blue, at every brightness. The bucket factor multiplies
-// ALL THREE channel sigmas, so the colour ordering can never invert — a bright
-// source spreads further, and it does so as red-then-yellow-then-white outside
-// in, which is what makes a halo read like film rather than like a bloom.
-// That is why the filtering is per channel: three widths cannot express a
-// red fringe that outruns green and blue.
-//
-// The partition is a smooth, nonnegative, sum-to-one ramp in LOG brightness with
-// knots at 2x, 4x and 8x diffuse white:
-//
-//   b <= 2x   narrow only            w = (1,     0,   0)
-//   2x .. 4x  narrow -> middle       w = (1-a,   a,   0)
-//   4x .. 8x  middle -> wide         w = (0,   1-c,   c)
-//   b >= 8x   wide only              w = (0,     0,   1)
-//
-// with `a` the 2x..4x ramp and `c` the 4x..8x one, so `w = (1-a, a-c, c)`.
-// Every weight is >= 0 and the three sum to exactly 1 at every brightness. The
-// blur is linear, so that makes the operator energy-preserving by construction:
-// the summed buckets carry the same total energy as the mask whatever the
-// brightness mix, and a bright source cannot add halo light merely by spreading
-// further.
-//
-// The ramp is taken on log2(brightness), not on light, so a source climbing in
-// stops crosses each knot at an even rate; on a linear ramp nearly every stop
-// above 4x would sit crammed into the top of the 4x..8x range.
 static inline float spatial_bucket_ramp(float brightness, float low, float high) {
     float stops = log2(max(brightness, 1.0e-4f));
     float t = clamp((stops - log2(low)) / max(log2(high) - log2(low), 1.0e-4f), 0.0f, 1.0f);
     return t * t * (3.0f - 2.0f * t);
 }
 
-static inline float3 spatial_bucket_weights(float brightness) {
-    float a = spatial_bucket_ramp(brightness, 2.0f, 4.0f);
-    float c = spatial_bucket_ramp(brightness, 4.0f, 8.0f);
-    return float3(1.0f - a, a - c, c);
+static inline float4 spatial_bucket_weights(float brightness) {
+    float a = spatial_bucket_ramp(brightness, 1.0f, 4.0f);
+    float b = spatial_bucket_ramp(brightness, 4.0f, 8.0f);
+    float c = spatial_bucket_ramp(brightness, 8.0f, 12.0f);
+    return float4(1.0f - a, a - b, b - c, c);
 }
 
 /// How bright the SOURCE is here, in multiples of diffuse white.
@@ -417,22 +394,24 @@ static inline float spatial_source_brightness(float3 linear, float frameWhiteSto
 ///
 /// `split` false is the unfiltered case — a zero radius, or halation disabled.
 /// With no filter to separate the buckets their sum IS the energy, so one
-/// texture carries it whole and the other two are left untouched. They may even
-/// be that same texture bound three times, which is why they are never written
+/// texture carries it whole and the other three are left untouched. They may even
+/// be that same texture bound four times, which is why they are never written
 /// unless the caller asked for a split.
 static inline void spatial_write_halation_buckets(
     float3 energy,
-    float3 weights,
+    float4 weights,
     bool split,
     texture2d<float, access::write> narrow,
     texture2d<float, access::write> middle,
     texture2d<float, access::write> wide,
+    texture2d<float, access::write> fourth,
     uint2 gid
 ) {
     narrow.write(float4(energy * weights.x, 1.0f), gid);
     if (split) {
         middle.write(float4(energy * weights.y, 1.0f), gid);
         wide.write(float4(energy * weights.z, 1.0f), gid);
+        fourth.write(float4(energy * weights.w, 1.0f), gid);
     }
 }
 
@@ -441,6 +420,7 @@ kernel void spatial_halation_mask(
     texture2d<float, access::write> narrow [[texture(1)]],
     texture2d<float, access::write> middle [[texture(2)]],
     texture2d<float, access::write> wide   [[texture(3)]],
+    texture2d<float, access::write> fourth [[texture(5)]],
     constant float& redOnsetStops          [[buffer(0)]],
     constant float& greenOnsetStops        [[buffer(1)]],
     constant float& blueOnsetStops         [[buffer(2)]],
@@ -465,10 +445,10 @@ kernel void spatial_halation_mask(
                                                           blueOnsetStops),
                                             referenceStops, frameWhiteStops);
     bool split = splitBuckets != 0;
-    float3 weights = split ? spatial_bucket_weights(spatial_source_brightness(linear, frameWhiteStops))
-                           : float3(1.0f, 0.0f, 0.0f);
+    float4 weights = split ? spatial_bucket_weights(spatial_source_brightness(linear, frameWhiteStops))
+                           : float4(1.0f, 0.0f, 0.0f, 0.0f);
 
-    spatial_write_halation_buckets(energy, weights, split, narrow, middle, wide, gid);
+    spatial_write_halation_buckets(energy, weights, split, narrow, middle, wide, fourth, gid);
 }
 
 /// The same halation buckets, plus the scene-linear frame the diffusion node
@@ -485,6 +465,7 @@ kernel void spatial_scene_prepare(
     texture2d<float, access::write> narrow [[texture(1)]],
     texture2d<float, access::write> middle [[texture(2)]],
     texture2d<float, access::write> wide   [[texture(3)]],
+    texture2d<float, access::write> fourth [[texture(5)]],
     texture2d<float, access::write> linearOut [[texture(4)]],
     constant float& redOnsetStops          [[buffer(0)]],
     constant float& greenOnsetStops        [[buffer(1)]],
@@ -508,10 +489,10 @@ kernel void spatial_scene_prepare(
                                                           blueOnsetStops),
                                             referenceStops, frameWhiteStops);
     bool split = splitBuckets != 0;
-    float3 weights = split ? spatial_bucket_weights(spatial_source_brightness(scene, frameWhiteStops))
-                           : float3(1.0f, 0.0f, 0.0f);
+    float4 weights = split ? spatial_bucket_weights(spatial_source_brightness(scene, frameWhiteStops))
+                           : float4(1.0f, 0.0f, 0.0f, 0.0f);
 
-    spatial_write_halation_buckets(energy, weights, split, narrow, middle, wide, gid);
+    spatial_write_halation_buckets(energy, weights, split, narrow, middle, wide, fourth, gid);
     linearOut.write(float4(scene, 1.0f), gid);
 }
 
@@ -581,6 +562,7 @@ kernel void spatial_halation_apply(
     texture2d<float, access::sample> narrow [[texture(1)]],
     texture2d<float, access::sample> middle [[texture(2)]],
     texture2d<float, access::sample> wide   [[texture(3)]],
+    texture2d<float, access::sample> fourth [[texture(9)]],
     // The output keeps index 4 so the diffusion ladder's slots (5-8) do not move.
     texture2d<float, access::write> output [[texture(4)]],
     texture2d<float, access::sample> diffusionLevel0 [[texture(5)]],
@@ -613,10 +595,10 @@ kernel void spatial_halation_apply(
     /// partial, because the transport is stopped between takes with the film
     /// mid-frame — see `LightLeakTransport.firstFrameSlip`.
     constant float& leakSlip               [[buffer(11)]],
-    /// Multiplies the three bucket textures: (1, 1, 1) when they are the three
-    /// filtered buckets, (1, 0, 0) when one texture carries the unsplit energy.
+    /// Multiplies four filtered buckets, or just the unsplit first texture:
+    /// (1, 1, 1, 1) or (1, 0, 0, 0).
     /// A constant, never a reading of the pixel being written.
-    constant float3& bucketWeight          [[buffer(12)]],
+    constant float4& bucketWeight          [[buffer(12)]],
     uint2 gid [[thread_position_in_grid]]
 ) {
     if (gid.x >= output.get_width() || gid.y >= output.get_height()) {
@@ -642,7 +624,8 @@ kernel void spatial_halation_apply(
     // pixel, so the halo cannot shrink in a dark surround.
     float3 diffusion = narrow.sample(spatial_linear_sampler, uv).rgb * bucketWeight.x
                      + middle.sample(spatial_linear_sampler, uv).rgb * bucketWeight.y
-                     + wide.sample(spatial_linear_sampler, uv).rgb * bucketWeight.z;
+                     + wide.sample(spatial_linear_sampler, uv).rgb * bucketWeight.z
+                     + fourth.sample(spatial_linear_sampler, uv).rgb * bucketWeight.w;
 
     // Each bucket is already a 0..1 fraction of its layer's onset-to-reference
     // span (see `spatial_halation_energy`), so there is nothing left to

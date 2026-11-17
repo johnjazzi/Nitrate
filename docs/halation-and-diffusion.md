@@ -8,19 +8,33 @@ bleeds, the **reference** decides how much strength a given excess buys, and the
 Everything below is scene-linear and pre-LUT.
 
 **Reach uses source-brightness soft steps, not mip levels.** Each source texel's
-RGB mask energy is partitioned into three nonnegative buckets whose weights sum
-to one. The handoffs are smoothstep ramps in log brightness: narrow below 2×
-white, narrow-to-middle between 2× and 4×, middle-to-wide between 4× and 8×,
-and wide above 8×. Radius factors are **1 / 1.25 / 2**. Each bucket is filtered
-at the colour's own sigma (red **1.8**, green **1**, blue **0.5** times base),
-then summed before tint/strength and scene-linear addition. The implementation
-uses nine MPS Gaussian operations and three channel-gather dispatches.
+RGB mask energy is partitioned into four nonnegative buckets whose weights sum
+to one. The handoffs are smoothstep ramps in log brightness:
+
+| Source brightness (× diffuse white) | Radius factor |
+|---|---|
+| ≤1× | 0.5× |
+| 4× | 1.25× |
+| 8× | 2× |
+| ≥12× | 2.5× |
+
+The earlier, smaller first anchor changes the width ramp only; RGB energy onsets
+remain **0.6 / 1.2 / 2.1 stops**. The 4×-white midpoint and 8×-white width stay
+unchanged. For brightness `b`, let `a = ramp(b, 1, 4)`, `c = ramp(b, 4, 8)` and
+`d = ramp(b, 8, 12)`, all log2 smoothsteps; the weights are
+`(1-a, a-c, c-d, d)`. Each bucket is filtered at the colour's own sigma (red
+**1.8**, green **1**, blue **0.5** times base), then summed before tint/strength
+and scene-linear addition. The implementation uses twelve MPS Gaussian
+operations and four channel-gather dispatches.
+
+The Debug growth control interpolates all four radius factors from **1×** at
+zero to their authored values at one; it disables width variation without
+changing the RGB energy thresholds.
 
 The gauge separately scales the stock radius: **8mm 1.4, 16mm 0.7, 35mm 0.35,
 75mm 0.05**, relative to the previously shared stock radius. Its halation energy
 multiplier is unchanged. The former mip implementation was rejected for visible
-coarse-grid artifacts; its timing is not the cost of this renderer. A fourth
-radius is not implemented in the app.
+coarse-grid artifacts; its timing is not the cost of this renderer.
 
 ## The five numbers, and who owns each
 

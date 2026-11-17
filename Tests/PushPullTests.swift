@@ -515,8 +515,8 @@ struct PushPullTests {
         let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(input, index: 0)
-        // Bind all three bucket slots even though strength is zero.
-        for index in 1...3 { encoder.setTexture(halationMask, index: index) }
+        // Bind all four bucket slots even though strength is zero.
+        for index in [1, 2, 3, 9] { encoder.setTexture(halationMask, index: index) }
         encoder.setTexture(output, index: 4)
         for level in 0..<4 { encoder.setTexture(halationMask, index: 5 + level) }
         var strength: Float = 0
@@ -535,7 +535,7 @@ struct PushPullTests {
         encoder.setBytes(&exposureStops, length: MemoryLayout<Float>.size, index: 4)
         encoder.setBytes(&exposureCeiling, length: MemoryLayout<Float>.size, index: 5)
         encoder.setBytes(&postEmulsionStops, length: MemoryLayout<Float>.size, index: 6)
-        var bucketWeight = SIMD3<Float>(1, 0, 0)
+        var bucketWeight = SIMD4<Float>(1, 0, 0, 0)
         var leakStops: Float = 0
         var leakTint = SIMD3<Float>(repeating: 0)
         var leakEdgeShare: Float = 0
@@ -546,7 +546,7 @@ struct PushPullTests {
         encoder.setBytes(&leakEdgeShare, length: MemoryLayout<Float>.size, index: 9)
         encoder.setBytes(&leakEdgeFalloff, length: MemoryLayout<Float>.size, index: 10)
         encoder.setBytes(&leakSlip, length: MemoryLayout<Float>.size, index: 11)
-        encoder.setBytes(&bucketWeight, length: MemoryLayout<SIMD3<Float>>.size, index: 12)
+        encoder.setBytes(&bucketWeight, length: MemoryLayout<SIMD4<Float>>.size, index: 12)
         encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1))
         encoder.endEncoding()

@@ -10,7 +10,7 @@ import simd
 ///
 ///  * HALATION is physical and PRE-LUT. `applyHalation(source:...)` decodes the
 ///    ungraded Apple Log 2 frame to linear scene light, takes each emulsion
-///    layer's excess above its knee, partitions that energy into three buckets
+///    layer's excess above its knee, partitions that energy into four buckets
 ///    by how bright its source is, filters each bucket at its own per-channel
 ///    radii (red widest, then green, then blue), adds the scattered energy back
 ///    in LINEAR light, and re-encodes to Apple Log 2. The renderer then runs the
@@ -69,10 +69,10 @@ final class SpatialEffectsStage {
     // factors below are global, and are the values to tune first when the halo
     // reads wrong on device.
 
-    /// The three brightness bucket sigmas, as multiples of ONE shared base. A
+    /// The four brightness bucket sigmas, as multiples of ONE shared base. A
     /// source climbs from narrow to wide as it gets brighter (see
     /// `spatial_bucket_weights` for the knots).
-    private static let halationBucketFactors = SIMD3<Float>(1.0, 1.25, 2.0)
+    private static let halationBucketFactors = SIMD4<Float>(0.5, 1.25, 2.0, 2.5)
 
     /// Per-channel diffusion radius, as a multiple of the same base sigma.
     /// Red scatters furthest through the emulsion, green is the middle layer and
@@ -248,10 +248,10 @@ final class SpatialEffectsStage {
     /// a white core at every brightness. Nothing reads the brightness of the
     /// pixel the halo lands on.
     ///
-    /// That needs nine filters per frame — three bucket sigmas times three
+    /// That needs twelve filters per frame — four bucket sigmas times three
     /// channel sigmas — because one MPS Gaussian pass applies a single sigma to
-    /// every channel. Three scratch textures are reused bucket to bucket, so the
-    /// nine filters cost six mask-sized textures, not ten.
+    /// every channel. Three channel scratch textures are reused bucket to bucket,
+    /// so the twelve filters need four bucket masks plus three scratch masks.
     ///
     /// `diffusion` is the lens filter in front of the emulsion. Both effects are
     /// scene-linear and pre-LUT, so they share ONE decode and ONE encode: the
@@ -330,10 +330,10 @@ final class SpatialEffectsStage {
         let maskHeight = fullResMask ? height : halfHeight
 
         // The buckets are only separated when there is a radius to filter them
-        // with: a zero radius means no blur, and with no blur the three buckets
+        // with: a zero radius means no blur, and with no blur the four buckets
         // sum back to the energy they came from. So the unfiltered case writes
-        // that energy once and the apply pass binds the one texture three times
-        // with weights (1, 0, 0) — no writes nobody reads, no allocation nobody
+        // that energy once and the apply pass binds the one texture four times
+        // with weights (1, 0, 0, 0) — no writes nobody reads, no allocation nobody
         // samples. Halation off is the same case: its contribution is zero.
         let blurred = strength != 0 && radiusFraction > 0
 
@@ -342,14 +342,14 @@ final class SpatialEffectsStage {
               let commandBuffer = commandQueue.makeCommandBuffer() else {
             return nil
         }
-        // The three buckets, each of which ends up holding its own per-channel
+        // The four buckets, each of which ends up holding its own per-channel
         // filtered result; and three scratch textures the per-channel filters
-        // write through, reused bucket to bucket. That is six masks at most —
-        // two per bucket — rather than one per filter.
+        // write through, reused bucket to bucket: seven masks in total rather
+        // than allocating one texture per filter.
         var bucketTextures: [MTLTexture] = [halationEnergy]
         var filterScratch: [MTLTexture] = []
         if blurred {
-            for _ in 1..<3 {
+            for _ in 1..<4 {
                 guard let bucket = makeTexture(width: maskWidth, height: maskHeight) else { return nil }
                 bucketTextures.append(bucket)
             }
@@ -360,11 +360,11 @@ final class SpatialEffectsStage {
         }
         // A texture bound to a slot nothing writes is still a texture MPS and
         // the sampler will read, so the unsplit case binds its one texture to
-        // all three slots and the weights keep the sum honest.
+        // all four slots and the weights keep the sum honest.
         let prepareBuckets = blurred ? bucketTextures
-                                     : [halationEnergy, halationEnergy, halationEnergy]
+                                     : [halationEnergy, halationEnergy, halationEnergy, halationEnergy]
         let applyBuckets = prepareBuckets
-        var bucketWeight = blurred ? SIMD3<Float>(repeating: 1) : SIMD3<Float>(1, 0, 0)
+        var bucketWeight = blurred ? SIMD4<Float>(repeating: 1) : SIMD4<Float>(1, 0, 0, 0)
 
         // The linear scene is the diffusion node's input; without the node it is
         // never allocated and the buckets-only prepare kernel runs instead.
@@ -406,9 +406,10 @@ final class SpatialEffectsStage {
             var split = UInt32(blurred ? 1 : 0)
             prepareEncoder.setComputePipelineState(scene == nil ? halationMaskPipeline : scenePreparePipeline)
             prepareEncoder.setTexture(source, index: 0)
-            for (offset, texture) in prepareBuckets.enumerated() {
+            for (offset, texture) in prepareBuckets.prefix(3).enumerated() {
                 prepareEncoder.setTexture(texture, index: 1 + offset)
             }
+            prepareEncoder.setTexture(prepareBuckets[3], index: 5)
             if let scene {
                 prepareEncoder.setTexture(scene, index: 4)
             }
@@ -443,8 +444,8 @@ final class SpatialEffectsStage {
             let baseSigma = baseRadius * Self.blurSigmaPerRadius
             let requestedGrowth = authoredGrowth ?? 1
             let growth = requestedGrowth.isFinite ? max(0, min(1, requestedGrowth)) : 1
-            let bucketFactors = SIMD3<Float>(repeating: 1)
-                + (Self.halationBucketFactors - SIMD3<Float>(repeating: 1)) * growth
+            let bucketFactors = SIMD4<Float>(repeating: 1)
+                + (Self.halationBucketFactors - SIMD4<Float>(repeating: 1)) * growth
             let requestedFactors = authoredRadiusFactors ?? Self.halationChannelFactors
             func safeFactor(_ value: Float, fallback: Float) -> Float {
                 value.isFinite ? max(0.05, min(4, value)) : fallback
@@ -453,7 +454,7 @@ final class SpatialEffectsStage {
                 safeFactor(requestedFactors.x, fallback: Self.halationChannelFactors.x),
                 safeFactor(requestedFactors.y, fallback: Self.halationChannelFactors.y),
                 safeFactor(requestedFactors.z, fallback: Self.halationChannelFactors.z))
-            let bucketValues = [bucketFactors.x, bucketFactors.y, bucketFactors.z]
+            let bucketValues = [bucketFactors.x, bucketFactors.y, bucketFactors.z, bucketFactors.w]
             let channelValues = [channelFactors.x, channelFactors.y, channelFactors.z]
             for (bucketIndex, bucketFactor) in bucketValues.enumerated() {
                 for (channelIndex, channelFactor) in channelValues.enumerated() {
@@ -511,10 +512,11 @@ final class SpatialEffectsStage {
             var diffusionAmount = plan == nil ? 0 : diffusion.amount
             encoder.setComputePipelineState(halationApplyPipeline)
             encoder.setTexture(source, index: 0)
-            for (offset, texture) in applyBuckets.enumerated() {
+            for (offset, texture) in applyBuckets.prefix(3).enumerated() {
                 encoder.setTexture(texture, index: 1 + offset)
             }
             encoder.setTexture(output, index: 4)
+            encoder.setTexture(applyBuckets[3], index: 9)
             for (offset, texture) in boundLevels.enumerated() {
                 encoder.setTexture(texture, index: 5 + offset)
             }
@@ -535,9 +537,9 @@ final class SpatialEffectsStage {
             encoder.setBytes(&leakEdgeFalloff, length: MemoryLayout<Float>.size, index: 10)
             var leakSlip = leak.slip
             encoder.setBytes(&leakSlip, length: MemoryLayout<Float>.size, index: 11)
-            // (1,1,1) for the three filtered buckets, (1,0,0) for the one
-            // unsplit texture bound three times. See `blurred` above.
-            encoder.setBytes(&bucketWeight, length: MemoryLayout<SIMD3<Float>>.size, index: 12)
+            // (1,1,1,1) for four filtered buckets, (1,0,0,0) for the one
+            // unsplit texture bound four times. See `blurred` above.
+            encoder.setBytes(&bucketWeight, length: MemoryLayout<SIMD4<Float>>.size, index: 12)
             encoder.dispatchThreadgroups(fullGroups, threadsPerThreadgroup: Self.groupSize)
             encoder.endEncoding()
         }

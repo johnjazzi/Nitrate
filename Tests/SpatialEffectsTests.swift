@@ -121,13 +121,13 @@ struct SpatialEffectsTests {
         stage: SpatialEffectsStage, device: MTLDevice, queue: MTLCommandQueue,
         width: Int, height: Int, sourcePixels: [Float16],
         strength: Float, radiusFraction: Float, layerScale: SIMD3<Float>,
-        growth: Float? = nil
+        growth: Float? = nil, onsets: SIMD3<Float>? = nil
     ) throws -> [Float16] {
         let input = try makeTexture(device: device, width: width, height: height, pixels: sourcePixels)
         let output = try #require(stage.applyHalation(
             source: input, commandQueue: queue,
             strength: strength, radiusFraction: radiusFraction, layerScale: layerScale,
-            authoredGrowth: growth,
+            authoredOnsets: onsets, authoredGrowth: growth,
             width: width, height: height
         ))
         return try readBack(output, device: device, queue: queue, width: width, height: height)
@@ -702,7 +702,8 @@ struct SpatialEffectsTests {
     /// not the unquantized fixture. Normalization separates reach from amplitude.
     private static func pointSpread(
         stage: SpatialEffectsStage, device: MTLDevice, queue: MTLCommandQueue,
-        brightness: Double, growth: Float = 1, strength: Float = 1, radiusFraction: Float = 0.012
+        brightness: Double, growth: Float = 1, strength: Float = 1, radiusFraction: Float = 0.012,
+        onsets: SIMD3<Float>? = nil
     ) throws -> SIMD3<Double> {
         let side = 256
         let source = sourcePixels(width: side, height: side) { x, y in
@@ -711,7 +712,7 @@ struct SpatialEffectsTests {
         let result = try runHalation(
             stage: stage, device: device, queue: queue, width: side, height: side,
             sourcePixels: source, strength: strength, radiusFraction: radiusFraction,
-            layerScale: SIMD3(repeating: 1), growth: growth)
+            layerScale: SIMD3(repeating: 1), growth: growth, onsets: onsets)
         let input = decodedLinear(source, count: side * side)
         let output = decodedLinear(result, count: side * side)
         var energy = SIMD3<Double>(repeating: 0)
@@ -755,7 +756,9 @@ struct SpatialEffectsTests {
         #expect(middle.x > narrow.x * 1.15)
         #expect(wide.x > middle.x * 1.10)
         let fixed = try Self.pointSpread(stage: stage, device: device, queue: queue, brightness: 4, growth: 0)
-        #expect(abs(fixed.x / narrow.x - 1) < 0.03, "growth off must retain the narrow shape")
+        let fixedLow = try Self.pointSpread(
+            stage: stage, device: device, queue: queue, brightness: 1, growth: 0)
+        #expect(abs(fixed.x / fixedLow.x - 1) < 0.03, "growth off must retain one brightness-independent shape")
         let dimmerGain = try Self.pointSpread(
             stage: stage, device: device, queue: queue, brightness: 4, strength: 0.5)
         #expect(abs(dimmerGain.x / wide.x - 1) < 0.03, "changing gain alone must not imitate radius growth")
@@ -766,14 +769,35 @@ struct SpatialEffectsTests {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
-        for knot in [1.0, 2.0, 4.0] { // source scene units: 2x/4x/8x delivered white
+        for knot in [0.5, 2.0, 4.0, 6.0] { // source scene units: 1x/4x/8x/12x white
             let low = knot * 0.99, high = knot * 1.01
             #expect(Self.appleLogEncode(low) != Self.appleLogEncode(high),
                     "the quantized inputs must actually straddle the knot")
-            let below = try Self.pointSpread(stage: stage, device: device, queue: queue, brightness: low)
-            let above = try Self.pointSpread(stage: stage, device: device, queue: queue, brightness: high)
+            let below = try Self.pointSpread(stage: stage, device: device, queue: queue, brightness: low, onsets: SIMD3(repeating: -1))
+            let above = try Self.pointSpread(stage: stage, device: device, queue: queue, brightness: high, onsets: SIMD3(repeating: -1))
             #expect(abs(above.x / below.x - 1) < 0.04,
                     "a small exposure change at a knot must not jump to another width")
+        }
+    }
+
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
+    func earlySmallAndFourthRadiiMatchTheirGaussianReferences() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
+        // Neutralize energy onsets only for this width fixture so the first
+        // 1x-white anchor actually carries measurable light. Production onsets
+        // are unchanged, and the separate knee/channel tests retain them.
+        let onsets = SIMD3<Float>(repeating: -1)
+        for (brightness, factor) in [(0.5, Float(0.5)), (2.0, Float(1.25)),
+                                      (4.0, Float(2)), (6.0, Float(2.5))] {
+            let actual = try Self.pointSpread(stage: stage, device: device, queue: queue,
+                                              brightness: brightness, onsets: onsets)
+            let reference = try Self.pointSpread(stage: stage, device: device, queue: queue,
+                                                 brightness: brightness, growth: 0,
+                                                 radiusFraction: 0.012 * factor, onsets: onsets)
+            #expect(abs(actual.x / reference.x - 1) < 0.01,
+                    "brightness \(brightness * 2)x white must use radius factor \(factor)")
         }
     }
 
@@ -855,7 +879,7 @@ struct SpatialEffectsTests {
                                pixels: try #require(levels.first))
     }
 
-    /// Dispatch `spatial_halation_apply` with three bucket texture slots and
+    /// Dispatch `spatial_halation_apply` with four bucket texture slots and
     /// return the encoded frame.
     ///
     /// The lens diffusion node is pinned OFF — zero weights, zero amount — so
@@ -875,7 +899,8 @@ struct SpatialEffectsTests {
         layerScale: SIMD3<Float> = SIMD3(1, 1, 1),
         middle: MTLTexture? = nil,
         wide: MTLTexture? = nil,
-        bucketWeight: SIMD3<Float> = SIMD3(1, 0, 0)
+        fourth: MTLTexture? = nil,
+        bucketWeight: SIMD4<Float> = SIMD4(1, 0, 0, 0)
     ) throws -> [Float16] {
         let sourceTexture = try makeTexture(
             device: device, width: width, height: height, pixels: source
@@ -891,6 +916,7 @@ struct SpatialEffectsTests {
         encoder.setTexture(mask, index: 1)
         encoder.setTexture(middle ?? mask, index: 2)
         encoder.setTexture(wide ?? mask, index: 3)
+        encoder.setTexture(fourth ?? mask, index: 9)
         encoder.setTexture(output, index: 4)
         for index in 5...8 {
             encoder.setTexture(mask, index: index)
@@ -924,7 +950,7 @@ struct SpatialEffectsTests {
         encoder.setBytes(&leakEdgeShare, length: MemoryLayout<Float>.size, index: 9)
         encoder.setBytes(&leakEdgeFalloff, length: MemoryLayout<Float>.size, index: 10)
         encoder.setBytes(&leakSlip, length: MemoryLayout<Float>.size, index: 11)
-        encoder.setBytes(&bucketWeight, length: MemoryLayout<SIMD3<Float>>.size, index: 12)
+        encoder.setBytes(&bucketWeight, length: MemoryLayout<SIMD4<Float>>.size, index: 12)
         encoder.dispatchThreadgroups(
             MTLSize(width: (width + 15) / 16, height: (height + 15) / 16, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1)
@@ -989,13 +1015,14 @@ struct SpatialEffectsTests {
         let narrow = try bucket(SIMD3(0.2, 0.01, 0.02))
         let middle = try bucket(SIMD3(0.03, 0.1, 0.04))
         let wide = try bucket(SIMD3(0.05, 0.06, 0.3))
+        let fourth = try bucket(SIMD3(0.07, 0.08, 0.09))
         let encoded = try Self.applyHalationDirectly(
             device: device, queue: queue, pipeline: pipeline,
             width: side, height: side, source: source, mask: narrow,
-            middle: middle, wide: wide, bucketWeight: SIMD3(repeating: 1))
+            middle: middle, wide: wide, fourth: fourth, bucketWeight: SIMD4(repeating: 1))
         let output = Self.decodedLinear(encoded, count: side * side)
-        // Base 0.18 plus the corresponding channel from all THREE buckets.
-        for (channel, expected) in [0.46, 0.35, 0.54].enumerated() {
+        // Base 0.18 plus the corresponding channel from all FOUR buckets.
+        for (channel, expected) in [0.53, 0.43, 0.63].enumerated() {
             #expect(abs(output[channel] - expected) < 0.004,
                     "bucket sum must preserve channel \(channel)")
         }
@@ -1049,7 +1076,7 @@ struct SpatialEffectsTests {
     func sourceBrightnessBucketsConserveEveryChannel() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
-        for level in [2.0, 3.0, 4.0, 6.0, 8.0, 12.0] {
+        for level in [1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0] {
             func mask(_ bucket: Int?) throws -> [Float16] {
                 try Self.halationMask(device: device, queue: queue,
                                       width: 2, height: 2, maskWidth: 1, maskHeight: 1, bucket: bucket) { _, _ in
@@ -1057,13 +1084,13 @@ struct SpatialEffectsTests {
                 }
             }
             let unsplit = try mask(nil)
-            let narrow = try mask(0), middle = try mask(1), wide = try mask(2)
+            let narrow = try mask(0), middle = try mask(1), wide = try mask(2), fourth = try mask(3)
             for channel in 0..<3 {
-                let sum = Double(narrow[channel]) + Double(middle[channel]) + Double(wide[channel])
+                let sum = Double(narrow[channel]) + Double(middle[channel]) + Double(wide[channel]) + Double(fourth[channel])
                 #expect(abs(sum - Double(unsplit[channel])) < 0.002,
                         "source split must conserve channel \(channel) at \(level)x")
             }
-            if level == 2 {
+            if level == 1 {
                 #expect(abs(Double(narrow[0]) - Double(unsplit[0])) < 0.002)
                 #expect(Double(middle[0]) < 0.002 && Double(wide[0]) < 0.002)
             } else if level == 4 {
@@ -1071,9 +1098,13 @@ struct SpatialEffectsTests {
                 // either side, so require an almost-complete handoff, not bit equality.
                 #expect(abs(Double(middle[0]) - Double(unsplit[0])) < 0.002)
                 #expect(Double(narrow[0]) < 0.002 && Double(wide[0]) < 0.002)
-            } else if level >= 8 {
+            } else if level == 8 {
                 #expect(abs(Double(wide[0]) - Double(unsplit[0])) < 0.002)
                 #expect(Double(narrow[0]) < 0.002 && Double(middle[0]) < 0.002)
+                #expect(Double(fourth[0]) < 0.002)
+            } else if level >= 12 {
+                #expect(abs(Double(fourth[0]) - Double(unsplit[0])) < 0.002)
+                #expect(Double(narrow[0]) < 0.002 && Double(middle[0]) < 0.002 && Double(wide[0]) < 0.002)
             }
         }
     }
@@ -1109,7 +1140,8 @@ struct SpatialEffectsTests {
         let mask = try emptyMask()
         let middle = try emptyMask()
         let wide = try emptyMask()
-        let buckets = [mask, middle, wide]
+        let fourth = try emptyMask()
+        let buckets = [mask, middle, wide, fourth]
 
         let commandBuffer = try #require(queue.makeCommandBuffer())
         let encoder = try #require(commandBuffer.makeComputeCommandEncoder())
@@ -1126,6 +1158,7 @@ struct SpatialEffectsTests {
         encoder.setTexture(mask, index: 1)
         encoder.setTexture(middle, index: 2)
         encoder.setTexture(wide, index: 3)
+        encoder.setTexture(fourth, index: 5)
         var exposure: Float = 0
         var ceiling: Float = 12
         var split: UInt32 = bucket == nil ? 0 : 1

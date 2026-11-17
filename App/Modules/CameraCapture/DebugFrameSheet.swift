@@ -498,7 +498,7 @@ struct DebugFrameSheet: View {
                                     { viewModel.parameters.halationGrowth = $0 }),
                        in: 0...1, step: 0.05, defaultValue: defaultParameters.halationGrowth)
             }
-            Text("Source brightness: 2× → 4× → 8× white. Growth 0 fixes the width; 1 reaches 1× / 1.25× / 2× radius.")
+            Text("Source brightness: 1× → 4× → 8× → 12× white. Growth 0 fixes width at 1×; 1 uses 0.5× / 1.25× / 2× / 2.5× radius.")
                 .font(NitrateTypography.font(.caption2)).foregroundStyle(.secondary)
             labelled(String(format: "Radius factors  R %.2f   G %.2f   B %.2f",
                             viewModel.parameters.halationRadiusFactors.x,
