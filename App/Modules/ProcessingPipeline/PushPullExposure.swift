@@ -242,15 +242,17 @@ enum PushPullTransfer {
 
     /// Stops under the clip over which the pull gain rolls off. MUST equal
     /// `kPushPullHoldStops` in `spatial.metal`, or the shader and the diagnostic
-    /// disagree. It is the one taste constant of the curve.
-    static let holdStops: Double = 1.0
+    /// disagree. These two shape controls never change the source ceiling.
+    static let holdStops: Double = 0.6
+    static let pullFirmness: Double = 8.0
 
     /// Pull gain weight at one scene-light value: 1 where the exposure applies in
     /// full, 0 at and above the clip ceiling. Mirrors `spatial_hold_weight`.
     static func holdWeight(linear: Double, ceiling: Double) -> Double {
         guard ceiling > 0, linear > 0 else { return 1 }
         let below = min(max(log2(ceiling / linear) / holdStops, 0), 1)
-        return below * below * (3 - 2 * below)
+        let smooth = below * below * (3 - 2 * below)
+        return 1 - pow(1 - smooth, pullFirmness)
     }
 
     /// One Apple Log 2 code value exposed by `stops` with the highlight hold: a
