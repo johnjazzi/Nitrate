@@ -171,7 +171,9 @@ struct DebugFrameRenderTests {
         let highlightStops = Float(log2(SpatialEffectsTests.appleLogDecode(0.85))) - frameWhite
 
         var redLow = seeded
-        redLow.halationRedOnsetStops = backgroundStops - 1
+        // The shaped low-light red tail needs a two-stop clearance for a
+        // visible 8-bit difference; retain the original pixel-delta assertion.
+        redLow.halationRedOnsetStops = backgroundStops - 2
         var allHigh = seeded
         allHigh.halationRedOnsetStops = highlightStops + 0.5
         allHigh.halationGreenOnsetStops = highlightStops + 0.5
@@ -350,7 +352,7 @@ struct DebugFrameRenderTests {
     func halationIsGradedThroughTheSameLUTAsTheSource() throws {
         let renderer = try makeRenderer()
         let config = try loadConfig()
-        let code: Float16 = 0.8
+        let code: Float16 = 0.6
         let frame = try Self.makeSyntheticFrame(background: code, highlight: code)
         var parameters = PipelineRenderer.DebugFrameParameters(config: config)
         parameters.glowStrength = 0
@@ -371,18 +373,27 @@ struct DebugFrameRenderTests {
         let referenceStops = Double(SpatialEffectsStage.halationReferenceStops)
         let onsets = SpatialEffectsStage.halationOnsets()
         let stops = log2(linear) - frameWhite
-        func energy(_ onset: Float) -> Double {
-            let span = max(referenceStops - Double(onset), 0.05)
-            return min(1, max(0, (stops - Double(onset)) / span))
+        func energy(_ onset: Float, channel: Int) -> Double {
+            let start = Double(onset)
+            if channel == 0 && start < 0.6 && referenceStops > 2 {
+                let oldSpan = referenceStops - 0.6
+                if stops >= 2 { return min(1, max(0, (stops - 0.6) / oldSpan)) }
+                let width = 2 - start
+                let t = min(1, max(0, (stops - start) / width))
+                return 1.4 / oldSpan * pow(t, width / 1.4)
+            }
+            let span = max(referenceStops - start, 0.05)
+            return min(1, max(0, (stops - start) / span))
         }
         let scales = [Double(parameters.halationTint.x), Double(parameters.halationTint.y),
                       Double(parameters.halationTint.z)]
         let strength = Double(parameters.halationStrength)
-        // The develop lift is applied last, to the whole delivered frame, so the
-        // expected code has to carry it too.
-        let lift = exp2(Double(SystemExposureScheme.developLiftStops))
-        let expectedCodes = zip([onsets.x, onsets.y, onsets.z], scales).map { onset, scale -> Float16 in
-            let combined = (linear + energy(onset) * scale * strength) * lift
+        // Feed pre-lift scene light to the reference renderer: it applies the
+        // develop lift itself even when halation is off. Pre-lifting this input
+        // would count that exposure twice and hide behind the LUT's shoulder.
+        let expectedCodes = zip([onsets.x, onsets.y, onsets.z], scales).enumerated().map { channel, pair -> Float16 in
+            let (onset, scale) = pair
+            let combined = linear + energy(onset, channel: channel) * scale * strength
             return Float16(0.69336945 + 0.08550479 * log2(combined + 0.00964052))
         }
         let expectedSource = try Self.makeSyntheticFrame(background: code, highlight: code)
@@ -402,13 +413,11 @@ struct DebugFrameRenderTests {
         let expected = try read(reference.pixelBuffer)
         let maximumDifference = zip(actual.pixels, expected.pixels)
             .map { abs(Int($0.0) - Int($0.1)) }.max() ?? 0
-        // The expected source is a half-float, and one ULP at code 0.8 is
-        // 0.000488 of a code. Blue's share of this halo is only ~0.05 in linear
-        // light now that its onset sits above green's, so rounding the reference
-        // to the nearest half-float and grading it through the 33-cube trilinear
-        // LUT can move a delivered code by three. That is a quantisation budget,
-        // not a claim about the render: the check is that halation enters the LUT
-        // rather than being painted on afterwards.
+        // The independent reference adds in Double then quantizes to half-float;
+        // the renderer adds a half-float mask then re-encodes to half-float.
+        // Retain the three-byte budget through the trilinear LUT. The lower-light
+        // fixture exercises the new red tail without hiding a wrong reference
+        // in the LUT's saturated shoulder.
         #expect(maximumDifference <= 3,
                 "Halation must enter the LUT as added scene light (max byte difference \(maximumDifference))")
     }
