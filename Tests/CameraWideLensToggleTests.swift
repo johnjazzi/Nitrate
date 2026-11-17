@@ -130,8 +130,10 @@ struct CameraWideLensToggleTests {
         #expect(selector.contains("guard lens != selectedLens || lens == .wide else { return }"))
         // One shared helper reads the policy, so the classic and minimal keys
         // cannot disagree about the label.
-        #expect(selector.components(separatedBy: "CameraFocalZoomPolicy.lensKeyFocalLengthMM(for: lens.focalZoomTier,").count - 1 == 1)
-        #expect(selector.contains("lensKeyFocalMM(lens, currentMM: currentFocalLengthMM)"))
+        #expect(selector.components(separatedBy: "CameraFocalZoomPolicy.lensKeyFocalLengthMM(for: .wide,").count - 1 == 1)
+        #expect(selector.contains("lensKeyFocalMM(lens, selected: selectedLens, currentMM: currentFocalLengthMM)"))
+        #expect(selector.contains("guard lens == .wide, selected == .wide else { return lens.focalLengthMM }"),
+                "another physical camera at 50 mm must not relabel the inactive wide key")
         #expect(selector.contains("CameraFocalZoomPolicy.wideLensToggleTargetMM(currentMM: currentMM)"))
         #expect(selector.contains(".accessibilityIdentifier(\"camera.lens.\\(lens.rawValue)\")"))
         #expect(selector.contains(".accessibilityAddTraits(isSelected ? [.isSelected] : [])"))

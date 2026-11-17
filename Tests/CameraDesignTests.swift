@@ -96,7 +96,7 @@ struct CameraDesignTests {
         #expect(!selector.contains("Text(\"mm\")"))
         // VoiceOver still announces the full lens name, unit included, from the
         // shared wide-key policy (50 mm while the wide lens is at that stop).
-        #expect(selector.contains("\"\\(displayedFocalMM(lens)) mm\""))
+        #expect(selector.contains("\"\\(lensKeyFocalMM(lens, selected: selectedLens, currentMM: currentFocalLengthMM)) mm\""))
 
         // The popout key shows the bare number (or the textual Front choice),
         // never the aperture icon or the millimetre unit.
