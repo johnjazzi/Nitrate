@@ -239,7 +239,11 @@ struct ContentView: View {
                     ExposureIndicatorView(meteredEV: cameraViewModel.liveExposureTargetOffset,
                                           targetEV: cameraViewModel.liveExposureBias,
                                           isManual: cameraViewModel.isManualExposure,
-                                          isAvailable: cameraViewModel.hasExposureMeter)
+                                          isAvailable: cameraViewModel.hasExposureMeter,
+                                          renderMarker: ExposureRenderMarker(
+                                              pushPull: shootingPushPull,
+                                              meteredEV: cameraViewModel.liveExposureTargetOffset),
+                                          renderTint: shootingPushPull?.stops.processingTint ?? .white)
                         .frame(width: meter.width, height: meter.height)
                         .position(x: meter.midX, y: meter.midY)
                 }

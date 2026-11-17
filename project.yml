@@ -387,6 +387,7 @@ targets:
       - path: App/Modules/CameraCapture/CameraModeCarousel.swift
       - path: App/Modules/CameraCapture/CameraModeStripGeometry.swift
       - path: App/Modules/CameraCapture/ExposureOverlay.swift
+      - path: App/Modules/CameraCapture/ExposureRenderMarker.swift
       - path: App/Modules/CameraCapture/ExposureRescueControl.swift
       - path: App/AppIdentity.swift
       - path: App/SplashEdgeDetails.swift
