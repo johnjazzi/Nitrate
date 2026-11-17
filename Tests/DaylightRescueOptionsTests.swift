@@ -1,33 +1,45 @@
 import Foundation
 import Testing
 
-/// Regressions for the scoped "too bright" options: the pull rung and the
-/// aperture target must be real destinations from the existing owners, and the
-/// compact card must stay free of the old editorial copy. Pure — no camera.
+/// Regressions for the scoped "too bright" options: both destinations must be
+/// real values from the existing owners, and both must move as far as that owner
+/// allows in a single tap — a two-stop pull, and the lens' strongest supported
+/// f-number. The compact card must stay free of the old editorial copy. Pure —
+/// no camera.
 struct DaylightRescueOptionTests {
     // MARK: - Pull ladder
 
-    @Test func pullTakesTheNextRealRungDarker() {
-        #expect(DaylightRescuePullPolicy.nextStops(after: -1, floor: -3) == -2)
-        #expect(DaylightRescuePullPolicy.nextStops(after: -2, floor: -3) == -3)
-    }
-
-    /// A pushed or neutral take resolves to a **negative** pull. Stops are signed,
-    /// so "one step darker" from +2/+1/0 is -1 — not +1 or 0, which would develop
-    /// brighter than the take the operator was rescuing.
-    @Test func pullFromAPushOrNeutralIsAlwaysARealNegativePull() {
-        #expect(DaylightRescuePullPolicy.nextStops(after: 2, floor: -3) == -1)
-        #expect(DaylightRescuePullPolicy.nextStops(after: 1, floor: -3) == -1)
-        #expect(DaylightRescuePullPolicy.nextStops(after: 0, floor: -3) == -1)
+    /// The offer itself already means ≥2 EV over target, so one tap must deliver
+    /// the two-stop pull — not a single rung that leaves the frame two stops hot.
+    @Test func pullJumpsTwoStopsFromANeutralOrPushedTake() {
+        #expect(DaylightRescuePullPolicy.nextStops(after: 2, floor: -3) == -2)
+        #expect(DaylightRescuePullPolicy.nextStops(after: 1, floor: -3) == -2)
+        #expect(DaylightRescuePullPolicy.nextStops(after: 0, floor: -3) == -2)
         // The destination survives the ladder owner unchanged: a real PULL rung.
-        #expect(PushPullStops.nearest(to: -1) == .pullOne)
-        #expect(PushPullStops.nearest(to: -1).effectWord == "PULL")
+        #expect(PushPullStops.nearest(to: -2) == .pullTwo)
+        #expect(PushPullStops.nearest(to: -2).effectWord == "PULL")
     }
 
-    @Test func pullStopsAtTheLadderFloor() {
+    /// A second request from an already pulled take moves two rungs darker and
+    /// clamps at the ladder floor; it never brightens and never overshoots -3.
+    @Test func aFurtherRequestFromAnExistingPullMovesTwoRungsAndClamps() {
+        #expect(DaylightRescuePullPolicy.nextStops(after: -1, floor: -3) == -3)
+        #expect(DaylightRescuePullPolicy.nextStops(after: -2, floor: -3) == -3,
+                "Two rungs past -2 is -4; the ladder floor caps it at -3.")
+    }
+
+    @Test func pullNeverOvershootsTheFloorOrBrightensAPull() {
+        for current in -6...6 {
+            for floor in -6 ... -1 {
+                guard let next = DaylightRescuePullPolicy.nextStops(after: current, floor: floor) else { continue }
+                #expect(next >= floor, "Destination \(next) went past floor \(floor).")
+                #expect(next < current, "Destination \(next) from \(current) is not darker.")
+            }
+        }
         #expect(DaylightRescuePullPolicy.nextStops(after: -3, floor: -3) == nil)
-        // A rung below the floor can only clamp back to the floor, never past it.
         #expect(DaylightRescuePullPolicy.nextStops(after: -5, floor: -3) == nil)
+        // A clamped floor shorter than two stops below neutral still moves two.
+        #expect(DaylightRescuePullPolicy.nextStops(after: 0, floor: -2) == -2)
     }
 
     @Test func pullRefusesANonNegativeFloorRatherThanInventingARung() {
@@ -41,6 +53,7 @@ struct DaylightRescueOptionTests {
         // Magnitude only: the row says "Pull 2 stops", never "Pull -2 stops".
         #expect(DaylightRescuePullPolicy.title(forStops: -1) == "Pull 1 stop")
         #expect(DaylightRescuePullPolicy.title(forStops: -2) == "Pull 2 stops")
+        #expect(DaylightRescuePullPolicy.title(forStops: -3) == "Pull 3 stops")
     }
 
     @Test func pullRowIsRefusedWithoutAStockAndAtTheFloor() {
@@ -56,15 +69,22 @@ struct DaylightRescueOptionTests {
         let row = DaylightRescuePresentation.pull(stockSelected: true, currentStops: 0,
                                                   floor: -3, busy: true)
         #expect(!row.enabled)
-        #expect(row.title == "Pull 1 stop")
+        #expect(row.title == "Pull 2 stops")
     }
 
     @Test func pullRowFromAPushedTakeNamesARealPull() {
         let row = DaylightRescuePresentation.pull(stockSelected: true, currentStops: 2,
                                                   floor: -3, busy: false)
         #expect(row.enabled)
-        #expect(row.title == "Pull 1 stop")
+        #expect(row.title == "Pull 2 stops")
         #expect(!row.title.contains("-"))
+    }
+
+    @Test func pullRowFromAnAlreadyPulledTakeNamesTheClampedJump() {
+        let row = DaylightRescuePresentation.pull(stockSelected: true, currentStops: -1,
+                                                  floor: -3, busy: false)
+        #expect(row.enabled)
+        #expect(row.title == "Pull 3 stops")
     }
 
     @Test func pullRowNeverClaimsACaptureChange() {
@@ -78,24 +98,63 @@ struct DaylightRescueOptionTests {
 
     // MARK: - Aperture ladder
 
-    @Test func aperturePicksTheNextSupportedStopNotAnInventedOne() {
-        #expect(DaylightRescueAperturePolicy.nextStop(after: 1.78, stops: [1.78, 2.8, 4.0]) == 2.8)
-        #expect(DaylightRescueAperturePolicy.nextStop(after: 2.8, stops: [1.78, 2.8, 4.0]) == 4.0)
+    /// One tap must stop down as far as the lens reports, so f/4 is chosen
+    /// directly from f/1.78 rather than stepping through f/2.8 first.
+    @Test func apertureJumpsToTheStrongestSupportedStop() {
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 1.78, stops: [1.78, 2.8, 4.0]) == 4.0)
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 2.8, stops: [1.78, 2.8, 4.0]) == 4.0)
+        // The destination is the owner's own value, not a rounded copy of it.
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 2.8, stops: [2.8, 4.0]) == 4.0)
     }
 
-    @Test func apertureOffersNothingWithoutACurrentOrHigherStop() {
-        // Unknown iris, no rung above the current one, and a fixed lens' empty
-        // ladder all offer no destination rather than an invented close.
-        #expect(DaylightRescueAperturePolicy.nextStop(after: nil, stops: [1.78, 2.8]) == nil)
-        #expect(DaylightRescueAperturePolicy.nextStop(after: 4.0, stops: [1.78, 2.8, 4.0]) == nil)
-        #expect(DaylightRescueAperturePolicy.nextStop(after: 1.78, stops: []) == nil)
+    @Test func apertureTakesTheTrueMaximumOfAnUnsortedOrDuplicatedLadder() {
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 1.78, stops: [4.0, 1.78, 2.8]) == 4.0)
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 1.78, stops: [2.8, 4.0, 4.0, 1.78]) == 4.0)
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 4.0, stops: [4.0, 1.78, 2.8]) == nil)
+    }
+
+    /// No guessed f/4 on a lens that stops at f/2.8: the destination is always a
+    /// stop the capability reports.
+    @Test func apertureNeverGuessesAStopTheLensDoesNotReport() {
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 1.78, stops: [1.78, 2.8]) == 2.8)
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 2.8, stops: [1.78, 2.8]) == nil)
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 1.78, stops: []) == nil)
+        // A fixed lens reports one stop, which is never above itself.
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 1.78, stops: [1.78]) == nil)
+    }
+
+    @Test func apertureOffersNothingWithoutAValidCurrentIris() {
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: nil, stops: [1.78, 2.8]) == nil)
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 0, stops: [1.78, 2.8]) == nil)
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: -1.78, stops: [1.78, 2.8]) == nil)
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: .nan, stops: [1.78, 2.8]) == nil)
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: .infinity, stops: [1.78, 2.8]) == nil)
+    }
+
+    @Test func apertureIgnoresNonFiniteAndNonPositiveLadderEntries() {
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 1.78, stops: [1.78, 4.0, .nan, .infinity]) == 4.0)
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 1.78, stops: [1.78, .nan, .infinity]) == nil)
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 1.78, stops: [1.78, 0, -2.8]) == nil)
+        #expect(DaylightRescueAperturePolicy.strongestStop(after: 1.78, stops: [.nan]) == nil)
     }
 
     @Test func apertureTitlePrintsTheDestinationFNumber() {
-        #expect(DaylightRescueAperturePolicy.title(forStop: 2.8) == "Close to f/2.8")
-        #expect(DaylightRescuePresentation.aperture(nextStop: 2.8, enabled: true)?.title
-                == "Close to f/2.8")
+        #expect(DaylightRescueAperturePolicy.title(forStop: 2.8) == "Stop down to f/2.8")
+        // A whole stop keeps the lens' f/4 form rather than f/4.0.
+        #expect(DaylightRescueAperturePolicy.title(forStop: 4.0) == "Stop down to f/4")
+        #expect(DaylightRescuePresentation.aperture(nextStop: 4.0, enabled: true)?.title
+                == "Stop down to f/4")
         #expect(DaylightRescuePresentation.aperture(nextStop: nil, enabled: true) == nil)
+    }
+
+    @Test func apertureRowNamesTheStrongestStopAndItsScope() {
+        let row = DaylightRescuePresentation.aperture(nextStop: 4.0, enabled: true)
+        #expect(row?.enabled == true)
+        #expect(row?.detail == "Strongest stop · applies to the next take")
+        // The row never claims the live preview is unchanged or that highlights
+        // were recovered from the recorded take.
+        #expect(row?.detail.lowercased().contains("clip") == false)
+        #expect(row?.detail.lowercased().contains("recover") == false)
     }
 
     @Test func apertureRowDisablesWhileBusy() {
@@ -149,7 +208,28 @@ struct DaylightRescueOptionTests {
         #expect(!card.contains("24 fps or 60 fps?"))
         let view = try source("App/ContentView.swift")
         #expect(view.contains("DaylightRescuePresentation.pull("))
-        #expect(view.contains("DaylightRescueAperturePolicy.nextStop("))
+        #expect(view.contains("DaylightRescueAperturePolicy.strongestStop("))
+    }
+
+    /// The row the operator reads and the value the tap writes are resolved by
+    /// the same policy call with the same owner-owned floor, so the destination
+    /// shown is the destination applied.
+    @Test func rescueRowsAndTheirActionsResolveTheSameDestination() throws {
+        let view = try source("App/ContentView.swift")
+        func occurrences(of needle: String) -> Int {
+            view.components(separatedBy: needle).count - 1
+        }
+        #expect(occurrences(of: "floor: PushPullStops.pullThree.rawValue") == 2,
+                "The row and the tap must both use the ladder owner's own floor.")
+        // The row renders the same take the tap will read, through the same
+        // policy: `pull(...)` for display, `nextStops(after:)` for the write.
+        #expect(view.contains("currentStops: daylightRescueCurrentPullStops"))
+        #expect(view.contains("let current = daylightRescueCurrentPullStops"))
+        #expect(occurrences(of: "DaylightRescuePullPolicy.nextStops(") == 1)
+        // Aperture: one destination, resolved above the overlay and forwarded
+        // unchanged to the canonical setter.
+        #expect(view.contains("let apertureStop = daylightRescueApertureStop"))
+        #expect(view.contains("cameraViewModel.setLensAperture(apertureStop)"))
     }
 
     @Test func contentViewRoutesTheThreeOptionsToTheirOwners() throws {
