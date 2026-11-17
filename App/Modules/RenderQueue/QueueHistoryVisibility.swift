@@ -64,3 +64,39 @@ final class QueueHistoryVisibility {
         return Set(strings.compactMap(UUID.init(uuidString:)))
     }
 }
+
+/// Pure continuation rule for an open History preview when the displayed receipt
+/// order changes underneath it.
+///
+/// The pager must never re-seat itself on the first page just because the page it
+/// was showing left the list: the operator asked to hide one image, not to jump
+/// back to the newest one. Hiding therefore continues to the next surviving row in
+/// the order that was on screen, and at the end of the list falls back to the
+/// nearest surviving predecessor. An emptied list closes the preview.
+///
+/// A wholly replaced list (the visible/hidden eye flip, a queue reload) has no
+/// survivor to continue from, so it keeps the previous first-row fallback rather
+/// than leaving a dangling selection. This type owns no state.
+enum QueuePreviewContinuation {
+    /// The preview selection that should follow `current` once `newIDs` replaces
+    /// `oldIDs` as the displayed order.
+    static func selection(current: UUID?, oldIDs: [UUID], newIDs: [UUID]) -> UUID? {
+        guard !newIDs.isEmpty else { return nil }
+        guard let current else { return nil }
+        let survivors = Set(newIDs)
+        if survivors.contains(current) { return current }
+
+        if let index = oldIDs.firstIndex(of: current) {
+            // Forward first: the next row that survived several removals at once.
+            if let successor = oldIDs[oldIDs.index(after: index)...].first(where: survivors.contains) {
+                return successor
+            }
+            // At the end of the list, so the closest surviving neighbour behind it.
+            if let predecessor = oldIDs[..<index].reversed().first(where: survivors.contains) {
+                return predecessor
+            }
+        }
+        // Nothing from the previous order survived: the list was replaced.
+        return newIDs.first
+    }
+}

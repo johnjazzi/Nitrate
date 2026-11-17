@@ -78,10 +78,14 @@ struct QueueSheetView: View {
         .presentationDragIndicator(.visible)
         .presentationBackground(.black)
         .preferredColorScheme(.dark)
-        .onChange(of: historyReceipts.map(\.id)) { _, ids in
-            if let current = previewJobID, !ids.contains(current) {
-                previewJobID = ids.first
-            }
+        .onChange(of: historyReceipts.map(\.id)) { oldIDs, newIDs in
+            // Safety net for every other reason the displayed order changes: the
+            // eye toggle, a queue reload, a batch clear. The policy continues the
+            // preview to the next surviving row instead of the first one.
+            let next = QueuePreviewContinuation.selection(current: previewJobID,
+                                                         oldIDs: oldIDs,
+                                                         newIDs: newIDs)
+            if next != previewJobID { previewJobID = next }
         }
         .onAppear { cameraViewModel.updateFreeSpace() }
     }
@@ -663,7 +667,9 @@ struct QueueSheetView: View {
 
     private func clearFailed(_ ids: Set<UUID>) {
         let currentFailures = Set(viewModel.jobs.filter { $0.status == .failed }.map(\.id))
-        for id in ids.intersection(currentFailures) { viewModel.historyVisibility.hide(id) }
+        let doomed = ids.intersection(currentFailures)
+        preparePreviewForRemoval(of: doomed)
+        for id in doomed { viewModel.historyVisibility.hide(id) }
         failedSelection.subtract(ids)
     }
 
@@ -822,11 +828,28 @@ struct QueueSheetView: View {
     /// Hide/show is presentation only: it never removes the job, its original,
     /// its retained output, its Photos state or its render recipe.
     private func toggleHidden(_ job: RenderJob) {
+        // Choose the successor while the row is still on screen: a pager whose
+        // selected page vanishes re-seats itself on the first page, so the
+        // continuation has to happen before the removal, not after it.
+        preparePreviewForRemoval(of: [job.id])
         if hiddenIDs.contains(job.id) {
             viewModel.historyVisibility.show(job.id)
         } else {
             viewModel.historyVisibility.hide(job.id)
         }
+    }
+
+    /// Point the pager at the row that will survive `doomed` leaving the displayed
+    /// order, so removing those pages never snaps the preview back to the first
+    /// one. The choice itself belongs to `QueuePreviewContinuation`.
+    private func preparePreviewForRemoval(of doomed: Set<UUID>) {
+        guard previewJobID != nil else { return }
+        let displayed = historyReceipts.map(\.id)
+        previewJobID = QueuePreviewContinuation.selection(
+            current: previewJobID,
+            oldIDs: displayed,
+            newIDs: displayed.filter { !doomed.contains($0) }
+        )
     }
 
     private func toggleSelection(_ job: RenderJob) {

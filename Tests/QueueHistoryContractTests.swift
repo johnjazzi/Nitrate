@@ -47,7 +47,10 @@ struct QueueHistoryContractTests {
         let sheet = try source("App/Modules/RenderQueue/QueueSheetView.swift")
         let clear = try section(sheet, from: "private func clearFailed", to: "private func failedTimestamp")
         #expect(clear.contains("let currentFailures = Set(viewModel.jobs.filter { $0.status == .failed }.map(\\.id))"))
-        #expect(clear.contains("for id in ids.intersection(currentFailures) { viewModel.historyVisibility.hide(id) }"))
+        #expect(clear.contains("let doomed = ids.intersection(currentFailures)"))
+        #expect(clear.contains("for id in doomed { viewModel.historyVisibility.hide(id) }"))
+        #expect(clear.contains("preparePreviewForRemoval(of: doomed)"),
+                "A batch clear continues the open preview before the rows leave")
         for forbidden in ["viewModel.remove(", "removeItem", "FileManager", "PHAsset", "PhotosPicker",
                           "outputURL", ".status = .", "sourceURL ="] {
             #expect(!clear.contains(forbidden), "Clearing failures must not touch media or jobs: \(forbidden)")
