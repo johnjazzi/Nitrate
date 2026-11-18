@@ -135,7 +135,11 @@ extension DevelopVideoModel {
         guard PhotoImportService.shouldRetryFromLibrary(after: directFailure) else {
             throw directFailure ?? CancellationError()
         }
-        return try await DevelopPhotoLibraryRaw.load(for: item, onStart: attachTransferProgress)
+        do {
+            return try await DevelopPhotoLibraryRaw.load(for: item, onStart: attachTransferProgress)
+        } catch {
+            throw PhotoImportService.contextualLibraryFailure(error, directFailure: directFailure)
+        }
     }
 
     func loadClip(from item: PhotosPickerItem) async throws -> DevelopClipTransfer {
@@ -168,6 +172,11 @@ enum DevelopPhotoLibraryRaw {
         guard let identifier = item.itemIdentifier, !identifier.isEmpty else {
             throw PhotoImportError.selectionNotIdentified
         }
+        // A permission decision is not a network transfer: do not time out the
+        // system alert or start a download after the selection was cancelled.
+        try Task.checkCancellation()
+        try await PhotoLibraryRawRequest.authorizeRead()
+        try Task.checkCancellation()
         let picked: DevelopVideoModel.DevelopPhotoTransfer? = try await DevelopTransferLoader.load(
             timeout: .seconds(120), onStart: onStart) { completion in
             let progress = Progress(totalUnitCount: 100)
@@ -218,9 +227,12 @@ private final class PhotoLibraryRawRequest: @unchecked Sendable {
     }
 
     func begin() {
-        Task.detached(priority: .userInitiated) { [self] in await run() }
+        Task { @MainActor [self] in await run() }
     }
 
+    // Keep PhotoKit resources on the same actor as the transfer loader. Only
+    // streamed bytes and lock-protected request state cross callback queues.
+    @MainActor
     private func run() async {
         defer { discardStaging() }
         do {
@@ -247,8 +259,8 @@ private final class PhotoLibraryRawRequest: @unchecked Sendable {
     }
 
     /// The asset's raw resource, fetched by the one identifier the picker gave.
+    @MainActor
     private func rawResource() async throws -> (PHAssetResource, PhotoResourceDescriptor) {
-        try await authorizeRead()
         try checkCancellation()
         // Fetch, never enumerate: one asset by its local identifier.
         guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject else {
@@ -257,7 +269,7 @@ private final class PhotoLibraryRawRequest: @unchecked Sendable {
         let resources = PHAssetResource.assetResources(for: asset)
         let descriptors = resources.map { PhotoResourceDescriptor($0) }
         guard let index = PhotoImportService.rawResourceIndex(in: descriptors), index < resources.count else {
-            throw PhotoImportError.unsupported(found: descriptors.first?.foundLabel ?? "an image without a raw file")
+            throw PhotoImportService.rawResourceRefusal(in: descriptors)
         }
         return (resources[index], descriptors[index])
     }
@@ -265,7 +277,8 @@ private final class PhotoLibraryRawRequest: @unchecked Sendable {
     /// Read access, asked for only when it is actually needed: the direct
     /// transfer of the picked file is permission-free, so this runs behind a
     /// refusal and never at launch.
-    private func authorizeRead() async throws {
+    @MainActor
+    static func authorizeRead() async throws {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         switch status {
         case .authorized, .limited:
@@ -307,6 +320,7 @@ private final class PhotoLibraryRawRequest: @unchecked Sendable {
     }
 
     /// Stream the resource to disk. No full-image `Data` is ever accumulated.
+    @MainActor
     private func stream(_ resource: PHAssetResource) async throws {
         let delivered = try await DevelopTransferLoader.load(timeout: .seconds(120)) { completion in
             let options = PHAssetResourceRequestOptions()
@@ -414,6 +428,8 @@ private final class PhotoLibraryRawRequest: @unchecked Sendable {
             return PhotoImportError.libraryAccessDenied
         case .accessRestricted:
             return PhotoImportError.libraryAccessRestricted
+        case .networkAccessRequired, .networkError:
+            return PhotoImportError.rawDownloadUnavailable
         default:
             return PhotoImportError.unreadable
         }

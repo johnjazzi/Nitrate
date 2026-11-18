@@ -30,6 +30,35 @@ struct DevelopWorkflowWiringTests {
         }
     }
 
+    @Test func onlyThePhotoPickerNamesItsLibraryForPairedRawIdentity() throws {
+        let preview = try source("App/Modules/VideoImport/DevelopPreview.swift")
+        let videoStart = try #require(preview.range(of: "private var videoPicker: some View"))
+        let photoStart = try #require(preview.range(of: "private var photoPicker: some View"))
+        let stagingStart = try #require(preview.range(of: "private func stageClips("))
+        let video = preview[videoStart.lowerBound..<photoStart.lowerBound]
+        let photo = preview[photoStart.lowerBound..<stagingStart.lowerBound]
+        #expect(photo.contains("preferredItemEncoding: .current, photoLibrary: .shared()"))
+        #expect(!video.contains("photoLibrary:"))
+    }
+
+    @Test func pairedRawLookupAuthorizesBeforeTimingTheSelectedResourceTransfer() throws {
+        let picker = try source("App/Modules/VideoImport/DevelopVideoPicker.swift")
+        let loaderStart = try #require(picker.range(of: "enum DevelopPhotoLibraryRaw {"))
+        let authorization = try #require(picker.range(of: "try await PhotoLibraryRawRequest.authorizeRead()",
+            range: loaderStart.upperBound..<picker.endIndex))
+        let transfer = try #require(picker.range(of: "try await DevelopTransferLoader.load(",
+            range: loaderStart.upperBound..<picker.endIndex))
+        #expect(authorization.lowerBound < transfer.lowerBound,
+                "Time spent deciding a Photos permission is not a failed network transfer")
+        #expect(picker.contains("guard PhotoImportService.shouldRetryFromLibrary(after: directFailure)"))
+        #expect(picker.contains("PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)"))
+        #expect(picker.contains("manager.requestData(for: resource, options: options)"))
+        #expect(picker.contains("manager.cancelDataRequest(installed)"))
+        #expect(picker.contains("try await PhotoImportService.validateRaw(at: file)"))
+        #expect(picker.contains("VideoImportService.copyToOwnedStorage("))
+        #expect(picker.contains("DevelopVideoModel.DevelopPhotoTransfer("))
+    }
+
     @Test func importPreviewAndRenderFailuresShowAnInlineReason() throws {
         let preview = try source("App/Modules/VideoImport/DevelopPreview.swift")
         #expect(preview.contains("Text(DevelopWorkflowPresentation.issueSummary(issue))"))

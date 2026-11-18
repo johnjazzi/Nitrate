@@ -65,6 +65,7 @@ enum TestRepository {
         "Tests/Fixtures/colorchecker-babelcolor-2006.json",
         "Tests/Fixtures/history-first-frame.mov",
         "App/ContentView.swift",
+        "App/Modules/VideoImport/DevelopVideoPicker.swift",
         "App/Modules/FilmStockLibrary/GaugeControl.swift",
         "App/Modules/FilmStockLibrary/PushPullControl.swift",
         "App/Modules/Purchase/AboutView.swift",

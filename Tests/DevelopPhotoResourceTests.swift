@@ -176,6 +176,52 @@ struct DevelopPhotoResourceTests {
 
     // MARK: - What the operator is told
 
+    @Test func aLibraryRefusalNamesThePrimaryPhotoNotItsSidecars() throws {
+        let resources = [
+            Self.resource(.sidecar, "IMG_7.MOV", "com.apple.quicktime-movie"),
+            Self.resource(.primaryPhoto, "IMG_7.JPG", "public.jpeg")
+        ]
+        let refusal = PhotoImportService.rawResourceRefusal(in: resources)
+        let message = try #require(refusal.errorDescription)
+        #expect(message.contains("JPEG"))
+        #expect(!message.contains("QuickTime"))
+    }
+
+    @Test func aRawEditingBaseIsNotMisreportedAsAJPEG() {
+        let resources = [
+            Self.resource(.primaryPhoto, "IMG_7.JPG", "public.jpeg"),
+            Self.resource(.adjustmentBasePhoto, "IMG_7.NEF", "com.nikon.raw-image")
+        ]
+        #expect(PhotoImportService.rawResourceIndex(in: resources) == nil)
+        #expect(PhotoImportService.rawResourceRefusal(in: resources) == .rawEditingBaseOnly)
+        #expect(PhotoImportError.rawEditingBaseOnly.errorDescription?.contains("unedited RAW original") == true)
+    }
+
+    @Test func deniedLookupKeepsTheRenderedFormatWithoutClaimingARawExists() throws {
+        for failure in [PhotoImportError.libraryAccessDenied, .libraryAccessRestricted, .assetNotInLibrary] {
+            let contextual = PhotoImportService.contextualLibraryFailure(failure,
+                directFailure: PhotoImportError.unsupported(found: "JPEG image"))
+            let message = contextual.localizedDescription
+            let reason = try #require(failure.errorDescription)
+            #expect(message.hasPrefix("Photos supplied JPEG image."))
+            #expect(message.contains(reason))
+            #expect(!message.contains("the raw paired with this photo could not be read"))
+        }
+        let cancelled = PhotoImportService.contextualLibraryFailure(CancellationError(),
+            directFailure: PhotoImportError.unsupported(found: "JPEG image"))
+        #expect(cancelled is CancellationError)
+        let unreadable = PhotoImportService.contextualLibraryFailure(PhotoImportError.unreadable,
+            directFailure: PhotoImportError.unsupported(found: "JPEG image")) as? PhotoImportError
+        #expect(unreadable == .unreadable)
+    }
+
+    @Test func anUnavailableCloudOriginalHasAConnectionRecoveryMessage() throws {
+        let message = try #require(PhotoImportError.rawDownloadUnavailable.errorDescription)
+        #expect(message.contains("iCloud"))
+        #expect(message.contains("connection"))
+        #expect(!PhotoImportService.shouldRetryFromLibrary(after: PhotoImportError.rawDownloadUnavailable))
+    }
+
     /// Denial, restriction and a limited library missing the picked photo are
     /// distinct, actionable outcomes — never a silent JPEG develop, and never a
     /// bare "try again".

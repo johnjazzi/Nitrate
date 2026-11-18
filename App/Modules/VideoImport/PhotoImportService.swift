@@ -46,6 +46,9 @@ enum PhotoImportError: LocalizedError, Equatable {
     /// The picker item carries no asset identity, so there is nothing to ask
     /// Photos about.
     case selectionNotIdentified
+    case libraryLookupUnavailable(found: String, reason: String)
+    case rawEditingBaseOnly
+    case rawDownloadUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -56,13 +59,19 @@ enum PhotoImportError: LocalizedError, Equatable {
         case .unreadable:
             return "Could not read this photo. Try again."
         case .libraryAccessDenied:
-            return "Photos access is off, so the raw paired with this photo could not be read. Allow access in Settings, or import the raw file itself."
+            return "Photos access is off. Allow this photo in Settings to check for a paired RAW original, or select the RAW file itself."
         case .libraryAccessRestricted:
-            return "Photos access is restricted on this device, so the raw paired with this photo could not be read."
+            return "Photos access is restricted on this device, so Nitrate cannot check for a paired RAW original."
         case .assetNotInLibrary:
             return "This photo is not available to Nitrate. If Photos access is limited to selected photos, allow this one, or allow full access in Settings."
         case .selectionNotIdentified:
             return "The picker did not identify this photo, so its paired raw could not be found. Pick it again."
+        case .libraryLookupUnavailable(let found, let reason):
+            return "Photos supplied \(found). \(reason)"
+        case .rawEditingBaseOnly:
+            return "This RAW is only available as a Photos editing base. Select the unedited RAW original to develop it."
+        case .rawDownloadUnavailable:
+            return "Could not download this photo's RAW original from iCloud. Check your connection and try again."
         }
     }
 }
@@ -202,6 +211,29 @@ enum PhotoImportService {
             // An unnamed type is still evidence when its content type or name
             // says raw; it ranks last so a known raw resource always wins.
             return isRawResource(resource) ? 2 : nil
+        }
+    }
+
+    static func rawResourceRefusal(in resources: [PhotoResourceDescriptor]) -> PhotoImportError {
+        if resources.contains(where: { $0.kind == .adjustmentBasePhoto && isRawResource($0) }) {
+            return .rawEditingBaseOnly
+        }
+        let primary = resources.first { $0.kind == .primaryPhoto }
+        return .unsupported(found: primary?.foundLabel ?? "a photo without an accessible RAW original")
+    }
+
+    /// A denied lookup cannot establish whether a paired RAW exists. Preserve
+    /// what the picker actually supplied instead of claiming a RAW was found.
+    static func contextualLibraryFailure(_ failure: Error, directFailure: Error?) -> Error {
+        guard let refusal = directFailure as? PhotoImportError,
+              case .unsupported(let found) = refusal,
+              let libraryFailure = failure as? PhotoImportError else { return failure }
+        switch libraryFailure {
+        case .libraryAccessDenied, .libraryAccessRestricted, .assetNotInLibrary:
+            return PhotoImportError.libraryLookupUnavailable(found: found,
+                reason: libraryFailure.errorDescription ?? "The paired RAW lookup was not permitted.")
+        default:
+            return failure
         }
     }
 
