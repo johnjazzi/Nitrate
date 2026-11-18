@@ -326,10 +326,12 @@ private final class PhotoLibraryRawRequest: @unchecked Sendable {
             let options = PHAssetResourceRequestOptions()
             // An original that lives only in iCloud is still the operator's raw.
             options.isNetworkAccessAllowed = true
-            options.progressHandler = { [weak self] fraction in self?.note(fraction: fraction) }
-            let installed = manager.requestData(for: resource, options: options) { [weak self] chunk in
+            // PhotoKit calls these Objective-C blocks on its own serial queue.
+            // Explicit Sendable closures must not inherit this method's MainActor.
+            options.progressHandler = { @Sendable [weak self] fraction in self?.note(fraction: fraction) }
+            let installed = manager.requestData(for: resource, options: options) { @Sendable [weak self] chunk in
                 self?.append(chunk)
-            } completionHandler: { [weak self] error in
+            } completionHandler: { @Sendable [weak self] error in
                 guard let self else {
                     completion(.success(false))
                     return

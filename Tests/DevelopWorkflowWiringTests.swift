@@ -41,6 +41,15 @@ struct DevelopWorkflowWiringTests {
         #expect(!video.contains("photoLibrary:"))
     }
 
+    @Test func photoKitResourceCallbacksDoNotInheritTheMainActor() throws {
+        let picker = try source("App/Modules/VideoImport/DevelopVideoPicker.swift")
+        // PhotoKit invokes these Objective-C blocks on its file-I/O queue.
+        // Implicit actor inheritance compiles but traps when the bytes arrive.
+        #expect(picker.contains("options.progressHandler = { @Sendable [weak self]"))
+        #expect(picker.contains("manager.requestData(for: resource, options: options) { @Sendable [weak self]"))
+        #expect(picker.contains("completionHandler: { @Sendable [weak self]"))
+    }
+
     @Test func pairedRawLookupAuthorizesBeforeTimingTheSelectedResourceTransfer() throws {
         let picker = try source("App/Modules/VideoImport/DevelopVideoPicker.swift")
         let loaderStart = try #require(picker.range(of: "enum DevelopPhotoLibraryRaw {"))
