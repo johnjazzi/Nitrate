@@ -25,7 +25,8 @@ struct ContactPreviewFrame<Content: View>: View {
                 HStack(spacing: 0) {
                     // Stock reads top-to-bottom, matching the right-hand ISO
                     // print; both become upright when the phone turns left.
-                    frameLabel(stockAndGauge, degrees: 90)
+                    // Trailing alignment keeps the stock at the bottom of its side band.
+                    frameLabel(stockAndGauge, degrees: 90, alignment: .trailing)
                     content()
                         .frame(width: size.width, height: size.height)
                         .clipped()
