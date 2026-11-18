@@ -374,11 +374,12 @@ static inline float3 spatial_halation_energy(float3 linear, float3 onsetStops,
 //
 // ONE brightness policy, THREE per-channel radii. The mask's RGB energy is
 // partitioned at each SOURCE texel into four nonnegative buckets summing to 1.
-// Log-brightness handoffs are 0.5x -> 4x -> 8x -> 12x diffuse white; their default
-// radius factors are 0.5 / 1.25 / 2 / 2.5. Each bucket's RGB channels retain their
-// own Gaussian radii: red 1.8x, green 1x, blue 0.5x base. The receiving pixel
-// never chooses a width; a brighter source only redistributes existing energy.
-// The first width anchor and red energy onset are both 0.5x white by default.
+// Log-brightness handoffs are 1x -> 5x -> 9x -> 12x diffuse white; their default
+// radius factors are 0.25 / 0.75 / 1.25 / 2. Each bucket's RGB channels retain
+// their own Gaussian radii: red 1.8x, green 1x, blue 0.5x base. The receiving
+// pixel never chooses a width; a brighter source only redistributes existing
+// energy. The first width anchor sits at diffuse white, where red's energy
+// onset also is. The 12x upper anchor is a width-policy choice, not a clip limit.
 //
 static inline float spatial_bucket_ramp(float brightness, float low, float high) {
     float stops = log2(max(brightness, 1.0e-4f));
@@ -387,9 +388,9 @@ static inline float spatial_bucket_ramp(float brightness, float low, float high)
 }
 
 static inline float4 spatial_bucket_weights(float brightness) {
-    float a = spatial_bucket_ramp(brightness, 0.5f, 4.0f);
-    float b = spatial_bucket_ramp(brightness, 4.0f, 8.0f);
-    float c = spatial_bucket_ramp(brightness, 8.0f, 12.0f);
+    float a = spatial_bucket_ramp(brightness, 1.0f, 5.0f);
+    float b = spatial_bucket_ramp(brightness, 5.0f, 9.0f);
+    float c = spatial_bucket_ramp(brightness, 9.0f, 12.0f);
     return float4(1.0f - a, a - b, b - c, c);
 }
 

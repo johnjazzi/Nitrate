@@ -352,7 +352,12 @@ struct DebugFrameRenderTests {
     func halationIsGradedThroughTheSameLUTAsTheSource() throws {
         let renderer = try makeRenderer()
         let config = try loadConfig()
-        let code: Float16 = 0.6
+        // ~1.25x white delivered (the mask frame is a stop under at -1), inside
+        // red's shaped low tail between its 1x onset and the 4x join, and well
+        // below the graded shoulder. The old 0.6 code now decodes BELOW red's
+        // onset, where every layer is dark and this comparison would pass
+        // without exercising the reference at all.
+        let code: Float16 = 0.637
         let frame = try Self.makeSyntheticFrame(background: code, highlight: code)
         var parameters = PipelineRenderer.DebugFrameParameters(config: config)
         parameters.glowStrength = 0
@@ -415,9 +420,9 @@ struct DebugFrameRenderTests {
             .map { abs(Int($0.0) - Int($0.1)) }.max() ?? 0
         // The independent reference adds in Double then quantizes to half-float;
         // the renderer adds a half-float mask then re-encodes to half-float.
-        // Retain the three-byte budget through the trilinear LUT. The lower-light
-        // fixture exercises the new red tail without hiding a wrong reference
-        // in the LUT's saturated shoulder.
+        // Retain the three-byte budget through the trilinear LUT. The
+        // inside-the-tail fixture exercises the shaped red response without
+        // hiding a wrong reference in the LUT's saturated shoulder.
         #expect(maximumDifference <= 3,
                 "Halation must enter the LUT as added scene light (max byte difference \(maximumDifference))")
     }

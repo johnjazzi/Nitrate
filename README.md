@@ -295,12 +295,13 @@ native HLG → shared input adapter ┴→ Apple Wide Gamut / Log 2
 - **Grain** is [described below](#how-the-grain-works).
 
 The halation model is **physically informed, not a calibrated film simulation**.
-Its channel thresholds are 0.75×, 1.5× and 3× decoded diffuse white; radius
-multipliers are 1.8×, 1× and 0.5× the stock's base radius. Channel energy is divided
-by a 10× excess reference before stock weights and strength are applied, starting
-earlier with a gentler ramp. The reference is that one absolute point for stills
-and takes alike — it is never measured off the file, so both ramp over the same
-span of light. These are starting values for device tuning, not measured emulsion properties. Halation
+Its RGB onsets are 0 / 2.15 / 3.00 stops above diffuse white (1× / 4.44× / 8×).
+Channel radius ratios are 1.8× / 1× / 0.5×, with source-brightness factors
+0.25× / 0.75× / 1.25× / 2× at 1× / 5× / 9× / 12× white. Layer response ramps
+in log brightness to a shared 3.3219-stop (~10× white) full-response reference;
+red's shaped low tail preserves the previous response from 4× white upward.
+That authored reference is not the source clip ceiling used by push/pull, which
+is measured from the source. These are tuning values, not measured emulsion properties. Halation
 addition is scene-linear and pre-LUT, with no background-dependent shadow gate;
 final colour and highlight rolloff come from the same stock LUT as the source.
 Passing GPU tests establishes the operation order and numerical behaviour, not

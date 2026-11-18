@@ -72,7 +72,7 @@ final class SpatialEffectsStage {
     /// The four brightness bucket sigmas, as multiples of ONE shared base. A
     /// source climbs from narrow to wide as it gets brighter (see
     /// `spatial_bucket_weights` for the knots).
-    private static let halationBucketFactors = SIMD4<Float>(0.5, 1.25, 2.0, 2.5)
+    private static let halationBucketFactors = SIMD4<Float>(0.25, 0.75, 1.25, 2.0)
 
     /// Per-channel diffusion radius, as a multiple of the same base sigma.
     /// Red scatters furthest through the emulsion, green is the middle layer and
@@ -99,15 +99,13 @@ final class SpatialEffectsStage {
     /// `spatial_halation_energy`). The old form — a knee in white
     /// multiples with growth linear in light — spent most of its span near the
     /// top, so a highlight appeared to do nothing and then saturate.
-    /// Authored from an outdoor scene in the debug sheet: these are the onsets that
-    /// read most natural on real light, and they sit about a stop and a half above
-    /// the earlier authored set, so an ordinary sunlit surface has to climb a
-    /// little further before it scatters. Red comes on first, then green, then
-    /// blue. Red's low tail begins at half white, while its response from 4x
-    /// white upward and the shared full-response reference stay unchanged.
-    private static let redOnsetStops: Float = -1.0000   // 0.5x diffuse white; rejoins old curve at 4x
-    private static let greenOnsetStops: Float = 1.2000  // 2.30x
-    private static let blueOnsetStops: Float = 2.1000   // 4.29x
+    /// Current tuning onsets: red begins at diffuse white, then green at 4.44x
+    /// and blue at 8x. Red retains the shaped low-light tail, joining the previous
+    /// +0.6-stop response at 4x white in both value and slope. Its response above
+    /// that join and the shared full-response reference remain unchanged.
+    private static let redOnsetStops: Float = 0.0000    // 1x diffuse white; C1 tail still joins old curve at 4x
+    private static let greenOnsetStops: Float = 2.1500  // 4.44x
+    private static let blueOnsetStops: Float = 3.0000   // 8.00x
 
     /// Where a layer reaches FULL contribution: 10x diffuse white, ONE value for
     /// stills and takes alike.
@@ -241,7 +239,7 @@ final class SpatialEffectsStage {
     /// energy is still added, but locally, over the source's own footprint.
     ///
     /// WIDTH is two independent policies multiplied together. The per-layer
-    /// energy is first split by how bright its SOURCE is (knots at 2x, 4x and 8x
+    /// energy is first split by how bright its SOURCE is (knots at 1x, 5x, 9x and 12x
     /// diffuse white — see `spatial_bucket_weights`), and each bucket's factor
     /// from `halationBucketFactors` scales the reach. Each bucket is then
     /// filtered per channel at `halationChannelFactors`: red 1.8x green's sigma,

@@ -45,8 +45,10 @@ struct PhotoDevelopmentPipelineTests {
         #expect(wall < trigger(onset: onsets.x, lift: 0) * powf(2, 2.988),
                 "nor an unlifted one, at the same scene light")
 
-        // A genuine specular still clears every layer, so the halo does not vanish.
-        let specular: Float = 20
+        // A genuine specular still clears every layer, so the halo does not
+        // vanish. In the lifted frame's units this is ~10x the delivered white,
+        // above blue's 8x onset.
+        let specular: Float = 40
         for onset in [onsets.x, onsets.y, onsets.z] {
             #expect(specular > trigger(onset: onset, lift: 2.988),
                     "a bright specular must still clear every layer")
@@ -62,9 +64,9 @@ struct PhotoDevelopmentPipelineTests {
                 "the develop lift is the capture stop put back, or the delivered exposure moves")
 
         let onsets = SpatialEffectsStage.halationOnsets()
-        #expect(abs(powf(2, onsets.x) - 0.5) < 0.001, "red responds from 0.5x diffuse white")
-        #expect(abs(powf(2, onsets.y) - 2.29740) < 0.001, "green from 2.30x")
-        #expect(abs(powf(2, onsets.z) - 4.28709) < 0.001, "blue from 4.29x")
+        #expect(abs(powf(2, onsets.x) - 1.0) < 0.001, "red responds from 1x diffuse white")
+        #expect(abs(powf(2, onsets.y) - 4.43828) < 0.001, "green from 4.44x")
+        #expect(abs(powf(2, onsets.z) - 8.0) < 0.001, "blue from 8x")
 
         // A take is measured a stop under the picture it delivers, and that offset
         // is the whole of the compensation: the same onset lands on the same

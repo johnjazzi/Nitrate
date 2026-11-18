@@ -13,16 +13,18 @@ to one. The handoffs are smoothstep ramps in log brightness:
 
 | Source brightness (× diffuse white) | Radius factor |
 |---|---|
-| ≤0.5× | 0.5× |
-| 4× | 1.25× |
-| 8× | 2× |
-| ≥12× | 2.5× |
+| ≤1× | 0.25× |
+| 5× | 0.75× |
+| 9× | 1.25× |
+| ≥12× | 2× |
 
-Red now begins just above **0.5× white (−1 stop)**; green/blue retain **1.2 / 2.1
-stops**. The first source-width anchor is also 0.5× white, with radius factor
-0.5×. The 4×-white midpoint and 8×-white width stay unchanged.
-For brightness `b`, let `a = ramp(b, 0.5, 4)`, `c = ramp(b, 4, 8)` and
-`d = ramp(b, 8, 12)`, all log2 smoothsteps; the weights are
+Red now begins at **1× white (0 stops)**; green/blue sit at **2.15 / 3.0
+stops**. The first source-width anchor is also 1× white, with radius factor
+0.25×; the top anchor stays at 12× white.
+The handoff spans narrow in stops as brightness rises, concentrating the
+remaining width growth near the brightest highlights rather than widening early.
+For brightness `b`, let `a = ramp(b, 1, 5)`, `c = ramp(b, 5, 9)` and
+`d = ramp(b, 9, 12)`, all log2 smoothsteps; the weights are
 `(1-a, a-c, c-d, d)`. Each bucket is filtered at the colour's own sigma (red
 **1.8**, green **1**, blue **0.5** times base), then summed before tint/strength
 and scene-linear addition. The implementation uses twelve MPS Gaussian
@@ -32,13 +34,14 @@ The Debug growth control interpolates all four radius factors from **1×** at
 zero to their authored values at one; it disables width variation without
 changing the RGB energy thresholds.
 
-Red's early tail smoothly joins its previous +0.6-stop curve at **4× white**,
-matching both value and slope. With source stops `s`, red onset `o < 0.6`, and
-reference `R`, use `E4 = 1.4 / (R - 0.6)`, `t = clamp((s-o)/(2-o), 0, 1)`, then
-`red = E4 * t^((2-o)/1.4)` below 4×. At/above 4×, retain the previous red ramp
-`clamp((s-0.6)/(R-0.6), 0, 1)`. The tail is monotone and starts with zero slope;
-exactly at the onset its energy is zero. Green and blue stay linear in stops.
-Debug red onsets at/above +0.6 retain the ordinary authored linear ramp.
+Red's early tail still meets its previous +0.6-stop curve at **4× white**,
+matching both value and slope. Moving the onset to 1× white changes the low end
+without moving that join. With source stops `s`, red onset `o < 0.6`,
+and reference `R`, use `E4 = 1.4 / (R - 0.6)`, `t = clamp((s-o)/(2-o), 0, 1)`,
+then `red = E4 * t^((2-o)/1.4)` below 4×. At/above 4×, retain the previous red
+ramp `clamp((s-0.6)/(R-0.6), 0, 1)`. The tail is monotone and starts with zero
+slope; exactly at the onset its energy is zero. Green and blue stay linear in
+stops. Debug red onsets at/above +0.6 retain the ordinary authored linear ramp.
 
 The gauge separately scales the stock radius: **8mm 1.4, 16mm 0.7, 35mm 0.35,
 75mm 0.05**, relative to the previously shared stock radius. Its halation energy
@@ -63,10 +66,10 @@ coarse-grid artifacts; its timing is not the cost of this renderer.
 All four numbers are stops above diffuse white:
 
 ```
-redOnset    −1.00    0.5x diffuse white (curved tail, old response from 4x upward)
-greenOnset  +1.20    2.30x
-blueOnset   +2.10    4.29x
-reference   +3.322   10x, inside Apple Log 2's ~12x recorded range
+redOnset     0.00    1.00x diffuse white (curved tail, old response from 4x upward)
+greenOnset  +2.15    4.44x
+blueOnset   +3.00    8.00x
+reference   +3.322   ~10x full halation response, not the source clip limit
 ```
 
 The mask reads ONE frame, and `frameWhiteStops` says where that frame's own 1.0
