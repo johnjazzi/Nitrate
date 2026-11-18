@@ -24,6 +24,7 @@ struct DevelopMediaHelp: View {
                 Section("Photos") {
                     Text("RAW photos, including DNG and Apple ProRAW, plus camera RAW formats such as Nikon NEF, Sony ARW and Canon CR2/CR3 when supported by this device's RAW decoder.")
                     Text("Support depends on the camera model and iOS decoder, not just the file extension. JPEG, HEIC and other already-processed images cannot be developed here.")
+                    Text("If you shot RAW+JPEG, the raw file is developed, not the JPEG. Reading the raw paired with a photo you pick can require Photos access; Nitrate asks only when it needs to.")
                 }
                 Section("Video") {
                     Text("Apple Log 2 clips with their original color metadata intact. Standard video, first-generation Apple Log, and clips converted to SDR or HDR are not supported by the video importer.")

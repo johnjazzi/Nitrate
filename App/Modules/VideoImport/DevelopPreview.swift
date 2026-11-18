@@ -399,8 +399,12 @@ struct DevelopPreview: View {
     }
 
     private var photoPicker: some View {
+        // The photo picker alone names its library: without `photoLibrary` the
+        // selected item carries no asset identifier, and a RAW+JPEG capture
+        // cannot be resolved to its raw resource. The video picker keeps the
+        // default, permission-free configuration.
         PhotosPicker(selection: $photoPickerItems, maxSelectionCount: 0, matching: .images,
-                     preferredItemEncoding: .current) {
+                     preferredItemEncoding: .current, photoLibrary: .shared()) {
             Label {
                 Text("Photo")
             } icon: {
