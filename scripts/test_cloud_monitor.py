@@ -1310,7 +1310,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("main-archive:", self.text)
         self.assertNotIn("pr-test:", self.text)
         self.assertEqual(self.text.count("runs-on: ubuntu-latest"), 1)
-        self.assertEqual(self.text.count("timeout-minutes: 15"), 1)
+        self.assertEqual(self.text.count("timeout-minutes: 25"), 1)
 
     def test_permissions_and_concurrency_are_conservative(self):
         self.assertIn("permissions:\n  contents: read\n  pull-requests: write", self.text)
@@ -1386,7 +1386,7 @@ class TestMonitorWorkflowContractTests(unittest.TestCase):
 
     def test_runs_on_ubuntu_not_a_macos_runner(self):
         self.assertIn("runs-on: ubuntu-latest", self.text)
-        self.assertIn("timeout-minutes: 15", self.text)
+        self.assertIn("timeout-minutes: 25", self.text)
         self.assertNotIn("xcode-27", self.text)
 
     def test_concurrency_matches_the_product_wide_monitor_group(self):

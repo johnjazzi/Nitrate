@@ -21,6 +21,10 @@ The suite pins:
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import re
+import subprocess
+import tempfile
 import unittest
 
 
@@ -271,6 +275,51 @@ class MigrationControlTests(unittest.TestCase):
         release_checkout = checkout_steps(self.release)
         self.assertTrue(release_checkout, "release-version must check out source")
         self.assertEqual(release_checkout[0]["uses"], CHECKOUT_PIN)
+
+
+class CloudMonitorBudgetTests(unittest.TestCase):
+    def test_cloud_start_command_passes_the_budget_to_the_monitor(self):
+        workflow = load_workflow((REPO_ROOT / ".github/workflows/xcode.yml").read_text())
+        assert isinstance(workflow, dict)
+        steps = workflow["jobs"]["xcode"]["steps"]
+        command = next(step["run"] for step in steps
+                       if step.get("name") == "Start and monitor the Cloud test run")
+        with tempfile.TemporaryDirectory(prefix="cloud-monitor-policy-") as directory:
+            python = Path(directory) / "cloud-monitor-venv/bin/python"
+            python.parent.mkdir(parents=True)
+            python.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+            python.chmod(0o700)
+            result = subprocess.run(["bash", "-e", "-c", command], capture_output=True,
+                                    text=True, check=True,
+                                    env={"PATH": os.environ.get("PATH", ""),
+                                         "RUNNER_TEMP": directory,
+                                         "CLOUD_EXPECTED_SHA": "f" * 40,
+                                         "CLOUD_BRANCH": "test/monitor-budget"})
+        self.assertEqual(result.stdout.splitlines(), ["scripts/cloud_monitor.py", "start",
+                         "--role", "test", "--expected-sha", "f" * 40,
+                         "--branch", "test/monitor-budget", "--alert-deadline", "1440"])
+
+    def test_cloud_alert_budget_fits_inside_the_existing_runner_cap(self):
+        workflow = load_workflow((REPO_ROOT / ".github/workflows/xcode.yml").read_text())
+        assert isinstance(workflow, dict)
+        job = workflow["jobs"]["xcode"]
+        commands = "\n".join(run_commands(workflow))
+        match = re.search(r"--alert-deadline\s+(\d+)", commands)
+        assert match is not None, "the monitor must declare a bounded alert deadline"
+        deadline = int(match.group(1))
+        self.assertEqual(deadline, 24 * 60,
+                         "Cloud finalization can outlast 18 minutes even when the test action passed")
+        self.assertEqual(job["timeout-minutes"], 25, "do not raise the existing runner cap")
+        self.assertGreaterEqual(job["timeout-minutes"] * 60 - deadline, 60,
+                                "leave time for the monitor to report a terminal result")
+
+    def test_cloud_monitor_still_preserves_the_product_concurrency_guard(self):
+        workflow = load_workflow((REPO_ROOT / ".github/workflows/xcode.yml").read_text())
+        assert isinstance(workflow, dict)
+        self.assertEqual(workflow["concurrency"]["group"], "cloud-monitor")
+        self.assertFalse(workflow["concurrency"]["cancel-in-progress"])
+        commands = "\n".join(run_commands(workflow))
+        self.assertIn('--expected-sha "$CLOUD_EXPECTED_SHA"', commands)
 
 
 if __name__ == "__main__":

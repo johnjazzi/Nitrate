@@ -114,8 +114,10 @@ jobs:
         env:
           APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
         run: |
+          # Allow Cloud to finalize its run status after the test action completes,
+          # while staying below the existing 25-minute runner cap.
           "$RUNNER_TEMP/cloud-monitor-venv/bin/python" scripts/cloud_monitor.py start \
             --role test \
             --expected-sha "$CLOUD_EXPECTED_SHA" \
             --branch "$CLOUD_BRANCH" \
-            --alert-deadline 1080
+            --alert-deadline 1440
