@@ -22,11 +22,16 @@ settings:
     # release. The build number is deliberately NOT maintained here: Xcode Cloud
     # supplies its own increasing build number to anything distributed, and a
     # hand-incremented second counter only ever drifted from it.
-    MARKETING_VERSION: "0.9.7"
+    MARKETING_VERSION: "0.9.8"
     INFOPLIST_KEY_CFBundleDisplayName: Nitrate
     INFOPLIST_KEY_NSCameraUsageDescription: "Nitrate needs camera access to capture Apple Log video for film stock processing."
     INFOPLIST_KEY_NSMicrophoneUsageDescription: "Nitrate records audio to accompany your film clips."
     INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "Nitrate saves rendered videos and optional original Log recordings to your photo library."
+    # Read access is used for one thing: looking up the raw original paired with
+    # a photo the operator picked in Develop, when Photos hands over the JPEG
+    # half of the pair. The picker itself needs no permission, so this is only
+    # requested for that lookup — never at launch.
+    INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "Nitrate reads the raw original paired with a photo you choose to develop. It reads only the photo you pick."
     INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
     INFOPLIST_KEY_UIRequiredDeviceCapabilities: "metal video-camera"
     INFOPLIST_KEY_UIStatusBarHidden: "YES"

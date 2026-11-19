@@ -23,12 +23,12 @@ struct ContactStockPrintingTests {
         text.components(separatedBy: needle).count - 1
     }
 
-    @Test func stockStripReadsTopToBottomOnTheSharedFrame() throws {
+    @Test func stockStripReadsTopToBottomAtTheBottomOfTheSideBand() throws {
         let frame = try source("App/Modules/RenderQueue/ContactPreviewFrame.swift")
         let leftBand = try section(frame, from: "HStack(spacing: 0) {", to: "content()")
 
-        #expect(leftBand.contains("frameLabel(stockAndGauge, degrees: 90)"),
-                "The stock strip must read top-to-bottom, not bottom-to-top")
+        #expect(leftBand.contains("frameLabel(stockAndGauge, degrees: 90, alignment: .trailing)"),
+                "The stock strip must stay bottom-aligned while reading top-to-bottom")
         #expect(!frame.contains("frameLabel(stockAndGauge, degrees: -90)"),
                 "The old bottom-to-top stock rotation is the upside-down regression")
         #expect(occurrences(of: "frameLabel(stockAndGauge", in: frame) == 1,

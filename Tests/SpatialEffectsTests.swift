@@ -219,8 +219,8 @@ struct SpatialEffectsTests {
         let addedBlue = adjacent.z - Self.surround
 
         #expect(addedRed > 0.002, "halation must add light outside the bright block (was \\(addedRed))")
-        // Warm: red responds to the least light, green next; blue is below its
-        // 4.0 knee at a 3.0x source and stays dark.
+        // Warm: red responds to the least light, green next; blue is still below
+        // its 8x onset at this 6x-white source.
         #expect(addedRed > addedGreen + 0.0005, "red must dominate green (red \\(addedRed), green \\(addedGreen))")
         #expect(addedGreen > addedBlue + 0.0005, "green must dominate blue (green \\(addedGreen), blue \\(addedBlue))")
 
@@ -744,23 +744,32 @@ struct SpatialEffectsTests {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
-        // frameWhite=-1: these source levels are 2x/4x/8x diffuse white.
-        let narrow = try Self.pointSpread(stage: stage, device: device, queue: queue, brightness: 0.5)
-        let middle = try Self.pointSpread(stage: stage, device: device, queue: queue, brightness: 2)
-        let wide = try Self.pointSpread(stage: stage, device: device, queue: queue, brightness: 4)
+        // frameWhite=-1: these source levels are 1x/5x/12x diffuse white, the
+        // width anchors. Energy onsets are neutralized for this geometry fixture
+        // only: production red starts scattering at 1x white itself, so its
+        // default energy at the first anchor is zero and could not measure a
+        // radius. The knee/onset tests retain the production thresholds.
+        let onsets = SIMD3<Float>(repeating: -2)
+        let narrow = try Self.pointSpread(
+            stage: stage, device: device, queue: queue, brightness: 0.5, onsets: onsets)
+        let middle = try Self.pointSpread(
+            stage: stage, device: device, queue: queue, brightness: 2.5, onsets: onsets)
+        let wide = try Self.pointSpread(
+            stage: stage, device: device, queue: queue, brightness: 6, onsets: onsets)
         let middleReference = try Self.pointSpread(
-            stage: stage, device: device, queue: queue, brightness: 2,
-            growth: 0, radiusFraction: 0.012 * 1.25)
+            stage: stage, device: device, queue: queue, brightness: 2.5,
+            growth: 0, radiusFraction: 0.012 * 0.75, onsets: onsets)
         #expect(abs(middle.x / middleReference.x - 1) < 0.01,
-                "at 4x white the middle bucket must have 1.25x the base radius")
+                "at 5x white the middle bucket must have 0.75x the base radius")
         #expect(middle.x > narrow.x * 1.15)
         #expect(wide.x > middle.x * 1.10)
-        let fixed = try Self.pointSpread(stage: stage, device: device, queue: queue, brightness: 4, growth: 0)
+        let fixed = try Self.pointSpread(
+            stage: stage, device: device, queue: queue, brightness: 6, growth: 0, onsets: onsets)
         let fixedLow = try Self.pointSpread(
-            stage: stage, device: device, queue: queue, brightness: 1, growth: 0)
+            stage: stage, device: device, queue: queue, brightness: 1, growth: 0, onsets: onsets)
         #expect(abs(fixed.x / fixedLow.x - 1) < 0.03, "growth off must retain one brightness-independent shape")
         let dimmerGain = try Self.pointSpread(
-            stage: stage, device: device, queue: queue, brightness: 4, strength: 0.5)
+            stage: stage, device: device, queue: queue, brightness: 6, strength: 0.5, onsets: onsets)
         #expect(abs(dimmerGain.x / wide.x - 1) < 0.03, "changing gain alone must not imitate radius growth")
     }
 
@@ -769,7 +778,7 @@ struct SpatialEffectsTests {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
-        for knot in [0.25, 2.0, 4.0, 6.0] { // source scene units: 0.5x/4x/8x/12x white
+        for knot in [0.5, 2.5, 4.5, 6.0] { // source scene units: 1x/5x/9x/12x white
             let low = knot * 0.99, high = knot * 1.01
             #expect(Self.appleLogEncode(low) != Self.appleLogEncode(high),
                     "the quantized inputs must actually straddle the knot")
@@ -786,11 +795,12 @@ struct SpatialEffectsTests {
         let queue = try #require(device.makeCommandQueue())
         let stage = try SpatialEffectsStage(device: device, library: try Self.shaderLibrary(device: device))
         // Neutralize energy onsets only for this width fixture so the first
-        // 0.5x-white anchor actually carries measurable light. Production onsets
-        // are unchanged, and the separate knee/channel tests retain them.
+        // 1x-white anchor actually carries measurable light (production red
+        // begins at 1x, where its energy is zero). Production onsets are
+        // unchanged, and the separate knee/channel tests retain them.
         let onsets = SIMD3<Float>(repeating: -2)
-        for (brightness, factor) in [(0.25, Float(0.5)), (2.0, Float(1.25)),
-                                      (4.0, Float(2)), (6.0, Float(2.5))] {
+        for (brightness, factor) in [(0.5, Float(0.25)), (2.5, Float(0.75)),
+                                      (4.5, Float(1.25)), (6.0, Float(2.0))] {
             let actual = try Self.pointSpread(stage: stage, device: device, queue: queue,
                                               brightness: brightness, onsets: onsets)
             let reference = try Self.pointSpread(stage: stage, device: device, queue: queue,
@@ -1076,7 +1086,7 @@ struct SpatialEffectsTests {
     func sourceBrightnessBucketsConserveEveryChannel() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
-        for level in [1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0] {
+        for level in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 9.0, 10.0, 12.0] {
             func mask(_ bucket: Int?) throws -> [Float16] {
                 try Self.halationMask(device: device, queue: queue,
                                       width: 2, height: 2, maskWidth: 1, maskHeight: 1, bucket: bucket) { _, _ in
@@ -1093,12 +1103,12 @@ struct SpatialEffectsTests {
             if level == 1 {
                 #expect(abs(Double(narrow[0]) - Double(unsplit[0])) < 0.002)
                 #expect(Double(middle[0]) < 0.002 && Double(wide[0]) < 0.002)
-            } else if level == 4 {
+            } else if level == 5 {
                 // Source and mask are float16: an encoded knot can decode just
                 // either side, so require an almost-complete handoff, not bit equality.
                 #expect(abs(Double(middle[0]) - Double(unsplit[0])) < 0.002)
                 #expect(Double(narrow[0]) < 0.002 && Double(wide[0]) < 0.002)
-            } else if level == 8 {
+            } else if level == 9 {
                 #expect(abs(Double(wide[0]) - Double(unsplit[0])) < 0.002)
                 #expect(Double(narrow[0]) < 0.002 && Double(middle[0]) < 0.002)
                 #expect(Double(fourth[0]) < 0.002)
@@ -1109,23 +1119,31 @@ struct SpatialEffectsTests {
         }
     }
 
+    /// Red's energy begins at diffuse white through a shaped low tail, and the
+    /// preserved +0.6-stop response above the 4x join is unchanged in value and
+    /// slope. Pinned numerically here, independently of the production stage.
     @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "Requires a Metal GPU"))
-    func earlyRedBeginsAtHalfWhiteAndSmoothlyRejoinsAtFour() throws {
+    func earlyRedBeginsAtDiffuseWhiteAndSmoothlyRejoinsAtFour() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let queue = try #require(device.makeCommandQueue())
         let onsets = SpatialEffectsStage.authoredOnsets
         let reference = SpatialEffectsStage.halationReferenceStops
-        #expect(abs(exp2(Double(onsets.x)) - 0.5) < 0.0001)
-        let levels = [0.4, 0.5, 0.55, 0.75, 1, 1.5, 2, pow(2, 1.9), 4, pow(2, 2.1), 8, 10, 12]
+        #expect(abs(exp2(Double(onsets.x)) - 1.0) < 0.0001, "red responds from 1x diffuse white")
+        #expect(abs(exp2(Double(onsets.y)) - 4.43828) < 0.001, "green responds from 4.44x diffuse white")
+        #expect(abs(exp2(Double(onsets.z)) - 8.0) < 0.001, "blue responds from 8x diffuse white")
+        let levels = [0.5, 0.9, 1, 1.25, 1.5, 2, 2.5, pow(2, 1.9), 4, pow(2, 2.1), 8, 10, 12]
         let mask = try Self.halationMask(
             device: device, queue: queue, width: levels.count * 2, height: 2,
             maskWidth: levels.count, maskHeight: 1, onsets: onsets, reference: reference
         ) { x, _ in SIMD3(repeating: levels[x / 2]) }
         func red(_ index: Int) -> Double { Double(mask[index * 4]) }
-        #expect(red(0) < 0.001 && red(1) < 0.001)
+        // Nothing at all below the onset, and exactly zero AT it: 1x white is
+        // where red's energy starts, not where it is already partly on.
+        #expect(red(0) < 0.001 && red(1) < 0.001 && red(2) < 0.001)
+        #expect(red(3) > 0.01, "red must respond once it clears the 1x onset")
         // Independent numerical pins: a narrow, nonzero low-light red tail,
         // not a globally shifted linear ramp that also brightens the midpoint.
-        for (index, expected) in [(3, 0.0154825), (4, 0.0488487), (6, 0.2157334)] {
+        for (index, expected) in [(3, 0.0378453), (4, 0.0888257), (6, 0.2846866)] {
             #expect(abs(red(index) - expected) < 0.002)
         }
         for index in 1..<levels.count {
@@ -1139,11 +1157,15 @@ struct SpatialEffectsTests {
         let rightSlope = (red(9) - red(8)) / 0.1
         #expect(abs(leftSlope - rightSlope) < 0.03, "the join must not introduce a slope kink")
         for index in levels.indices {
+            // The input texture stores half-float encoded values, not the ideal
+            // scene level. Decode that actual code before predicting the ramp:
+            // blue's shorter onset-to-reference span amplifies input quantization.
+            let decoded = Self.appleLogDecode(Double(Self.appleLogEncode(levels[index])))
             for channel in 1...2 {
                 let onset = Double(onsets[channel])
-                let expected = min(1, max(0, (log2(levels[index]) - onset) / (Double(reference) - onset)))
+                let expected = min(1, max(0, (log2(decoded) - onset) / (Double(reference) - onset)))
                 #expect(abs(Double(mask[index * 4 + channel]) - expected) < 0.002,
-                        "green/blue response must remain unchanged")
+                        "green/blue must retain their linear-stop response")
             }
         }
     }

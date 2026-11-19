@@ -80,6 +80,7 @@ FILE_FIXTURES: tuple[str, ...] = (
     "App/Design/NitrateTypography.swift",
     "App/App.swift",
     "App/ContentView.swift",
+    "App/Modules/VideoImport/DevelopVideoPicker.swift",
     "App/Modules/CameraCapture/CameraHaptics.swift",
     "App/Modules/CameraCapture/CameraTopPanelLayout.swift",
     "App/Modules/CameraCapture/RecordingTallyLight.swift",
