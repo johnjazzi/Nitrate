@@ -22,10 +22,14 @@ struct CameraShootingModeGate: Equatable {
     let isStoppingRecording: Bool
 
     /// Nil when the row may change mode.
-    var reason: String? {
+    var reason: String? { reason(requiresCameraReady: true) }
+
+    func reason(requiresCameraReady: Bool) -> String? {
         guard isLifecycleActive else { return "Camera is not running" }
-        guard isCameraConfigured else { return "Camera is not ready yet" }
-        guard !isConfigurationInFlight else { return "Camera is still configuring" }
+        if requiresCameraReady {
+            guard isCameraConfigured else { return "Camera is not ready yet" }
+            guard !isConfigurationInFlight else { return "Camera is still configuring" }
+        }
         if isStartingRecording { return "Starting the take…" }
         if isRecording { return "Recording — stop the take to change modes" }
         if isStoppingRecording { return "Finishing the take…" }

@@ -254,10 +254,12 @@ struct ContentView: View {
                    let slot = CameraModeStripGeometry.frame(
                     controls: bottom, canvasWidth: geometry.size.width,
                     horizontalInset: controlBarHorizontalInset(in: geometry)) {
-                    CameraModeCarousel(selected: cameraMode.selected, enabled: canChangeCameraMode,
+                    CameraModeCarousel(selected: cameraMode.selected,
+                                       enabled: canSelectCameraMode(.develop) || canSelectCameraMode(.video),
                                        rotationDegrees: statusRotationDegrees, onSelect: selectCameraMode,
                                        photoAvailable: photoModeAvailable,
-                                       onBlockedSelect: { _ in explainBlockedModeTap() })
+                                       onBlockedSelect: explainBlockedModeTap,
+                                       canSelect: canSelectCameraMode)
                         .frame(width: slot.width, height: slot.height)
                         .position(x: slot.midX, y: slot.midY)
                         // The letters are dimmed rather than disabled, so a tap
@@ -277,8 +279,7 @@ struct ContentView: View {
                                     .offset(y: 44)
                             }
                         }
-                        .accessibilityValue(cameraViewModel.shootingModeBlockedReason
-                            ?? modeRefusalNotice ?? "")
+                        .accessibilityValue(modeRefusalNotice ?? "")
                 }
 
                 if !isDevelopMode, let top = controlBounds["top"], let bottom = controlBounds["bottom"] {
@@ -1274,8 +1275,8 @@ struct ContentView: View {
 
     private var settingsButton: some View {
         Button {
-            guard !captureBusy, !cameraViewModel.isPhotoCaptureBusy,
-                  cameraViewModel.canChangeShootingMode else { return }
+            // Settings must remain reachable when camera setup has not succeeded.
+            guard !captureBusy, !cameraViewModel.isPhotoCaptureBusy else { return }
             showSettings = true
         } label: {
             Image(systemName: "gearshape.fill")
@@ -1650,10 +1651,22 @@ struct ContentView: View {
             enabled: cameraHardwareControlsVisible)
     }
 
-    private var canChangeCameraMode: Bool {
-        scenePhase == .active && cameraViewModel.canChangeShootingMode && !captureBusy && !cameraViewModel.isPhotoCaptureBusy && !cameraViewModel.isChangingFrameRate
-            && !cameraViewModel.isSwitchingCameraLens && !showStockSheet && !showQueueSheet
-            && !showSettings && !showDaylightRescue
+    private func cameraModeRefusal(_ mode: CameraMode) -> String? {
+        // Video → Develop changes only the UI. Leaving Photo still switches
+        // the camera graph and must pass the full readiness check.
+        let requiresCameraReady = mode != .develop || cameraMode.selected == .photo
+        if let reason = cameraViewModel.shootingModeGate.reason(requiresCameraReady: requiresCameraReady) {
+            return reason
+        }
+        guard scenePhase == .active, !showStockSheet, !showQueueSheet,
+              !showSettings, !showDaylightRescue else {
+            return "Finish the current action to change modes"
+        }
+        return nil
+    }
+
+    private func canSelectCameraMode(_ mode: CameraMode) -> Bool {
+        cameraModeRefusal(mode) == nil
     }
 
     private var photoDeliveryStatus: String? {
@@ -1790,14 +1803,14 @@ struct ContentView: View {
 
     /// A dimmed row is not a dead one: a tap answers from the same gate that dims
     /// it, so a refusal is never silent and never has to be a standing label.
-    private func explainBlockedModeTap() {
-        showModeRefusal(cameraViewModel.shootingModeBlockedReason
-            ?? "Finish the current action to change modes")
+    private func explainBlockedModeTap(_ mode: CameraMode) {
+        guard let reason = cameraModeRefusal(mode) else { return }
+        showModeRefusal(reason)
     }
 
     private func selectCameraMode(_ mode: CameraMode) {
-        guard canChangeCameraMode else {
-            explainBlockedModeTap()
+        guard canSelectCameraMode(mode) else {
+            explainBlockedModeTap(mode)
             return
         }
         guard CameraMode.visibleModes(photoAvailable: photoModeAvailable).contains(mode),
@@ -1832,7 +1845,7 @@ struct ContentView: View {
         guard cameraMode.select(mode, enabled: true, photoAvailable: photoModeAvailable) else { return }
         // Develop shares the video graph, so its commits land here; the photo
         // transitions reset from the camera model once their graph commits.
-        cameraViewModel.resetFocusAreaToCenter()
+        if cameraViewModel.canChangeShootingMode { cameraViewModel.resetFocusAreaToCenter() }
         if mode == .video {
             developModel.leaveDevelop()
         } else {
@@ -1863,7 +1876,7 @@ struct ContentView: View {
 
     private var errorOverlays: some View {
         Group {
-            if let error = cameraViewModel.errorMessage,
+            if !isDevelopMode, let error = cameraViewModel.errorMessage,
                cameraViewModel.isBlockingErrorMessage {
                 VStack {
                     cameraErrorBanner(error)

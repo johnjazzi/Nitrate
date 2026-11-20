@@ -32,7 +32,7 @@ struct VideoImportEntryTests {
         // A refused mode tap answers with the reason rather than returning
         // silently: the dimmed row has no standing banner to explain itself.
         #expect(!screen.contains("guard canChangeCameraMode else { return }"))
-        #expect(screen.contains("explainBlockedModeTap()"))
+        #expect(screen.contains("explainBlockedModeTap(mode)"))
         #expect(screen.contains("CameraModeStripGeometry.frame"))
     }
 
