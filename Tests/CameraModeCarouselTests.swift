@@ -203,6 +203,15 @@ struct CameraModeCarouselRenderTests {
         #expect(live.resolvedTap(.video) == .select(.video))
     }
 
+    @Test func destinationAvailabilityAppliesToTapAndSwipe() {
+        let video = CameraModeCarousel(selected: .video, enabled: true, onSelect: { _ in },
+                                       photoAvailable: true, canSelect: { $0 == .develop })
+        #expect(video.resolvedTap(.develop) == .select(.develop))
+        #expect(video.resolvedSwipe(CGSize(width: 80, height: 0)) == .select(.develop))
+        #expect(video.resolvedTap(.photo) == .refused(.photo))
+        #expect(video.resolvedSwipe(CGSize(width: -80, height: 0)) == .none)
+    }
+
     @Test func landscapeLabelsRotateWithoutExpandingTheStrip() throws {
         for width: CGFloat in [96, 200] {
             for mode in CameraMode.visibleModes {

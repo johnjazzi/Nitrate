@@ -25,6 +25,19 @@ struct CameraShootingModeGateTests {
         #expect(value.reason == nil)
     }
 
+    @Test func developDoesNotRequireCameraReadinessButPreservesCaptureSafety() {
+        let unavailable = gate(isCameraConfigured: false)
+        #expect(!unavailable.isAllowed)
+        #expect(unavailable.reason(requiresCameraReady: false) == nil)
+        #expect(gate(isConfigurationInFlight: true).reason(requiresCameraReady: false) == nil)
+        for busy in [gate(isLifecycleActive: false), gate(isStartingRecording: true),
+                     gate(isRecording: true), gate(isStoppingRecording: true),
+                     gate(isPhotoCaptureBusy: true), gate(isChangingCaptureProfile: true),
+                     gate(isChangingFrameRate: true), gate(isSwitchingCameraLens: true)] {
+            #expect(busy.reason(requiresCameraReady: false) != nil)
+        }
+    }
+
     /// Every blocked state names itself: a greyed row with no reason is the bug.
     @Test func everyBlockedStateHasItsOwnReason() {
         let blocked: [CameraShootingModeGate] = [
@@ -69,8 +82,8 @@ struct CameraShootingModeGateTests {
         #expect(!source.contains("shootingModeBlockedReason ?? modeRefusalNotice"),
                 "the blocked gate's reason must not be rendered unconditionally")
         // The dimmed row still takes the tap and answers from the same gate.
-        #expect(source.contains("onBlockedSelect: { _ in explainBlockedModeTap() }"))
-        #expect(source.contains("cameraViewModel.shootingModeBlockedReason"))
+        #expect(source.contains("onBlockedSelect: explainBlockedModeTap"))
+        #expect(source.contains("canSelect: canSelectCameraMode"))
     }
 
     /// The row reports a refused tap instead of swallowing it.

@@ -20,6 +20,12 @@ class PhotoFieldWiringTests(unittest.TestCase):
     def setUp(self):
         self.content = (ROOT / 'App/ContentView.swift').read_text()
 
+    def test_settings_entry_does_not_require_camera_readiness(self):
+        action = section(self.content, 'private var settingsButton: some View', '} label: {')
+        self.assertIn('showSettings = true', action)
+        self.assertIn('guard !captureBusy, !cameraViewModel.isPhotoCaptureBusy', action)
+        self.assertNotIn('canChangeShootingMode', action)
+
     def test_photo_shutter_resolves_current_library_gauge(self):
         callback = self.content.split('onPhotoCapture:', 1)[1].split('photoExposure:', 1)[0]
         self.assertIn('library.lastGauge(for:', callback)

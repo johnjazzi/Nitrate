@@ -177,6 +177,7 @@ struct CameraModeCarousel: View {
     let selected: CameraMode
     let enabled: Bool
     let onSelect: (CameraMode) -> Void
+    private let canSelect: (CameraMode) -> Bool
     let rotationDegrees: Double
     var photoAvailable = false
     /// Called with the tapped letter while the row is blocked, so the refusal
@@ -218,13 +219,15 @@ struct CameraModeCarousel: View {
 
     init(selected: CameraMode, enabled: Bool, rotationDegrees: Double = 0,
          onSelect: @escaping (CameraMode) -> Void, photoAvailable: Bool = false,
-         onBlockedSelect: ((CameraMode) -> Void)? = nil) {
+         onBlockedSelect: ((CameraMode) -> Void)? = nil,
+         canSelect: @escaping (CameraMode) -> Bool = { _ in true }) {
         self.selected = selected
         self.enabled = enabled
         self.onSelect = onSelect
         self.rotationDegrees = rotationDegrees
         self.photoAvailable = photoAvailable
         self.onBlockedSelect = onBlockedSelect
+        self.canSelect = canSelect
     }
 
     var body: some View {
@@ -437,7 +440,7 @@ struct CameraModeCarousel: View {
         .accessibilityIdentifier(mode.accessibilityIdentifier)
         // The row stays tappable when blocked so the refusal can be spoken; say
         // the row is unavailable rather than "dimmed".
-        .accessibilityHint(enabled ? "" : "Unavailable right now")
+        .accessibilityHint(enabled && canSelect(mode) ? "" : "Unavailable right now")
         .accessibilityAddTraits(mode == selected ? .isSelected : [])
     }
 
@@ -491,12 +494,15 @@ struct CameraModeCarousel: View {
     // MARK: - Swipe
 
     func resolvedTap(_ mode: CameraMode) -> CameraModeRowTap {
-        CameraModeRowTap.outcome(for: mode, enabled: enabled)
+        CameraModeRowTap.outcome(for: mode, enabled: enabled && canSelect(mode))
     }
 
     func resolvedSwipe(_ translation: CGSize) -> CameraModeCarouselGesture.Outcome {
-        guard enabled else { return .none }
-        return CameraModeCarouselGesture.outcome(translation: translation, from: selected, visible: visibleModes)
+        guard enabled,
+              case let .select(mode) = CameraModeCarouselGesture.outcome(
+                translation: translation, from: selected, visible: visibleModes),
+              canSelect(mode) else { return .none }
+        return .select(mode)
     }
 
     private var swipeGesture: some Gesture {
