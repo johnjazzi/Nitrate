@@ -326,8 +326,9 @@ final class CameraViewModel {
     private let flashStore = FlashSettingsStore()
     /// Marks a take before capture and is acknowledged once the render queue has
     /// durably accepted it. If the app dies in between, the file is reconciled at
-    /// next launch as an original-only rescue rather than being lost.
-    private let captureJournal = CaptureJournal()
+    /// next launch as an original-only rescue rather than being lost. Shared with
+    /// the session, which records the still's handoff before its DNG is written.
+    private var captureJournal: CaptureJournal { session.captureJournal }
     private var lifecycleGate = CameraLifecycleGate()
     private var configurationInFlight = false
     private var cameraConfigured = false { didSet { pushCameraHardwareControls() } }
@@ -401,9 +402,11 @@ final class CameraViewModel {
         if isStartingRecording {
             captureGeneration &+= 1
             isStartingRecording = false
-            session.stopRecording()
+            // The app is going away mid-take: the session is interrupted, so
+            // the recorder finalizes what it captured instead of draining.
+            session.interruptRecording()
         } else if isRecording {
-            session.stopRecording()
+            session.interruptRecording()
         }
         invalidateRecordingTimers()
         cameraConfigured = false
@@ -1069,7 +1072,9 @@ final class CameraViewModel {
                 // whichever take is now live.
                 guard self.captureGeneration == generation else { return }
                 guard self.lifecycleGate.isActive else {
-                    if error == nil { self.session.stopRecording() }
+                    // The app left while the take was starting: that is an
+                    // interruption, not the user's Stop.
+                    if error == nil { self.session.interruptRecording() }
                     return
                 }
                 self.isStartingRecording = false

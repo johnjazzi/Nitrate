@@ -1001,6 +1001,172 @@ struct CameraSampleBufferRecorderTests {
         #expect(rig.events.finishedCount == 2, "A stale finish timeout must never double-report")
     }
 
+    // MARK: - Session interruption keeps the captured original
+
+    /// A session interruption is not a deliberate Stop. When the accepted audio
+    /// runs past the last delivered video frame and no further frame can arrive,
+    /// the take must be finalized at once and kept as an original instead of
+    /// waiting out the five-second drain and then being cancelled and deleted.
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func interruptionWithAudioAheadOfVideoFinalizesAndKeepsTheOriginal() async throws {
+        let deadlines = RecorderDrainDeadlines()
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true), deadlines: deadlines)
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        // The packet ends at 11.1, past this clip's only video frame.
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 11))
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+        #expect(!writer.finishWasRequested)
+        #expect(deadlines.count == 0)
+
+        rig.recorder.interrupt()
+        await rig.drainSubmittedWork()
+        #expect(writer.finishWasRequested,
+                "An interrupted take must not wait for a video tail that cannot arrive")
+        #expect(writer.inputsFinishedCount == 1)
+        #expect(deadlines.count == 1, "Only the finish deadline is armed; no drain deadline is")
+
+        writer.completeFinalization(success: true)
+        await rig.drainSubmittedWork()
+        try #require(rig.events.finishedCount == 1)
+        #expect(FileManager.default.fileExists(atPath: url.path),
+                "A readable interrupted original must be kept, never deleted")
+        let error = try #require(rig.events.finishedErrors.first)
+        #expect(CameraRetainedRecordingError.retainedURL(from: error) == url,
+                "An interrupted take is preserved through the original-rescue path, not claimed clean")
+        #expect(error.localizedDescription.lowercased().contains("interrupt"))
+    }
+
+    /// An interruption can land after a deliberate Stop already froze the audio
+    /// endpoint and started draining. The drain cannot complete, so the captured
+    /// material is finalized rather than failed once the deadline expires.
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func interruptionDuringADeliberateStopDrainFinalizesWhatWasCaptured() async throws {
+        let deadlines = RecorderDrainDeadlines()
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true), deadlines: deadlines)
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 11))
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+
+        rig.recorder.stop()
+        await rig.drainSubmittedWork()
+        #expect(!writer.finishWasRequested, "A deliberate stop keeps its drain contract")
+        #expect(deadlines.count == 1)
+
+        rig.recorder.interrupt()
+        await rig.drainSubmittedWork()
+        #expect(writer.finishWasRequested,
+                "The interrupted drain must finalize the material already captured")
+        writer.completeFinalization(success: true)
+        await rig.drainSubmittedWork()
+        try #require(rig.events.finishedCount == 1)
+
+        // Replaying the drain deadline must not touch a take that is already terminal.
+        deadlines.fireAll()
+        await rig.drainSubmittedWork()
+        #expect(rig.events.finishedCount == 1)
+        #expect(writer.status == .completed)
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        let error = try #require(rig.events.finishedErrors.first)
+        #expect(CameraRetainedRecordingError.retainedURL(from: error) == url)
+    }
+
+    /// An interrupted writer whose finish completion never arrives must still be
+    /// kept when it reached completed status.
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func interruptedTakeWithALostFinishCompletionRetainsTheFinalizedOriginal() async throws {
+        let deadlines = RecorderDrainDeadlines()
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true), deadlines: deadlines)
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 11))
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+        rig.recorder.interrupt()
+        await rig.drainSubmittedWork()
+        #expect(writer.finishWasRequested)
+        // The file finalized, but the writer completion never arrives.
+        writer.completeFinalizationWithoutCallback(success: true)
+        deadlines.fireAll()
+        await rig.drainSubmittedWork()
+        try #require(rig.events.finishedCount == 1)
+        #expect(await rig.events.nextFinished()?.contains("timed out") == true)
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        let error = try #require(rig.events.finishedErrors.first)
+        #expect(CameraRetainedRecordingError.retainedURL(from: error) == url)
+    }
+
+    /// The interruption state and the drain deadline are per clip: the take after
+    /// an interrupted one records and finishes as a clean success.
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func aTakeRecordedAfterAnInterruptionStillRecordsNormally() async throws {
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let firstURL = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 11))
+        await rig.drainSubmittedWork()
+        let firstWriter = try #require(rig.control.current)
+        rig.recorder.interrupt()
+        await rig.drainSubmittedWork()
+        firstWriter.completeFinalization(success: true)
+        await rig.drainSubmittedWork()
+        #expect(rig.events.finishedCount == 1)
+        #expect(await rig.events.nextFinished()?.lowercased().contains("interrupt") == true)
+        #expect(CameraRetainedRecordingError.retainedURL(from: try #require(rig.events.finishedErrors.first))
+                == firstURL)
+        try? FileManager.default.removeItem(at: firstURL)
+
+        let secondURL = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: secondURL) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 20))
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 20.02))
+        // Video now covers the accepted audio endpoint (20.12) before the stop.
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 20.2))
+        await rig.drainSubmittedWork()
+        let secondWriter = try #require(rig.control.current)
+        rig.recorder.stop()
+        await rig.drainSubmittedWork()
+        #expect(secondWriter.finishWasRequested)
+        secondWriter.completeFinalization(success: true)
+        await rig.drainSubmittedWork()
+        #expect(rig.events.finishedCount == 2)
+        #expect(await rig.events.nextFinished() == nil,
+                "A take recorded after an interruption must stay a clean success")
+        #expect(FileManager.default.fileExists(atPath: secondURL.path))
+    }
+
+    /// An interruption that lands once video already covers the accepted audio
+    /// leaves nothing missing: that take is a normal success, not a partial that
+    /// gets reported back as a kept original.
+    @available(macOS 14.2, iOS 17.2, *)
+    @Test func interruptionAfterTheVideoCoveredTheAudioStaysACleanTake() async throws {
+        let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
+        let url = try begin(rig.recorder, events: rig.events, audioSettings: ["codec": "aac"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10))
+        rig.recorder.submitAudioSampleForTesting(try Self.pcmSample(pts: 10))
+        // Covers the packet that ends at 10.1 before the interruption.
+        rig.recorder.submitVideoSampleForTesting(try Self.log2Sample(pts: 10.2))
+        await rig.drainSubmittedWork()
+        let writer = try #require(rig.control.current)
+        rig.recorder.interrupt()
+        await rig.drainSubmittedWork()
+        #expect(writer.finishWasRequested)
+        writer.completeFinalization(success: true)
+        await rig.drainSubmittedWork()
+        try #require(rig.events.finishedCount == 1)
+        #expect(await rig.events.nextFinished() == nil,
+                "A complete take must not be reported as an interrupted partial")
+        #expect(rig.events.finishedErrors.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: url.path))
+    }
+
     @available(macOS 14.2, iOS 17.2, *)
     @Test func longDeterministicAudioTimelineWithinTheBoundIsFullyWritten() async throws {
         let rig = makeRig(FakeWriterBehavior(delayedFinish: true))
@@ -1711,6 +1877,30 @@ struct CameraCaptureRuntimeSourceContractTests {
     @Test func recorderFallbackDurationComesFromTheTakeMode() throws {
         let source = try sessionSource()
         #expect(source.contains("videoFrameDuration: frameRate.fallbackVideoSampleDuration"))
+    }
+
+    /// A session interruption, recovery and teardown are not the user's Stop: the
+    /// recorder must be told which one ended the take so it finalizes and keeps
+    /// an interrupted original instead of waiting out a drain that cannot finish.
+    @Test func sessionInterruptionAndTeardownUseTheRecorderInterruptPath() throws {
+        let source = try sessionSource()
+        // Session recovery and graph teardown while a take is active.
+        #expect(source.contains("if recordingActive { sampleBufferRecorder.interrupt() }"))
+        #expect(source.contains("self.sampleBufferRecorder.interrupt()"))
+        // One take-end helper serves both routes, and each call site names its
+        // own intent.
+        #expect(source.contains(
+            "sessionQueue.async { [weak self] in self?.endActiveTakeOnSessionQueue(interrupted: false) }"))
+        #expect(source.contains(
+            "sessionQueue.async { [weak self] in self?.endActiveTakeOnSessionQueue(interrupted: true) }"))
+        let helper = try #require(source.range(of: "private func endActiveTakeOnSessionQueue(interrupted: Bool)"))
+        let body = String(source[helper.lowerBound...].prefix(2_000))
+        #expect(body.contains(
+            "if interrupted { sampleBufferRecorder.interrupt() } else { sampleBufferRecorder.stop() }"))
+        // The background boundary interrupts; it must not run a drain the
+        // interrupted session can never complete.
+        let model = try viewModelSource()
+        #expect(model.contains("session.interruptRecording()"))
     }
 
     private func viewModelSource() throws -> String {

@@ -49,6 +49,10 @@ enum PhotoImportError: LocalizedError, Equatable {
     case libraryLookupUnavailable(found: String, reason: String)
     case rawEditingBaseOnly
     case rawDownloadUnavailable
+    /// The picked raw is larger than this device can develop. Refused before the
+    /// copy, with the same reason the decoder and the still stage would give —
+    /// admitting it would only move the failure to the end of the develop.
+    case tooLarge(width: Int, height: Int)
 
     var errorDescription: String? {
         switch self {
@@ -72,6 +76,8 @@ enum PhotoImportError: LocalizedError, Equatable {
             return "This RAW is only available as a Photos editing base. Select the unedited RAW original to develop it."
         case .rawDownloadUnavailable:
             return "Could not download this photo's RAW original from iCloud. Check your connection and try again."
+        case .tooLarge(let width, let height):
+            return PhotoRenderBudget.refusalMessage(width: width, height: height)
         }
     }
 }
@@ -168,6 +174,18 @@ enum PhotoImportService {
     /// picked image is copied only once it is a raw the renderer can develop.
     static func validateRaw(at url: URL) async throws {
         _ = try await inspect(url: url)
+    }
+
+    /// The delivery-size half of the gate: a raw larger than this device can
+    /// develop is refused before it is copied, with the same reason the decoder
+    /// and the still stage report. Capability alone (`canDevelop`) is not enough
+    /// — opening a 60 MP file only to fail at the end of the develop is what this
+    /// refusal replaces.
+    static func sizeRefusal(width: Int, height: Int) -> PhotoImportError? {
+        guard width > 0, height > 0 else { return nil } // reported as unreadable upstream
+        return PhotoRenderBudget.accepts(width: width, height: height)
+            ? nil
+            : .tooLarge(width: width, height: height)
     }
 
     // MARK: - The raw half of a RAW+JPEG pair
@@ -315,6 +333,9 @@ enum PhotoImportService {
         let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
         let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
         guard width > 0, height > 0 else { throw PhotoImportError.unreadable }
+        // Size is a delivery limit, not a capability one: refuse it here, before
+        // the copy, with the same explanation the develop would have produced.
+        if let refusal = sizeRefusal(width: width, height: height) { throw refusal }
 
         let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any] ?? [:]
         let iso = (exif[kCGImagePropertyExifISOSpeedRatings] as? [NSNumber])?.first?.floatValue

@@ -75,11 +75,30 @@ final class StillFilmRenderResources {
         self.stillPresenceGain = stillPresenceGain
     }
 
+    /// The still stage's own admission rule, shared with the import gate and the
+    /// decoder.
+    ///
+    /// It used to be `PhotoCapturePolicy.maximumPixelCount` — the camera's
+    /// capture ceiling — while the decoder admitted 80 MP, so a 24 MP import
+    /// previewed and then threw `Invalid still extent` here. This is the same
+    /// rule the gate and the decoder now apply, exposed so a regression test can
+    /// point the production rule at the sizes that used to slip through.
+    static func acceptsExtent(_ extent: CGRect) -> Bool {
+        PhotoRenderBudget.accepts(extent: extent.size)
+    }
+
     private func texture(_ image: CIImage) throws -> MTLTexture {
         let extent = image.extent
-        guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0,
-              extent.width * extent.height <= Double(PhotoCapturePolicy.maximumPixelCount) else {
-            throw DevelopmentPhotoRenderer.RenderError.decode("Invalid still extent")
+        guard Self.acceptsExtent(extent) else {
+            // A non-finite extent cannot be named in pixels; an oversized one can
+            // and gets the same reason the import gate would have given.
+            guard extent.width.isFinite, extent.height.isFinite,
+                  extent.width > 0, extent.height > 0 else {
+                throw DevelopmentPhotoRenderer.RenderError.decode("Invalid still extent")
+            }
+            throw DevelopmentPhotoRenderer.RenderError.decode(
+                PhotoRenderBudget.refusalMessage(width: Int(extent.width.rounded()),
+                                                 height: Int(extent.height.rounded())))
         }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float,
             width: Int(extent.width), height: Int(extent.height), mipmapped: false)
