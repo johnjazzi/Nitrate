@@ -13,6 +13,9 @@ final class RenderQueueViewModel {
 
     private let persister: QueuePersister
     private let journal: CaptureJournal
+    /// Rebuilt from durable markers, never from a guessed file extension. These
+    /// references are visible in History but cannot enter a saver or renderer.
+    private(set) var captureRecoveryIssues: [CaptureJournal.RecoveryIssue] = []
     private let persistOverride: (([RenderJob]) throws -> Void)?
     private let loadOverride: (() throws -> [RenderJob])?
     private let injectedRender: RenderOperation?
@@ -187,13 +190,14 @@ final class RenderQueueViewModel {
     ///
     /// A video is queued original-only: the take's validation outcome is
     /// unknown, so it is delivered verbatim and never rendered. A still is only
-    /// rescued when its own validation finished; an incomplete DNG is not the
-    /// operator's photo and is never exported. Each marker releases exactly one
+    /// rescued when its own validation finished; unchecked DNGs remain reachable
+    /// in History's recovery quarantine and are never exported. Each marker releases exactly one
     /// queue entry, so a retried reconciliation cannot duplicate a rescue.
     func reconcileOrphanedCaptures() {
         let known = Set(jobs.map { $0.sourceURL.standardizedFileURL.path })
-        var incompleteStillWasRetired = false
-        for pending in journal.pendingHandoffs() {
+        let scan = journal.scan()
+        captureRecoveryIssues = scan.issues
+        for pending in scan.handoffs {
             let source = pending.url
             if known.contains(source.standardizedFileURL.path) {
                 // A failed rescue write leaves a job in memory. Seeing that job
@@ -203,20 +207,14 @@ final class RenderQueueViewModel {
                 continue
             }
             if pending.mediaKind == .photo, !pending.validated {
-                // The marker is retired so it cannot resurface every launch, but
-                // the file is left alone: nothing here deletes a capture it did
-                // not finish writing.
-                journal.acknowledge(source)
-                incompleteStillWasRetired = true
+                // scan reports every durable defect as a recovery issue. Only a
+                // capture this process may still be writing reaches here, and
+                // it must be neither enqueued nor quarantined mid-capture.
                 continue
             }
             if enqueueOriginalOnly(sourceURL: source, reason: "recovered after an interrupted session") {
                 journal.acknowledge(source)
             }
-        }
-        if incompleteStillWasRetired, externalErrorMessage == nil {
-            externalErrorMessage = "A RAW capture was interrupted before it could be checked. "
-                + "The unfinished file was not added to Photos."
         }
     }
 

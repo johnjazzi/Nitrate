@@ -1061,8 +1061,9 @@ final class CameraViewModel {
             // Cancellation advances captureGeneration, and a foreground reset
             // changes sessionFrameRate; neither can relabel this take's URL.
             let sourceProfile = CameraSession.permittedSourceProfile() ?? .appleLog2
+            try captureJournal.markPending(outputURL, capturePolicy:
+                RenderCapturePolicy(sessionFrameRate.fps, sourceProfile: sourceProfile))
             capturePolicies.record(sourceURL: outputURL, mode: sessionFrameRate, sourceProfile: sourceProfile)
-            captureJournal.markPending(outputURL, capturePolicy: capturePolicies.policy(for: outputURL))
             if usesSharedIdlePreview { session.setVideoRecordingZoomIntent(photoCropZoom) }
             session.startRecording(to: outputURL) { [weak self] error in
                 guard let self else { return }
@@ -1099,6 +1100,9 @@ final class CameraViewModel {
         } catch {
             session.endTakeFlash()
             isStartingRecording = false
+            invalidateRecordingTimers()
+            recordingTimerOrigin = nil
+            recordingStoppedAt = nil
             errorMessage = "Failed to prepare recording: \(error.localizedDescription)"
         }
     }

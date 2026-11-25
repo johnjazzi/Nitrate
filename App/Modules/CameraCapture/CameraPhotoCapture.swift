@@ -114,11 +114,11 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
         }
         evidence["status"] = "capturing"
         try writeManifest()
-        started = true
         // The handoff is recorded before the sensor is asked, so a process that
         // dies between the DNG write and the queue's acceptance still leaves a
         // recoverable marker naming this capture and its media kind.
-        journal?.markPending(Self.destination(in: directory), mediaKind: .photo)
+        try journal?.markPending(Self.destination(in: directory), mediaKind: .photo)
+        started = true
         let requestID = settings.uniqueID
         queue.asyncAfter(deadline: .now() + timeoutInterval) { [weak self] in
             guard let self, var state = self.transaction else { return }
@@ -268,7 +268,13 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
                 self.dngURL = url
                 // The file passed the container, dimension, active-area and
                 // format checks: it is a deliverable still, not a fragment.
-                self.journal?.markValidated(url, mediaKind: .photo)
+                do { try self.journal?.markValidated(url, mediaKind: .photo) }
+                catch {
+                    // The DNG already passed validation. Keep the original and
+                    // pending marker, and still offer the normal queue handoff.
+                    // A failed queue write leaves a visible quarantine at launch.
+                    self.evidence["journalWarning"] = String(error.localizedDescription.prefix(240))
+                }
             } catch {
                 self.failure = self.failure ?? "DNG validation failed: \(error)"
                 self.evidence["dngReadable"] = "false"
@@ -389,7 +395,12 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
 
     private func recordManifest() {
         do { try writeManifest() }
-        catch { failure = failure ?? "capture manifest persistence failed: \(error)" }
+        catch {
+            if dngURL != nil {
+                // Post-validation storage failure must not hide a good original.
+                evidence["manifestWarning"] = String(error.localizedDescription.prefix(240))
+            } else { failure = failure ?? "capture manifest persistence failed: \(error)" }
+        }
     }
 
     private func writeManifest() throws {
@@ -399,7 +410,7 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
                            "pixelBufferWidth", "pixelBufferHeight", "dngBytes", "dngReadable",
                            "resolvedRawWidth", "resolvedRawHeight", "actualFileType", "actualRawPixelFormat",
                            "asShotNeutral", "activeArea", "rotationAngleRequested", "rotationAngleApplied",
-                           "rotationAngleSupported",
+                           "rotationAngleSupported", "journalWarning", "manifestWarning",
                            // Lamp evidence, merged from the capture's FlashRecord.
                            FlashRecord.modeKey, FlashRecord.intensityKey, FlashRecord.durationKey,
                            FlashRecord.exposureKey, FlashRecord.refusedKey,

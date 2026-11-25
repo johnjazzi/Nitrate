@@ -106,6 +106,7 @@ struct QueueSheetView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         if isExpanded, !showsFailedOnly { notices }
+                        if !showsFailedOnly { captureRecoverySection }
                         if isExpanded, !showsFailedOnly { workSections }
                         if showsFailedOnly { failedControls }
                         historySection
@@ -436,6 +437,35 @@ struct QueueSheetView: View {
     }
 
     // MARK: - Work sections (expanded only)
+
+    /// Also visible when compact: quarantines are not jobs or receipts, and
+    /// must never disappear behind an empty history or a hidden-work summary.
+    @ViewBuilder private var captureRecoverySection: some View {
+        if !viewModel.captureRecoveryIssues.isEmpty {
+            sectionHeader("Capture recovery")
+            ForEach(viewModel.captureRecoveryIssues) { issue in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(issue.message)
+                        .font(NitrateTypography.font(.caption))
+                    Text(issue.url.path)
+                        .font(NitrateTypography.font(.caption2))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                    if issue.retryable {
+                        Button("Retry recovery") { viewModel.reconcileOrphanedCaptures() }
+                            .buttonStyle(.borderless)
+                            .disabled(cameraViewModel.isPhotoCaptureBusy || cameraViewModel.isStartingRecording
+                                || cameraViewModel.isRecording || cameraViewModel.isStoppingRecording)
+                            .accessibilityIdentifier("queue.retryCaptureRecovery")
+                    }
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(uiColor: .tertiarySystemFill)))
+                .padding(.horizontal, QueueContactSheetLayout.horizontalPadding)
+            }
+        }
+    }
 
     private var workSections: some View {
         VStack(alignment: .leading, spacing: 8) {
