@@ -11,6 +11,9 @@ final class DevelopmentPhotoController: @unchecked Sendable {
     private let queue: DispatchQueue
     private let onUpdate: @MainActor @Sendable (PhotoExposureSnapshot) -> Void
     private let onFailure: @Sendable (String) -> Void
+    /// Durable handoff recorded before each still is written, so a process death
+    /// between the DNG write and queue acceptance is recoverable.
+    private let journal: CaptureJournal?
 
     private var started = false
     private var stopped = false
@@ -77,10 +80,12 @@ final class DevelopmentPhotoController: @unchecked Sendable {
 
     init(device: AVCaptureDevice, output: AVCapturePhotoOutput, pixelFormat: OSType,
          dimensions: CMVideoDimensions, directory: URL, queue: DispatchQueue,
+         journal: CaptureJournal? = nil,
          onUpdate: @escaping @MainActor @Sendable (PhotoExposureSnapshot) -> Void,
          onFailure: @escaping @Sendable (String) -> Void) {
         self.device = device; self.output = output; self.pixelFormat = pixelFormat
         self.dimensions = dimensions; self.directory = directory; self.queue = queue
+        self.journal = journal
         self.onUpdate = onUpdate; self.onFailure = onFailure
     }
 
@@ -321,7 +326,8 @@ final class DevelopmentPhotoController: @unchecked Sendable {
         do {
             let helper = try CameraPhotoCapture(output: output, pixelFormat: pixelFormat,
                 dimensions: dimensions, directory: folder, queue: queue,
-                rotationAngle: rotationAngle, flashRequested: flash.isPhotoLampOn) { [weak self] result in
+                rotationAngle: rotationAngle, flashRequested: flash.isPhotoLampOn,
+                journal: journal) { [weak self] result in
                     guard let self else { return }
                     self.trace("capture-terminal \(result.failure ?? "success")")
                     self.extinguishFlash()

@@ -168,7 +168,7 @@ struct RenderQueueRecoveryTests {
         defer { try? FileManager.default.removeItem(at: files.directory) }
         let journal = CaptureJournal(root: files.directory.appendingPathComponent("journal"))
         // The take landed on disk, then the app died before any queue entry.
-        journal.markPending(files.source)
+        try journal.markPending(files.source)
 
         var renders = 0
         var saves: [URL] = []
@@ -189,7 +189,7 @@ struct RenderQueueRecoveryTests {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }
         let journal = CaptureJournal(root: files.directory.appendingPathComponent("journal"))
-        journal.markPending(files.source)
+        try journal.markPending(files.source)
         journal.acknowledge(files.source)
         #expect(journal.pendingCaptures().isEmpty)
 
@@ -205,7 +205,7 @@ struct RenderQueueRecoveryTests {
         defer { try? FileManager.default.removeItem(at: files.directory) }
         try Data([4, 5, 6]).write(to: files.output)
         let journal = CaptureJournal(root: files.directory.appendingPathComponent("journal"))
-        journal.markPending(files.source)
+        try journal.markPending(files.source)
         #expect(journal.pendingCaptures().count == 1)
 
         let model = RenderQueueViewModel(persistenceURL: files.persistence,
@@ -240,10 +240,12 @@ struct RenderQueueRecoveryTests {
     @Test func journalRetiresMarkersWhoseFileNeverLanded() throws {
         let files = try scratch()
         defer { try? FileManager.default.removeItem(at: files.directory) }
-        let journal = CaptureJournal(root: files.directory.appendingPathComponent("journal"))
+        let directory = files.directory.appendingPathComponent("journal")
         let missing = files.directory.appendingPathComponent("never-written.mov")
-        journal.markPending(missing)
-        #expect(journal.pendingCaptures().isEmpty)
+        try CaptureJournal(root: directory, sessionID: UUID()).markPending(missing)
+        // The capture belonged to a process that is gone, so no bytes can land.
+        let relaunched = CaptureJournal(root: directory, sessionID: UUID())
+        #expect(relaunched.pendingCaptures().isEmpty)
     }
 
     @Test func enqueueWriteFailurePausesAnAlreadyRunningJobBeforePhotos() async throws {

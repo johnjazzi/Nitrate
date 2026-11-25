@@ -99,19 +99,6 @@ final class RAWPhotoDecoder {
     private let queue: MTLCommandQueue
     private let context: CIContext
     private let colorSpace: CGColorSpace
-    /// Largest imported raw this decoder will open.
-    ///
-    /// `PhotoCapturePolicy.maximumPixelCount` (12.19 MP) sizes the DNGs THIS app
-    /// writes; it is not an import limit, and applying it refused every DSLR raw
-    /// above 12 MP (a 16 MP Sony NEX-6 ARW, a 33 MP A7 IV, a 45 MP NEF). A raw
-    /// the operator picked is theirs to develop, at the resolution it was shot.
-    ///
-    /// This ceiling exists only to refuse a file large enough to exhaust memory
-    /// before anything can fail gracefully. Raise it if it gets in the way; it is
-    /// one number on purpose.
-    static let maximumImportPixels = 80_000_000
-
-    private var usablePixelLimit: Int { Self.maximumImportPixels }
 
     init(device: MTLDevice, queue: MTLCommandQueue) throws {
         self.device = device
@@ -214,8 +201,14 @@ final class RAWPhotoDecoder {
         guard extent.origin.x.isFinite, extent.origin.y.isFinite,
               extent.width.isFinite, extent.height.isFinite,
               extent.width > 0, extent.height > 0 else { throw DecodeError.emptyOutput }
-        let pixels = extent.width * extent.height
-        guard pixels.isFinite, pixels <= CGFloat(usablePixelLimit) else { throw DecodeError.pixelBudget(pixels) }
+        // One delivery budget for admission and for the still stages: this
+        // decoder used to admit 80 MP on its own, so a 24 MP file could open,
+        // preview at 960 px, and then die in the still stage's guard. Admitting
+        // a file is a promise the rest of the pipeline has to keep.
+        let pixelWidth = Int(extent.width.rounded()), pixelHeight = Int(extent.height.rounded())
+        guard PhotoRenderBudget.accepts(width: pixelWidth, height: pixelHeight) else {
+            throw DecodeError.pixelBudget(width: pixelWidth, height: pixelHeight)
+        }
         let normalized = image.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
         let texture = try renderLinearImage(normalized)
         settings["renderColorSpace"] = "extendedLinearSRGB"
@@ -271,13 +264,15 @@ final class RAWPhotoDecoder {
     }
 
     enum DecodeError: Error, LocalizedError {
-        case unsupported(String), resources(String), invalidWhiteBalance, emptyOutput, pixelBudget(CGFloat), metal(String)
+        case unsupported(String), resources(String), invalidWhiteBalance, emptyOutput,
+             pixelBudget(width: Int, height: Int), metal(String)
         var errorDescription: String? {
             switch self {
             case .unsupported(let s), .resources(let s), .metal(let s): return s
             case .invalidWhiteBalance: return "Temperature/tint outside supported finite ranges"
             case .emptyOutput: return "RAW decoder returned an empty or non-finite extent"
-            case .pixelBudget(let p): return "RAW output exceeds 12 MP-class usable-pixel limit (\(p))"
+            case .pixelBudget(let width, let height):
+                return PhotoRenderBudget.refusalMessage(width: width, height: height)
             }
         }
     }

@@ -98,6 +98,20 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
     /// still live. Latched so the take is finished and its readable original
     /// retained instead of being cancelled and deleted.
     private var latchedQualityError: Error?
+    /// Set when the session — not the user — ended the take: an AVFoundation
+    /// interruption, a runtime error, session teardown or backgrounding. Such a
+    /// take cannot receive the video tail the drain waits for, so it is
+    /// finalized as soon as the interruption is known and its readable original
+    /// is reported through the original-rescue path rather than as a clean clip.
+    private var stopWasInterrupted = false
+
+    /// True when the accepted audio ends after the last captured video frame:
+    /// the tail a deliberate-stop drain would have waited for never arrived.
+    private var isMissingItsVideoTail: Bool {
+        guard let audioEnd = lastAudioEndTime, audioEnd.isValid, audioEnd.isNumeric else { return false }
+        guard let videoEnd = lastVideoEndTime, videoEnd.isValid, videoEnd.isNumeric else { return true }
+        return videoEnd < audioEnd
+    }
     private let scheduleDrainTimeout: (TimeInterval, @escaping @Sendable () -> Void) -> Void
     private var appendedVideoFrames = 0
     /// Presentation time at which the recording exposure took effect; video
@@ -218,8 +232,18 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         }
     }
 
+    /// Deliberate end of a take. The writer keeps its drain contract: video is
+    /// allowed to reach the accepted audio endpoint before the tracks close.
     func stop() {
         queue.async { [weak self] in self?.finishOnQueue() }
+    }
+
+    /// Session-initiated end of a take (system interruption, runtime error,
+    /// session teardown, backgrounding). No further video can arrive, so the
+    /// material already captured is finalized instead of waiting out the drain
+    /// deadline and deleting a take the user had recorded.
+    func interrupt() {
+        queue.async { [weak self] in self?.interruptOnQueue() }
     }
 
     func cancel() {
@@ -708,6 +732,28 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         return CMTimeAdd(CMSampleBufferGetPresentationTimeStamp(sample), validDuration ? duration : fallbackDuration)
     }
 
+    /// Finalize an interrupted take immediately, whether the interruption lands
+    /// on a live clip or on one whose deliberate stop is already draining. The
+    /// writer still reaches its own terminal state and is validated exactly like
+    /// a stopped take; only the "is this a clean success" answer differs.
+    private func interruptOnQueue() {
+        switch state {
+        case .recording:
+            stopWasInterrupted = true
+            if stopAudioEndTime == nil { stopAudioEndTime = lastAudioEndTime }
+            recentDropTimes.removeAll()
+            finalizeOnQueue()
+        case .awaitingVideo:
+            // Nothing has been written yet, so there is no original to keep.
+            fail(CameraSampleBufferRecorderError.noVideoFrames)
+        case .idle, .finishing, .finished, .failed:
+            // A take already finalizing, finished, failed or absent owns its
+            // terminal result; an interruption must not report twice or touch
+            // a later clip.
+            break
+        }
+    }
+
     private func finishOnQueue() {
         guard state == .awaitingVideo || state == .recording, stopAudioEndTime == nil else { return }
         guard state == .recording else {
@@ -836,6 +882,19 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
                         reason: CameraSampleBufferRecorderError.configuredMicrophoneProducedNoAudio)))
                     return
                 }
+                // An interrupted take whose audio outlives the last captured
+                // frame is a partial by definition: the movie finalized
+                // readably, but the session ended it before the tail arrived,
+                // so it is kept through the original-rescue path instead of
+                // being claimed as a clean finished clip. An interruption that
+                // landed after the video already covered the audio leaves a
+                // complete take and takes the ordinary success path.
+                if self.stopWasInterrupted, self.isMissingItsVideoTail {
+                    self.complete(.failure(CameraRetainedRecordingError(
+                        originalURL: destination,
+                        reason: CameraSampleBufferRecorderError.interruptedTake)))
+                    return
+                }
 #if DEBUG
                 if self.preservationProbeEnabled {
                     guard let source = self.sourceProbe else {
@@ -952,6 +1011,7 @@ final class CameraSampleBufferRecorder: NSObject, AVCaptureVideoDataOutputSample
         audioOverflowEpoch = nil
         audioHandoffLock.unlock()
         latchedQualityError = nil
+        stopWasInterrupted = false
         appendedVideoFrames = 0
         firstAppendedUptime = nil
         appendedAudioSamples = 0
@@ -1314,6 +1374,7 @@ enum CameraSampleBufferRecorderError: LocalizedError {
     case sustainedFrameDrops(Int)
     case noVideoFrames
     case cancelled
+    case interruptedTake
     case stopDrainTimedOut
     case finishWritingTimedOut
     case configuredMicrophoneProducedNoAudio
@@ -1335,6 +1396,7 @@ enum CameraSampleBufferRecorderError: LocalizedError {
         case .sustainedFrameDrops(let count): return "Capture dropped \(count) frames within two seconds."
         case .noVideoFrames: return "Recording stopped before a valid video frame was written."
         case .cancelled: return "Recording was cancelled before its first frame was written."
+        case .interruptedTake: return "the take was interrupted before it finished"
         case .stopDrainTimedOut: return "Recording timed out waiting for delayed video to reach the audio endpoint."
         case .finishWritingTimedOut: return "Recording timed out while finalizing; the take was not reported."
         case .configuredMicrophoneProducedNoAudio: return "The configured microphone delivered no audio for this take."

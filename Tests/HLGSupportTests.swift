@@ -117,7 +117,7 @@ struct HLGSupportTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let journal = CaptureJournal(root: root)
-        journal.markPending(source, capturePolicy: policy)
+        try journal.markPending(source, capturePolicy: policy)
         #expect(journal.capturePolicy(for: source) == policy)
         journal.acknowledge(source)
         #expect(journal.capturePolicy(for: source) == nil)

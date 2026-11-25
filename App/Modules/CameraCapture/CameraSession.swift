@@ -254,6 +254,13 @@ final class CameraSession: NSObject, @unchecked Sendable {
     /// word-sized snapshot properties.
     private(set) var supportsCameraControl = false
 
+    /// Durable handoff markers for captures this camera made. One instance per
+    /// session: video marks on the main actor before a take, stills mark on the
+    /// capture queue before the DNG is written, and the render queue acknowledges
+    /// both. The journal is file-based with no mutable state, so the two actors
+    /// never share anything but the marker directory.
+    let captureJournal = CaptureJournal()
+
     override init() {
         hardwareControls = CameraHardwareControls(session: session, queue: sessionQueue)
         super.init()
@@ -4161,37 +4168,46 @@ final class CameraSession: NSObject, @unchecked Sendable {
     }
 
     func stopRecording() {
-        sessionQueue.async { [weak self] in
-            guard let self else { return }
-            // The lamp belongs to the take. It goes out at the stop request, not
-            // when the writer has finished draining: the frames are captured by
-            // then, and a torch left burning for the drain is the failure mode
-            // this control must never have.
-            self.extinguishTakeFlash()
-            self.invalidateMetering()
-            if self.sharedIdleEnabled {
-                self.sharedGraph.request(.idle)
-                let request = self.sharedVideoRequest
-                self.sharedVideoRequest = nil
-                if let request { DispatchQueue.main.async { request.completion(CameraSampleBufferRecorderError.cancelled) } }
-                // At the end of this scope a `defer` would only run now anyway.
-                self.driveSharedGraph()
+        sessionQueue.async { [weak self] in self?.endActiveTakeOnSessionQueue(interrupted: false) }
+    }
+
+    /// Ends the take because the app is going away (background boundary), not
+    /// because the user pressed Stop. The interrupted session cannot deliver the
+    /// video tail a drain waits for, so the recorder finalizes the material it
+    /// already has and keeps a readable original instead of deleting the take.
+    func interruptRecording() {
+        sessionQueue.async { [weak self] in self?.endActiveTakeOnSessionQueue(interrupted: true) }
+    }
+
+    private func endActiveTakeOnSessionQueue(interrupted: Bool) {
+        // The lamp belongs to the take. It goes out at the stop request, not
+        // when the writer has finished draining: the frames are captured by
+        // then, and a torch left burning for the drain is the failure mode
+        // this control must never have.
+        extinguishTakeFlash()
+        invalidateMetering()
+        if sharedIdleEnabled {
+            sharedGraph.request(.idle)
+            let request = sharedVideoRequest
+            sharedVideoRequest = nil
+            if let request { DispatchQueue.main.async { request.completion(CameraSampleBufferRecorderError.cancelled) } }
+            // At the end of this scope a `defer` would only run now anyway.
+            driveSharedGraph()
+        }
+        if recordingStartPending {
+            recordingStartPending = false
+            recordingGeneration &+= 1
+            failPendingStart(CameraSampleBufferRecorderError.noVideoFrames)
+            if let epoch = recorderCompletionBridge.activeEpoch {
+                recorderCompletionBridge.cancelUserStart(epoch: epoch)
+                recordingFinishing = true
+                refreshPublicRecordingState()
+                sampleBufferRecorder.cancel()
             }
-            if self.recordingStartPending {
-                self.recordingStartPending = false
-                self.recordingGeneration &+= 1
-                self.failPendingStart(CameraSampleBufferRecorderError.noVideoFrames)
-                if let epoch = self.recorderCompletionBridge.activeEpoch {
-                    self.recorderCompletionBridge.cancelUserStart(epoch: epoch)
-                    self.recordingFinishing = true
-                    self.refreshPublicRecordingState()
-                    self.sampleBufferRecorder.cancel()
-                }
-            } else if self.recordingActive {
-                self.recordingFinishing = true
-                self.refreshPublicRecordingState()
-                self.sampleBufferRecorder.stop()
-            }
+        } else if recordingActive {
+            recordingFinishing = true
+            refreshPublicRecordingState()
+            if interrupted { sampleBufferRecorder.interrupt() } else { sampleBufferRecorder.stop() }
         }
     }
 
@@ -4367,7 +4383,7 @@ final class CameraSession: NSObject, @unchecked Sendable {
         else { delivery = update }
         let controller = DevelopmentPhotoController(device: device, output: output,
             pixelFormat: pixelFormat, dimensions: size, directory: directory,
-            queue: sessionQueue, onUpdate: delivery) { [weak self] message in
+            queue: sessionQueue, journal: captureJournal, onUpdate: delivery) { [weak self] message in
                 self?.reportDevelopmentPhotoError(CameraError.photoExposureUnavailable(message))
             }
         // A refused lamp on a still is a warning: the photo still happens.
@@ -5377,7 +5393,10 @@ final class CameraSession: NSObject, @unchecked Sendable {
         if let epoch = recorderCompletionBridge.activeEpoch {
             recordingFinishing = true
             refreshPublicRecordingState()
-            if recordingActive { sampleBufferRecorder.stop() }
+            // Recovery is an interruption, not a deliberate Stop: the session
+            // cannot deliver the tail video the drain waits for, so the recorder
+            // finalizes what it already has and keeps a readable original.
+            if recordingActive { sampleBufferRecorder.interrupt() }
             else {
                 recorderCompletionBridge.cancelUserStart(epoch: epoch)
                 sampleBufferRecorder.cancel()
@@ -5566,12 +5585,14 @@ final class CameraSession: NSObject, @unchecked Sendable {
                     self.sampleBufferRecorder.cancel()
                 }
             } else if self.recordingActive {
-                // Keep the capture connection running until the recorder has
-                // drained video to the frozen audio endpoint.
+                // Teardown is an interruption, not a deliberate Stop. The graph
+                // is about to stop, so waiting for a video tail would only delay
+                // deleting the take: finalize the captured material and keep a
+                // readable original instead.
                 self.stopSessionAfterRecording = true
                 self.recordingFinishing = true
                 self.refreshPublicRecordingState()
-                self.sampleBufferRecorder.stop()
+                self.sampleBufferRecorder.interrupt()
                 return
             }
             if self.sharedIdleEnabled { self.driveSharedGraph(); return }

@@ -214,6 +214,25 @@ enum PhotoCaptureTimeoutDisposition: Equatable, Sendable {
     case markedFailed, alreadyFailed, terminal
 }
 
+/// What a still transaction hands back when it closes.
+///
+/// A file that validated is the operator's photo even when the framework's
+/// terminal callback never arrived: a timeout changes the result, never the
+/// file. A capture that recorded a failure has nothing deliverable, and an
+/// incomplete file never has a URL at all — only the validated one does.
+enum PhotoCaptureHandoffPolicy {
+    /// The URL to hand back and the failure to record with it.
+    ///
+    /// The timeout reason is applied here, not before: a validated DNG must not
+    /// inherit a failure that would make its delivery look broken.
+    static func handoff(validated: URL?, failure: String?, timedOut: Bool)
+        -> (url: URL?, failure: String?) {
+        if let failure { return (nil, failure) }
+        if let validated { return (validated, nil) }
+        return (nil, timedOut ? "capture timed out awaiting framework terminal callback" : nil)
+    }
+}
+
 /// A timeout changes the result but never releases the sensor transaction.
 struct PhotoCaptureTransactionState: Sendable {
     let uniqueID: Int64

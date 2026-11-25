@@ -13,6 +13,9 @@ final class RenderQueueViewModel {
 
     private let persister: QueuePersister
     private let journal: CaptureJournal
+    /// Rebuilt from durable markers, never from a guessed file extension. These
+    /// references are visible in History but cannot enter a saver or renderer.
+    private(set) var captureRecoveryIssues: [CaptureJournal.RecoveryIssue] = []
     private let persistOverride: (([RenderJob]) throws -> Void)?
     private let loadOverride: (() throws -> [RenderJob])?
     private let injectedRender: RenderOperation?
@@ -182,16 +185,31 @@ final class RenderQueueViewModel {
         return true
     }
 
-    /// Rescue captures that were marked before recording but never accepted by
+    /// Rescue captures that were marked before the capture but never accepted by
     /// the queue — the app died (or the queue was unreadable) in between.
     ///
-    /// They are queued original-only: the take's validation outcome is unknown,
-    /// so it is delivered verbatim and never rendered.
+    /// A video is queued original-only: the take's validation outcome is
+    /// unknown, so it is delivered verbatim and never rendered. A still is only
+    /// rescued when its own validation finished; unchecked DNGs remain reachable
+    /// in History's recovery quarantine and are never exported. Each marker releases exactly one
+    /// queue entry, so a retried reconciliation cannot duplicate a rescue.
     func reconcileOrphanedCaptures() {
         let known = Set(jobs.map { $0.sourceURL.standardizedFileURL.path })
-        for source in journal.pendingCaptures() {
+        let scan = journal.scan()
+        captureRecoveryIssues = scan.issues
+        for pending in scan.handoffs {
+            let source = pending.url
             if known.contains(source.standardizedFileURL.path) {
-                journal.acknowledge(source)
+                // A failed rescue write leaves a job in memory. Seeing that job
+                // again is not durable acceptance; keep its marker until Retry
+                // records the queue successfully.
+                if !isPersistenceBlocked { journal.acknowledge(source) }
+                continue
+            }
+            if pending.mediaKind == .photo, !pending.validated {
+                // scan reports every durable defect as a recovery issue. Only a
+                // capture this process may still be writing reaches here, and
+                // it must be neither enqueued nor quarantined mid-capture.
                 continue
             }
             if enqueueOriginalOnly(sourceURL: source, reason: "recovered after an interrupted session") {
@@ -267,7 +285,11 @@ final class RenderQueueViewModel {
             return nil
         }
         if let existing = jobs.first(where: { $0.sourceURL.standardizedFileURL == sourceURL.standardizedFileURL }) {
-            return existing.isPhoto == true ? existing.id : nil
+            guard existing.isPhoto == true else { return nil }
+            // The still already has a durable entry, so its recovery marker has
+            // nothing left to protect.
+            journal.acknowledge(sourceURL)
+            return existing.id
         }
         // A still is one exposure, so an automatic pull has no meter reading to
         // act on; the stock's persisted manual pull still applies. The resolved
@@ -291,6 +313,10 @@ final class RenderQueueViewModel {
             publishQueueMessage()
             return nil
         }
+        // Only a durable queue entry releases the capture's recovery marker. A
+        // failed write leaves it in place, so the still is rescued at launch
+        // instead of being stranded on disk with no retryable job.
+        journal.acknowledge(sourceURL)
         processNext()
         return photo.id
     }
@@ -416,6 +442,10 @@ final class RenderQueueViewModel {
         // acceptance attempt must reuse that source's original-only job.
         if !jobs.contains(where: { $0.sourceURL == sourceURL && $0.originalOnly == true }) {
             var rescued = RenderJob(originalOnlySourceURL: sourceURL, reason: reason, sessionId: sessionId)
+            // A rescued still is a DNG, and the video saver rejects it. Read the
+            // media kind from the file, not from the caller, so the correct
+            // deliverer is chosen even for a rescue.
+            if PhotoImportService.isRaw(sourceURL) { rescued.isPhoto = true }
             rescued.capturePolicy = journal.capturePolicy(for: sourceURL)
             jobs.append(rescued)
         }

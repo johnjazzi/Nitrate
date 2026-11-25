@@ -18,6 +18,10 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
     private let requestedDimensions: CMVideoDimensions
     private let directory: URL
     private let queue: DispatchQueue
+    /// Durable handoff for an operator still. Recorded before the DNG can be
+    /// written and upgraded when the file validates, so a process death in
+    /// either window is recoverable. Debug capture paths pass nil.
+    private let journal: CaptureJournal?
     /// Quarter-turn frozen at the shutter tap. Applied to the photo connection
     /// immediately before the request, because that is what the DNG's EXIF
     /// orientation — and therefore the decoded still — follows.
@@ -34,6 +38,8 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
     private var terminalDelivered = false
     private var started = false
     private var frameworkTerminated = false
+    /// A timeout that closed only after an in-flight processing callback settled.
+    private var timeoutClosurePending = false
     private var completionBarrier = PhotoCompletionBarrier(waitingFor: [.rawProcessed, .captureTerminated])
     private let deliveryLock = NSLock()
     private var pendingProcessing = 0
@@ -45,6 +51,7 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
          /// is always replaced by the framework's resolved capture result.
          flash _: FlashRecord = .off,
          flashRequested: Bool = false,
+         journal: CaptureJournal? = nil,
          timeoutInterval: TimeInterval = PhotoExposureCadence.captureTransactionTimeout,
          onTerminal: @escaping @Sendable (CameraPhotoCaptureResult) -> Void) throws {
         guard timeoutInterval.isFinite, timeoutInterval > 0 else { throw CaptureError.invalidSettings }
@@ -54,6 +61,7 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
         self.requestedDimensions = dimensions
         self.directory = directory
         self.queue = queue
+        self.journal = journal
         self.rotationAngle = rotationAngle
         self.flashRequested = flashRequested
         let flashSupported = output.supportedFlashModes.contains(.on)
@@ -106,6 +114,10 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
         }
         evidence["status"] = "capturing"
         try writeManifest()
+        // The handoff is recorded before the sensor is asked, so a process that
+        // dies between the DNG write and the queue's acceptance still leaves a
+        // recoverable marker naming this capture and its media kind.
+        try journal?.markPending(Self.destination(in: directory), mediaKind: .photo)
         started = true
         let requestID = settings.uniqueID
         queue.asyncAfter(deadline: .now() + timeoutInterval) { [weak self] in
@@ -113,11 +125,19 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
             guard state.uniqueID == requestID else { return }
             switch state.timeout() {
             case .markedFailed:
-                self.failure = self.failure ?? "capture timed out awaiting framework terminal callback"
-                self.evidence["status"] = "timedOutAwaitingTerminal"
                 self.evidence["timedOut"] = "true"
                 self.transaction = state
-                self.recordManifest()
+                // A processing callback already entered may still be writing and
+                // validating the DNG. Closing the transaction underneath it would
+                // refuse that file's own callback and discard a photo the camera
+                // did finish. Wait for it to settle, then close.
+                if self.hasPendingProcessing {
+                    self.timeoutClosurePending = true
+                    self.recordManifest()
+                    return
+                }
+                // Let the handoff policy apply a timeout failure only when no
+                // validated DNG exists. Pre-setting failure here hides that URL.
                 // The framework's terminal callback is normally last. When it never
                 // arrives the transaction is closed here instead: `finishIfReady`
                 // waits for `frameworkTerminated`, so a dropped terminal would hold
@@ -190,7 +210,7 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
                 self.recordManifest(); return
             }
             do {
-                let url = self.directory.appendingPathComponent("capture.dng")
+                let url = Self.destination(in: directory)
                 try data.write(to: url, options: .atomic)
                 self.evidence["dng"] = "capture.dng"
                 let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -246,6 +266,15 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
                 self.evidence["dngBytes"] = String((attrs[.size] as? NSNumber)?.intValue ?? 0)
                 self.evidence["dngReadable"] = "true"
                 self.dngURL = url
+                // The file passed the container, dimension, active-area and
+                // format checks: it is a deliverable still, not a fragment.
+                do { try self.journal?.markValidated(url, mediaKind: .photo) }
+                catch {
+                    // The DNG already passed validation. Keep the original and
+                    // pending marker, and still offer the normal queue handoff.
+                    // A failed queue write leaves a visible quarantine at launch.
+                    self.evidence["journalWarning"] = String(error.localizedDescription.prefix(240))
+                }
             } catch {
                 self.failure = self.failure ?? "DNG validation failed: \(error)"
                 self.evidence["dngReadable"] = "false"
@@ -290,6 +319,13 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
         let settled = deliveryLock.withLock { pendingProcessing -= 1; return pendingProcessing == 0 }
         if settled { completionBarrier.complete(.rawProcessed) }
         finishIfReady()
+        // The timeout fired while this processing was still in flight; that work
+        // is now accounted for (and may have validated the DNG), so the timed-out
+        // transaction can close.
+        if settled, timeoutClosurePending {
+            timeoutClosurePending = false
+            finishAfterTimeout()
+        }
     }
 
     private func finishIfReady() {
@@ -306,6 +342,11 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
     }
 
     /// Close a timed-out transaction without the framework's terminal callback.
+    ///
+    /// A DNG that already validated is the operator's photo: the lost callback
+    /// changes the result, never the file. It is handed back so the queue can
+    /// take it, and it is handed back exactly once — this is the only terminal
+    /// this transaction will deliver.
     private func finishAfterTimeout() {
         guard !terminalDelivered, var state = transaction, state.timedOut else { return }
         guard state.finish(uniqueID: state.uniqueID) else { return }
@@ -313,12 +354,20 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
         frameworkTerminated = true
         completionBarrier.complete(.rawProcessed)
         completionBarrier.complete(.captureTerminated)
-        failure = failure ?? "capture timed out awaiting framework terminal callback"
-        evidence["status"] = "timedOutAwaitingTerminal"
+        let handoff = PhotoCaptureHandoffPolicy.handoff(validated: dngURL, failure: failure, timedOut: true)
+        failure = handoff.failure
+        evidence["timedOut"] = "true"
+        evidence["status"] = handoff.url == nil ? "timedOutAwaitingTerminal" : "timedOutWithValidatedDNG"
         recordManifest()
         terminalDelivered = true
-        onTerminal(CameraPhotoCaptureResult(dngURL: nil, evidence: evidence,
+        onTerminal(CameraPhotoCaptureResult(dngURL: handoff.url, evidence: evidence,
                                             failure: failure, timedOut: true))
+    }
+
+    /// Where this capture's DNG is written. One place, so the marker recorded
+    /// before the write and the file the callback validates cannot disagree.
+    private static func destination(in directory: URL) -> URL {
+        directory.appendingPathComponent("capture.dng")
     }
 
     private static func captureMetadata(_ metadata: [String: Any]) -> [String: String] {
@@ -346,7 +395,12 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
 
     private func recordManifest() {
         do { try writeManifest() }
-        catch { failure = failure ?? "capture manifest persistence failed: \(error)" }
+        catch {
+            if dngURL != nil {
+                // Post-validation storage failure must not hide a good original.
+                evidence["manifestWarning"] = String(error.localizedDescription.prefix(240))
+            } else { failure = failure ?? "capture manifest persistence failed: \(error)" }
+        }
     }
 
     private func writeManifest() throws {
@@ -356,7 +410,7 @@ final class CameraPhotoCapture: NSObject, AVCapturePhotoCaptureDelegate, @unchec
                            "pixelBufferWidth", "pixelBufferHeight", "dngBytes", "dngReadable",
                            "resolvedRawWidth", "resolvedRawHeight", "actualFileType", "actualRawPixelFormat",
                            "asShotNeutral", "activeArea", "rotationAngleRequested", "rotationAngleApplied",
-                           "rotationAngleSupported",
+                           "rotationAngleSupported", "journalWarning", "manifestWarning",
                            // Lamp evidence, merged from the capture's FlashRecord.
                            FlashRecord.modeKey, FlashRecord.intensityKey, FlashRecord.durationKey,
                            FlashRecord.exposureKey, FlashRecord.refusedKey,

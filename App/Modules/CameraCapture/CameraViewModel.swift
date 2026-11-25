@@ -326,8 +326,9 @@ final class CameraViewModel {
     private let flashStore = FlashSettingsStore()
     /// Marks a take before capture and is acknowledged once the render queue has
     /// durably accepted it. If the app dies in between, the file is reconciled at
-    /// next launch as an original-only rescue rather than being lost.
-    private let captureJournal = CaptureJournal()
+    /// next launch as an original-only rescue rather than being lost. Shared with
+    /// the session, which records the still's handoff before its DNG is written.
+    private var captureJournal: CaptureJournal { session.captureJournal }
     private var lifecycleGate = CameraLifecycleGate()
     private var configurationInFlight = false
     private var cameraConfigured = false { didSet { pushCameraHardwareControls() } }
@@ -401,9 +402,11 @@ final class CameraViewModel {
         if isStartingRecording {
             captureGeneration &+= 1
             isStartingRecording = false
-            session.stopRecording()
+            // The app is going away mid-take: the session is interrupted, so
+            // the recorder finalizes what it captured instead of draining.
+            session.interruptRecording()
         } else if isRecording {
-            session.stopRecording()
+            session.interruptRecording()
         }
         invalidateRecordingTimers()
         cameraConfigured = false
@@ -1058,8 +1061,9 @@ final class CameraViewModel {
             // Cancellation advances captureGeneration, and a foreground reset
             // changes sessionFrameRate; neither can relabel this take's URL.
             let sourceProfile = CameraSession.permittedSourceProfile() ?? .appleLog2
+            try captureJournal.markPending(outputURL, capturePolicy:
+                RenderCapturePolicy(sessionFrameRate.fps, sourceProfile: sourceProfile))
             capturePolicies.record(sourceURL: outputURL, mode: sessionFrameRate, sourceProfile: sourceProfile)
-            captureJournal.markPending(outputURL, capturePolicy: capturePolicies.policy(for: outputURL))
             if usesSharedIdlePreview { session.setVideoRecordingZoomIntent(photoCropZoom) }
             session.startRecording(to: outputURL) { [weak self] error in
                 guard let self else { return }
@@ -1069,7 +1073,9 @@ final class CameraViewModel {
                 // whichever take is now live.
                 guard self.captureGeneration == generation else { return }
                 guard self.lifecycleGate.isActive else {
-                    if error == nil { self.session.stopRecording() }
+                    // The app left while the take was starting: that is an
+                    // interruption, not the user's Stop.
+                    if error == nil { self.session.interruptRecording() }
                     return
                 }
                 self.isStartingRecording = false
@@ -1094,6 +1100,9 @@ final class CameraViewModel {
         } catch {
             session.endTakeFlash()
             isStartingRecording = false
+            invalidateRecordingTimers()
+            recordingTimerOrigin = nil
+            recordingStoppedAt = nil
             errorMessage = "Failed to prepare recording: \(error.localizedDescription)"
         }
     }
